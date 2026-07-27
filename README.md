@@ -89,7 +89,7 @@
     | `revert` | 이전 커밋 되돌리기 | `revert: 소셜 로그인 기능 추가 취소` |
 
 ### 팀원
-|<img src="https://github.com/kingrangE.png">|<img src="https://github.com/taeju-moon.png">|<img src="https://github.com/HongJunseong.png">|<img src="https://github.com/inerasable0203.png">|
+|[<img src="https://github.com/kingrangE.png">](https://github.com/kingrangE)|[<img src="https://github.com/taeju-moon.png">](https://github.com/taeju-moon.png)|[<img src="https://github.com/HongJunseong.png">](https://github.com/HongJunseong)|[<img src="https://github.com/inerasable0203.png">](https://github.com/inerasable0203)|
 |---------|-----|-----|----|
 |전길원|문태주|홍준성|최지욱|
 |DE|DE|DE|DE|
