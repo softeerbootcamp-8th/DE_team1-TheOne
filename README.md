@@ -6,6 +6,10 @@
 4. 문서화
 5. [Team Rule](#team-rule)
 
+## 프로젝트 소개
+### 기능
+1. 로그 확인
+2. 
 
 
 ## Team Rule
@@ -45,7 +49,16 @@
     - 모든 작업 Branch 여기서 생성/병합
     - 직접 Push 금지
 - 작업 브랜치: 하나의 Issue 단위로 생성
-    - EX) `feature/12-kakao-login`
+    - EX) `feature/12-bike-station-dag`
+    |타입|사용 시점|예시|
+    |---|------|---|
+    |feature|새로운 기능 개발|feature/12-bike-station-dag|
+    |fix|개발 중 발견된 버그 수정|fix/21-spark-null-handling|
+    |refactor|동작 변화 없는 코드 구조 개선|refactor/31-etl-pipeline-split|
+    |docs|문서 수정|docs/35-readme|
+    |test|테스트 추가 및 개선|test/40-dag-unit-test|
+    |chore|설정 및 유지보수|chore/44-airflow-docker-setup|
+    |hotfix|main 버전 긴급 오류 수정|hotfix/50-kafka-consumer-crash|
     - feature: 새로운 기능 개발
     - fix: 개발 중 발견된 버그 수정
     - refactor: 동작 변화 없는 코드 구조 개선
@@ -66,27 +79,27 @@
     ```
 - 예시
     ```bash
-    feat(auth): 카카오 로그인 기능 추가
+    feat(dag): 따릉이 대여소 수집 DAG 추가
 
-    인가 코드를 사용해 액세스 토큰을 발급하고
-    사용자 정보를 저장하도록 구현
+    Airflow DAG를 등록해 공공 API로부터
+    대여소 현황 데이터를 매시간 수집하도록 구현
 
     Closes #12
     ```
 - 커밋 타입
     | 타입 | 사용 시점 | 예시 |
     |---|---|---|
-    | `feat` | 새로운 기능 추가 | `feat(auth): 소셜 로그인 추가` |
-    | `fix` | 버그 수정 | `fix(order): 중복 주문 생성 문제 수정` |
-    | `docs` | 문서 추가/변경 | `docs: 로컬 실행 방법 추가` |
-    | `style` | 동작 변화 없는 코드 형식 수정 | `style: 들여쓰기 및 줄바꿈 정리` |
-    | `refactor` | 기능 변화 없는 코드 구조 개선 | `refactor(user): 회원 조회 로직 분리` |
-    | `test` | 테스트 추가 또는 수정 | `test(auth): 로그인 실패 테스트 추가` |
-    | `chore` | 설정/패키지/기타 유지보수 | `chore: ESLint 설정 추가` |
-    | `build` | 빌드 시스템이나 의존성 변경 | `build: axios 의존성 추가` |
-    | `ci` | CI/CD 설정 변경 | `ci: GitHub Actions 테스트 작업 추가` |
-    | `perf` | 성능 개선 | `perf(search): 검색 결과 캐싱 적용` |
-    | `revert` | 이전 커밋 되돌리기 | `revert: 소셜 로그인 기능 추가 취소` |
+    | `feat` | 새로운 기능 추가 | `feat(dag): 따릉이 대여소 수집 DAG 추가` |
+    | `fix` | 버그 수정 | `fix(spark): null 값으로 인한 job 실패 수정` |
+    | `docs` | 문서 추가/변경 | `docs: 데이터 파이프라인 실행 방법 추가` |
+    | `style` | 동작 변화 없는 코드 형식 수정 | `style: PEP8 기준 들여쓰기 정리` |
+    | `refactor` | 기능 변화 없는 코드 구조 개선 | `refactor(etl): 적재 로직 함수 분리` |
+    | `test` | 테스트 추가 또는 수정 | `test(dag): DAG 태스크 순서 테스트 추가` |
+    | `chore` | 설정/패키지/기타 유지보수 | `chore: Airflow Docker 이미지 버전 업데이트` |
+    | `build` | 빌드 시스템이나 의존성 변경 | `build: pyspark 의존성 추가` |
+    | `ci` | CI/CD 설정 변경 | `ci: GitHub Actions DAG 검증 작업 추가` |
+    | `perf` | 성능 개선 | `perf(spark): 파티셔닝으로 셔플 비용 절감` |
+    | `revert` | 이전 커밋 되돌리기 | `revert: 카프카 컨슈머 변경 사항 되돌리기` |
 
 ### 팀원
 |[<img src="https://github.com/kingrangE.png">](https://github.com/kingrangE)|[<img src="https://github.com/taeju-moon.png">](https://github.com/taeju-moon.png)|[<img src="https://github.com/HongJunseong.png">](https://github.com/HongJunseong)|[<img src="https://github.com/inerasable0203.png">](https://github.com/inerasable0203)|
