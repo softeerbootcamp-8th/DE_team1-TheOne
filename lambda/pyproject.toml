@@ -1,0 +1,15 @@
+[project]
+name = "tlc-lambda"
+version = "0.1.0"
+requires-python = "==3.11.*"
+
+# 수집 함수 공용 의존성. 함수별로 더 가벼워야 하면 함수 폴더에 개별 pyproject 로 분리.
+dependencies = [
+    "requests",
+    "beautifulsoup4",  # crawl_rental
+    "lxml",
+    "boto3",           # S3 적재 (bronze/*)
+]
+
+[dependency-groups]
+dev = ["pytest", "moto"]  # moto: AWS 모킹

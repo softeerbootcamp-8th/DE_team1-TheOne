@@ -1,0 +1,32 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / lock artifacts (uncomment if lockfiles should not be tracked)
+# uv.lock
+
+# Airflow
+airflow/logs/
+airflow/**/*.pyc
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.lock.hcl
+
+# Env / secrets
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/

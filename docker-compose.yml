@@ -1,0 +1,59 @@
+# =============================================================================
+# 로컬 개발 환경 — docker compose up 한 줄로 Airflow 가 뜹니다.
+#
+#   docker compose up -d        # 띄우기 (첫 실행은 이미지 빌드로 몇 분 걸림)
+#   docker compose logs -f      # 로그 보기
+#   docker compose down         # 내리기
+#   docker compose down -v      # 내리면서 DB 까지 초기화
+#
+# UI: http://localhost:8080
+# 로그인 정보는 `docker compose logs airflow | grep -i password` 로 확인합니다.
+#
+# 버전은 versions.toml 을 따릅니다 (Airflow 3.3.0 / Postgres 16 / LocalExecutor).
+# Airflow 이미지 안의 라이브러리 버전은 airflow/uv.lock 과 같은 조합입니다.
+# =============================================================================
+
+services:
+  postgres:
+    # versions.toml: postgres = "16"
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow:
+    # airflow/Dockerfile 을 빌드해서 씁니다 (constraints 로 고정된 provider 포함)
+    build: ./airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # versions.toml: executor = "LocalExecutor"
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      # 기본값 300초(5분). 로컬 개발에서 DAG 고치고 5분 기다리긴 불편하므로 10초로.
+      # 운영에서는 기본값을 쓰세요 (잦은 재파싱은 부하입니다).
+      AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "10"
+    ports:
+      - "8080:8080"
+    volumes:
+      # DAG 를 로컬에서 고치면 컨테이너에 바로 반영됩니다 (재빌드 불필요)
+      - ./airflow/dags:/opt/airflow/dags
+      - ./config:/opt/airflow/project-config:ro
+    # standalone = api-server + scheduler + dag-processor + triggerer 를 한 번에
+    command: standalone
+    restart: unless-stopped
+
+volumes:
+  postgres-db:
