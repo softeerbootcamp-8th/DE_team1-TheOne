@@ -1,0 +1,27 @@
+[project]
+name = "tlc-airflow"
+version = "0.1.0"
+requires-python = "==3.11.*"
+
+# Airflow 3 부터 PythonOperator/BashOperator 는 standard provider 로 이동했습니다.
+#
+# ★ 버전을 == 로 박은 이유
+#   이 값들은 Airflow 3.3.0 공식 constraints 가 검증한 조합입니다
+#   (constraints/constraints-3.3.0-py3.11.txt 참고).
+#   핀을 빼면 uv 가 최신으로 해석해서 pandas 3.x / numpy 2.x 처럼
+#   Airflow 가 검증하지 않은 조합이 잠깁니다.
+#   버전을 올릴 때는 constraints 파일에서 해당 값을 확인하고 같이 고치세요.
+dependencies = [
+    "apache-airflow==3.3.0",
+    "apache-airflow-providers-standard==1.15.0",
+    "apache-airflow-providers-amazon==9.31.0",       # S3 / EMR / Lambda / RDS
+    "apache-airflow-providers-postgres==6.8.0",      # 메타DB + 서빙 DB
+    "apache-airflow-providers-apache-spark==6.2.0",
+    "apache-airflow-providers-http==6.0.4",          # vPIC / EIA / NREL API
+    "requests==2.34.2",
+    "beautifulsoup4==4.15.0",
+    "lxml==6.1.1",
+    "pandas==2.1.4",
+    "numpy==1.26.4",    # pandas 2.1.4 는 numpy 2.x 와 호환되지 않음
+    "pyarrow==24.0.0",
+]

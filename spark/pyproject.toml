@@ -1,0 +1,22 @@
+[project]
+name = "tlc-spark"
+version = "0.1.0"
+requires-python = "==3.11.*"
+
+# ★ pyspark 는 여기 넣지 않습니다. EMR(7.13 → Spark 3.5.6-amzn)이 제공합니다.
+#   로컬 단위테스트에서만 아래 dev 그룹으로 EMR 버전에 맞춰 설치하세요.
+dependencies = [
+    "numpy",
+    "scipy",       # 합성 데이터 분포 (Lognormal/Gamma/logistic/softmax)
+    "pandas",
+    "pyarrow",
+    "geopandas",   # taxi_zone shapefile ↔ AFDC 충전소 공간조인
+    "shapely",
+    "requests",
+]
+
+[dependency-groups]
+dev = [
+    "pyspark==3.5.6",   # EMR 7.13 의 Spark 버전과 일치 (versions.toml 참조)
+    "pytest",
+]
