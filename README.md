@@ -1,7 +1,7 @@
-# DE 1조 따릉 레인저스!
+# DE 1조 
 
-1. 프로젝트 소개
-2. 아키텍처
+1. [프로젝트 소개](#프로젝트-소개)
+2. [아키텍처](#아키텍처)
 3. 실행 방법
 4. 문서화
 5. [Team Rule](#team-rule)
@@ -9,6 +9,8 @@
 ## 프로젝트 소개
 ### 기능
 
+## 아키텍처
+![System Architecture](architecture.png)
 
 ## Team Rule
 ### Ground Rule
@@ -60,13 +62,6 @@
     |test|테스트 추가 및 개선|test/40-dag-unit-test|
     |chore|설정 및 유지보수|chore/44-airflow-docker-setup|
     |hotfix|main 버전 긴급 오류 수정|hotfix/50-kafka-consumer-crash|
-    - feature: 새로운 기능 개발
-    - fix: 개발 중 발견된 버그 수정
-    - refactor: 동작 변화 없는 코드 구조 개선
-    - docs: 문서 수정
-    - test: 테스트 추가 및 개선
-    - chore: 설정 및 유지보수
-    - hotfix: main 버전 긴급 오류 수정
 
 ### Commit Rule
 > `Conventional Commits` 기준 작성
