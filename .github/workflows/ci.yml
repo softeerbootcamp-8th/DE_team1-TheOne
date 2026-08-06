@@ -1,0 +1,41 @@
+# =============================================================================
+# 버전 잠금 검증 — PR 마다 자동 실행됩니다.
+#
+# pyproject.toml 을 고치고 `uv lock` 을 안 돌린 PR 을 여기서 막습니다.
+# 로컬에서 `make check` 를 돌리는 것과 똑같은 검사입니다.
+# =============================================================================
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main, develop]
+
+# 같은 PR 에 연달아 push 하면 이전 실행은 취소 (낭비 방지)
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  version-lock:
+    name: 버전 잠금 검증
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v5
+        with:
+          # versions.toml 의 tooling.uv 와 맞출 것
+          version: "0.12.2"
+          enable-cache: true
+
+      - name: 락파일 드리프트 검증
+        run: make check
+
+      - name: 실패 시 안내
+        if: failure()
+        run: |
+          echo "::error::pyproject.toml 과 uv.lock 이 어긋났습니다."
+          echo "고친 런타임 폴더에서 'uv lock' 을 돌리고, uv.lock 도 같이 커밋하세요."
+          echo "  예) cd airflow && uv lock"

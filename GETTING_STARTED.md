@@ -67,6 +67,7 @@ RUN uv export --frozen ... -o requirements.txt && pip install -r requirements.tx
 ## 3. 구조
 
 ```
+.github/workflows/   CI — PR 마다 버전 잠금 검증
 docker-compose.yml   로컬 개발 환경 (Airflow + Postgres)
 versions.toml        팀 버전표 — "우리 뭐 쓰지?" 한눈에
 Makefile             lock / check / sync / build
@@ -118,6 +119,14 @@ cd .. && docker compose build && docker compose up -d   # 4) 이미지 다시 �
 
 **PR 올리기 전에 `make check` 한 번.** `pyproject.toml` 만 고치고 `uv lock` 을 안
 돌렸다면 여기서 FAIL 이 납니다.
+
+깜빡해도 **PR 을 올리면 CI 가 같은 검사를 자동으로 돌려서 빨간불**이 뜹니다
+(`.github/workflows/ci.yml`). 로컬에서 미리 돌려보면 왕복을 줄일 수 있을 뿐입니다.
+
+> CI 가 잡는 것: "`uv lock` 을 깜빡한" 실수.
+> CI 가 못 잡는 것: `uv lock` 까지 돌려서 **잘못된 버전을 제대로 잠근** 경우.
+> 예를 들어 `pandas==2.1.4` 를 `2.2.0` 으로 바꾸고 `uv lock` 을 돌리면 CI 는
+> 통과합니다. Airflow 검증 조합에서 벗어나는지는 **리뷰어가 봐야 합니다.**
 
 ### 남이 올린 변경을 받았을 때
 
@@ -173,7 +182,6 @@ Docker 안에서 도는 것과 **같은 버전**이 깔립니다. 실행은 Dock
 
 ## 7. 아직 안 된 것
 
-- **CI 미설정.** `.github/workflows/` 가 없어서 `make check` 는 각자 돌려야 합니다.
 - **Renovate 앱 미연결.** `renovate.json` 은 있지만 GitHub 앱 연결이 필요합니다.
 - **EMR 이미지가 `:latest`.** 떠다니는 태그라 운영 배포 전에 digest 고정 필요.
 - **spark 이미지는 빌드 검증 안 함.** EMR 베이스 이미지가 수 GB 라 받지 않았습니다.
