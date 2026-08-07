@@ -3,14 +3,8 @@ name = "tlc-airflow"
 version = "0.1.0"
 requires-python = "==3.11.*"
 
-# Airflow 3 부터 PythonOperator/BashOperator 는 standard provider 로 이동했습니다.
-#
-# ★ 버전을 == 로 박은 이유
-#   이 값들은 Airflow 3.3.0 공식 constraints 가 검증한 조합입니다
-#   (constraints/constraints-3.3.0-py3.11.txt 참고).
-#   핀을 빼면 uv 가 최신으로 해석해서 pandas 3.x / numpy 2.x 처럼
-#   Airflow 가 검증하지 않은 조합이 잠깁니다.
-#   버전을 올릴 때는 constraints 파일에서 해당 값을 확인하고 같이 고치세요.
+# 직접 의존성은 리뷰에서 변경이 드러나도록 ==로 고정합니다.
+# 실제 설치되는 전체 의존성 버전은 uv.lock이 고정합니다.
 dependencies = [
     "apache-airflow==3.3.0",
     "apache-airflow-providers-standard==1.15.0",

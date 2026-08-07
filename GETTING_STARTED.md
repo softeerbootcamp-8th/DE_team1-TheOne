@@ -40,7 +40,7 @@ docker compose build        # 라이브러리가 바뀐 뒤 이미지 다시 굽
 이게 핵심입니다. **`uv.lock` 하나가 로컬과 Docker 양쪽의 원천입니다.**
 
 ```
-pyproject.toml    "boto3 쓸래"                    ← 사람이 적음 (느슨)
+pyproject.toml    "boto3==1.43.65 쓸래"           ← 직접 의존성 (리뷰 대상)
       ↓  uv lock
 uv.lock           "boto3 1.43.65 + 해시 abc123…"  ← ★ git 에 커밋됨 (정확)
       │
@@ -69,7 +69,6 @@ RUN uv export --frozen ... -o requirements.txt && pip install -r requirements.tx
 ```
 .github/workflows/   CI — PR 마다 버전 잠금 검증
 docker-compose.yml   로컬 개발 환경 (Airflow + Postgres)
-versions.toml        팀 버전표 — "우리 뭐 쓰지?" 한눈에
 Makefile             lock / check / sync / build
 
 airflow/    Airflow 3.3.0   → EC2          (compose 로 로컬 실행)
@@ -90,16 +89,26 @@ config/              가정 파라미터 (기획서 11장). 버전 관리와 무
 
 | | Airflow | Spark |
 |---|---|---|
-| pandas | 2.1.4 | 3.0.5 |
-| numpy | 1.26.4 | 2.4.6 |
+| pandas | 2.1.4 | 3.0.1 |
+| numpy | 1.26.4 | 2.4.3 |
+| 근거 | Airflow 3.3.0 공식 constraints | EMR 7.13 이 제공하는 값 |
 
 한 환경에 다 넣으면 둘 중 하나가 끌려 내려가 깨집니다.
+
+> **spark 버전을 바꿀 때 주의.** EMR 7.13 이미지에는 파이썬이 두 개 있고
+> (`python3.9` = 이미지 기본, `python3.11` = Spark 가 실제로 쓰는 것),
+> 값은 **3.11 쪽**을 봐야 합니다. 기본 `python` 을 조회하면 엉뚱한 값이 나옵니다.
+>
+> ```bash
+> docker run --rm --entrypoint /usr/bin/python3.11 \
+>   public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest -m pip list --format=freeze
+> ```
 
 ---
 
 ## 4. 라이브러리를 추가·변경할 때
 
-`uv.lock` 갱신은 **로컬에서** 해야 합니다. 그래서 uv 는 깔아두세요.
+`uv.lock` 갱신은 **로컬에서** 해야 합니다. 그래서 uv는 깔아두세요.
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -112,8 +121,8 @@ source $HOME/.local/bin/env
 cd airflow
 # 1) pyproject.toml 의 dependencies 수정
 uv lock                    # 2) 잠금 갱신 ← 빼먹으면 팀원과 버전이 갈립니다
-make check                 # 3) 확인 (루트에서)
-cd .. && docker compose build && docker compose up -d   # 4) 이미지 다시 굽기
+cd .. && make check        # 3) 루트에서 확인
+docker compose build && docker compose up -d   # 4) 이미지 다시 굽기
 # 5) pyproject.toml 과 uv.lock 을 "같이" 커밋 → PR
 ```
 
@@ -124,9 +133,10 @@ cd .. && docker compose build && docker compose up -d   # 4) 이미지 다시 �
 (`.github/workflows/ci.yml`). 로컬에서 미리 돌려보면 왕복을 줄일 수 있을 뿐입니다.
 
 > CI 가 잡는 것: "`uv lock` 을 깜빡한" 실수.
-> CI 가 못 잡는 것: `uv lock` 까지 돌려서 **잘못된 버전을 제대로 잠근** 경우.
+> CI가 못 잡는 것: `uv lock`까지 돌려서 **잘못된 버전을 제대로 잠근** 경우.
 > 예를 들어 `pandas==2.1.4` 를 `2.2.0` 으로 바꾸고 `uv lock` 을 돌리면 CI 는
-> 통과합니다. Airflow 검증 조합에서 벗어나는지는 **리뷰어가 봐야 합니다.**
+> 통과합니다. 그래서 의존성 변경은 기능 변경과 분리해 PR로 올리고,
+> Ruleset에 따라 다른 팀원 1명의 승인을 받아야 합니다.
 
 ### 남이 올린 변경을 받았을 때
 
@@ -135,17 +145,18 @@ git pull
 docker compose build && docker compose up -d    # lock 이 바뀌었으면 이미지도 다시
 ```
 
-### Airflow 만 주의
+### 버전을 변경할 때
 
-`airflow/pyproject.toml` 의 버전은 `==` 로 박혀 있습니다. Airflow 공식 constraints 가
-검증한 조합이라 임의로 올리면 깨집니다. 핀을 빼면 pandas 3.x / numpy 2.x 처럼
-Airflow 가 검증한 적 없는 조합이 잠깁니다.
+세 런타임의 직접 의존성은 변경이 리뷰에서 명확히 보이도록 `==`로 고정합니다.
+버전을 바꿀 때는 해당 `pyproject.toml`과 `uv.lock`을 함께 변경합니다.
 
 ```bash
-make airflow-constraints          # constraints 새로 받기
-# 받은 파일에서 값 확인 → airflow/pyproject.toml 수정
-cd airflow && uv lock
+cd <airflow|spark|lambda>
+uv lock
+cd .. && make check
 ```
+
+의존성 변경은 기능 코드와 같은 PR에 섞지 않습니다.
 
 ---
 
@@ -182,9 +193,12 @@ Docker 안에서 도는 것과 **같은 버전**이 깔립니다. 실행은 Dock
 
 ## 7. 아직 안 된 것
 
-- **Renovate 앱 미연결.** `renovate.json` 은 있지만 GitHub 앱 연결이 필요합니다.
 - **EMR 이미지가 `:latest`.** 떠다니는 태그라 운영 배포 전에 digest 고정 필요.
-- **spark 이미지는 빌드 검증 안 함.** EMR 베이스 이미지가 수 GB 라 받지 않았습니다.
-  airflow / lambda 이미지는 빌드 + 버전 대조까지 확인했습니다.
+- **EMR 실제 잡 제출 미확인.** 세 이미지 모두 빌드 + 버전 대조까지 확인했지만,
+  EMR Serverless 에 잡을 올려본 적은 없습니다.
+- **`pyspark.pandas` 는 쓸 수 없습니다.** EMR 7.13 의 Spark 3.5.6-amzn-2 자체가
+  numpy 2.x 에서 import 에 실패합니다 (`np.NaN` 제거). 로컬도 EMR 도 동일합니다.
+  고치려고 numpy 를 내리면 EMR 제공분을 덮어써서 더 큰 문제가 됩니다.
+  `pyspark.sql` API 와 pandas UDF 는 정상 동작하니 그쪽으로 쓰세요.
 - **compose 는 로컬 개발 전용.** 운영은 EC2/EMR/Lambda 로 따로 배포합니다.
   `AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL=10` 같은 설정도 개발용입니다.

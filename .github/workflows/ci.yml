@@ -26,7 +26,7 @@ jobs:
       - name: uv 설치
         uses: astral-sh/setup-uv@v5
         with:
-          # versions.toml 의 tooling.uv 와 맞출 것
+          # Dockerfile에서 lockfile을 export하는 uv 버전과 맞출 것
           version: "0.12.2"
           enable-cache: true
 
