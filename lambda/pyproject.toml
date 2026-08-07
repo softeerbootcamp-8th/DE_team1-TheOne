@@ -5,11 +5,11 @@ requires-python = "==3.11.*"
 
 # 수집 함수 공용 의존성. 함수별로 더 가벼워야 하면 함수 폴더에 개별 pyproject 로 분리.
 dependencies = [
-    "requests",
-    "beautifulsoup4",  # crawl_rental
-    "lxml",
-    "boto3",           # S3 적재 (bronze/*)
+    "requests==2.34.2",
+    "beautifulsoup4==4.15.0",  # crawl_rental
+    "lxml==6.1.1",
+    "boto3==1.43.65",           # S3 적재 (bronze/*)
 ]
 
 [dependency-groups]
-dev = ["pytest", "moto"]  # moto: AWS 모킹
+dev = ["pytest==9.1.1", "moto==5.2.2"]  # moto: AWS 모킹
