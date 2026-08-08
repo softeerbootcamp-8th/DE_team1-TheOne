@@ -8,6 +8,10 @@ dependencies = [
     "requests==2.34.2",
     "beautifulsoup4==4.15.0",  # crawl_rental
     "lxml==6.1.1",
+    # fasttrack_vehicle_pricing: 가격이 카드 이미지 안에만 있어 OCR 로 읽습니다.
+    # tesseract 바이너리(>=5.0)가 따로 필요합니다 — docs/GETTING_STARTED.md 참고.
+    "pytesseract==0.3.13",
+    "pillow==12.3.0",
     "boto3==1.43.65",           # S3 적재 (bronze/*)
     "pyarrow==22.0.0",          # parquet 쓰기 (uber_eligible_vehicles)
 ]
