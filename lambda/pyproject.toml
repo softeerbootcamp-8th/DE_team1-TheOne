@@ -9,6 +9,7 @@ dependencies = [
     "beautifulsoup4==4.15.0",  # crawl_rental
     "lxml==6.1.1",
     "boto3==1.43.65",           # S3 적재 (bronze/*)
+    "pyarrow==22.0.0",          # parquet 쓰기 (uber_eligible_vehicles)
 ]
 
 [dependency-groups]

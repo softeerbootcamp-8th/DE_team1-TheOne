@@ -29,3 +29,6 @@ airflow/**/*.pyc
 # Editor
 .vscode/
 .idea/
+
+# 로컬 수집 결과 (bronze parquet 등)
+data/
