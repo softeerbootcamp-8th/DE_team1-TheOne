@@ -1,13 +1,15 @@
 """Gas Price Bronze 월별 배치를 일별 Silver JSON으로 변환합니다."""
 
-import logging
 import os
 
-from .extract import extract
-from .load import load
-from .transform import transform
+from pipeline_core.pipeline import Pipeline
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+from ..common.logging_setup import configure_lambda_logging
+from .extractor import GasPriceBronzeExtractor
+from .loader import GasPriceSilverLoader
+from .transformer import GasPriceSilverTransformer
+
+configure_lambda_logging()
 
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
@@ -19,13 +21,14 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
 
-    bronze_rows = extract(bronze_dir, collected_month)
-    silver_rows = transform(bronze_rows)
-    paths = load(silver_rows, silver_dir)
+    result = Pipeline(
+        GasPriceBronzeExtractor(bronze_dir, collected_month),
+        GasPriceSilverLoader(silver_dir),
+        transformer=GasPriceSilverTransformer(),
+    ).run()
 
     return {
         "collected_month": collected_month,
-        "bronze_row_count": len(bronze_rows),
-        "silver_row_count": len(silver_rows),
-        "paths": paths,
+        "row_count": result.write_result.row_count,
+        "location": result.write_result.location,
     }
