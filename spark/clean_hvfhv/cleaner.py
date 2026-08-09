@@ -39,9 +39,6 @@ def clean_hvfhv(df, error_threshold=0.2):
     df_valid = df_transformed.filter(valid_condition)
     df_invalid = df_transformed.filter(~valid_condition)
     
-    df_valid.cache()
-    df_invalid.cache()
-    
     valid_count = df_valid.count()
     invalid_count = df_invalid.count()
     
