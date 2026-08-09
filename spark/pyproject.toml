@@ -20,6 +20,7 @@ dependencies = [
     "geopandas==1.1.4",   # taxi_zone shapefile ↔ AFDC 충전소 공간조인
     "shapely==2.1.2",
     "requests==2.34.2",
+    "pipeline-core",
 ]
 
 [dependency-groups]
@@ -27,3 +28,9 @@ dev = [
     "pyspark==3.5.6",   # EMR 7.13의 Spark 버전과 일치
     "pytest==9.1.1",
 ]
+
+[tool.uv.sources]
+pipeline-core = { path = "../libs/pipeline_core" }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
