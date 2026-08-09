@@ -18,6 +18,7 @@ def main():
     parser.add_argument("--error_log_path", required=True, help="Path to save invalid data logs")
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory (default: 4g)")
     parser.add_argument("--error_threshold", type=float, default=0.2, help="Validation error threshold (default: 0.2)")
+    parser.add_argument("--zone_lookup_path", required=True, help="Path to taxi_zone_lookup.csv")
     args = parser.parse_args()
 
     # 1. Spark Session
@@ -33,13 +34,14 @@ def main():
     try:
         # 2. Extract
         df_raw = extract_hvfhv(spark, args.input_path)
+        df_zone = spark.read.option("header", "true").csv(args.zone_lookup_path)
         
         if df_raw.count() == 0:
             logger.info("처리할 데이터가 없습니다.")
             sys.exit(0)
             
         # 3. Clean
-        df_valid, df_invalid = clean_hvfhv(df_raw, error_threshold=args.error_threshold)
+        df_valid, df_invalid = clean_hvfhv(df_raw, df_zone, error_threshold=args.error_threshold)
         
         # 4. Load (Error logs)
         if df_invalid.count() > 0:
