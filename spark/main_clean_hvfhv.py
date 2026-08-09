@@ -27,6 +27,7 @@ def main():
         .appName("HVFHV_Clean_Pipeline") \
         .config("spark.sql.session.timeZone", "UTC") \
         .config("spark.driver.memory", args.spark_memory) \
+        .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
         .getOrCreate()
         
     spark.sparkContext.setLogLevel("WARN")
