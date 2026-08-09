@@ -1,4 +1,9 @@
-"""Oil Bronze의 날짜별 Hive 파티션을 월 단위로 읽습니다."""
+"""Oil Bronze의 수집일 Hive 파티션을 읽습니다.
+
+정기 실행은 그날 수집분(`collected_date`) 하나만 읽습니다. 월 전체를 다시 읽으면
+과거 파티션의 깨진 파일 하나가 그 달 내내 배치를 막기 때문입니다.
+과거 보정은 `collected_month`를 지정한 수동 백필로 처리합니다.
+"""
 
 import json
 import logging
@@ -10,23 +15,43 @@ from pipeline_core.extractor import Extractor
 logger = logging.getLogger(__name__)
 
 DATASET = "oil"
+PARTITION_KEY = "collected_date"
 MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+DATE_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
 
 
 class GasPriceBronzeExtractor(Extractor):
-    """해당 월에 속한 collected_date 파티션의 JSON을 모두 읽습니다."""
+    """대상 수집일(또는 수집월) 파티션의 JSON을 읽습니다."""
 
     name = "gas_price_bronze"
 
-    def __init__(self, base_dir: str, collected_month: str):
-        if not MONTH_RE.fullmatch(collected_month):
+    def __init__(
+        self,
+        base_dir: str,
+        collected_date: str | None = None,
+        collected_month: str | None = None,
+    ):
+        if bool(collected_date) == bool(collected_month):
+            raise ValueError(
+                "collected_date와 collected_month 중 정확히 하나만 지정해야 합니다."
+            )
+        if collected_date and not DATE_RE.fullmatch(collected_date):
+            raise ValueError("collected_date는 YYYY-MM-DD 형식이어야 합니다.")
+        if collected_month and not MONTH_RE.fullmatch(collected_month):
             raise ValueError("collected_month는 YYYY-MM 형식이어야 합니다.")
+
         self._base_dir = base_dir
-        self._collected_month = collected_month
+        self.target = collected_date or collected_month
+        # 하루면 파티션 하나, 한 달이면 그 달의 파티션 전부.
+        self._partition_pattern = (
+            f"{PARTITION_KEY}={collected_date}"
+            if collected_date
+            else f"{PARTITION_KEY}={collected_month}-*"
+        )
 
     def extract(self) -> list[dict]:
         dataset_path = Path(self._base_dir) / DATASET
-        partition_pattern = f"collected_date={self._collected_month}-*"
+        partition_pattern = self._partition_pattern
         paths = sorted(
             path
             for partition in dataset_path.glob(partition_pattern)
@@ -48,7 +73,5 @@ class GasPriceBronzeExtractor(Extractor):
 
             rows.append({**row, "bronze_path": str(path)})
 
-        logger.info(
-            "Gas Price Bronze 로드 완료: %s (%d건)", self._collected_month, len(rows)
-        )
+        logger.info("bronze_extract done target=%s rows=%d", self.target, len(rows))
         return rows

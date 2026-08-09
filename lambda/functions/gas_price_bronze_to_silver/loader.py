@@ -17,6 +17,9 @@ class GasPriceSilverLoader(Loader):
 
     def __init__(self, base_dir: str):
         self._base_dir = base_dir
+        # 이번 실행이 처리한 price_date -> 파일 경로. 새로 쓴 것과 이미 최신이라
+        # 건너뛴 것을 모두 담습니다. 핸들러가 대상 날짜 반영 여부를 확인하는 데 씁니다.
+        self.handled: dict[str, str] = {}
 
     def partition_path(self, price_date: date) -> Path:
         """가격 기준일의 Silver Hive 파티션 경로를 반환합니다."""
@@ -40,6 +43,7 @@ class GasPriceSilverLoader(Loader):
             partition = self.partition_path(price_date)
             partition.mkdir(parents=True, exist_ok=True)
             path = partition / "gas_price.json"
+            self.handled[price_date.isoformat()] = str(path)
             payload = {
                 **row,
                 "price_date": price_date.isoformat(),
@@ -93,11 +97,10 @@ class GasPriceSilverLoader(Loader):
             written_count += 1
 
         logger.info(
-            "Gas Price Silver 처리 완료: %d건 중 %d건 저장",
-            len(data),
-            written_count,
+            "silver_load done processed=%d written=%d", len(data), written_count
         )
+        # row_count 는 실제로 기록한 건수입니다. 이미 최신이라 건너뛴 건은 제외됩니다.
         return WriteResult(
             location=str(Path(self._base_dir) / DATASET),
-            row_count=len(data),
+            row_count=written_count,
         )

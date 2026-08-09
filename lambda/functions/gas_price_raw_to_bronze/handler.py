@@ -28,7 +28,8 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "fuel_type": FUEL_TYPE,
         # Bronze 파일 이름이 가격 기준일입니다 (loader.GasPriceBronzeLoader.write 참고).
         "price_date": Path(result.write_result.location).stem,
-        "collected_month": f"{collected_at:%Y-%m}",
+        # Silver 배치가 이 하루치 파티션만 처리합니다 (Bronze 파티션 키와 동일).
+        "collected_date": f"{collected_at:%Y-%m-%d}",
         "row_count": result.write_result.row_count,
         "path": result.write_result.location,
     }
