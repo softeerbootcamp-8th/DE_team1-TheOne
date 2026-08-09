@@ -14,7 +14,14 @@ dependencies = [
     "pillow==12.3.0",
     "boto3==1.43.65",           # S3 적재 (bronze/*)
     "pyarrow==22.0.0",          # parquet 쓰기 (uber_eligible_vehicles)
+    "pipeline-core",            # 공통 Extractor/Transformer/Loader/Pipeline
 ]
 
 [dependency-groups]
 dev = ["pytest==9.1.1", "moto==5.2.2"]  # moto: AWS 모킹
+
+[tool.uv.sources]
+pipeline-core = { path = "../libs/pipeline_core" }
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
