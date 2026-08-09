@@ -19,3 +19,9 @@ dependencies = [
     "numpy==1.26.4",    # pandas 2.1.4 는 numpy 2.x 와 호환되지 않음
     "pyarrow==24.0.0",
 ]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
