@@ -12,10 +12,10 @@ from pathlib import Path
 
 from pipeline_core.extractor import Extractor
 
+from ..common import gas_price_layout as layout
+
 logger = logging.getLogger(__name__)
 
-DATASET = "oil"
-PARTITION_KEY = "collected_date"
 MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 DATE_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])$")
 
@@ -43,14 +43,12 @@ class GasPriceBronzeExtractor(Extractor):
         self._base_dir = base_dir
         self.target = collected_date or collected_month
         # 하루면 파티션 하나, 한 달이면 그 달의 파티션 전부.
-        self._partition_pattern = (
-            f"{PARTITION_KEY}={collected_date}"
-            if collected_date
-            else f"{PARTITION_KEY}={collected_month}-*"
-        )
+        self._partition_pattern = layout.bronze_partition(
+            base_dir, collected_date or f"{collected_month}-*"
+        ).name
 
     def extract(self) -> list[dict]:
-        dataset_path = Path(self._base_dir) / DATASET
+        dataset_path = layout.dataset_path(self._base_dir)
         partition_pattern = self._partition_pattern
         paths = sorted(
             path

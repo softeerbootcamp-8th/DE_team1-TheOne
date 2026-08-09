@@ -6,13 +6,12 @@ Extractor가 만든 일별 행을 수집일 기준 Hive 파티션에 씁니다.
 import json
 import logging
 from datetime import datetime
-from pathlib import Path
 
 from pipeline_core.loader import Loader, WriteResult
 
-logger = logging.getLogger(__name__)
+from ..common import gas_price_layout as layout
 
-DATASET = "oil"
+logger = logging.getLogger(__name__)
 
 
 class GasPriceBronzeLoader(Loader):
@@ -22,19 +21,13 @@ class GasPriceBronzeLoader(Loader):
         self._base_dir = base_dir
         self._collected_at = collected_at
 
-    # 수집일로 나눈 Hive 파티션 경로를 만듭니다.
-    def partition_path(self) -> Path:
-        return (
-            Path(self._base_dir)
-            / DATASET
-            / f"collected_date={self._collected_at:%Y-%m-%d}"
-        )
-
     def write(self, data: dict) -> WriteResult:
-        partition = self.partition_path()
-        partition.mkdir(parents=True, exist_ok=True)
-        # 파일 이름이 곧 가격 기준일입니다 (핸들러가 이 이름에서 price_date를 읽습니다).
-        path = partition / f"{data['price_date']:%Y-%m-%d}.json"
+        path = layout.bronze_file(
+            self._base_dir,
+            f"{self._collected_at:%Y-%m-%d}",
+            data["price_date"],
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
 
         record = {
             "state": data["state"],
