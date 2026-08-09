@@ -22,7 +22,7 @@ services:
     volumes:
       - postgres-db:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "pg_isready", "-U", "airflow"]
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -42,12 +42,14 @@ services:
       # 기본값 300초(5분). 로컬 개발에서 DAG 고치고 5분 기다리긴 불편하므로 10초로.
       # 운영에서는 기본값을 쓰세요 (잦은 재파싱은 부하입니다).
       AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "10"
+      PYTHONPATH: /opt/airflow/project-root
     ports:
       - "8080:8080"
     volumes:
       # DAG 를 로컬에서 고치면 컨테이너에 바로 반영됩니다 (재빌드 불필요)
       - ./airflow/dags:/opt/airflow/dags
       - ./config:/opt/airflow/project-config:ro
+      - .:/opt/airflow/project-root
     # standalone = api-server + scheduler + dag-processor + triggerer 를 한 번에
     command: standalone
     restart: unless-stopped
