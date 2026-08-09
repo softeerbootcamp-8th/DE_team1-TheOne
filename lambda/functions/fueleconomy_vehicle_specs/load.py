@@ -1,0 +1,70 @@
+"""fueleconomy.gov 차종별 제원 적재(load).
+
+extract 가 만든 행 목록을 parquet 으로 씁니다.
+지금은 로컬 경로만 지원하고, S3 적재는 다음 이슈에서 붙입니다.
+
+원본 컬럼을 버리지 않는 게 목적이라 스키마를 고정하지 않고 들어온 컬럼에서
+만듭니다. 원본이 컬럼을 추가해도 그대로 실립니다. 값은 전부 문자열이고
+타입 변환은 실버 단계에서 합니다.
+"""
+
+import logging
+from datetime import datetime
+from pathlib import Path
+
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+logger = logging.getLogger(__name__)
+
+DATASET = "fueleconomy_vehicle_specs"
+
+# source 는 파티션 키(source=)로만 남깁니다. 파일 안에 같은 이름의 컬럼을 또 두면
+# 읽을 때 파티션 값(dictionary)과 타입이 충돌합니다.
+PARTITION_KEY = "source"
+# 유일하게 문자열이 아닌 컬럼. 나머지는 원본 그대로 문자열입니다.
+TIMESTAMP_COLUMN = "collected_at"
+
+
+def build_schema(row: dict) -> pa.Schema:
+    """행 하나를 보고 스키마를 만듭니다. collected_at 만 timestamp, 나머지는 string."""
+    return pa.schema(
+        [
+            (name, pa.timestamp("us", tz="UTC") if name == TIMESTAMP_COLUMN else pa.string())
+            for name in row
+            if name != PARTITION_KEY
+        ]
+    )
+
+
+def partition_path(base_dir: str, source: str, collected_at: datetime) -> Path:
+    """collected_date / source 로 나눈 Hive 파티션 경로.
+
+    1년에 한 번 수집이라 실제로는 연 1개 파티션이 쌓입니다. 다른 데이터셋과
+    모양을 맞추기 위해 날짜 단위 키를 그대로 씁니다.
+    """
+    return (
+        Path(base_dir)
+        / DATASET
+        / f"collected_date={collected_at:%Y-%m-%d}"
+        / f"source={source}"
+    )
+
+
+def load(rows: list[dict], base_dir: str, collected_at: datetime) -> str:
+    """행 목록을 파티션 하나에 parquet 한 개로 씁니다."""
+    partition = partition_path(base_dir, rows[0][PARTITION_KEY], collected_at)
+    partition.mkdir(parents=True, exist_ok=True)
+    path = partition / f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
+
+    table = pa.Table.from_pylist(rows, schema=build_schema(rows[0]))
+    pq.write_table(table, path, compression="snappy")
+
+    logger.info(
+        "적재 완료: %s (%d행 %d컬럼, %d bytes)",
+        path,
+        table.num_rows,
+        table.num_columns,
+        path.stat().st_size,
+    )
+    return str(path)
