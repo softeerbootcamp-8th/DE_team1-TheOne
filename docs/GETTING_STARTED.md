@@ -177,6 +177,42 @@ cd lambda   # 또는 spark
 uv sync --reinstall-package pipeline-core
 ```
 
+### 파이썬 패키지가 아닌 것 — tesseract
+
+`uv.lock` 은 파이썬 패키지만 고정합니다. **시스템 바이너리는 못 잠급니다.**
+
+`lambda/functions/fasttrack_vehicle_pricing` 은 렌탈 업체 사이트의 가격이
+이미지 안에만 있어서 OCR(tesseract)로 읽습니다. `pytesseract` 는 이 바이너리를
+호출하는 래퍼일 뿐이라, 바이너리가 없으면 실행 시점에 실패합니다.
+
+| | 고정되는 곳 | 어떻게 |
+|---|---|---|
+| `pytesseract`, `pillow` | `lambda/uv.lock` | `uv lock` 이 자동 |
+| **tesseract 바이너리** | 없음 (시스템 패키지) | **`make sync` 가 챙김** |
+
+`make sync` 가 `tesseract` 타깃을 먼저 부릅니다. 없으면 macOS 는 brew,
+Ubuntu/Debian 은 apt 로 깔고, 이미 있으면 버전만 찍고 넘어갑니다.
+
+```bash
+make sync
+# ==> tesseract 5.5.3
+# ==> syncing airflow ...
+```
+
+바이너리만 따로 확인하려면 `make tesseract`. 영어 데이터(`eng`)만 있으면 되고
+brew/apt 기본 패키지에 포함되어 있습니다.
+
+> **주의.** tesseract 는 버전에 따라 인식 결과가 달라질 수 있습니다.
+> OCR 결과가 팀원마다 다르면 먼저 `tesseract --version` 을 맞춰보세요.
+> 확인된 조합: **tesseract 5.5.3 / pytesseract 0.3.13 / pillow 12.3.0**
+> — 차량 카드 12장 전부 제조사·모델·가격 인식 성공.
+
+> **Lambda 배포는 아직입니다.** Lambda 베이스 이미지(AL2 / AL2023)에는
+> tesseract 패키지가 없어 `yum`/`dnf` 로 안 깔립니다. 이 수집은 자주 돌릴
+> 데이터가 아니라 지금은 로컬 실행만 지원합니다. 배포가 필요해지면
+> Debian 베이스(`python:3.11-slim` + `awslambdaric`, tesseract 5.5.0 설치 확인)나
+> AWS Textract 로 바꾸면 됩니다 — `ocr_card()` 함수 하나만 바뀝니다.
+
 ---
 
 ## 5. 하지 말 것

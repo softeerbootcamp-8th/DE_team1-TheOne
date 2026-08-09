@@ -139,6 +139,16 @@ wheels = [
 ]
 
 [[package]]
+name = "pipeline-core"
+version = "0.1.0"
+source = { directory = "../libs/pipeline_core" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = "==9.1.1" }]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -328,6 +338,7 @@ dependencies = [
     { name = "geopandas" },
     { name = "numpy" },
     { name = "pandas" },
+    { name = "pipeline-core" },
     { name = "pyarrow" },
     { name = "requests" },
     { name = "scipy" },
@@ -345,6 +356,7 @@ requires-dist = [
     { name = "geopandas", specifier = "==1.1.4" },
     { name = "numpy", specifier = "==2.4.3" },
     { name = "pandas", specifier = "==3.0.1" },
+    { name = "pipeline-core", directory = "../libs/pipeline_core" },
     { name = "pyarrow", specifier = "==23.0.1" },
     { name = "requests", specifier = "==2.34.2" },
     { name = "scipy", specifier = "==1.17.1" },
