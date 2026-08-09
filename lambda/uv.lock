@@ -276,6 +276,16 @@ wheels = [
 ]
 
 [[package]]
+name = "pipeline-core"
+version = "0.1.0"
+source = { directory = "../libs/pipeline_core" }
+
+[package.metadata]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = "==9.1.1" }]
+
+[[package]]
 name = "pluggy"
 version = "1.6.0"
 source = { registry = "https://pypi.org/simple" }
@@ -443,6 +453,7 @@ dependencies = [
     { name = "boto3" },
     { name = "lxml" },
     { name = "pillow" },
+    { name = "pipeline-core" },
     { name = "pyarrow" },
     { name = "pytesseract" },
     { name = "requests" },
@@ -460,6 +471,7 @@ requires-dist = [
     { name = "boto3", specifier = "==1.43.65" },
     { name = "lxml", specifier = "==6.1.1" },
     { name = "pillow", specifier = "==12.3.0" },
+    { name = "pipeline-core", directory = "../libs/pipeline_core" },
     { name = "pyarrow", specifier = "==22.0.0" },
     { name = "pytesseract", specifier = "==0.3.13" },
     { name = "requests", specifier = "==2.34.2" },
