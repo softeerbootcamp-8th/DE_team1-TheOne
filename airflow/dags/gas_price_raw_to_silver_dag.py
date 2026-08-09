@@ -1,0 +1,112 @@
+"""뉴욕주 정규 휘발유 가격 Raw -> Bronze -> Silver 일일 파이프라인."""
+
+import importlib
+import logging
+import sys
+from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
+
+from airflow.sdk import dag, task
+
+logger = logging.getLogger(__name__)
+
+try:
+    from common.slack_failure_callback import slack_failure_callback
+except Exception as exc:
+    logger.warning("Slack 실패 콜백을 불러오지 못했습니다: %s", exc)
+
+    def slack_failure_callback(context):
+        task_instance = context.get("task_instance")
+        logger.error(
+            "Task 실패: %s",
+            task_instance.task_id if task_instance else "unknown",
+        )
+
+CURRENT_DIR = Path(__file__).resolve().parent
+AIRFLOW_DIR = CURRENT_DIR.parent
+CONTAINER_ROOT = Path("/opt/airflow/project-root")
+PROJECT_ROOT = CONTAINER_ROOT if CONTAINER_ROOT.exists() else AIRFLOW_DIR.parent
+
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
+SILVER_DIR = str(PROJECT_ROOT / "data" / "silver")
+PARTITION_PREFIX = "collected_date="
+
+
+def collected_month_from_path(path: str) -> str:
+    """Bronze 파일의 Hive 파티션에서 수집월을 반환합니다."""
+    partition = Path(path).parent.name
+    if not partition.startswith(PARTITION_PREFIX):
+        raise ValueError(f"Bronze 경로에 수집일 파티션이 없습니다: {path}")
+
+    collected_date = partition.removeprefix(PARTITION_PREFIX)
+    try:
+        return date.fromisoformat(collected_date).strftime("%Y-%m")
+    except ValueError as exc:
+        raise ValueError(f"유효하지 않은 수집일 파티션입니다: {partition}") from exc
+
+
+default_args = {
+    "owner": "DE_team1",
+    "depends_on_past": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=10),
+    "execution_timeout": timedelta(minutes=15),
+    "on_failure_callback": slack_failure_callback,
+}
+
+
+@dag(
+    dag_id="gas_price_raw_to_silver_pipeline",
+    default_args=default_args,
+    description="뉴욕주 정규 휘발유 가격 Raw -> Bronze -> Silver 일일 파이프라인",
+    schedule="0 9 * * *",
+    start_date=datetime(2026, 8, 1, tzinfo=timezone.utc),
+    catchup=False,
+    max_active_runs=1,
+    tags=["gas_price", "raw", "bronze", "silver", "lambda"],
+)
+def gas_price_raw_to_silver_pipeline():
+    @task(task_id="raw_to_bronze")
+    def raw_to_bronze_task() -> dict:
+        handler = importlib.import_module(
+            "lambda.functions.gas_price_raw_to_bronze.handler"
+        ).lambda_handler
+        result = handler(event={"base_dir": BRONZE_DIR})
+        logger.info("Raw -> Bronze 완료: %s", result)
+        return result
+
+    @task(task_id="bronze_to_silver")
+    def bronze_to_silver_task(raw_result: dict) -> dict:
+        collected_month = collected_month_from_path(raw_result["path"])
+        price_date = date.fromisoformat(raw_result["price_date"])
+
+        handler = importlib.import_module(
+            "lambda.functions.gas_price_bronze_to_silver.handler"
+        ).lambda_handler
+        result = handler(
+            event={
+                "collected_month": collected_month,
+                "bronze_dir": BRONZE_DIR,
+                "silver_dir": SILVER_DIR,
+            }
+        )
+
+        expected_path = (
+            Path(SILVER_DIR)
+            / "gas_price"
+            / f"price_date={price_date.isoformat()}"
+            / "gas_price.json"
+        )
+        if str(expected_path) not in result["paths"]:
+            raise RuntimeError(f"수집한 날짜의 Silver JSON이 없습니다: {expected_path}")
+
+        logger.info("Bronze -> Silver 완료: %s", result)
+        return result
+
+    bronze_to_silver_task(raw_to_bronze_task())
+
+
+gas_price_dag = gas_price_raw_to_silver_pipeline()
