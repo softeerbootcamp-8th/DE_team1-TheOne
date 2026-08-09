@@ -5,6 +5,7 @@ from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
+from pipeline_core.extractor import Extractor
 
 PAGE_URL = "https://gasprices.aaa.com/?state=NY"
 HEADERS = {
@@ -16,6 +17,8 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
+STATE = "NY"
+FUEL_TYPE = "regular"
 CARD_SELECTOR = "main#maincontent .map-badges .average-price--blue"
 PRICE_RE = re.compile(r"\$\s*(\d+(?:\.\d+)?)")
 DATE_RE = re.compile(r"\b(\d{1,2}/\d{1,2}/\d{2})\b")
@@ -38,14 +41,21 @@ def parse(html: str) -> dict:
         raise RuntimeError("New York 가격 또는 기준일을 찾지 못했습니다 (페이지 구조 변경 의심)")
 
     return {
-        "state": "NY",
-        "fuel_type": "regular",
+        "state": STATE,
+        "fuel_type": FUEL_TYPE,
         "price_usd_per_gallon": float(price_match.group(1)),
         "price_date": datetime.strptime(date_match.group(1), "%m/%d/%y").date(),
         "source_url": PAGE_URL,
     }
 
 
-def extract(timeout: int = 30) -> dict:
-    """수집 진입점 — 페이지 요청과 파싱 결과를 반환합니다."""
-    return parse(fetch(timeout))
+class GasPriceExtractor(Extractor):
+    """AAA 뉴욕주 페이지에서 정규 휘발유 평균 가격 한 건을 수집합니다."""
+
+    name = "gas_price"
+
+    def __init__(self, timeout: int = 30):
+        self._timeout = timeout
+
+    def extract(self) -> dict:
+        return parse(fetch(self._timeout))
