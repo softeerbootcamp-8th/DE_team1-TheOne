@@ -34,7 +34,7 @@ def clean_hvfhv(df, df_zone, error_threshold=0.2):
     HVFHV 데이터의 클렌징, 변환, 파생 컬럼 추가를 수행합니다.
     불합격(Invalid) 데이터가 (error_threshold)를 초과할 경우 Exception을 발생시킵니다.
     연산이 단순하므로 캐싱 X
-    
+
     Returns:
         (df_valid, df_invalid) : 정상 DataFrame과 불합격 DataFrame 튜플
     """
@@ -56,7 +56,7 @@ def clean_hvfhv(df, df_zone, error_threshold=0.2):
      .withColumn("taxi_model_id", lit(None).cast("string")) \
      .withColumn("year_month", date_format(col("pickup_datetime"), "yyyy-MM"))
 
-    # 1.1. Taxi Zone Join (Pickup & Dropoff)
+    # 1.1. Taxi Zone Join (Pickup & Dropoff) (broadcast join)
     df_zone_pu = df_zone.select(
         col("LocationID").alias("PU_LocationID_join"),
         col("Borough").alias("pickup_borough"),
@@ -88,11 +88,18 @@ def clean_hvfhv(df, df_zone, error_threshold=0.2):
     ]
     df_transformed = df_transformed.drop(*cols_to_drop)
 
+    # 1.3. 수익/비용 데이터 결측치 처리 (Null -> 0.0)
+    df_transformed = df_transformed.fillna(0.0, subset=["tolls", "tips", "driver_pay"])
+
+    # 1.4. 스키마 순서 및 타입 강제
+    select_exprs = [col(field.name).cast(field.dataType).alias(field.name) for field in FINAL_SCHEMA]
+    df_transformed = df_transformed.select(*select_exprs)
+
     # 2. 클렌징 룰 (정상 조건)
     valid_condition = (
-        col("trip_miles").isNotNull() & (col("trip_miles") > 0) &
-        col("trip_time").isNotNull() & (col("trip_time") > 0) &
-        col("driver_pay").isNotNull() & (col("driver_pay") >= 0)
+        col("trip_miles").isNotNull() & (col("trip_miles") > 0) & (col("trip_miles") <= 1000) &
+        col("trip_time").isNotNull() & (col("trip_time") > 0) & (col("trip_time") <= 86400) &
+        col("driver_pay").isNotNull() & (col("driver_pay") >= 0) & (col("driver_pay") <= 5000)
     )
     
     # 3. 분리
