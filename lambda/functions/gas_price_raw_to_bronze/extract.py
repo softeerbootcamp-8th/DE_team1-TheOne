@@ -1,4 +1,4 @@
-"""AAA New York 정규 휘발유 평균 가격 수집."""
+"""AAA New York 정규 휘발유 평균 가격 Raw 수집."""
 
 import re
 from datetime import datetime

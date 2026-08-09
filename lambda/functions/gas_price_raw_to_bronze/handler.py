@@ -1,4 +1,4 @@
-"""AAA New York 휘발유 가격 수집과 Bronze 적재를 실행합니다."""
+"""AAA New York 휘발유 가격 Raw 수집과 Bronze 적재를 실행합니다."""
 
 import logging
 import os
