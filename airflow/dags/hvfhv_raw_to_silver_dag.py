@@ -21,12 +21,15 @@ try:
 except ImportError:
     from airflow.operators.bash import BashOperator
 
-# 프로젝트 루트 디렉토리를 sys.path에 추가
+# 프로젝트 루트 디렉토리를 sys.path에 추가 (컨테이너 /opt/airflow/project-root 및 로컬 호환)
 CURRENT_DIR = Path(__file__).resolve().parent
 AIRFLOW_DIR = CURRENT_DIR.parent
-PROJECT_ROOT = AIRFLOW_DIR.parent
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+CONTAINER_ROOT = Path("/opt/airflow/project-root")
+PROJECT_ROOT = CONTAINER_ROOT if CONTAINER_ROOT.exists() else AIRFLOW_DIR.parent
+
+for path_str in [str(PROJECT_ROOT), str(PROJECT_ROOT / "lambda"), str(PROJECT_ROOT / "spark")]:
+    if path_str not in sys.path:
+        sys.path.insert(0, path_str)
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +43,11 @@ except Exception as e:
         task_id = context.get("task_instance").task_id if context.get("task_instance") else "unknown"
         logger.error("Task [%s] failed without slack callback.", task_id)
 
-# 기본 설정값
-DEFAULT_BRONZE_DIR = os.getenv("BRONZE_DIR", "data/bronze")
-DEFAULT_SILVER_DIR = os.getenv("SILVER_DIR", "data/silver/hvfhv")
-DEFAULT_ERROR_LOG_DIR = os.getenv("ERROR_LOG_DIR", "data/silver/hvfhv_errors")
-DEFAULT_ZONE_LOOKUP_PATH = os.getenv("ZONE_LOOKUP_PATH", "data/taxi_zone_lookup.csv")
+# 기본 설정값 (PROJECT_ROOT 기준 절대경로)
+DEFAULT_BRONZE_DIR = os.getenv("BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze"))
+DEFAULT_SILVER_DIR = os.getenv("SILVER_DIR", str(PROJECT_ROOT / "data" / "silver" / "hvfhv"))
+DEFAULT_ERROR_LOG_DIR = os.getenv("ERROR_LOG_DIR", str(PROJECT_ROOT / "data" / "silver" / "hvfhv_errors"))
+DEFAULT_ZONE_LOOKUP_PATH = os.getenv("ZONE_LOOKUP_PATH", str(PROJECT_ROOT / "data" / "bronze" / "taxi_zone_lookup.csv"))
 
 
 def resolve_target_year_month(logical_date: datetime, params: dict) -> tuple[str, str]:
@@ -120,7 +123,7 @@ def hvfhv_raw_to_silver_pipeline():
         hvfhv_handler_module = importlib.import_module("lambda.functions.hvfhv.handler")
         lambda_handler = hvfhv_handler_module.lambda_handler
 
-        logical_date = context["logical_date"]
+        logical_date = context.get("logical_date") or context.get("data_interval_start") or datetime.now(timezone.utc)
         params = context.get("params", {})
 
         year_str, month_str = resolve_target_year_month(logical_date, params)

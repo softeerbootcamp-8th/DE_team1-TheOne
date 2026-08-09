@@ -1,6 +1,11 @@
 import sys
 import argparse
 import logging
+import pyspark.util
+
+# PySpark Connect 모드 자동 전환 방지
+pyspark.util._is_remote_only = False
+
 from pyspark.sql import SparkSession
 
 from clean_hvfhv.extractor import extract_hvfhv
@@ -25,6 +30,7 @@ def main():
     logger.info(f"Initializing Spark Session with memory: {args.spark_memory}")
     spark = SparkSession.builder \
         .appName("HVFHV_Clean_Pipeline") \
+        .master("local[*]") \
         .config("spark.sql.session.timeZone", "UTC") \
         .config("spark.driver.memory", args.spark_memory) \
         .config("spark.sql.sources.partitionOverwriteMode", "dynamic") \
