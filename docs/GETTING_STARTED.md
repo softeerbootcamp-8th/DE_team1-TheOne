@@ -158,6 +158,25 @@ cd .. && make check
 
 의존성 변경은 기능 코드와 같은 PR에 섞지 않습니다.
 
+### `libs/pipeline_core` 를 고쳤을 때
+
+`lambda`, `spark` 는 공통 `Extractor`/`Transformer`/`Loader`/`Pipeline` 인터페이스를 담은
+`libs/pipeline_core` 를 `pyproject.toml` 의 로컬 경로 의존성으로 참조합니다:
+
+```toml
+[tool.uv.sources]
+pipeline-core = { path = "../libs/pipeline_core" }
+```
+
+이 방식은 처음 `uv sync` 할 때 빌드한 wheel 을 그대로 설치해두는 구조라, `libs/pipeline_core`
+소스를 고친 뒤 영향받는 런타임에서 그냥 `uv sync` 만 다시 돌리면 **변경이 반영 안 될 수
+있습니다.** 이럴 땐 아래처럼 명시적으로 재설치하세요:
+
+```bash
+cd lambda   # 또는 spark
+uv sync --reinstall-package pipeline-core
+```
+
 ### 파이썬 패키지가 아닌 것 — tesseract
 
 `uv.lock` 은 파이썬 패키지만 고정합니다. **시스템 바이너리는 못 잠급니다.**
