@@ -1,10 +1,12 @@
 # Airflow 실행 환경. 공식 이미지 태그에 airflow/python 버전이 각인되어 있습니다.
 FROM apache/airflow:3.3.0-python3.11
 
-# PySpark 로컬 마스터 실행을 위한 자바 런타임(default-jre-headless) 설치
+# PySpark 로컬 마스터 실행을 위한 자바 런타임(default-jre-headless)과
+# 렌탈 차량 대장 수집용 OCR 엔진(tesseract-ocr) 설치.
+# 가격이 업체 카드 이미지 안에만 있어 pytesseract 가 이 바이너리를 호출합니다.
 USER root
 RUN apt-get update \
- && apt-get install -y --no-install-recommends default-jre-headless \
+ && apt-get install -y --no-install-recommends default-jre-headless tesseract-ocr \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 USER airflow
