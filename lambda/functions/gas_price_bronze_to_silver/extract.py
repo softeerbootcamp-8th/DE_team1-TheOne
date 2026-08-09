@@ -1,4 +1,4 @@
-"""Oil Bronze의 일별 JSON 파일을 월 단위로 읽습니다."""
+"""Oil Bronze의 날짜별 Hive 파티션을 월 단위로 읽습니다."""
 
 import json
 import logging
@@ -12,14 +12,21 @@ MONTH_RE = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 
 
 def extract(base_dir: str, collected_month: str) -> list[dict]:
-    """월별 Bronze 파티션의 JSON을 읽어 날짜순 레코드로 반환합니다."""
+    """해당 월에 속한 collected_date 파티션의 JSON을 읽습니다."""
     if not MONTH_RE.fullmatch(collected_month):
         raise ValueError("collected_month는 YYYY-MM 형식이어야 합니다.")
 
-    partition = Path(base_dir) / DATASET / f"collected_month={collected_month}"
-    paths = sorted(partition.glob("*.json"))
+    dataset_path = Path(base_dir) / DATASET
+    partition_pattern = f"collected_date={collected_month}-*"
+    paths = sorted(
+        path
+        for partition in dataset_path.glob(partition_pattern)
+        for path in partition.rglob("*.json")
+    )
     if not paths:
-        raise FileNotFoundError(f"Bronze JSON 파일이 없습니다: {partition}")
+        raise FileNotFoundError(
+            f"Bronze JSON 파일이 없습니다: {dataset_path}/{partition_pattern}"
+        )
 
     rows: list[dict] = []
     for path in paths:
@@ -32,5 +39,7 @@ def extract(base_dir: str, collected_month: str) -> list[dict]:
 
         rows.append({**row, "bronze_path": str(path)})
 
-    logger.info("Gas Price Bronze 로드 완료: %s (%d건)", partition, len(rows))
+    logger.info(
+        "Gas Price Bronze 로드 완료: %s (%d건)", collected_month, len(rows)
+    )
     return rows
