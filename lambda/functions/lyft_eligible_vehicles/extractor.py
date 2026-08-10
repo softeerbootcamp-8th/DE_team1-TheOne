@@ -20,6 +20,7 @@ from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
+from pipeline_core.extractor import Extractor
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +256,30 @@ def parse(page_data: dict, city_slug: str, collected_at: datetime) -> list[dict]
     return rows
 
 
-def extract(city_slug: str, collected_at: datetime) -> list[dict]:
+def extract(
+    city_slug: str,
+    collected_at: datetime,
+    timeout: int = 30,
+) -> list[dict]:
     """수집 진입점 — 공식 페이지 호출과 NYC 차량 파싱을 수행합니다."""
     logger.info("Lyft 차량 수집 시작: city=%s url=%s", city_slug, PAGE_URL)
-    return parse(fetch(), city_slug, collected_at)
+    return parse(fetch(timeout), city_slug, collected_at)
+
+
+class LyftEligibleVehiclesExtractor(Extractor):
+    """Lyft 공식 페이지에서 NYC Premium 대상 차량을 수집합니다."""
+
+    name = "lyft_eligible_vehicles"
+
+    def __init__(
+        self,
+        city_slug: str,
+        collected_at: datetime,
+        timeout: int = 30,
+    ):
+        self._city_slug = city_slug
+        self._collected_at = collected_at
+        self._timeout = timeout
+
+    def extract(self) -> list[dict]:
+        return extract(self._city_slug, self._collected_at, self._timeout)
