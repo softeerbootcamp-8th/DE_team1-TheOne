@@ -25,7 +25,8 @@ from pipeline_core.extractor import Extractor
 logger = logging.getLogger(__name__)
 
 PAGE_URL = "https://www.lyft.com/driver/eligible-premium-vehicles"
-CITY_REGION_CODES = {"new-york": "NYC"}
+CITY_SLUG = "new-york"
+REGION_CODE = "NYC"
 VEHICLE_FAQ_NAME = "Driver > HVM Eligible Vehicle List"
 
 HEADERS = {
@@ -51,12 +52,8 @@ RIDE_TYPE_NAMES = ("Extra Comfort", "Black SUV", "Black", "XXL", "XL")
 
 def fetch(timeout: int = 30) -> dict:
     """공식 페이지에서 차량 목록이 든 Next.js 페이지 데이터를 받습니다."""
-    try:
-        response = requests.get(PAGE_URL, headers=HEADERS, timeout=timeout)
-        response.raise_for_status()
-    except requests.RequestException:
-        logger.exception("Lyft 차량 페이지 요청 실패: url=%s", PAGE_URL)
-        raise
+    response = requests.get(PAGE_URL, headers=HEADERS, timeout=timeout)
+    response.raise_for_status()
 
     if not response.text.strip():
         raise RuntimeError("Lyft 차량 페이지 응답이 비어 있습니다")
@@ -150,8 +147,7 @@ def _vehicle_entries(page_data: dict, region_code: str) -> list[dict]:
 
 def _clean_eligibility(raw: str) -> str:
     # 각주 번호는 등급 정보가 아니므로 태그 내용까지 제거합니다.
-    without_footnotes = SUP_TAG_RE.sub("", raw)
-    return HTML_TAG_RE.sub("", without_footnotes).strip()
+    return HTML_TAG_RE.sub("", SUP_TAG_RE.sub("", raw)).strip()
 
 
 def _normalize_ride_types(raw: str) -> list[str]:
@@ -165,15 +161,13 @@ def _normalize_ride_types(raw: str) -> list[str]:
 
 def parse(page_data: dict, city_slug: str, collected_at: datetime) -> list[dict]:
     """NYC 제조사 목록을 최소 연식/등급 묶음 단위의 행으로 펼칩니다."""
-    try:
-        region_code = CITY_REGION_CODES[city_slug]
-    except KeyError as exc:
-        raise ValueError(f"지원하지 않는 Lyft 도시입니다: {city_slug!r}") from exc
+    if city_slug != CITY_SLUG:
+        raise ValueError(f"지원하지 않는 Lyft 도시입니다: {city_slug!r}")
 
     rows: list[dict] = []
     skipped = 0
 
-    for entry in _vehicle_entries(page_data, region_code):
+    for entry in _vehicle_entries(page_data, REGION_CODE):
         make = str(entry.get("question") or "").strip()
         answer = entry.get("answer")
         if not make or not isinstance(answer, str) or not answer.strip():
@@ -249,7 +243,7 @@ def parse(page_data: dict, city_slug: str, collected_at: datetime) -> list[dict]
     logger.info(
         "Lyft 차량 파싱 완료: city=%s region=%s rows=%d skipped=%d",
         city_slug,
-        region_code,
+        REGION_CODE,
         len(rows),
         skipped,
     )
