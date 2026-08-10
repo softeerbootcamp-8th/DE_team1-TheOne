@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from functions.lyft_eligible_vehicles import extractor
+from functions.lyft_eligible_vehicles_raw_to_bronze import extractor
 
 
 def test_extractor가_연식과_등급_묶음을_행으로_펼친다(monkeypatch):
