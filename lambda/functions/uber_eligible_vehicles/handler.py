@@ -1,17 +1,19 @@
 """Uber Eligible Vehicles 수집/적재 Lambda 핸들러.
 
-extract(수집) 와 load(적재) 를 이어붙이기만 합니다.
+Extractor(수집) 와 Loader(적재) 를 Pipeline 으로 이어붙이기만 합니다.
 """
 
 import json
-import logging
 import os
 from datetime import datetime, timezone
 
-from .extract import extract
-from .load import load
+from pipeline_core.pipeline import Pipeline
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+from ..common.logging_setup import configure_lambda_logging
+from .extractor import UberEligibleVehiclesExtractor
+from .loader import UberEligibleVehiclesBronzeLoader
+
+configure_lambda_logging()
 
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
@@ -20,10 +22,18 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
 
-    rows = extract(city_slug, collected_at)
-    path = load(rows, base_dir, collected_at)
+    result = Pipeline(
+        UberEligibleVehiclesExtractor(city_slug, collected_at),
+        UberEligibleVehiclesBronzeLoader(base_dir, city_slug, collected_at),
+    ).run()
 
-    return {"city_slug": city_slug, "row_count": len(rows), "path": path}
+    return {
+        "city_slug": city_slug,
+        # Silver 배치가 이 하루치 파티션을 읽습니다 (Bronze 파티션 키와 동일).
+        "collected_date": f"{collected_at:%Y-%m-%d}",
+        "row_count": result.write_result.row_count,
+        "path": result.write_result.location,
+    }
 
 
 if __name__ == "__main__":

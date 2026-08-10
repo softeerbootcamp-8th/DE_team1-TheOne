@@ -18,6 +18,7 @@ import re
 from datetime import datetime
 
 import requests
+from pipeline_core.extractor import Extractor
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,21 @@ def parse(data: dict, city_slug: str, collected_at: datetime) -> list[dict]:
     return rows
 
 
-def extract(city_slug: str, collected_at: datetime) -> list[dict]:
+def extract(city_slug: str, collected_at: datetime, timeout: int = 30) -> list[dict]:
     """수집 진입점 — 호출 + 파싱을 묶어 행 목록을 돌려줍니다."""
     logger.info("수집 시작: city=%s", city_slug)
-    return parse(fetch(city_slug), city_slug, collected_at)
+    return parse(fetch(city_slug, timeout), city_slug, collected_at)
+
+
+class UberEligibleVehiclesExtractor(Extractor):
+    """Uber 공식 RPC 에서 도시별 운행 가능 차량을 수집합니다."""
+
+    name = "uber_eligible_vehicles"
+
+    def __init__(self, city_slug: str, collected_at: datetime, timeout: int = 30):
+        self._city_slug = city_slug
+        self._collected_at = collected_at
+        self._timeout = timeout
+
+    def extract(self) -> list[dict]:
+        return extract(self._city_slug, self._collected_at, self._timeout)
