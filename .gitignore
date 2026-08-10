@@ -32,3 +32,8 @@ airflow/**/*.pyc
 
 # 로컬 수집 결과 (bronze parquet 등)
 data/
+
+# AI
+.claude
+graphify-out
+CLAUDE.md
