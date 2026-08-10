@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from functions.common import gas_price_layout as layout
 from functions.gas_price_bronze_to_silver.handler import lambda_handler as to_silver
 from functions.gas_price_raw_to_bronze.loader import GasPriceBronzeLoader
 
@@ -30,12 +31,20 @@ def silver_json(result: dict, price_date: date) -> Path:
     )
 
 
+def test_bronze_파일명에서_price_date를_되읽을_수_있다():
+    """핸들러가 이 왕복에 의존합니다 (bronze_file <-> price_date_from_bronze_file)."""
+    path = layout.bronze_file("/tmp/bronze", "2026-08-09", ROW["price_date"])
+
+    assert layout.price_date_from_bronze_file(str(path)) == ROW["price_date"].isoformat()
+    assert path.parent.parent.name == layout.DATASET
+
+
 def test_bronze_to_silver(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
 
     location = write_bronze(bronze_dir, ROW, COLLECTED_AT)
-    # handler가 파일 이름에서 price_date를 읽으므로 이 규칙이 깨지면 안 됩니다.
-    assert Path(location).stem == ROW["price_date"].isoformat()
+    # Bronze 를 쓰는 쪽과 Silver 가 읽는 쪽이 같은 데이터셋 경로를 봐야 합니다.
+    assert Path(location).parent.parent == layout.dataset_path(str(bronze_dir))
 
     result = to_silver(
         event={

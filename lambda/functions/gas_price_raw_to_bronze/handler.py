@@ -2,10 +2,10 @@
 
 import os
 from datetime import datetime, timezone
-from pathlib import Path
 
 from pipeline_core.pipeline import Pipeline
 
+from ..common import gas_price_layout as layout
 from ..common.logging_setup import configure_lambda_logging
 from .extractor import FUEL_TYPE, STATE, GasPriceExtractor
 from .loader import GasPriceBronzeLoader
@@ -26,8 +26,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     return {
         "state": STATE,
         "fuel_type": FUEL_TYPE,
-        # Bronze 파일 이름이 가격 기준일입니다 (loader.GasPriceBronzeLoader.write 참고).
-        "price_date": Path(result.write_result.location).stem,
+        "price_date": layout.price_date_from_bronze_file(result.write_result.location),
         # Silver 배치가 이 하루치 파티션만 처리합니다 (Bronze 파티션 키와 동일).
         "collected_date": f"{collected_at:%Y-%m-%d}",
         "row_count": result.write_result.row_count,

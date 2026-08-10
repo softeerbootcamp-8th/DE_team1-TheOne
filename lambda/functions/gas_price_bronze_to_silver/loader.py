@@ -7,9 +7,9 @@ from pathlib import Path
 
 from pipeline_core.loader import Loader, WriteResult
 
-logger = logging.getLogger(__name__)
+from ..common import gas_price_layout as layout
 
-DATASET = "gas_price"
+logger = logging.getLogger(__name__)
 
 
 class GasPriceSilverLoader(Loader):
@@ -20,10 +20,6 @@ class GasPriceSilverLoader(Loader):
         # 이번 실행이 처리한 price_date -> 파일 경로. 새로 쓴 것과 이미 최신이라
         # 건너뛴 것을 모두 담습니다. 핸들러가 대상 날짜 반영 여부를 확인하는 데 씁니다.
         self.handled: dict[str, str] = {}
-
-    def partition_path(self, price_date: date) -> Path:
-        """가격 기준일의 Silver Hive 파티션 경로를 반환합니다."""
-        return Path(self._base_dir) / DATASET / f"price_date={price_date.isoformat()}"
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
@@ -40,9 +36,8 @@ class GasPriceSilverLoader(Loader):
             if collected_at.tzinfo is None:
                 raise ValueError("collected_at에 시간대가 없습니다.")
 
-            partition = self.partition_path(price_date)
-            partition.mkdir(parents=True, exist_ok=True)
-            path = partition / "gas_price.json"
+            path = layout.silver_file(self._base_dir, price_date)
+            path.parent.mkdir(parents=True, exist_ok=True)
             self.handled[price_date.isoformat()] = str(path)
             payload = {
                 **row,
@@ -101,6 +96,6 @@ class GasPriceSilverLoader(Loader):
         )
         # row_count 는 실제로 기록한 건수입니다. 이미 최신이라 건너뛴 건은 제외됩니다.
         return WriteResult(
-            location=str(Path(self._base_dir) / DATASET),
+            location=str(layout.dataset_path(self._base_dir)),
             row_count=written_count,
         )
