@@ -18,6 +18,11 @@ dependencies = [
     "pandas==2.1.4",
     "numpy==1.26.4",    # pandas 2.1.4 는 numpy 2.x 와 호환되지 않음
     "pyarrow==24.0.0",
+    # DAG 가 lambda/functions 핸들러를 그대로 import 하므로 그쪽 의존성도 필요합니다.
+    # 렌탈 차량 대장은 가격이 이미지 안에만 있어 OCR 로 읽습니다.
+    # tesseract 바이너리는 Dockerfile 에서 설치합니다 (lambda 쪽과 같은 버전 고정).
+    "pytesseract==0.3.13",
+    "pillow==12.3.0",
 ]
 
 [dependency-groups]
