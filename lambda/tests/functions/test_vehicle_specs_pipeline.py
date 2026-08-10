@@ -6,8 +6,8 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from functions.fueleconomy_vehicle_specs.extractor import parse
-from functions.fueleconomy_vehicle_specs.loader import VehicleSpecsBronzeLoader
+from functions.fueleconomy_vehicle_specs_raw_to_bronze.extractor import parse
+from functions.fueleconomy_vehicle_specs_raw_to_bronze.loader import VehicleSpecsBronzeLoader
 
 COLLECTED_AT = datetime(2027, 1, 1, 4, 0, tzinfo=timezone.utc)
 

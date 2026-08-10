@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from functions.uber_eligible_vehicles import extractor
-from functions.uber_eligible_vehicles.loader import UberEligibleVehiclesBronzeLoader
+from functions.uber_eligible_vehicles_raw_to_bronze import extractor
+from functions.uber_eligible_vehicles_raw_to_bronze.loader import UberEligibleVehiclesBronzeLoader
 
 COLLECTED_AT = datetime(2026, 8, 10, 3, 0, tzinfo=timezone.utc)
 CITY_SLUG = "new-york"

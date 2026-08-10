@@ -71,7 +71,7 @@ default_args = {
 def fueleconomy_vehicle_specs_raw_to_bronze_pipeline():
     @task(task_id="raw_to_bronze")
     def raw_to_bronze_task() -> dict:
-        result = lambda_handler_for("fueleconomy_vehicle_specs")(
+        result = lambda_handler_for("fueleconomy_vehicle_specs_raw_to_bronze")(
             event={"base_dir": BRONZE_DIR}
         )
         logger.info("Raw -> Bronze 완료: %s", result)
