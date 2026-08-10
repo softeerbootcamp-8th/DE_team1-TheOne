@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
+from pipeline_core.loader import Loader, WriteResult
 
 logger = logging.getLogger(__name__)
 
@@ -45,31 +46,30 @@ SCHEMA = pa.schema(
 )
 
 
-def partition_path(base_dir: str, collected_at: datetime) -> Path:
-    """collected_date 로 분류한 Hive 파티션 디렉토리 경로를 생성합니다."""
-    return (
-        Path(base_dir)
-        / DATASET
-        / f"collected_date={collected_at:%Y-%m-%d}"
-    )
+class HvfhvBronzeLoader(Loader):
+    """다운로드한 Parquet 바이너리를 파티션 내 단일 parquet 파일로 저장합니다."""
 
+    def __init__(self, base_dir: str, collected_at: datetime):
+        self._base_dir = base_dir
+        self._collected_at = collected_at
 
-def load(content: bytes, base_dir: str, collected_at: datetime) -> str:
-    """다운로드한 Parquet 파일 바이너리(bytes)를 파티션 내 단일 parquet 파일로 저장합니다."""
-    partition = partition_path(base_dir, collected_at)
-    partition.mkdir(parents=True, exist_ok=True)
-    
-    file_name = f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
-    path = partition / file_name
+    def partition_path(self) -> Path:
+        """collected_date 로 분류한 Hive 파티션 디렉토리 경로를 생성합니다."""
+        return (
+            Path(self._base_dir)
+            / DATASET
+            / f"collected_date={self._collected_at:%Y-%m-%d}"
+        )
 
-    logger.info("바이너리 데이터 저장 시도: %s", path)
-    
-    # 전달받은 원본 bytes 내용을 파싱 없이 파일로 직접 씁니다.
-    path.write_bytes(content)
+    def write(self, data: bytes) -> WriteResult:
+        partition = self.partition_path()
+        partition.mkdir(parents=True, exist_ok=True)
+        path = partition / f"{self._collected_at:%Y%m%dT%H%M%SZ}.parquet"
 
-    logger.info(
-        "적재 완료: %s (%d bytes)", 
-        path, 
-        len(content)
-    )
-    return str(path)
+        # 전달받은 원본 bytes 내용을 파싱 없이 파일로 직접 씁니다.
+        path.write_bytes(data)
+
+        logger.info("bronze_load done path=%s bytes=%d", path, len(data))
+        # 원본 파일을 그대로 쓰므로 행 수를 세려면 parquet 을 열어야 합니다.
+        # Bronze 는 원본 보존이 목적이라 파일 1개를 1로 셉니다.
+        return WriteResult(location=str(path), row_count=1)

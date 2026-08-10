@@ -4,7 +4,9 @@
 """
 
 import logging
+
 import requests
+from pipeline_core.extractor import Extractor
 
 logger = logging.getLogger(__name__)
 
@@ -28,7 +30,16 @@ def fetch(year_str: str, month_str: str, timeout: int = 180) -> bytes:
     return response.content
 
 
-def extract(year_str: str, month_str: str) -> bytes:
-    """수집 진입점 — URL 데이터 fetch 결과를 반환합니다."""
-    logger.info("수집 시작: 연도=%s, 월=%s", year_str, month_str)
-    return fetch(year_str, month_str)
+class HvfhvExtractor(Extractor):
+    """대상 연월의 FHVHV Trip Record Parquet 을 원본 그대로 받아옵니다."""
+
+    name = "hvfhv"
+
+    def __init__(self, year_str: str, month_str: str, timeout: int = 180):
+        self._year_str = year_str
+        self._month_str = month_str
+        self._timeout = timeout
+
+    def extract(self) -> bytes:
+        logger.info("수집 시작: 연도=%s, 월=%s", self._year_str, self._month_str)
+        return fetch(self._year_str, self._month_str, self._timeout)
