@@ -181,7 +181,7 @@ uv sync --reinstall-package pipeline-core
 
 `uv.lock` 은 파이썬 패키지만 고정합니다. **시스템 바이너리는 못 잠급니다.**
 
-`lambda/functions/fasttrack_vehicle_pricing` 은 렌탈 업체 사이트의 가격이
+`lambda/functions/vehicle_catalog_raw_to_bronze` 은 렌탈 업체 사이트의 가격이
 이미지 안에만 있어서 OCR(tesseract)로 읽습니다. `pytesseract` 는 이 바이너리를
 호출하는 래퍼일 뿐이라, 바이너리가 없으면 실행 시점에 실패합니다.
 

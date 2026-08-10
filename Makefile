@@ -36,7 +36,7 @@ sync: tesseract
 	done
 
 # uv.lock 은 파이썬 패키지만 고정합니다. tesseract 는 시스템 바이너리라
-# lock 이 못 잡아서 여기서 챙깁니다. (lambda/functions/fasttrack_vehicle_pricing
+# lock 이 못 잡아서 여기서 챙깁니다. (lambda/functions/vehicle_catalog_raw_to_bronze
 # 이 렌탈 가격을 이미지에서 OCR 로 읽습니다.)
 .PHONY: tesseract
 tesseract:
