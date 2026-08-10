@@ -29,6 +29,7 @@ import logging
 from datetime import datetime
 
 import requests
+from pipeline_core.extractor import Extractor
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,15 @@ def parse(text: str, collected_at: datetime) -> list[dict]:
     return rows
 
 
-def extract(collected_at: datetime, timeout: int = 120) -> list[dict]:
-    """수집 진입점 — 다운로드 + 파싱을 묶어 행 목록을 돌려줍니다."""
-    logger.info("수집 시작: %s", CSV_URL)
-    return parse(fetch(timeout), collected_at)
+class VehicleSpecsExtractor(Extractor):
+    """fueleconomy.gov 벌크 CSV 를 받아 원본 컬럼 그대로 행 목록을 만듭니다."""
+
+    name = "fueleconomy_vehicle_specs"
+
+    def __init__(self, collected_at: datetime, timeout: int = 120):
+        self._collected_at = collected_at
+        self._timeout = timeout
+
+    def extract(self) -> list[dict]:
+        logger.info("수집 시작: %s", CSV_URL)
+        return parse(fetch(self._timeout), self._collected_at)

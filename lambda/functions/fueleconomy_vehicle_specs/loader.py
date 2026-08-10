@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from pipeline_core.loader import Loader, WriteResult
 
 logger = logging.getLogger(__name__)
 
@@ -37,34 +38,39 @@ def build_schema(row: dict) -> pa.Schema:
     )
 
 
-def partition_path(base_dir: str, source: str, collected_at: datetime) -> Path:
-    """collected_date / source 로 나눈 Hive 파티션 경로.
-
-    1년에 한 번 수집이라 실제로는 연 1개 파티션이 쌓입니다. 다른 데이터셋과
-    모양을 맞추기 위해 날짜 단위 키를 그대로 씁니다.
-    """
-    return (
-        Path(base_dir)
-        / DATASET
-        / f"collected_date={collected_at:%Y-%m-%d}"
-        / f"source={source}"
-    )
-
-
-def load(rows: list[dict], base_dir: str, collected_at: datetime) -> str:
+class VehicleSpecsBronzeLoader(Loader):
     """행 목록을 파티션 하나에 parquet 한 개로 씁니다."""
-    partition = partition_path(base_dir, rows[0][PARTITION_KEY], collected_at)
-    partition.mkdir(parents=True, exist_ok=True)
-    path = partition / f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
 
-    table = pa.Table.from_pylist(rows, schema=build_schema(rows[0]))
-    pq.write_table(table, path, compression="snappy")
+    def __init__(self, base_dir: str, collected_at: datetime):
+        self._base_dir = base_dir
+        self._collected_at = collected_at
 
-    logger.info(
-        "적재 완료: %s (%d행 %d컬럼, %d bytes)",
-        path,
-        table.num_rows,
-        table.num_columns,
-        path.stat().st_size,
-    )
-    return str(path)
+    def partition_path(self, source: str) -> Path:
+        """collected_date / source 로 나눈 Hive 파티션 경로.
+
+        1년에 한 번 수집이라 실제로는 연 1개 파티션이 쌓입니다. 다른 데이터셋과
+        모양을 맞추기 위해 날짜 단위 키를 그대로 씁니다.
+        """
+        return (
+            Path(self._base_dir)
+            / DATASET
+            / f"collected_date={self._collected_at:%Y-%m-%d}"
+            / f"{PARTITION_KEY}={source}"
+        )
+
+    def write(self, data: list[dict]) -> WriteResult:
+        partition = self.partition_path(data[0][PARTITION_KEY])
+        partition.mkdir(parents=True, exist_ok=True)
+        path = partition / f"{self._collected_at:%Y%m%dT%H%M%SZ}.parquet"
+
+        table = pa.Table.from_pylist(data, schema=build_schema(data[0]))
+        pq.write_table(table, path, compression="snappy")
+
+        logger.info(
+            "bronze_load done path=%s rows=%d columns=%d bytes=%d",
+            path,
+            table.num_rows,
+            table.num_columns,
+            path.stat().st_size,
+        )
+        return WriteResult(location=str(path), row_count=table.num_rows)
