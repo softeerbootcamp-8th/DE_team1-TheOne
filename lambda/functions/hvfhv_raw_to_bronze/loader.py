@@ -49,16 +49,16 @@ SCHEMA = pa.schema(
 class HvfhvBronzeLoader(Loader):
     """다운로드한 Parquet 바이너리를 파티션 내 단일 parquet 파일로 저장합니다."""
 
-    def __init__(self, base_dir: str, collected_at: datetime):
+    def __init__(self, base_dir: str, year_month: str, collected_at: datetime):
         self._base_dir = base_dir
+        self._year_month = year_month
         self._collected_at = collected_at
 
     def partition_path(self) -> Path:
-        """collected_date 로 분류한 Hive 파티션 디렉토리 경로를 생성합니다."""
         return (
             Path(self._base_dir)
             / DATASET
-            / f"collected_date={self._collected_at:%Y-%m-%d}"
+            / f"year_month={self._year_month}"
         )
 
     def write(self, data: bytes) -> WriteResult:
