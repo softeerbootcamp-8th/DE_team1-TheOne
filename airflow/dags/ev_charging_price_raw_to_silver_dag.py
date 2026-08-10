@@ -75,7 +75,7 @@ def ev_charging_price_raw_to_silver_pipeline():
             raise ValueError("Airflow Variable 또는 환경변수 NLR_API_KEY가 필요합니다.")
         os.environ["NLR_API_KEY"] = api_key
 
-        result = lambda_handler_for("ev_charging_stations")(
+        result = lambda_handler_for("ev_charging_stations_raw_to_bronze")(
             event={"base_dir": BRONZE_DIR}
         )
         logger.info("Raw -> Bronze 완료: %s", result)

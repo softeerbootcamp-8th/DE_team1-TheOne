@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from functions.lyft_eligible_vehicles.loader import (
+from functions.lyft_eligible_vehicles_raw_to_bronze.loader import (
     SCHEMA,
     LyftEligibleVehiclesLoader,
 )

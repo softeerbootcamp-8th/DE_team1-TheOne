@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from functions.common import ev_charging_layout as layout
-from functions.ev_charging_stations.loader import EvChargingBronzeLoader
+from functions.ev_charging_stations_raw_to_bronze.loader import EvChargingBronzeLoader
 from functions.ev_charging_stations_bronze_to_silver.handler import (
     lambda_handler as to_silver,
 )
