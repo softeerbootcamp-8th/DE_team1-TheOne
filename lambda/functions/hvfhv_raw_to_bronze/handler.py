@@ -27,16 +27,18 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
 
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
+    year_month = f"{year_str}-{str(month_str).zfill(2)}"
 
     result = Pipeline(
         HvfhvExtractor(year_str, month_str),
-        HvfhvBronzeLoader(base_dir, collected_at),
+        HvfhvBronzeLoader(base_dir, year_month, collected_at),
     ).run()
 
     path = result.write_result.location
     return {
         "year": year_str,
         "month": month_str,
+        "year_month": year_month,
         "collected_date": f"{collected_at:%Y-%m-%d}",
         "file_size_bytes": Path(path).stat().st_size,
         "path": path,
