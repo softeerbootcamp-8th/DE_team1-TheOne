@@ -13,7 +13,7 @@ dependencies = [
     "pytesseract==0.3.13",
     "pillow==12.3.0",
     "boto3==1.43.65",           # S3 적재 (bronze/*)
-    "pyarrow==22.0.0",          # parquet 쓰기 (uber_eligible_vehicles)
+    "pyarrow==22.0.0",          # parquet 쓰기 (uber_eligible_vehicles_raw_to_bronze)
     "pipeline-core",            # 공통 Extractor/Transformer/Loader/Pipeline
 ]
 
