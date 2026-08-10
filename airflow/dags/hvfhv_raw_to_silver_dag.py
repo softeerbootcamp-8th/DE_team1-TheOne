@@ -159,7 +159,9 @@ def hvfhv_raw_to_silver_pipeline():
             f"--output_path {DEFAULT_SILVER_DIR} "
             f"--error_log_path {DEFAULT_ERROR_LOG_DIR} "
             f"--zone_lookup_path {DEFAULT_ZONE_LOOKUP_PATH} "
-            f"--error_threshold 0.2"
+            f"--error_threshold 0.2 "
+            f"--year \"{{{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['year'] }}}}\" "
+            f"--month \"{{{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['month'] }}}}\""
         ),
         env={
             **os.environ,
