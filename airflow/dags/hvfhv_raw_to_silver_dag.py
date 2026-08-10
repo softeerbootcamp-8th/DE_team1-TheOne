@@ -140,12 +140,12 @@ def hvfhv_raw_to_silver_pipeline():
         logger.info("raw_to_bronze 작업 완료: result=%s", result)
         return result
 
-    # Spark 클렌징 실행 태스크 (spark/main_clean_hvfhv.py)
+    # Spark 클렌징 실행 태스크 (spark/jobs/bronze_to_silver/hvfhv/job.py)
     # BashOperator를 사용하여 spark python 스크립트 실행
     bronze_to_silver_task = BashOperator(
         task_id="bronze_to_silver",
         bash_command=(
-            f"python {PROJECT_ROOT}/spark/main_clean_hvfhv.py "
+            f"python {PROJECT_ROOT}/spark/jobs/bronze_to_silver/hvfhv/job.py "
             f"--input_path {DEFAULT_BRONZE_DIR}/hvfhv "
             f"--output_path {DEFAULT_SILVER_DIR} "
             f"--error_log_path {DEFAULT_ERROR_LOG_DIR} "
