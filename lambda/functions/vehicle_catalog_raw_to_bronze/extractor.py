@@ -31,6 +31,7 @@ import pytesseract
 import requests
 from bs4 import BeautifulSoup
 from PIL import Image
+from pipeline_core.extractor import Extractor
 
 logger = logging.getLogger(__name__)
 
@@ -154,5 +155,18 @@ def extract(collected_at: datetime, timeout: int = 30) -> list[dict]:
         )
 
     priced = sum(1 for r in rows if r["price_usd"] is not None)
-    logger.info("파싱 완료: %d대 (가격 확보 %d대)", len(rows), priced)
+    logger.info("catalog_extract done rows=%d priced=%d", len(rows), priced)
     return rows
+
+
+class VehicleCatalogExtractor(Extractor):
+    """렌탈 업체 페이지의 차량 카드를 OCR 해 차량 대장 행 목록을 만듭니다."""
+
+    name = "vehicle_catalog"
+
+    def __init__(self, collected_at: datetime, timeout: int = 30):
+        self._collected_at = collected_at
+        self._timeout = timeout
+
+    def extract(self) -> list[dict]:
+        return extract(self._collected_at, self._timeout)

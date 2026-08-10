@@ -6,75 +6,52 @@
 
 수집 대상이 12대뿐이고 업체가 카드 이미지를 새로 올릴 때만 값이 바뀌므로
 주 1회로 잡았습니다. 실제 변경 빈도가 관측되면 조정하세요.
+
+이미 적재된 Bronze 를 다시 변환하려면 수동 트리거하면서 `collected_date`
+파라미터에 대상 수집일(예: "2026-08-09")을 넣으세요.
 """
 
+import importlib
 import logging
 import os
-import re
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
-try:
-    from airflow.sdk import Param, dag, task
-except ImportError:
-    from airflow.decorators import dag, task
-    from airflow.models.param import Param
+from airflow.sdk import Param, dag, task
 
-# 프로젝트 루트 디렉토리를 sys.path에 추가 (컨테이너 /opt/airflow/project-root 및 로컬 호환)
+logger = logging.getLogger(__name__)
+
+try:
+    from common.slack_failure_callback import slack_failure_callback
+except Exception as exc:
+    logger.warning("Slack 실패 콜백을 불러오지 못했습니다: %s", exc)
+
+    def slack_failure_callback(context):
+        task_instance = context.get("task_instance")
+        logger.error(
+            "Task 실패: %s",
+            task_instance.task_id if task_instance else "unknown",
+        )
+
 CURRENT_DIR = Path(__file__).resolve().parent
 AIRFLOW_DIR = CURRENT_DIR.parent
 CONTAINER_ROOT = Path("/opt/airflow/project-root")
 PROJECT_ROOT = CONTAINER_ROOT if CONTAINER_ROOT.exists() else AIRFLOW_DIR.parent
 
-for path_str in [str(PROJECT_ROOT), str(PROJECT_ROOT / "lambda")]:
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-
-logger = logging.getLogger(__name__)
-
-# 슬랙 에러 콜백 임포트 (안전한 Fallback 처리)
-try:
-    from common.slack_failure_callback import slack_failure_callback
-except Exception as e:  # noqa: BLE001
-    logger.warning("slack_failure_callback 임포트 실패 (기본 로깅으로 대체): %s", e)
-
-    def slack_failure_callback(context):
-        task_instance = context.get("task_instance")
-        task_id = task_instance.task_id if task_instance else "unknown"
-        logger.error("Task [%s] failed without slack callback.", task_id)
-
+# Airflow 이미지에는 pipeline-core가 설치돼 있지 않아 경로로 참조(이후 변경 필요)
+for path in (PROJECT_ROOT, PROJECT_ROOT / "libs" / "pipeline_core"):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 DEFAULT_BRONZE_DIR = os.getenv("BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze"))
 DEFAULT_SILVER_DIR = os.getenv("SILVER_DIR", str(PROJECT_ROOT / "data" / "silver"))
 
-BRONZE_HANDLER = "lambda.functions.fasttrack_vehicle_pricing.handler"
-SILVER_HANDLER = "lambda.functions.fasttrack_vehicle_pricing_bronze_to_silver.handler"
 
-# Bronze 적재 경로에서 수집일을 되읽습니다.
-COLLECTED_DATE_RE = re.compile(r"collected_date=(\d{4}-\d{2}-\d{2})")
-
-
-def resolve_collected_date(bronze_result: dict, params: dict) -> str:
-    """Silver 변환 대상 수집일을 정합니다.
-
-    Bronze 핸들러는 실행 시각으로 파티션을 정하므로, 수집일을 DAG 가 따로
-    계산하면 자정 근처에서 Bronze 가 쓴 파티션과 어긋날 수 있습니다.
-    그래서 Bronze 가 실제로 적재한 경로에서 되읽는 것을 기본으로 합니다.
-    """
-    manual_date = (params.get("collected_date") or "").strip()
-    if manual_date:
-        logger.info("수동 파라미터 적용: collected_date=%s", manual_date)
-        return manual_date
-
-    path = str(bronze_result.get("path") or "")
-    matched = COLLECTED_DATE_RE.search(path)
-    if not matched:
-        raise ValueError(f"Bronze 적재 경로에서 collected_date를 찾지 못했습니다: {path}")
-
-    collected_date = matched.group(1)
-    logger.info("Bronze 적재 경로에서 수집일 확인: collected_date=%s", collected_date)
-    return collected_date
+def lambda_handler_for(function_name: str):
+    """`lambda`가 파이썬 예약어라 정적 import가 안 돼 동적으로 불러옵니다."""
+    module = importlib.import_module(f"lambda.functions.{function_name}.handler")
+    return module.lambda_handler
 
 
 default_args = {
@@ -93,14 +70,15 @@ default_args = {
     schedule="0 3 * * 1",  # 매주 월요일 03:00 UTC
     start_date=datetime(2026, 8, 1),
     catchup=False,
-    tags=["vehicle-catalog", "bronze", "silver", "lambda"],
+    tags=["vehicle_catalog", "raw", "bronze", "silver", "lambda"],
     params={
         "collected_date": Param(
             None,
-            type=["string", "null"],
+            type=["null", "string"],
+            pattern=r"^\d{4}-\d{2}-\d{2}$",
             description=(
                 "이미 적재된 Bronze 를 다시 변환할 때만 지정 (예: '2026-08-09'). "
-                "비워두면 이번 실행이 적재한 Bronze 경로에서 자동으로 읽습니다."
+                "비워두면 이번 실행이 적재한 수집일을 그대로 씁니다."
             ),
         ),
         "bronze_dir": Param(
@@ -119,37 +97,34 @@ def vehicle_catalog_raw_to_silver_pipeline():
     @task(task_id="raw_to_bronze")
     def raw_to_bronze_task(**context) -> dict:
         """렌탈 업체 사이트를 수집해 Bronze 에 적재합니다."""
-        import importlib
-
-        lambda_handler = importlib.import_module(BRONZE_HANDLER).lambda_handler
         params = context.get("params", {})
-        event = {"base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR}
-
-        logger.info("raw_to_bronze 작업 시작: event=%s", event)
-        result = lambda_handler(event=event)
-        logger.info("raw_to_bronze 작업 완료: result=%s", result)
+        result = lambda_handler_for("vehicle_catalog_raw_to_bronze")(
+            event={"base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR}
+        )
+        logger.info("Raw -> Bronze 완료: %s", result)
         return result
 
     @task(task_id="bronze_to_silver")
-    def bronze_to_silver_task(bronze_result: dict, **context) -> dict:
+    def bronze_to_silver_task(raw_result: dict, **context) -> dict:
         """Bronze 차량 대장의 조인 키를 정규화해 Silver 로 적재합니다."""
-        import importlib
-
-        lambda_handler = importlib.import_module(SILVER_HANDLER).lambda_handler
         params = context.get("params", {})
-        event = {
-            "collected_date": resolve_collected_date(bronze_result, params),
-            "bronze_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
-            "silver_dir": params.get("silver_dir") or DEFAULT_SILVER_DIR,
-        }
+        # Bronze 핸들러는 실행 시각으로 파티션을 정하므로 DAG 가 수집일을 따로
+        # 계산하면 자정 근처에서 어긋납니다. Bronze 가 알려준 값을 그대로 씁니다.
+        collected_date = (params.get("collected_date") or "").strip() or raw_result[
+            "collected_date"
+        ]
 
-        logger.info("bronze_to_silver 작업 시작: event=%s", event)
-        result = lambda_handler(event=event)
-        logger.info("bronze_to_silver 작업 완료: result=%s", result)
+        result = lambda_handler_for("vehicle_catalog_bronze_to_silver")(
+            event={
+                "collected_date": collected_date,
+                "bronze_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
+                "silver_dir": params.get("silver_dir") or DEFAULT_SILVER_DIR,
+            }
+        )
+        logger.info("Bronze -> Silver 완료: %s", result)
         return result
 
     bronze_to_silver_task(raw_to_bronze_task())
 
 
-# DAG 인스턴스 생성
 vehicle_catalog_dag = vehicle_catalog_raw_to_silver_pipeline()
