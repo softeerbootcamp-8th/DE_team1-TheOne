@@ -11,7 +11,7 @@ import importlib
 import logging
 import os
 import sys
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import Variable, dag, task
@@ -32,26 +32,19 @@ AIRFLOW_DIR = CURRENT_DIR.parent
 CONTAINER_ROOT = Path("/opt/airflow/project-root")
 PROJECT_ROOT = CONTAINER_ROOT if CONTAINER_ROOT.exists() else AIRFLOW_DIR.parent
 
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+# Airflow 이미지에는 pipeline-core가 설치돼 있지 않아 경로로 참조(이후 변경 필요)
+for path in (PROJECT_ROOT, PROJECT_ROOT / "libs" / "pipeline_core"):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 SILVER_DIR = str(PROJECT_ROOT / "data" / "silver")
-PARTITION_PREFIX = "collected_date="
 
 
-def collected_date_from_path(path: str) -> str:
-    """Bronze 파일의 Hive 파티션에서 수집일을 반환합니다."""
-    partition = Path(path).parent.name
-    if not partition.startswith(PARTITION_PREFIX):
-        raise ValueError(f"Bronze 경로에 수집일 파티션이 없습니다: {path}")
-
-    collected_date = partition.removeprefix(PARTITION_PREFIX)
-    try:
-        date.fromisoformat(collected_date)
-    except ValueError as exc:
-        raise ValueError(f"유효하지 않은 수집일 파티션입니다: {partition}") from exc
-    return collected_date
+def lambda_handler_for(function_name: str):
+    """`lambda`가 파이썬 예약어라 정적 import가 안 돼 동적으로 불러옵니다."""
+    module = importlib.import_module(f"lambda.functions.{function_name}.handler")
+    return module.lambda_handler
 
 
 default_args = {
@@ -82,22 +75,17 @@ def ev_charging_price_raw_to_silver_pipeline():
             raise ValueError("Airflow Variable 또는 환경변수 NLR_API_KEY가 필요합니다.")
         os.environ["NLR_API_KEY"] = api_key
 
-        handler = importlib.import_module(
-            "lambda.functions.ev_charging_stations.handler"
-        ).lambda_handler
-        result = handler(event={"base_dir": BRONZE_DIR})
+        result = lambda_handler_for("ev_charging_stations")(
+            event={"base_dir": BRONZE_DIR}
+        )
         logger.info("Raw -> Bronze 완료: %s", result)
         return result
 
     @task(task_id="bronze_to_silver")
     def bronze_to_silver_task(raw_result: dict) -> dict:
-        collected_date = collected_date_from_path(raw_result["path"])
-        handler = importlib.import_module(
-            "lambda.functions.ev_charging_stations_bronze_to_silver.handler"
-        ).lambda_handler
-        result = handler(
+        result = lambda_handler_for("ev_charging_stations_bronze_to_silver")(
             event={
-                "collected_date": collected_date,
+                "collected_date": raw_result["collected_date"],
                 "bronze_dir": BRONZE_DIR,
                 "silver_dir": SILVER_DIR,
             }
