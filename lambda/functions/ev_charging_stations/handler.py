@@ -1,13 +1,15 @@
 """NLR 전기차 충전소 수집과 Bronze 적재를 실행합니다."""
 
-import logging
 import os
 from datetime import datetime, timezone
 
-from .extract import extract
-from .load import load
+from pipeline_core.pipeline import Pipeline
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+from ..common.logging_setup import configure_lambda_logging
+from .extractor import FUEL_TYPE_CODE, STATE, EvChargingStationExtractor
+from .loader import EvChargingBronzeLoader
+
+configure_lambda_logging()
 
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
@@ -19,13 +21,16 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
 
-    rows = extract(api_key, collected_at)
-    path = load(rows, base_dir, collected_at)
+    result = Pipeline(
+        EvChargingStationExtractor(api_key, collected_at),
+        EvChargingBronzeLoader(base_dir, collected_at),
+    ).run()
 
     return {
-        "state": "NY",
-        "fuel_type_code": "ELEC",
-        "row_count": len(rows),
-        "priced_count": sum(bool((row["ev_pricing"] or "").strip()) for row in rows),
-        "path": path,
+        "state": STATE,
+        "fuel_type_code": FUEL_TYPE_CODE,
+        # Silver 배치가 이 하루치 파티션을 읽습니다 (Bronze 파티션 키와 동일).
+        "collected_date": f"{collected_at:%Y-%m-%d}",
+        "row_count": result.write_result.row_count,
+        "path": result.write_result.location,
     }

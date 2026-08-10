@@ -8,6 +8,7 @@ import logging
 from datetime import datetime
 
 import requests
+from pipeline_core.extractor import Extractor
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,8 @@ PARAMS = {
     "access": "all",
     "limit": "all",
 }
+STATE = "NY"
+FUEL_TYPE_CODE = "ELEC"
 
 
 def fetch(api_key: str, timeout: int = 60) -> list[dict]:
@@ -42,7 +45,8 @@ def fetch(api_key: str, timeout: int = 60) -> list[dict]:
     if payload.get("total_results") != len(stations):
         raise RuntimeError("API 결과가 일부만 반환되었습니다.")
     if any(
-        station.get("state") != "NY" or station.get("fuel_type_code") != "ELEC"
+        station.get("state") != STATE
+        or station.get("fuel_type_code") != FUEL_TYPE_CODE
         for station in stations
     ):
         raise RuntimeError("뉴욕주 전기차 충전소가 아닌 데이터가 포함되었습니다.")
@@ -83,10 +87,25 @@ def parse(stations: list[dict], collected_at: datetime) -> list[dict]:
     ]
 
 
-def extract(api_key: str, collected_at: datetime, timeout: int = 60) -> list[dict]:
-    """수집 진입점 — API 호출과 Bronze용 필드 선택을 수행합니다."""
-    logger.info("뉴욕주 전기차 충전소 수집 시작")
-    rows = parse(fetch(api_key, timeout), collected_at)
-    priced = sum(bool((row["ev_pricing"] or "").strip()) for row in rows)
-    logger.info("수집 완료: %d개소 (가격 정보 %d개소)", len(rows), priced)
-    return rows
+def priced_count(rows: list[dict]) -> int:
+    """가격 문자열이 채워진 충전소 수."""
+    return sum(bool((row["ev_pricing"] or "").strip()) for row in rows)
+
+
+class EvChargingStationExtractor(Extractor):
+    """NLR API에서 뉴욕주 전기차 충전소 스냅샷을 수집합니다."""
+
+    name = "ev_charging_stations"
+
+    def __init__(self, api_key: str, collected_at: datetime, timeout: int = 60):
+        self._api_key = api_key
+        self._collected_at = collected_at
+        self._timeout = timeout
+
+    def extract(self) -> list[dict]:
+        logger.info("뉴욕주 전기차 충전소 수집 시작")
+        rows = parse(fetch(self._api_key, self._timeout), self._collected_at)
+        logger.info(
+            "station_extract done rows=%d priced=%d", len(rows), priced_count(rows)
+        )
+        return rows
