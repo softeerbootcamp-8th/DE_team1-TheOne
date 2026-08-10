@@ -16,7 +16,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not api_key:
         raise ValueError("NLR_API_KEY 환경변수가 필요합니다.")
 
-    base_dir = event.get("base_dir") or os.getenv("OUTPUT_DIR", "data/bronze")
+    base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
 
     rows = extract(api_key, collected_at)

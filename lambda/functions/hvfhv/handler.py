@@ -24,7 +24,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not year_str or not month_str:
         raise ValueError("year와 month 파라미터가 누락되었습니다.")
         
-    base_dir = event.get("base_dir") or os.getenv("OUTPUT_DIR", "data/bronze")
+    base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
 
     logger.info("ETL 작업 개시: 대상 연월=%s-%s, 출력 폴더=%s", year_str, month_str, base_dir)
