@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
-    base_dir = event.get("base_dir") or os.getenv("OUTPUT_DIR", "data/bronze")
+    base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
 
     rows = extract(collected_at)
