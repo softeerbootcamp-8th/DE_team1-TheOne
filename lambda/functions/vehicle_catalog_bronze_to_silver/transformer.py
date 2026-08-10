@@ -2,36 +2,23 @@
 
 Bronze 의 차종 표기는 업체 카드 이미지에서 읽은 값이라 전부 대문자입니다
 ("OUTLANDER SPORT"). 반면 차종별 제원(fueleconomy)과 배차 가능 목록(uber)은
-"Outlander Sport" 처럼 일반 표기를 씁니다. 그대로는 붙지 않습니다.
-
-표기를 예쁘게 고치는 대신 **대문자 조인 키를 따로 만듭니다.** 제목 형식으로
-바꾸면 "RAV4" 가 "Rav4" 가 되는데, 정작 두 데이터셋 모두 "RAV4" 로 적고 있어
-오히려 조인이 깨집니다. 어느 한쪽 표기를 정답으로 고르지 않고 양쪽을 대문자로
-맞추는 편이 안전합니다.
+"Outlander Sport" 처럼 일반 표기를 씁니다. 그대로는 붙지 않아서 대문자
+조인 키를 따로 만듭니다 — 규칙과 그 이유는 `common.join_keys` 를 보세요.
 
 원문(make/model/raw_name)은 그대로 남겨 추적할 수 있게 합니다.
 """
 
 import math
-import re
 from datetime import datetime, timezone
 
 from pipeline_core.transformer import Transformer
 
-# 조인 키에서 연속 공백을 하나로 줄입니다. 카드 이미지 OCR 특성상 단어 사이
-# 공백이 두 칸으로 들어오는 경우가 있습니다.
-WHITESPACE_RE = re.compile(r"\s+")
+from ..common.join_keys import normalize_key
 
 EXPECTED_PRICE_PERIOD = "week"
 # 주간 렌트료로 볼 수 없는 값을 걸러냅니다. 관측된 범위는 514~749 USD 입니다.
 MIN_WEEKLY_PRICE_USD = 50.0
 MAX_WEEKLY_PRICE_USD = 5000.0
-
-
-def _key(value: object) -> str | None:
-    """조인용 키 — 앞뒤 공백 제거, 연속 공백 축약, 대문자."""
-    text = WHITESPACE_RE.sub(" ", str(value or "").strip())
-    return text.upper() or None
 
 
 def _as_utc(value: object) -> datetime:
@@ -77,8 +64,8 @@ class VehicleCatalogSilverTransformer(Transformer):
                 if not vendor:
                     raise ValueError("vendor가 비어 있습니다")
 
-                make_key = _key(row.get("make"))
-                model_key = _key(row.get("model"))
+                make_key = normalize_key(row.get("make"))
+                model_key = normalize_key(row.get("model"))
                 if not make_key or not model_key:
                     # 이미지에서 차종을 못 읽은 행입니다. 조인 키를 만들 수 없습니다.
                     raise ValueError("make 또는 model이 비어 있습니다")
