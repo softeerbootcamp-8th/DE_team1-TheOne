@@ -4,6 +4,7 @@
 Bronze 레이어(Parquet)에 적재하고 Spark 정제 작업을 통해 Silver 레이어로 변환합니다.
 """
 
+import importlib
 import logging
 import os
 import sys
@@ -27,9 +28,22 @@ AIRFLOW_DIR = CURRENT_DIR.parent
 CONTAINER_ROOT = Path("/opt/airflow/project-root")
 PROJECT_ROOT = CONTAINER_ROOT if CONTAINER_ROOT.exists() else AIRFLOW_DIR.parent
 
-for path_str in [str(PROJECT_ROOT), str(PROJECT_ROOT / "lambda"), str(PROJECT_ROOT / "spark")]:
+# libs/pipeline_core 는 Airflow 이미지에 설치돼 있지 않아 경로로 참조(이후 변경 필요)
+for path_str in [
+    str(PROJECT_ROOT),
+    str(PROJECT_ROOT / "lambda"),
+    str(PROJECT_ROOT / "spark"),
+    str(PROJECT_ROOT / "libs" / "pipeline_core"),
+]:
     if path_str not in sys.path:
         sys.path.insert(0, path_str)
+
+
+def lambda_handler_for(function_name: str):
+    """`lambda`가 파이썬 예약어라 정적 import가 안 돼 동적으로 불러옵니다."""
+    return importlib.import_module(
+        f"lambda.functions.{function_name}.handler"
+    ).lambda_handler
 
 logger = logging.getLogger(__name__)
 
@@ -118,11 +132,6 @@ def hvfhv_raw_to_silver_pipeline():
     @task(task_id="raw_to_bronze")
     def raw_to_bronze_task(**context) -> dict:
         """Lambda 함수(lambda/functions/hvfhv)를 호출하여 HVFHV 데이터를 Bronze 레이어에 저장합니다."""
-        import importlib
-
-        hvfhv_handler_module = importlib.import_module("lambda.functions.hvfhv.handler")
-        lambda_handler = hvfhv_handler_module.lambda_handler
-
         logical_date = context.get("logical_date") or context.get("data_interval_start") or datetime.now(timezone.utc)
         params = context.get("params", {})
 
@@ -136,7 +145,7 @@ def hvfhv_raw_to_silver_pipeline():
         }
 
         logger.info("raw_to_bronze 작업 시작: event=%s", event)
-        result = lambda_handler(event=event)
+        result = lambda_handler_for("hvfhv")(event=event)
         logger.info("raw_to_bronze 작업 완료: result=%s", result)
         return result
 
