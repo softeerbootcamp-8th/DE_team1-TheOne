@@ -9,7 +9,6 @@ from pyspark.sql.types import (
 )
 
 from pipeline_core.transformer import Transformer
-from common.io import SparkParquetLoader
 
 logger = logging.getLogger(__name__)
 
@@ -47,12 +46,10 @@ class HVFHVCleanTransformer(Transformer):
         df_zone: Optional[DataFrame] = None,
         zone_lookup_path: Optional[str] = None,
         error_threshold: float = 0.2,
-        error_log_path: Optional[str] = None,
     ):
         self._df_zone = df_zone
         self._zone_lookup_path = zone_lookup_path
         self._error_threshold = error_threshold
-        self._error_log_path = error_log_path
 
     def transform(self, df: DataFrame) -> DataFrame:
         logger.info("데이터 정제 및 변환 시작...")
@@ -148,12 +145,5 @@ class HVFHVCleanTransformer(Transformer):
             error_msg = f"불합격 비율이 {invalid_ratio:.1%}로 임계치({self._error_threshold:.1%})를 초과했습니다."
             logger.error(error_msg)
             raise ValueError(error_msg)
-
-        if invalid_count > 0 and self._error_log_path:
-            err_path = Path(self._error_log_path)
-            if not err_path.is_absolute():
-                err_path = Path(__file__).resolve().parents[4] / err_path
-            loader = SparkParquetLoader(str(err_path))
-            loader.write(df_invalid)
 
         return df_valid

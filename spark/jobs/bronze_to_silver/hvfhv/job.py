@@ -26,7 +26,6 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     parser = argparse.ArgumentParser(description="HVFHV Bronze to Silver Pipeline Job")
     parser.add_argument("--input_path", default="data/bronze/hvfhv", help="Path to bronze raw data")
     parser.add_argument("--output_path", default="data/silver/hvfhv", help="Path to save silver clean data")
-    parser.add_argument("--error_log_path", default="data/silver/hvfhv_errors", help="Path to save invalid data logs")
     parser.add_argument("--zone_lookup_path", default="data/bronze/taxi_zone_lookup.csv", help="Path to taxi_zone_lookup.csv")
     parser.add_argument("--error_threshold", type=float, default=0.2, help="Validation error threshold (default: 0.2)")
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
@@ -37,7 +36,6 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
 
     input_path = resolve_path(args.input_path)
     output_path = resolve_path(args.output_path)
-    error_log_path = resolve_path(args.error_log_path)
     zone_lookup_path = resolve_path(args.zone_lookup_path)
 
     if args.year and args.month:
@@ -63,7 +61,6 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     transformer = HVFHVCleanTransformer(
         zone_lookup_path=zone_lookup_path,
         error_threshold=args.error_threshold,
-        error_log_path=error_log_path,
     )
 
     result = Pipeline(extractor, loader, transformer=transformer).run()
