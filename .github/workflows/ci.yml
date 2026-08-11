@@ -1,8 +1,12 @@
 # =============================================================================
-# 버전 잠금 검증 — PR 마다 자동 실행됩니다.
+# PR 마다 자동 실행되는 검증 — 세 가지를 병렬로 봅니다.
 #
-# pyproject.toml 을 고치고 `uv lock` 을 안 돌린 PR 을 여기서 막습니다.
-# 로컬에서 `make check` 를 돌리는 것과 똑같은 검사입니다.
+#   version-lock  pyproject.toml 을 고치고 `uv lock` 을 안 돌린 PR 을 막습니다.
+#   test          lambda 테스트를 돌립니다.
+#   docker-build  런타임 3개 이미지가 실제로 빌드되는지 봅니다.
+#
+# 전부 로컬에서 `make check` / `pytest` / `make build` 를 돌리는 것과 같습니다.
+# AWS 자격증명은 쓰지 않습니다 — 빌드만 하고 어디에도 푸시하지 않습니다.
 # =============================================================================
 name: CI
 
@@ -39,3 +43,50 @@ jobs:
           echo "::error::pyproject.toml 과 uv.lock 이 어긋났습니다."
           echo "고친 런타임 폴더에서 'uv lock' 을 돌리고, uv.lock 도 같이 커밋하세요."
           echo "  예) cd airflow && uv lock"
+
+  # 테스트는 lambda 에만 있습니다. spark / airflow 에 생기면 여기에 붙이세요.
+  # tesseract 바이너리는 필요 없습니다 — 테스트가 OCR 경로를 타지 않습니다.
+  test:
+    name: 테스트
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.2"
+          enable-cache: true
+
+      # --frozen 이라 lock 을 다시 풀지 않습니다. 어긋나 있으면 version-lock 이 먼저 잡습니다.
+      # uv run 이 설치까지 겸하므로 별도 sync 단계는 두지 않습니다.
+      - name: pytest
+        working-directory: lambda
+        run: uv run --frozen pytest tests -q
+
+  # 푸시하지 않고 빌드만 합니다. Dockerfile 이 깨진 PR 을 여기서 막는 게 목적입니다.
+  docker-build:
+    name: 이미지 빌드
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 이미지 빌드
+        run: make build
+
+      # Airflow 는 import 에 실패한 DAG 를 조용히 건너뜁니다. 배포 후 "화면에 안 보인다"
+      # 로 발견되기 전에 여기서 잡습니다. 위에서 만든 이미지를 그대로 쓰므로
+      # 의존성 설치가 다시 필요 없습니다. 태그는 Makefile 의 GIT_SHA 와 같은 규칙입니다.
+      - name: DAG import 검증
+        run: |
+          docker run --rm -v "$PWD/airflow:/airflow:ro" \
+            tlc-airflow:$(git rev-parse --short HEAD) \
+            python /airflow/scripts/check_dags.py /airflow/dags
+
+      - name: 실패 시 안내
+        if: failure()
+        run: |
+          echo "::error::이미지 빌드 또는 DAG import 검증이 실패했습니다."
+          echo "로컬에서 같은 검사를 돌릴 수 있습니다:"
+          echo "  make build"
+          echo "  cd airflow && .venv/bin/python scripts/check_dags.py"

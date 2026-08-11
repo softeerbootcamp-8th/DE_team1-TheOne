@@ -17,6 +17,11 @@ RUN pip install --no-cache-dir "uv==0.12.2" \
  && pip install --no-cache-dir --no-deps /tmp/libs/pipeline_core -t ${LAMBDA_TASK_ROOT} \
  && rm -rf /tmp/build /tmp/libs
 
-# 핸들러가 생기면 아래 두 줄 추가:
-# COPY functions/ ${LAMBDA_TASK_ROOT}/functions/
+# 핸들러가 생기면 아래 두 줄 추가 (컨텍스트가 저장소 루트라 lambda/ 가 붙습니다):
+# COPY lambda/functions/ ${LAMBDA_TASK_ROOT}/functions/
 # CMD ["functions.<이름>.handler.lambda_handler"]
+#
+# ★ vehicle_catalog_raw_to_bronze 를 이 이미지에 담는다면 tesseract 바이너리도 함께
+#   설치해야 합니다. pytesseract 는 파이썬 래퍼일 뿐이라 uv.lock 이 못 잡고, 없으면
+#   OCR 호출 시점에 TesseractNotFoundError 로 죽습니다. 지금은 이 함수가 airflow
+#   이미지 안에서 돌아 문제가 없습니다 (airflow/Dockerfile 이 tesseract-ocr 를 깝니다).

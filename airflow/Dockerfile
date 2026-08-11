@@ -19,5 +19,5 @@ RUN pip install --no-cache-dir "uv==0.12.2" \
  && pip install --no-cache-dir -r /tmp/build/requirements.txt \
  && rm -rf /tmp/build
 
-# DAG 가 생기면 아래 한 줄 추가:
-# COPY --chown=airflow:root dags/ /opt/airflow/dags/
+# DAG 가 생기면 아래 한 줄 추가 (컨텍스트가 저장소 루트라 airflow/ 가 붙습니다):
+# COPY --chown=airflow:root airflow/dags/ /opt/airflow/dags/
