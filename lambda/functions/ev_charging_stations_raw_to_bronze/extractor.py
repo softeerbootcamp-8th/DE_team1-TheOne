@@ -1,11 +1,7 @@
-"""NLR API에서 뉴욕주 전기차 충전소 가격 정보를 수집합니다.
+"""NLR API의 뉴욕주 전기차 충전소 응답 원문을 수집합니다."""
 
-`ev_pricing`은 단가, 기본요금, 유휴요금 등이 섞인 자유 형식 문자열이므로
-Extract 단계에서는 파싱하지 않고 원문 그대로 반환합니다.
-"""
-
+import json
 import logging
-from datetime import datetime
 
 import requests
 from pipeline_core.extractor import Extractor
@@ -25,8 +21,8 @@ STATE = "NY"
 FUEL_TYPE_CODE = "ELEC"
 
 
-def fetch(api_key: str, timeout: int = 60) -> list[dict]:
-    """뉴욕주 전기차 충전소 전체를 NLR API에서 받아옵니다."""
+def fetch(api_key: str, timeout: int = 60) -> bytes:
+    """응답을 검증하되 저장할 원문 bytes는 변경하지 않고 반환합니다."""
     if not api_key.strip():
         raise ValueError("NLR API key가 비어 있습니다.")
 
@@ -37,7 +33,17 @@ def fetch(api_key: str, timeout: int = 60) -> list[dict]:
         timeout=timeout,
     )
     response.raise_for_status()
-    payload = response.json()
+    content = response.content
+    if not content.strip():
+        raise RuntimeError("NLR API 응답이 비어 있습니다.")
+
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise RuntimeError("NLR API 응답이 올바른 JSON이 아닙니다.") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("NLR API 응답이 JSON 객체 형식이 아닙니다.")
+
     stations = payload.get("fuel_stations")
 
     if not isinstance(stations, list) or not stations:
@@ -51,45 +57,10 @@ def fetch(api_key: str, timeout: int = 60) -> list[dict]:
     ):
         raise RuntimeError("뉴욕주 전기차 충전소가 아닌 데이터가 포함되었습니다.")
 
-    return stations
-
-
-def parse(stations: list[dict], collected_at: datetime) -> list[dict]:
-    """원본 응답에서 가격 분석과 적재에 필요한 필드만 선택합니다."""
-    return [
-        {
-            "station_id": station["id"],
-            "station_name": station.get("station_name"),
-            "fuel_type_code": station.get("fuel_type_code"),
-            "status_code": station.get("status_code"),
-            "access_code": station.get("access_code"),
-            "restricted_access": station.get("restricted_access"),
-            "street_address": station.get("street_address"),
-            "city": station.get("city"),
-            "state": station.get("state"),
-            "zip": station.get("zip"),
-            "latitude": station.get("latitude"),
-            "longitude": station.get("longitude"),
-            "ev_network": station.get("ev_network"),
-            "ev_network_web": station.get("ev_network_web"),
-            "ev_connector_types": station.get("ev_connector_types"),
-            "ev_level1_evse_num": station.get("ev_level1_evse_num"),
-            "ev_level2_evse_num": station.get("ev_level2_evse_num"),
-            "ev_dc_fast_num": station.get("ev_dc_fast_num"),
-            "ev_pricing": station.get("ev_pricing"),
-            "cards_accepted": station.get("cards_accepted"),
-            "date_last_confirmed": station.get("date_last_confirmed"),
-            "updated_at": station.get("updated_at"),
-            "source_url": API_URL,
-            "collected_at": collected_at,
-        }
-        for station in sorted(stations, key=lambda station: station["id"])
-    ]
-
-
-def priced_count(rows: list[dict]) -> int:
-    """가격 문자열이 채워진 충전소 수."""
-    return sum(bool((row["ev_pricing"] or "").strip()) for row in rows)
+    logger.info(
+        "station_extract done rows=%d bytes=%d", len(stations), len(content)
+    )
+    return content
 
 
 class EvChargingStationExtractor(Extractor):
@@ -97,15 +68,10 @@ class EvChargingStationExtractor(Extractor):
 
     name = "ev_charging_stations"
 
-    def __init__(self, api_key: str, collected_at: datetime, timeout: int = 60):
+    def __init__(self, api_key: str, timeout: int = 60):
         self._api_key = api_key
-        self._collected_at = collected_at
         self._timeout = timeout
 
-    def extract(self) -> list[dict]:
+    def extract(self) -> bytes:
         logger.info("뉴욕주 전기차 충전소 수집 시작")
-        rows = parse(fetch(self._api_key, self._timeout), self._collected_at)
-        logger.info(
-            "station_extract done rows=%d priced=%d", len(rows), priced_count(rows)
-        )
-        return rows
+        return fetch(self._api_key, self._timeout)

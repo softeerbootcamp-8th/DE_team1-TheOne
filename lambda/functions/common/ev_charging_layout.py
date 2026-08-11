@@ -1,12 +1,12 @@
 """전기차 충전소 데이터셋의 저장 경로 규칙.
 
-Bronze 를 쓰는 쪽(`ev_charging_stations`)과 읽는 쪽(`ev_charging_stations_bronze_to_silver`)이
-같은 규칙을 봐야 하므로 한 곳에 모읍니다.
+Bronze 를 쓰는 쪽(`ev_charging_stations_raw_to_bronze`)과 읽는 쪽
+(`ev_charging_stations_bronze_to_silver`)이 같은 규칙을 봐야 하므로 한 곳에 모읍니다.
 
-    <base>/ev_charging_stations/collected_date=YYYY-MM-DD/<수집시각>.parquet  (Bronze)
+    <base>/ev_charging_stations/collected_date=YYYY-MM-DD/<수집시각>.json     (Bronze)
     <base>/ev_charging_price/price_date=YYYY-MM-DD/ev_charging_price.json     (Silver)
 
-Bronze 는 충전소 스냅샷 전체(수천 행), Silver 는 뉴욕시 일별 평균 요금 한 행이라
+Bronze 는 NLR API 응답 원문 JSON, Silver 는 뉴욕시 일별 평균 요금 한 행이라
 데이터셋 이름이 다릅니다. 같은 데이터의 이름이 갈린 것이 아니라 알갱이가 다릅니다.
 """
 
@@ -32,7 +32,7 @@ def bronze_partition(base_dir: str, collected_date: str) -> Path:
 def bronze_file(base_dir: str, collected_at: datetime) -> Path:
     """Bronze 파일 이름은 수집 시각입니다 (하루에 여러 번 수집해도 안 덮어씁니다)."""
     partition = bronze_partition(base_dir, f"{collected_at:%Y-%m-%d}")
-    return partition / f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
+    return partition / f"{collected_at:%Y%m%dT%H%M%SZ}.json"
 
 
 def silver_dataset_path(base_dir: str) -> Path:
