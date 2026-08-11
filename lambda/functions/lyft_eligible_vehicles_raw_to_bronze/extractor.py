@@ -1,15 +1,8 @@
-"""Lyft 뉴욕시 Premium Eligible Vehicles 수집(extract).
+"""Lyft 공식 페이지에서 NYC Premium 대상 차량 원문을 수집합니다.
 
-수집 대상: https://www.lyft.com/driver/eligible-premium-vehicles
-
-차량 목록은 화면 HTML이 아니라 Next.js의 ``__NEXT_DATA__`` JSON 안에 있습니다.
-제조사별 원문은 ``MODEL - 최소 연식 (등급)`` 형태이며, Uber 수집기처럼
-최소 연식/등급 묶음 하나를 한 행으로 펼칩니다. 원문에 연식이 없는 XXL
-차량은 값을 추측하지 않고 ``min_year=None``으로 남깁니다.
-
-일부 제조사는 지역별 목록이 다르므로 New York City 지역 코드인 ``NYC``
-목록을 선택합니다. Standard 차량은 공식 Premium 목록에 없으므로 수집하지
-않습니다.
+페이지 전체 HTML은 저장하지 않고 차량 FAQ에 있는 제조사·차량 행만 가져옵니다.
+등급명은 선별하지 않지만, ``min_year``는 해당 상품의 최소 허용 연식이므로
+4자리 연식이 명시되지 않은 묶음은 Uber 수집기와 동일하게 건너뜁니다.
 """
 
 import json
@@ -40,42 +33,29 @@ HEADERS = {
 
 MODEL_LINE_RE = re.compile(r"^__(?P<model>.+?)__\s*-\s*(?P<eligibility>.*?)\s*$")
 YEAR_GROUP_RE = re.compile(
-    r"^(?P<year>\d{4})\s*\((?P<ride_types>.*?)(?:\))?\s*$"
+    r"^(?P<year>\d{4})\s*\((?P<products>.+)\)\s*$"
 )
-NO_YEAR_GROUP_RE = re.compile(r"^\((?P<ride_types>.*?)\)\s*$")
 SUP_TAG_RE = re.compile(r"<sup\b[^>]*>.*?</sup>", re.IGNORECASE)
 HTML_TAG_RE = re.compile(r"<[^>]+>")
 
-# 긴 이름을 먼저 확인해 Black SUV -> Black, XXL -> XL로 잘못 읽는 것을 막습니다.
-RIDE_TYPE_NAMES = ("Extra Comfort", "Black SUV", "Black", "XXL", "XL")
-
 
 def fetch(timeout: int = 30) -> dict:
-    """공식 페이지에서 차량 목록이 든 Next.js 페이지 데이터를 받습니다."""
+    """공식 페이지에서 차량 목록이 든 Next.js 데이터를 받습니다."""
     response = requests.get(PAGE_URL, headers=HEADERS, timeout=timeout)
     response.raise_for_status()
 
-    if not response.text.strip():
-        raise RuntimeError("Lyft 차량 페이지 응답이 비어 있습니다")
-
     script = BeautifulSoup(response.text, "lxml").select_one("script#__NEXT_DATA__")
     if script is None or not script.string:
-        raise RuntimeError(
-            "__NEXT_DATA__를 찾지 못했습니다 (페이지 구조 변경 의심)"
-        )
+        raise RuntimeError("Lyft 차량 페이지에서 __NEXT_DATA__를 찾지 못했습니다")
 
     try:
         payload = json.loads(script.string)
     except json.JSONDecodeError as exc:
-        raise RuntimeError("__NEXT_DATA__ JSON 파싱에 실패했습니다") from exc
+        raise RuntimeError("Lyft __NEXT_DATA__ JSON을 읽지 못했습니다") from exc
 
     page_data = payload.get("props", {}).get("pageProps", {}).get("brandPageData")
-    if not isinstance(page_data, dict) or not page_data:
-        raise RuntimeError(
-            "응답에 차량 페이지 데이터가 없습니다 (페이지 구조 변경 의심)"
-        )
-
-    logger.info("Lyft 차량 페이지 수신 완료: bytes=%d", len(response.content))
+    if not isinstance(page_data, dict):
+        raise RuntimeError("Lyft 차량 페이지 데이터를 찾지 못했습니다")
     return page_data
 
 
@@ -90,190 +70,163 @@ def _walk_components(value: object) -> Iterator[dict]:
 
 
 def _vehicle_entries(page_data: dict, region_code: str) -> list[dict]:
-    faqs = [
-        component
-        for component in _walk_components(page_data)
-        if component.get("componentType") == "FAQ"
-        and component.get("displayName") == VEHICLE_FAQ_NAME
-    ]
-    if len(faqs) != 1:
-        raise RuntimeError(
-            f"차량 FAQ를 정확히 하나 찾지 못했습니다: count={len(faqs)} "
-            "(페이지 구조 변경 의심)"
-        )
-
-    raw_entries = faqs[0].get("entries")
-    if not isinstance(raw_entries, list) or not raw_entries:
-        raise RuntimeError("차량 FAQ가 비어 있습니다 (페이지 구조 변경 의심)")
+    """차량 FAQ 중 대상 지역에 표시되는 차량 항목만 선택합니다."""
+    faq = next(
+        (
+            component
+            for component in _walk_components(page_data)
+            if component.get("componentType") == "FAQ"
+            and component.get("displayName") == VEHICLE_FAQ_NAME
+        ),
+        None,
+    )
+    if faq is None:
+        return []
 
     selected: list[dict] = []
-    for entry in raw_entries:
-        component_type = entry.get("componentType")
-        if component_type == "FAQEntry":
+    for entry in faq.get("entries") or []:
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("componentType") == "FAQEntry":
             selected.append(entry)
             continue
-        if component_type != "VisibilityToggleList":
-            raise RuntimeError(f"알 수 없는 차량 FAQ 구성요소: {component_type!r}")
+        if entry.get("componentType") != "VisibilityToggleList":
+            continue
 
-        toggles = entry.get("listOfVisibilityToggles")
-        if not isinstance(toggles, list) or not toggles:
-            raise RuntimeError(
-                "지역별 차량 목록이 비어 있습니다 (페이지 구조 변경 의심)"
-            )
-
-        matches = [toggle for toggle in toggles if region_code in toggle.get("regions", [])]
-        if not matches:
-            matches = [toggle for toggle in toggles if not toggle.get("regions")]
-        if len(matches) != 1:
-            raise RuntimeError(
-                f"지역별 차량 목록을 정확히 하나 선택하지 못했습니다: "
-                f"region={region_code} count={len(matches)}"
-            )
-
-        components = matches[0].get("componentList")
-        regional_entries = [
-            component
-            for component in components or []
-            if component.get("componentType") == "FAQEntry"
+        toggles = [
+            toggle
+            for toggle in entry.get("listOfVisibilityToggles") or []
+            if isinstance(toggle, dict)
         ]
-        if not regional_entries:
-            raise RuntimeError(
-                f"선택한 지역 차량 목록이 비어 있습니다: region={region_code}"
-            )
-        selected.extend(regional_entries)
+        regional = next(
+            (toggle for toggle in toggles if region_code in toggle.get("regions", [])),
+            None,
+        )
+        fallback = next((toggle for toggle in toggles if not toggle.get("regions")), None)
+        chosen = regional or fallback
+        if chosen is None:
+            continue
+
+        selected.extend(
+            component
+            for component in chosen.get("componentList") or []
+            if isinstance(component, dict)
+            and component.get("componentType") == "FAQEntry"
+        )
 
     return selected
 
 
-def _clean_eligibility(raw: str) -> str:
-    # 각주 번호는 등급 정보가 아니므로 태그 내용까지 제거합니다.
+def _clean_text(raw: str) -> str:
     return HTML_TAG_RE.sub("", SUP_TAG_RE.sub("", raw)).strip()
 
 
-def _normalize_ride_types(raw: str) -> list[str]:
-    ride_types: list[str] = []
-    for token in raw.split(","):
-        matched = next((name for name in RIDE_TYPE_NAMES if name in token), None)
-        if matched and matched not in ride_types:
-            ride_types.append(matched)
-    return ride_types
+def _products(raw: str) -> list[str]:
+    """공식 페이지의 등급 표기를 선별하지 않고 쉼표 단위로만 나눕니다."""
+    return [product.strip() for product in raw.split(",") if product.strip()]
+
+
+def _row(
+    *,
+    city_slug: str,
+    make: str | None,
+    model: str | None,
+    min_year: int,
+    products: list[str],
+    raw_eligibility: str,
+    raw_vehicle: str,
+    collected_at: datetime,
+) -> dict:
+    return {
+        "city_slug": city_slug,
+        "make": make,
+        "model": model,
+        "min_year": min_year,
+        "products": products,
+        "raw_eligibility": raw_eligibility,
+        "raw_vehicle": raw_vehicle,
+        "source_url": PAGE_URL,
+        "collected_at": collected_at,
+    }
 
 
 def parse(page_data: dict, city_slug: str, collected_at: datetime) -> list[dict]:
-    """NYC 제조사 목록을 최소 연식/등급 묶음 단위의 행으로 펼칩니다."""
+    """NYC 차량 행을 연식/상품 묶음 단위로 펼칩니다."""
     if city_slug != CITY_SLUG:
         raise ValueError(f"지원하지 않는 Lyft 도시입니다: {city_slug!r}")
 
     rows: list[dict] = []
     skipped = 0
-
     for entry in _vehicle_entries(page_data, REGION_CODE):
-        make = str(entry.get("question") or "").strip()
+        make = str(entry.get("question") or "").strip() or None
         answer = entry.get("answer")
-        if not make or not isinstance(answer, str) or not answer.strip():
-            skipped += 1
-            logger.warning("제조사 차량 목록 파싱 실패: make=%r", make)
-            continue
+        raw_lines = answer.splitlines() if isinstance(answer, str) else [str(answer)]
 
-        for raw_line in answer.splitlines():
-            raw_line = raw_line.strip()
-            if not raw_line or raw_line.startswith("*"):
+        for raw_vehicle in raw_lines:
+            raw_vehicle = raw_vehicle.strip()
+            if not raw_vehicle:
                 continue
 
-            model_match = MODEL_LINE_RE.match(raw_line)
-            if not model_match:
+            matched = MODEL_LINE_RE.match(raw_vehicle)
+            if not matched:
                 skipped += 1
-                logger.warning("차량 행 파싱 실패: make=%s raw=%r", make, raw_line)
+                logger.warning(
+                    "lyft_parse skipped reason=vehicle_format make=%r raw=%r",
+                    make,
+                    raw_vehicle,
+                )
                 continue
 
-            model = model_match.group("model").strip()
-            raw_eligibility = model_match.group("eligibility").strip()
-            eligibility = _clean_eligibility(raw_eligibility)
+            model = matched.group("model").strip() or None
+            raw_eligibility = matched.group("eligibility").strip()
+            chunks = _clean_text(raw_eligibility).split(" / ")
 
-            for chunk in eligibility.split(" / "):
+            for chunk in chunks:
                 chunk = chunk.strip()
                 year_match = YEAR_GROUP_RE.match(chunk)
-                no_year_match = NO_YEAR_GROUP_RE.match(chunk)
-
-                if year_match:
-                    min_year = int(year_match.group("year"))
-                    raw_ride_types = year_match.group("ride_types")
-                elif no_year_match:
-                    min_year = None
-                    raw_ride_types = no_year_match.group("ride_types")
-                else:
+                if not year_match:
                     skipped += 1
                     logger.warning(
-                        "등급 묶음 파싱 실패: make=%s model=%s raw=%r",
+                        "lyft_parse skipped reason=missing_min_year "
+                        "make=%r model=%r raw=%r",
                         make,
                         model,
                         chunk,
                     )
                     continue
 
-                ride_types = _normalize_ride_types(raw_ride_types)
-                if not ride_types:
-                    skipped += 1
-                    logger.warning(
-                        "알 수 없는 Lyft 등급: make=%s model=%s raw=%r",
-                        make,
-                        model,
-                        raw_ride_types,
-                    )
-                    continue
+                min_year = int(year_match.group("year"))
+                products = _products(year_match.group("products"))
 
                 rows.append(
-                    {
-                        "city_slug": city_slug,
-                        "make": make,
-                        "model": model,
-                        "min_year": min_year,
-                        "ride_types": ride_types,
-                        "raw_eligibility": raw_eligibility,
-                        "source_url": PAGE_URL,
-                        "collected_at": collected_at,
-                    }
+                    _row(
+                        city_slug=city_slug,
+                        make=make,
+                        model=model,
+                        min_year=min_year,
+                        products=products,
+                        raw_eligibility=raw_eligibility,
+                        raw_vehicle=raw_vehicle,
+                        collected_at=collected_at,
+                    )
                 )
 
     if not rows:
-        raise RuntimeError(
-            "Lyft 차량 파싱 결과가 0건입니다 (페이지 구조 변경 의심)"
-        )
+        raise RuntimeError("Lyft 차량 파싱 결과가 0건입니다")
 
-    logger.info(
-        "Lyft 차량 파싱 완료: city=%s region=%s rows=%d skipped=%d",
-        city_slug,
-        REGION_CODE,
-        len(rows),
-        skipped,
-    )
+    logger.info("lyft_extract done rows=%d skipped=%d", len(rows), skipped)
     return rows
 
 
-def extract(
-    city_slug: str,
-    collected_at: datetime,
-    timeout: int = 30,
-) -> list[dict]:
-    """수집 진입점 — 공식 페이지 호출과 NYC 차량 파싱을 수행합니다."""
-    logger.info("Lyft 차량 수집 시작: city=%s url=%s", city_slug, PAGE_URL)
-    return parse(fetch(timeout), city_slug, collected_at)
-
-
 class LyftEligibleVehiclesExtractor(Extractor):
-    """Lyft 공식 페이지에서 NYC Premium 대상 차량을 수집합니다."""
+    """Lyft 공식 페이지에서 NYC Premium 대상 차량 행을 수집합니다."""
 
     name = "lyft_eligible_vehicles"
 
-    def __init__(
-        self,
-        city_slug: str,
-        collected_at: datetime,
-        timeout: int = 30,
-    ):
+    def __init__(self, city_slug: str, collected_at: datetime, timeout: int = 30):
         self._city_slug = city_slug
         self._collected_at = collected_at
         self._timeout = timeout
 
     def extract(self) -> list[dict]:
-        return extract(self._city_slug, self._collected_at, self._timeout)
+        return parse(fetch(self._timeout), self._city_slug, self._collected_at)
