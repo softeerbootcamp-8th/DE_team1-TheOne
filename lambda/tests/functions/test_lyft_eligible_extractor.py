@@ -1,11 +1,11 @@
-"""Lyft Eligible Vehicles Extractor 계약 검증."""
+"""Lyft Eligible Vehicles 원문 추출 계약 검증."""
 
 from datetime import datetime, timezone
 
 from functions.lyft_eligible_vehicles_raw_to_bronze import extractor
 
 
-def test_extractor가_연식과_등급_묶음을_행으로_펼친다(monkeypatch):
+def test_연식이_없는_묶음은_건너뛰고_상품명은_선별하지_않는다(monkeypatch):
     page_data = {
         "componentType": "FAQ",
         "displayName": extractor.VEHICLE_FAQ_NAME,
@@ -15,7 +15,9 @@ def test_extractor가_연식과_등급_묶음을_행으로_펼친다(monkeypatch
                 "question": "Cadillac",
                 "answer": (
                     "__ESCALADE ESV__ - 2018 (Extra Comfort) / "
-                    "2019 (Black, Black SUV) / (XXL)"
+                    "2019 (Black, Black SUV) / (XXL)\n"
+                    "__LYRIQ__ - 2024 (Future Select)\n"
+                    "*Black exterior is required"
                 ),
             }
         ],
@@ -28,8 +30,10 @@ def test_extractor가_연식과_등급_묶음을_행으로_펼친다(monkeypatch
         collected_at,
     ).extract()
 
-    assert [(row["min_year"], row["ride_types"]) for row in rows] == [
+    assert [(row["min_year"], row["products"]) for row in rows] == [
         (2018, ["Extra Comfort"]),
         (2019, ["Black", "Black SUV"]),
-        (None, ["XXL"]),
+        (2024, ["Future Select"]),
     ]
+    assert all(row["min_year"] is not None for row in rows)
+    assert rows[0]["raw_vehicle"].startswith("__ESCALADE ESV__")
