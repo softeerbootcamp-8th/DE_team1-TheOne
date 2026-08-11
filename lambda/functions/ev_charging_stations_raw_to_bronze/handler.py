@@ -22,7 +22,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     collected_at = datetime.now(timezone.utc)
 
     result = Pipeline(
-        EvChargingStationExtractor(api_key, collected_at),
+        EvChargingStationExtractor(api_key),
         EvChargingBronzeLoader(base_dir, collected_at),
     ).run()
 

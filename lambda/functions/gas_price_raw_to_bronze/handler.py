@@ -5,9 +5,8 @@ from datetime import datetime, timezone
 
 from pipeline_core.pipeline import Pipeline
 
-from ..common import gas_price_layout as layout
 from ..common.logging_setup import configure_lambda_logging
-from .extractor import FUEL_TYPE, STATE, GasPriceExtractor
+from .extractor import GasPriceExtractor
 from .loader import GasPriceBronzeLoader
 
 configure_lambda_logging()
@@ -31,4 +30,5 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "price_date": layout.price_date_from_bronze_file(result.write_result.location),
         # Silver 배치가 이 하루치 파티션만 처리합니다 (Bronze 파티션 키와 동일).
         "collected_date": f"{collected_at:%Y-%m-%d}",
+        "path": result.write_result.location,
     }

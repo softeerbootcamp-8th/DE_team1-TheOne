@@ -1,6 +1,6 @@
-"""AAA New York 정규 휘발유 평균 가격 Bronze JSON 적재.
+"""AAA New York 정규 휘발유 평균 가격 원문을 Bronze JSON으로 적재.
 
-Extractor가 만든 일별 행을 수집일 기준 Hive 파티션에 씁니다.
+Extractor가 수집한 가격과 기준일 문자열을 변환하지 않고 일별 파티션에 씁니다.
 """
 
 import json
@@ -22,19 +22,11 @@ class GasPriceBronzeLoader(Loader):
         self._collected_at = collected_at
 
     def write(self, data: dict) -> WriteResult:
-        path = layout.bronze_file(
-            self._base_dir,
-            f"{self._collected_at:%Y-%m-%d}",
-            data["price_date"],
-        )
+        path = layout.bronze_file(self._base_dir, f"{self._collected_at:%Y-%m-%d}")
         path.parent.mkdir(parents=True, exist_ok=True)
 
         record = {
-            "state": data["state"],
-            "fuel_type": data["fuel_type"],
-            "price_usd_per_gallon": data["price_usd_per_gallon"],
-            "price_date": data["price_date"].isoformat(),
-            "source_url": data["source_url"],
+            **data,
             "collected_at": self._collected_at.isoformat(),
         }
 

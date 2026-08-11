@@ -1,11 +1,14 @@
-"""EV Charging Raw -> Bronze -> Silver 배선 검증 (네트워크 없이 Loader부터 실행)."""
+"""EV Charging 원본 보존과 Bronze -> Silver 계약 검증."""
 
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from functions.common import ev_charging_layout as layout
+from functions.ev_charging_stations_raw_to_bronze import extractor as raw_extractor
 from functions.ev_charging_stations_raw_to_bronze.loader import EvChargingBronzeLoader
 from functions.ev_charging_stations_bronze_to_silver.handler import (
     lambda_handler as to_silver,
@@ -13,6 +16,16 @@ from functions.ev_charging_stations_bronze_to_silver.handler import (
 
 COLLECTED_AT = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
 COLLECTED_DATE = f"{COLLECTED_AT:%Y-%m-%d}"
+RAW_RESPONSE = b'''{
+  "total_results": 1,
+  "station_counts": {"total": 1},
+  "fuel_stations": [{
+    "id": 1,
+    "state": "NY",
+    "fuel_type_code": "ELEC",
+    "field_not_used_by_silver": {"keep": true}
+  }]
+}'''
 
 
 def station(station_id: int, zip_code: str, pricing: str | None) -> dict:
@@ -54,7 +67,12 @@ ROWS = [
 
 
 def write_bronze(bronze_dir: Path, rows: list[dict], collected_at: datetime) -> str:
-    return EvChargingBronzeLoader(str(bronze_dir), collected_at).write(rows).location
+    """기존 Bronze -> Silver 계약을 독립적으로 검증하는 Parquet fixture."""
+    partition = layout.bronze_partition(str(bronze_dir), f"{collected_at:%Y-%m-%d}")
+    partition.mkdir(parents=True, exist_ok=True)
+    path = partition / f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    return str(path)
 
 
 def run_silver(bronze_dir: Path, silver_dir: Path, collected_date: str) -> dict:
@@ -65,6 +83,35 @@ def run_silver(bronze_dir: Path, silver_dir: Path, collected_date: str) -> dict:
             "silver_dir": str(silver_dir),
         }
     )
+
+
+def test_extractor가_API_응답_bytes를_그대로_반환한다(monkeypatch):
+    class Response:
+        content = RAW_RESPONSE
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(
+        raw_extractor.requests,
+        "get",
+        lambda *args, **kwargs: Response(),
+    )
+
+    result = raw_extractor.EvChargingStationExtractor("test-key").extract()
+
+    assert result == RAW_RESPONSE
+
+
+def test_raw_to_bronze가_전체_JSON_원문을_그대로_저장한다(tmp_path):
+    result = EvChargingBronzeLoader(str(tmp_path), COLLECTED_AT).write(RAW_RESPONSE)
+    path = Path(result.location)
+
+    assert path.suffix == ".json"
+    assert path.read_bytes() == RAW_RESPONSE
+    assert list(path.parent.iterdir()) == [path]
+    assert result.row_count == 1
 
 
 def test_bronze_to_silver(tmp_path):
