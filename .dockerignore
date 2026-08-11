@@ -1,0 +1,10 @@
+# 빌드 컨텍스트는 저장소 루트입니다 (Makefile 의 `docker build -f <런타임>/Dockerfile .`).
+# libs/pipeline_core 를 COPY 하려면 루트여야 하는데, 그러면 로컬 잔여물까지
+# 딸려가므로 여기서 잘라냅니다. 없으면 매 빌드마다 1.5GB 를 전송합니다.
+**/.venv/
+.git/
+data/
+graphify-out/
+**/__pycache__/
+**/.pytest_cache/
+*.png

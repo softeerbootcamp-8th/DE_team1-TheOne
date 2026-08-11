@@ -8,6 +8,9 @@ GIT_SHA  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "nogit")
 # ECR 로 푸시할 때만 끝에 슬래시를 붙여 지정하세요:
 #   make build REGISTRY=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/
 REGISTRY ?=
+# Lambda/EMR 기본 아키텍처. 고정하지 않으면 Apple Silicon 팀원은 arm64 이미지를 만들고,
+# 그건 x86_64 Lambda 에서 "exec format error" 로 죽습니다. Graviton 으로 갈 때만 바꾸세요.
+PLATFORM ?= linux/amd64
 
 # uv 설치 스크립트는 ~/.local/bin 에 바이너리를 놓습니다. 이 make 실행 안에서
 # 바로 이어서 `uv` 를 호출해도 찾을 수 있도록 PATH 에 미리 넣어둡니다.
@@ -65,9 +68,12 @@ tesseract:
 		echo "!! tesseract 를 직접 설치하세요 (5.x). docs/GETTING_STARTED.md 참고"; exit 1; \
 	fi
 
+# 컨텍스트는 저장소 루트입니다. lambda/spark 가 libs/pipeline_core 를 COPY 해야 하는데
+# 도커는 컨텍스트 밖을 참조할 수 없어서입니다. 전송량은 .dockerignore 가 잡습니다.
 .PHONY: build
 build:
 	@for r in $(RUNTIMES); do \
 		echo "==> building $(REGISTRY)tlc-$$r:$(GIT_SHA)"; \
-		docker build -t $(REGISTRY)tlc-$$r:$(GIT_SHA) $$r || exit 1; \
+		docker build --platform $(PLATFORM) -f $$r/Dockerfile \
+			-t $(REGISTRY)tlc-$$r:$(GIT_SHA) . || exit 1; \
 	done

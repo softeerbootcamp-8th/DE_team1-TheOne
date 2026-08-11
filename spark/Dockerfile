@@ -12,11 +12,20 @@ USER root
 #   이 이미지의 기본 python/pip 은 3.9 인데, Spark 는 3.11 을 씁니다
 #   (spark-env: PYSPARK_PYTHON=${PYSPARK_PYTHON:-/usr/bin/python3.11}).
 #   그냥 `pip install` 하면 Spark 가 안 보는 3.9 site-packages 에 깔립니다.
-COPY pyproject.toml uv.lock /tmp/build/
+# ★ 빌드 컨텍스트는 저장소 루트입니다 (`make build` 참고). COPY 경로에 spark/ 가
+#   붙는 이유이자, libs/pipeline_core 를 가져올 수 있는 이유입니다.
+#   /tmp/libs 위치는 uv.lock 의 `directory = "../libs/pipeline_core"` 와 맞춘 것입니다.
+COPY spark/pyproject.toml spark/uv.lock /tmp/build/
+COPY libs/pipeline_core /tmp/libs/pipeline_core
+
+# pipeline-core 만 따로 빼서 설치합니다. requirements.txt 에 남겨두면 pip 이
+# "디렉터리는 해시를 못 낸다"며 거부합니다 (해시 검증은 나머지 패키지에 그대로 유지).
 RUN /usr/bin/python3.11 -m pip install --no-cache-dir "uv==0.12.2" \
- && (cd /tmp/build && /usr/bin/python3.11 -m uv export --frozen --no-dev --no-emit-project -o requirements.txt) \
+ && (cd /tmp/build && /usr/bin/python3.11 -m uv export --frozen --no-dev --no-emit-project \
+      --no-emit-package pipeline-core -o requirements.txt) \
  && /usr/bin/python3.11 -m pip install --no-cache-dir -r /tmp/build/requirements.txt \
- && rm -rf /tmp/build
+ && /usr/bin/python3.11 -m pip install --no-cache-dir --no-deps /tmp/libs/pipeline_core \
+ && rm -rf /tmp/build /tmp/libs
 
 USER hadoop
 
