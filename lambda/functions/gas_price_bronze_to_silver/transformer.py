@@ -1,9 +1,12 @@
-"""Gas Price Bronze 레코드를 일별 Silver 레코드로 정제합니다."""
+"""Gas Price Bronze 원문을 월별 Silver 레코드로 정제합니다."""
 
 import math
+import re
 from datetime import date, datetime, timezone
 
 from pipeline_core.transformer import Transformer
+
+PRICE_RE = re.compile(r"^\$\s*(\d+(?:\.\d+)?)$")
 
 
 class GasPriceSilverTransformer(Transformer):
@@ -21,8 +24,13 @@ class GasPriceSilverTransformer(Transformer):
             try:
                 state = str(row.get("state") or "").strip().upper()
                 fuel_type = str(row.get("fuel_type") or "").strip().lower()
-                price = float(row["price_usd_per_gallon"])
-                price_date = date.fromisoformat(str(row["price_date"]))
+                price_match = PRICE_RE.fullmatch(str(row["price_raw"]).strip())
+                if not price_match:
+                    raise ValueError("price_raw 형식이 올바르지 않습니다")
+                price = float(price_match.group(1))
+                price_date = datetime.strptime(
+                    str(row["price_date_raw"]).strip(), "%m/%d/%y"
+                ).date()
                 collected_at = datetime.fromisoformat(
                     str(row["collected_at"]).replace("Z", "+00:00")
                 )
