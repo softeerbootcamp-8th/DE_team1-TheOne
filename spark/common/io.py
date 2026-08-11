@@ -35,6 +35,6 @@ class SparkParquetLoader(Loader):
     def write(self, data: DataFrame) -> WriteResult:
         writer = data.write.mode("overwrite")
         if self._partition_by:
-            writer = writer.partitionBy(*self._partition_by)
+            writer = writer.option("partitionOverwriteMode", "dynamic").partitionBy(*self._partition_by)
         writer.parquet(self._path)
         return WriteResult(location=self._path, row_count=data.count())
