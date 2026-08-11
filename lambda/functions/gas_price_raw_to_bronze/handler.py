@@ -33,6 +33,5 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "state": record["state"],
         "fuel_type": record["fuel_type"],
         "price_date": price_date.isoformat(),
-        # Silver 배치가 이 하루치 파티션만 처리합니다 (Bronze 파티션 키와 동일).
         "collected_date": f"{collected_at:%Y-%m-%d}",
     }

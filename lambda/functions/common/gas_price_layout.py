@@ -3,18 +3,17 @@
 Bronze 를 쓰는 쪽(`gas_price_raw_to_bronze`)과 읽는 쪽(`gas_price_bronze_to_silver`)이
 같은 규칙을 봐야 하므로 한 곳에 모읍니다. 규칙을 바꿀 때 여기만 고치면 양쪽이 함께 따라갑니다.
 
-    <base>/gas_price/collected_date=YYYY-MM-DD/gas_price.json     (Bronze)
-    <base>/gas_price/price_date=YYYY-MM-DD/gas_price.json          (Silver)
+    <base>/gas_price/collected_date=YYYY-MM-DD/gas_price.json       (Bronze)
+    <base>/gas_price/collected_month=YYYY-MM/gas_price.parquet      (Silver)
 """
 
-from datetime import date
 from pathlib import Path
 
 DATASET = "gas_price"
 BRONZE_PARTITION_KEY = "collected_date"
-SILVER_PARTITION_KEY = "price_date"
+SILVER_PARTITION_KEY = "collected_month"
 BRONZE_FILE_NAME = "gas_price.json"
-SILVER_FILE_NAME = "gas_price.json"
+SILVER_FILE_NAME = "gas_price.parquet"
 
 
 def dataset_path(base_dir: str) -> Path:
@@ -31,6 +30,6 @@ def bronze_file(base_dir: str, collected_date: str) -> Path:
     return bronze_partition(base_dir, collected_date) / BRONZE_FILE_NAME
 
 
-def silver_file(base_dir: str, price_date: date) -> Path:
-    partition = f"{SILVER_PARTITION_KEY}={price_date.isoformat()}"
+def silver_file(base_dir: str, collected_month: str) -> Path:
+    partition = f"{SILVER_PARTITION_KEY}={collected_month}"
     return dataset_path(base_dir) / partition / SILVER_FILE_NAME

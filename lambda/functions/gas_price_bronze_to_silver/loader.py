@@ -1,9 +1,10 @@
-"""정제된 Gas Price 데이터를 날짜별 Silver JSON으로 적재합니다."""
+"""정제된 Gas Price 데이터를 월별 Silver Parquet으로 적재합니다."""
 
-import json
 import logging
-from datetime import date, datetime, timezone
-from pathlib import Path
+from uuid import uuid4
+
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from pipeline_core.loader import Loader, WriteResult
 
@@ -11,91 +12,45 @@ from ..common import gas_price_layout as layout
 
 logger = logging.getLogger(__name__)
 
+SCHEMA = pa.schema(
+    [
+        ("state", pa.string()),
+        ("fuel_type", pa.string()),
+        ("price_usd_per_gallon", pa.float64()),
+        ("price_date", pa.date32()),
+        ("source_url", pa.string()),
+        ("collected_at", pa.timestamp("us", tz="UTC")),
+        ("bronze_path", pa.string()),
+    ]
+)
+
 
 class GasPriceSilverLoader(Loader):
-    """정제된 레코드를 가격 기준일별 JSON 파일로 저장합니다."""
+    """정제된 한 달치를 고정 경로의 Parquet 파일 하나로 저장합니다."""
 
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, collected_month: str):
         self._base_dir = base_dir
-        # 이번 실행이 처리한 price_date -> 파일 경로. 새로 쓴 것과 이미 최신이라
-        # 건너뛴 것을 모두 담습니다. 핸들러가 대상 날짜 반영 여부를 확인하는 데 씁니다.
-        self.handled: dict[str, str] = {}
+        self._collected_month = collected_month
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
             raise ValueError("적재할 Gas Price Silver 데이터가 없습니다.")
 
-        written_count = 0
-        for row in data:
-            price_date = row.get("price_date")
-            collected_at = row.get("collected_at")
-            if not isinstance(price_date, date) or isinstance(price_date, datetime):
-                raise ValueError("price_date가 date 형식이 아닙니다.")
-            if not isinstance(collected_at, datetime):
-                raise ValueError("collected_at이 datetime 형식이 아닙니다.")
-            if collected_at.tzinfo is None:
-                raise ValueError("collected_at에 시간대가 없습니다.")
+        path = layout.silver_file(self._base_dir, self._collected_month)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        table = pa.Table.from_pylist(data, schema=SCHEMA)
 
-            path = layout.silver_file(self._base_dir, price_date)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            self.handled[price_date.isoformat()] = str(path)
-            payload = {
-                **row,
-                "price_date": price_date.isoformat(),
-                "collected_at": collected_at.astimezone(timezone.utc).isoformat(),
-            }
-
-            if path.exists():
-                try:
-                    existing = json.loads(path.read_text(encoding="utf-8"))
-                    existing_collected_at = datetime.fromisoformat(
-                        str(existing["collected_at"]).replace("Z", "+00:00")
-                    )
-                    if existing_collected_at.tzinfo is None:
-                        raise ValueError("collected_at에 시간대가 없습니다")
-                except (
-                    OSError,
-                    json.JSONDecodeError,
-                    KeyError,
-                    TypeError,
-                    ValueError,
-                ) as exc:
-                    raise RuntimeError(
-                        f"기존 Silver JSON을 읽지 못했습니다: {path}"
-                    ) from exc
-
-                if collected_at < existing_collected_at:
-                    continue
-                if collected_at == existing_collected_at:
-                    if any(
-                        existing.get(key) != payload[key]
-                        for key in (
-                            "state",
-                            "fuel_type",
-                            "price_usd_per_gallon",
-                            "price_date",
-                            "source_url",
-                        )
-                    ):
-                        raise ValueError(
-                            "동일한 collected_at의 Silver 값이 충돌합니다: "
-                            f"{path}"
-                        )
-                    continue
-
-            temporary_path = path.with_suffix(".json.tmp")
-            temporary_path.write_text(
-                json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-                encoding="utf-8",
-            )
+        try:
+            pq.write_table(table, temporary_path, compression="snappy")
             temporary_path.replace(path)
-            written_count += 1
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
         logger.info(
-            "silver_load done processed=%d written=%d", len(data), written_count
+            "silver_load done path=%s collected_month=%s rows=%d",
+            path,
+            self._collected_month,
+            table.num_rows,
         )
-        # row_count 는 실제로 기록한 건수입니다. 이미 최신이라 건너뛴 건은 제외됩니다.
-        return WriteResult(
-            location=str(layout.dataset_path(self._base_dir)),
-            row_count=written_count,
-        )
+        return WriteResult(location=str(path), row_count=table.num_rows)
