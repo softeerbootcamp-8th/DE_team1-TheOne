@@ -12,7 +12,8 @@ RUN apt-get update \
 USER airflow
 
 # uv.lock을 그대로 설치해 로컬/CI/Docker의 패키지 버전을 일치시킵니다.
-COPY --chown=airflow:root pyproject.toml uv.lock /tmp/build/
+# ★ 빌드 컨텍스트는 저장소 루트입니다 (`make build` 참고) — COPY 경로에 airflow/ 가 붙습니다.
+COPY --chown=airflow:root airflow/pyproject.toml airflow/uv.lock /tmp/build/
 RUN pip install --no-cache-dir "uv==0.12.2" \
  && (cd /tmp/build && uv export --frozen --no-dev --no-emit-project -o requirements.txt) \
  && pip install --no-cache-dir -r /tmp/build/requirements.txt \
