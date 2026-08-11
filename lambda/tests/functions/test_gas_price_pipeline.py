@@ -1,13 +1,15 @@
-"""Gas Price Raw -> Bronze와 기존 Bronze -> Silver 동작을 검증합니다."""
+"""Gas Price 일별 Bronze와 월별 Silver 파이프라인을 검증합니다."""
 
 import json
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+import pyarrow.parquet as pq
 import pytest
 
 from functions.common import gas_price_layout as layout
 from functions.gas_price_bronze_to_silver.handler import lambda_handler as to_silver
+from functions.gas_price_bronze_to_silver.loader import SCHEMA
 from functions.gas_price_raw_to_bronze import extractor as raw_extractor
 from functions.gas_price_raw_to_bronze.extractor import PAGE_URL, parse
 from functions.gas_price_raw_to_bronze.handler import lambda_handler as to_bronze
@@ -20,43 +22,16 @@ RAW_ROW = {
     "price_date_raw": "8/8/26",
     "source_url": PAGE_URL,
 }
-SILVER_INPUT_ROW = {
-    "state": "NY",
-    "fuel_type": "regular",
-    "price_usd_per_gallon": 3.21,
-    "price_date": date(2026, 8, 8),
-    "source_url": PAGE_URL,
-}
 COLLECTED_AT = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
 
 
-def write_silver_input(bronze_dir: Path, row: dict, collected_at: datetime) -> str:
-    """Bronze -> Silver 전환 전의 기존 정규화 스키마 fixture를 씁니다."""
-    path = (
-        layout.bronze_partition(str(bronze_dir), f"{collected_at:%Y-%m-%d}")
-        / f"{row['price_date']:%Y-%m-%d}.json"
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(
-            {
-                **row,
-                "price_date": row["price_date"].isoformat(),
-                "collected_at": collected_at.isoformat(),
-            }
-        )
-        + "\n",
-        encoding="utf-8",
-    )
-    return str(path)
+def write_bronze(bronze_dir: Path, row: dict, collected_at: datetime) -> Path:
+    result = GasPriceBronzeLoader(str(bronze_dir), collected_at).write(row)
+    return Path(result.location)
 
 
-def silver_json(result: dict, price_date: date) -> Path:
-    return (
-        Path(result["locations"][0])
-        / f"price_date={price_date.isoformat()}"
-        / "gas_price.json"
-    )
+def read_silver(path: Path) -> list[dict]:
+    return pq.ParquetFile(path).read().to_pylist()
 
 
 def test_extract는_가격과_기준일을_문자열_원문으로_유지한다():
@@ -120,133 +95,105 @@ def test_raw_to_bronze_handler가_DAG에_필요한_응답을_반환한다(
     assert Path(result["locations"][0]).exists()
 
 
-def test_bronze_to_silver(tmp_path):
+def test_bronze_원문을_월별_silver_parquet으로_변환한다(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-
-    location = write_silver_input(bronze_dir, SILVER_INPUT_ROW, COLLECTED_AT)
-    # Bronze 를 쓰는 쪽과 Silver 가 읽는 쪽이 같은 데이터셋 경로를 봐야 합니다.
-    assert Path(location).parent.parent == layout.dataset_path(str(bronze_dir))
+    first_path = write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
+    second_at = COLLECTED_AT + timedelta(days=1)
+    second_row = {
+        **RAW_ROW,
+        "price_raw": "$3.250",
+        "price_date_raw": "8/9/26",
+    }
+    second_path = write_bronze(bronze_dir, second_row, second_at)
 
     result = to_silver(
-        event={
-            "collected_date": f"{COLLECTED_AT:%Y-%m-%d}",
+        {
+            "collected_month": "2026-08",
             "bronze_dir": str(bronze_dir),
             "silver_dir": str(silver_dir),
-            "expect_price_date": SILVER_INPUT_ROW["price_date"].isoformat(),
+        }
+    )
+    silver_path = layout.silver_file(str(silver_dir), "2026-08")
+    table = pq.ParquetFile(silver_path).read()
+
+    assert result == {
+        "row_count": 2,
+        "locations": [str(silver_path)],
+        "collected_month": "2026-08",
+    }
+    assert table.schema == SCHEMA
+    assert table.to_pylist() == [
+        {
+            "state": "NY",
+            "fuel_type": "regular",
+            "price_usd_per_gallon": 3.21,
+            "price_date": date(2026, 8, 8),
+            "source_url": PAGE_URL,
+            "collected_at": COLLECTED_AT,
+            "bronze_path": str(first_path),
+        },
+        {
+            "state": "NY",
+            "fuel_type": "regular",
+            "price_usd_per_gallon": 3.25,
+            "price_date": date(2026, 8, 9),
+            "source_url": PAGE_URL,
+            "collected_at": second_at,
+            "bronze_path": str(second_path),
+        },
+    ]
+
+
+def test_같은_가격일은_최신_수집본으로_월파일을_덮어쓴다(tmp_path):
+    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
+    write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
+    first = to_silver(
+        {
+            "collected_month": "2026-08",
+            "bronze_dir": str(bronze_dir),
+            "silver_dir": str(silver_dir),
         }
     )
 
-    assert result["row_count"] == 1
-    assert silver_json(result, SILVER_INPUT_ROW["price_date"]).exists()
-
-
-def test_과거_파티션이_깨져도_당일_처리는_성공한다(tmp_path):
-    """이 이슈의 핵심 — 과거의 오류가 오늘 실행을 막지 않아야 합니다."""
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-
-    past_collected_at = COLLECTED_AT - timedelta(days=6)
-    past_location = write_silver_input(
+    write_bronze(
         bronze_dir,
-        {**SILVER_INPUT_ROW, "price_date": date(2026, 8, 2)},
-        past_collected_at,
+        {**RAW_ROW, "price_raw": "$3.300"},
+        COLLECTED_AT + timedelta(days=1),
     )
-    Path(past_location).write_text("{망가진 JSON", encoding="utf-8")
-
-    write_silver_input(bronze_dir, SILVER_INPUT_ROW, COLLECTED_AT)
-
-    result = to_silver(
-        event={
-            "collected_date": f"{COLLECTED_AT:%Y-%m-%d}",
-            "bronze_dir": str(bronze_dir),
-            "silver_dir": str(silver_dir),
-            "expect_price_date": SILVER_INPUT_ROW["price_date"].isoformat(),
-        }
-    )
-
-    assert result["row_count"] == 1
-    assert result["processed_count"] == 1
-
-
-def test_당일_파일이_깨지면_실패한다(tmp_path):
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-
-    location = write_silver_input(bronze_dir, SILVER_INPUT_ROW, COLLECTED_AT)
-    Path(location).write_text("{망가진 JSON", encoding="utf-8")
-
-    with pytest.raises(RuntimeError):
-        to_silver(
-            event={
-                "collected_date": f"{COLLECTED_AT:%Y-%m-%d}",
-                "bronze_dir": str(bronze_dir),
-                "silver_dir": str(silver_dir),
-            }
-        )
-
-
-def test_백필은_그_달_전체를_다시_정제한다(tmp_path):
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-
-    write_silver_input(
-        bronze_dir,
-        {**SILVER_INPUT_ROW, "price_date": date(2026, 8, 2)},
-        COLLECTED_AT - timedelta(days=6),
-    )
-    write_silver_input(bronze_dir, SILVER_INPUT_ROW, COLLECTED_AT)
-
-    result = to_silver(
-        event={
-            "collected_month": f"{COLLECTED_AT:%Y-%m}",
+    second = to_silver(
+        {
+            "collected_month": "2026-08",
             "bronze_dir": str(bronze_dir),
             "silver_dir": str(silver_dir),
         }
     )
 
-    assert result["processed_count"] == 2
-    assert silver_json(result, date(2026, 8, 2)).exists()
-    assert silver_json(result, SILVER_INPUT_ROW["price_date"]).exists()
+    silver_path = Path(second["locations"][0])
+    rows = read_silver(silver_path)
+    assert first["locations"] == second["locations"]
+    assert len(list(silver_path.parent.glob("*.parquet"))) == 1
+    assert len(rows) == 1
+    assert rows[0]["price_usd_per_gallon"] == 3.3
+    assert rows[0]["collected_at"] == COLLECTED_AT + timedelta(days=1)
 
 
-def test_대상_날짜가_처리되지_않으면_실패한다(tmp_path):
-    """이전 실행이 남긴 Silver 파일이 있어도 존재만으로 통과하면 안 됩니다."""
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-
-    # 어제 수집분으로 Silver 파일을 미리 만들어 둡니다.
-    write_silver_input(
-        bronze_dir, SILVER_INPUT_ROW, COLLECTED_AT - timedelta(days=1)
-    )
-    to_silver(
-        event={
-            "collected_date": f"{COLLECTED_AT - timedelta(days=1):%Y-%m-%d}",
-            "bronze_dir": str(bronze_dir),
-            "silver_dir": str(silver_dir),
-        }
-    )
-
-    # 오늘 수집분은 다른 price_date 인데 어제 날짜를 기대하면 실패해야 합니다.
-    write_silver_input(
-        bronze_dir,
-        {**SILVER_INPUT_ROW, "price_date": date(2026, 8, 9)},
-        COLLECTED_AT,
-    )
-
-    with pytest.raises(RuntimeError, match="대상 날짜를 처리하지 않았습니다"):
+def test_collected_month_형식이_잘못되면_실패한다(tmp_path):
+    with pytest.raises(ValueError, match="YYYY-MM"):
         to_silver(
-            event={
-                "collected_date": f"{COLLECTED_AT:%Y-%m-%d}",
-                "bronze_dir": str(bronze_dir),
-                "silver_dir": str(silver_dir),
-                "expect_price_date": SILVER_INPUT_ROW["price_date"].isoformat(),
-            }
-        )
-
-
-def test_대상을_둘_다_지정하면_실패한다(tmp_path):
-    with pytest.raises(ValueError, match="정확히 하나만"):
-        to_silver(
-            event={
-                "collected_date": "2026-08-09",
-                "collected_month": "2026-08",
+            {
+                "collected_month": "2026-8",
                 "bronze_dir": str(tmp_path),
                 "silver_dir": str(tmp_path),
+            }
+        )
+
+
+def test_대상_월의_bronze가_없으면_실패한다(tmp_path):
+    with pytest.raises(FileNotFoundError, match="Bronze JSON 파일이 없습니다"):
+        to_silver(
+            {
+                "collected_month": "2026-08",
+                "bronze_dir": str(tmp_path / "bronze"),
+                "silver_dir": str(tmp_path / "silver"),
             }
         )
