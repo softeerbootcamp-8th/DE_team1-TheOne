@@ -8,7 +8,9 @@ import pytest
 
 from functions.common import gas_price_layout as layout
 from functions.gas_price_bronze_to_silver.handler import lambda_handler as to_silver
+from functions.gas_price_raw_to_bronze import extractor as raw_extractor
 from functions.gas_price_raw_to_bronze.extractor import PAGE_URL, parse
+from functions.gas_price_raw_to_bronze.handler import lambda_handler as to_bronze
 from functions.gas_price_raw_to_bronze.loader import GasPriceBronzeLoader
 
 RAW_ROW = {
@@ -84,6 +86,40 @@ def test_raw_to_bronze는_수집일별_json에_원문을_저장한다(tmp_path):
     assert result.row_count == 1
 
 
+def test_raw_to_bronze_handler가_DAG에_필요한_응답을_반환한다(
+    tmp_path, monkeypatch
+):
+    class Response:
+        text = """
+        <main id="maincontent">
+          <div class="map-badges">
+            <div class="average-price--blue">
+              <p class="numb">$3.210</p>
+              <span>Price as of 8/8/26</span>
+            </div>
+          </div>
+        </main>
+        """
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(
+        raw_extractor.requests,
+        "get",
+        lambda *args, **kwargs: Response(),
+    )
+
+    result = to_bronze({"base_dir": str(tmp_path)})
+
+    assert result["row_count"] == 1
+    assert result["state"] == "NY"
+    assert result["fuel_type"] == "regular"
+    assert result["price_date"] == "2026-08-08"
+    assert Path(result["locations"][0]).exists()
+
+
 def test_bronze_to_silver(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
 
@@ -101,7 +137,7 @@ def test_bronze_to_silver(tmp_path):
     )
 
     assert result["row_count"] == 1
-    assert silver_json(result, ROW["price_date"]).exists()
+    assert silver_json(result, SILVER_INPUT_ROW["price_date"]).exists()
 
 
 def test_과거_파티션이_깨져도_당일_처리는_성공한다(tmp_path):

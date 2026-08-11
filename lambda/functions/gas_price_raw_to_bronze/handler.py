@@ -1,7 +1,9 @@
 """AAA New York 휘발유 가격 Raw 수집과 Bronze 적재를 실행합니다."""
 
+import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 from pipeline_core.pipeline import Pipeline
 
@@ -21,14 +23,16 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         GasPriceExtractor(),
         GasPriceBronzeLoader(base_dir, collected_at),
     ).run()
+    location = result.write_result.location
+    record = json.loads(Path(location).read_text(encoding="utf-8"))
+    price_date = datetime.strptime(record["price_date_raw"], "%m/%d/%y").date()
 
     return {
         "row_count": result.write_result.row_count,
-        "locations": [result.write_result.location],
-        "state": STATE,
-        "fuel_type": FUEL_TYPE,
-        "price_date": layout.price_date_from_bronze_file(result.write_result.location),
+        "locations": [location],
+        "state": record["state"],
+        "fuel_type": record["fuel_type"],
+        "price_date": price_date.isoformat(),
         # Silver 배치가 이 하루치 파티션만 처리합니다 (Bronze 파티션 키와 동일).
         "collected_date": f"{collected_at:%Y-%m-%d}",
-        "path": result.write_result.location,
     }
