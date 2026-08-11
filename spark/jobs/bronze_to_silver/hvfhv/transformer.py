@@ -40,6 +40,16 @@ FINAL_SCHEMA = StructType([
     StructField("dropoff_service_zone", StringType(), True)
 ])
 
+REQUIRED_COLUMNS = [
+    "pickup_datetime",
+    "dropoff_datetime",
+    "PULocationID",
+    "DOLocationID",
+    "trip_miles",
+    "trip_time",
+    "driver_pay",
+]
+
 
 class HVFHVCleanTransformer(Transformer):
     """
@@ -117,8 +127,8 @@ class HVFHVCleanTransformer(Transformer):
             if field.name not in df_transformed.columns:
                 df_transformed = df_transformed.withColumn(field.name, lit(None).cast(field.dataType))
 
-        # 1.3 driver_pay 결측치(Null) 제거
-        df_transformed = df_transformed.dropna(subset=["driver_pay"])
+        # 1.3 필수 컬럼(REQUIRED_COLUMNS) 결측치(Null) 행 제거 (Validation)
+        df_transformed = df_transformed.dropna(subset=REQUIRED_COLUMNS)
 
         # 1.4 금액 관련 필드 결측치 처리 (Null -> 0.0)
         fare_cols = [
