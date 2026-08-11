@@ -34,6 +34,7 @@ airflow/**/*.pyc
 data/
 
 # AI
-.claude
+.claude/settings.json
+.claude/settings.local.json
 graphify-out
 CLAUDE.md
