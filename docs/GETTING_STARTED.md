@@ -15,13 +15,24 @@ git clone <repo-url> && cd DE_team1-Even1TrillionNoSee
 docker compose up -d
 ```
 
+8080 이 다른 프로젝트에 물려 있으면 `AIRFLOW_PORT` 로 바꿔서 띄웁니다.
+
+```bash
+AIRFLOW_PORT=8090 docker compose up -d
+```
+
 브라우저에서 <http://localhost:8080> 접속. 로그인 정보는:
 
 ```bash
 docker compose logs airflow | grep "Password for user"
 ```
 
-`hello_test` DAG 가 보이면 정상입니다. (확인 후 `airflow/dags/hello_test.py` 는 지우세요.)
+`airflow/dags/` 의 DAG 가 목록에 보이면 정상입니다. 하나도 안 보이면 import 에서 깨진 것이니
+아래로 확인하세요 (정상이면 `No data found`).
+
+```bash
+docker compose exec airflow airflow dags list-import-errors
+```
 
 ### 일상 명령어
 
