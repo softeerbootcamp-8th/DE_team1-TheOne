@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import Param, dag, task
+import pyarrow.parquet as pq
 
 logger = logging.getLogger(__name__)
 
@@ -97,7 +98,55 @@ def gas_price_bronze_to_silver_pipeline():
         logger.info("Bronze -> Silver 완료: %s", result)
         return result
 
-    bronze_to_silver_task()
+    @task(
+        task_id="validate_silver",
+        retries=1,
+        retry_delay=timedelta(minutes=10),
+        on_failure_callback=slack_failure_callback,
+    )
+    def validate_silver_task(result: dict) -> None:
+        if not isinstance(result, dict):
+            raise TypeError("Handler 결과가 dict가 아닙니다.")
+
+        row_count = result.get("row_count")
+        locations = result.get("locations")
+        collected_month = result.get("collected_month")
+        if isinstance(row_count, bool) or not isinstance(row_count, int):
+            raise ValueError("row_count가 정수가 아닙니다.")
+        if row_count <= 0:
+            raise ValueError("Silver row_count는 1 이상이어야 합니다.")
+        if not isinstance(locations, list) or len(locations) != 1:
+            raise ValueError("locations에는 파일 경로가 하나 있어야 합니다.")
+        if not isinstance(collected_month, str):
+            raise ValueError("collected_month가 문자열이 아닙니다.")
+        try:
+            target_month = datetime.strptime(collected_month, "%Y-%m")
+        except ValueError as exc:
+            raise ValueError("collected_month는 YYYY-MM 형식이어야 합니다.") from exc
+        if target_month.strftime("%Y-%m") != collected_month:
+            raise ValueError("collected_month는 YYYY-MM 형식이어야 합니다.")
+
+        layout = importlib.import_module("lambda.functions.common.gas_price_layout")
+        path = Path(locations[0])
+        expected = layout.silver_file(SILVER_DIR, collected_month)
+        if path.resolve() != expected.resolve():
+            raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
+        if not path.is_file():
+            raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
+
+        try:
+            table = pq.ParquetFile(path).read()
+        except Exception as exc:
+            raise RuntimeError(f"Silver Parquet을 읽지 못했습니다: {path}") from exc
+        if table.num_rows != row_count:
+            raise ValueError("Silver 파일 행 수와 Handler row_count가 다릅니다.")
+        loader = importlib.import_module(
+            "lambda.functions.gas_price_bronze_to_silver.loader"
+        )
+        if table.schema != loader.SCHEMA:
+            raise ValueError("Silver 스키마가 올바르지 않습니다.")
+
+    validate_silver_task(bronze_to_silver_task())
 
 
 gas_price_bronze_to_silver_dag = gas_price_bronze_to_silver_pipeline()
