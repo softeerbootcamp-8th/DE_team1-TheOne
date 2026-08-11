@@ -30,7 +30,11 @@ services:
 
   airflow:
     # airflow/Dockerfile을 빌드해서 씁니다(uv.lock으로 고정된 패키지 포함).
-    build: ./airflow
+    # 컨텍스트는 저장소 루트입니다 — Dockerfile 의 COPY 경로가 `airflow/...` 로
+    # 시작해서(`make build` 와 동일) 여기를 ./airflow 로 두면 빌드가 실패합니다.
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
     depends_on:
       postgres:
         condition: service_healthy
@@ -44,7 +48,8 @@ services:
       AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "10"
       PYTHONPATH: /opt/airflow/project-root
     ports:
-      - "8080:8080"
+      # 8080 이 다른 프로젝트에 물려 있으면 AIRFLOW_PORT=8090 docker compose up -d
+      - "${AIRFLOW_PORT:-8080}:8080"
     volumes:
       # DAG 를 로컬에서 고치면 컨테이너에 바로 반영됩니다 (재빌드 불필요)
       - ./airflow/dags:/opt/airflow/dags
