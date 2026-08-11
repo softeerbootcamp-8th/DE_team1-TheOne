@@ -10,19 +10,27 @@ dependencies = [
     "apache-airflow-providers-standard==1.15.0",
     "apache-airflow-providers-amazon==9.31.0",       # S3 / EMR / Lambda / RDS
     "apache-airflow-providers-postgres==6.8.0",      # 메타DB + 서빙 DB
+    # ★ 이 provider 는 pyspark 가 아니라 pyspark-client(Spark Connect 전용)를 끌어옵니다.
+    #   그래서 이 환경에서는 spark/common/session.py 의 .master("local[1]") 이
+    #   CONNECT_URL_NOT_SET 으로 실패합니다 — hvfhv DAG 의 bronze_to_silver 는
+    #   현재 Airflow 안에서 실행할 수 없습니다. 0811.md 3번(EMR 실행 방식)에서 해결합니다.
+    #   pyspark==3.5.6 을 여기 선언해도 pyspark-client 가 함께 남아 같은 `pyspark`
+    #   모듈을 두 배포판이 제공하므로, 선언만으로는 해결되지 않습니다.
     "apache-airflow-providers-apache-spark==6.2.0",
     "apache-airflow-providers-http==6.0.4",          # vPIC / EIA / NREL API
+    # ─── 아래는 DAG 가 lambda/functions 핸들러를 그대로 import 하기 때문에 필요합니다.
+    #     lambda/pyproject.toml 과 버전이 정확히 같아야 합니다. 어긋나면 로컬에서
+    #     통과한 코드가 Lambda 이미지에서 다르게 돕니다. 한쪽만 바꾸지 마세요.
+    #     상한은 lambda 쪽 베이스 이미지(AL2 = glibc 2.26)가 정합니다 — #125 참고.
     "requests==2.34.2",
     "beautifulsoup4==4.15.0",
     "lxml==6.1.1",
-    "pandas==2.1.4",
-    "numpy==1.26.4",    # pandas 2.1.4 는 numpy 2.x 와 호환되지 않음
-    "pyarrow==24.0.0",
-    # DAG 가 lambda/functions 핸들러를 그대로 import 하므로 그쪽 의존성도 필요합니다.
+    "pyarrow==20.0.0",
+    "boto3==1.43.65",   # S3 적재. provider 전이분에 맡기면 버전이 조용히 떠다닙니다.
     # 렌탈 차량 대장은 가격이 이미지 안에만 있어 OCR 로 읽습니다.
-    # tesseract 바이너리는 Dockerfile 에서 설치합니다 (lambda 쪽과 같은 버전 고정).
+    # tesseract 바이너리는 Dockerfile 에서 설치합니다.
     "pytesseract==0.3.13",
-    "pillow==12.3.0",
+    "pillow==11.3.0",
 ]
 
 [dependency-groups]
