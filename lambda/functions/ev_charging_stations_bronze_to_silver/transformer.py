@@ -5,6 +5,7 @@ Free와 시간당·세션당·정액 요금은 kWh 단위 평균에서 제외합
 
 import math
 import re
+from collections.abc import Iterable
 from datetime import datetime, timezone
 from statistics import fmean
 
@@ -77,27 +78,38 @@ def _price_per_kwh(value: object) -> tuple[float | None, str]:
 
 
 class EvChargingSilverTransformer(Transformer):
-    """NYC 충전소의 kWh 요금을 일별 평균 행 하나로 정제합니다."""
+    """각 일별 스냅샷의 NYC kWh 요금을 평균 행으로 정제합니다."""
 
-    def transform(self, data: list[dict]) -> dict:
-        rows = data
+    def transform(self, data: Iterable[dict]) -> list[dict]:
+        rows = [self._transform_snapshot(snapshot) for snapshot in data]
         if not rows:
             raise ValueError("변환할 EV Charging Bronze 데이터가 없습니다.")
+        return sorted(rows, key=lambda row: row["price_date"])
+
+    @staticmethod
+    def _transform_snapshot(snapshot: dict) -> dict:
+        bronze_path = str(snapshot.get("bronze_path") or "<unknown>")
+        try:
+            stations = snapshot["fuel_stations"]
+            collected_at = _as_utc(snapshot["collected_at"])
+            source_url = str(snapshot.get("source_url") or "").strip()
+            if not isinstance(stations, list) or not stations:
+                raise ValueError("충전소 데이터가 비어 있습니다")
+            if not source_url:
+                raise ValueError("source_url이 비어 있습니다")
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"{bronze_path}: {exc}") from exc
 
         errors: list[str] = []
         station_ids: set[int] = set()
         prices: list[float] = []
-        collected_times: set[datetime] = set()
-        source_urls: set[str] = set()
-        bronze_paths: set[str] = set()
         nyc_station_count = 0
         free_station_count = 0
         missing_price_count = 0
         unsupported_price_count = 0
 
-        for row in rows:
-            bronze_path = str(row.get("bronze_path") or "<unknown>")
-            station_label = row.get("station_id", "<unknown>")
+        for row in stations:
+            station_label = row.get("id", "<unknown>")
             try:
                 state = str(row.get("state") or "").strip().upper()
                 fuel_type = str(row.get("fuel_type_code") or "").strip().upper()
@@ -108,22 +120,14 @@ class EvChargingSilverTransformer(Transformer):
                 if borough is None:
                     continue
 
-                station_id = int(row["station_id"])
+                station_id = int(row["id"])
                 if station_id <= 0:
                     raise ValueError("station_id는 양수여야 합니다")
                 if station_id in station_ids:
                     raise ValueError("station_id가 중복됩니다")
 
-                collected_at = _as_utc(row["collected_at"])
-                source_url = str(row.get("source_url") or "").strip()
-                if not source_url:
-                    raise ValueError("source_url이 비어 있습니다")
-
                 price, status = _price_per_kwh(row.get("ev_pricing"))
                 station_ids.add(station_id)
-                collected_times.add(collected_at)
-                source_urls.add(source_url)
-                bronze_paths.add(bronze_path)
                 nyc_station_count += 1
 
                 if status == "missing":
@@ -137,7 +141,7 @@ class EvChargingSilverTransformer(Transformer):
                         raise ValueError("표준화된 요금이 비어 있습니다")
                     prices.append(price)
             except (KeyError, TypeError, ValueError) as exc:
-                errors.append(f"{bronze_path} station_id={station_label}: {exc}")
+                errors.append(f"{bronze_path} id={station_label}: {exc}")
 
         if errors:
             raise ValueError("EV Charging Silver 변환 실패:\n- " + "\n- ".join(errors))
@@ -145,16 +149,6 @@ class EvChargingSilverTransformer(Transformer):
             raise ValueError("뉴욕시 충전소 데이터가 없습니다.")
         if not prices:
             raise ValueError("표준화 가능한 kWh 단위 요금이 없습니다.")
-        if len(collected_times) != 1:
-            raise ValueError(
-                "하나의 Bronze 스냅샷에 collected_at이 섞여 있습니다."
-            )
-        if len(source_urls) != 1 or len(bronze_paths) != 1:
-            raise ValueError(
-                "하나의 Bronze 스냅샷이 아닌 데이터가 섞여 있습니다."
-            )
-
-        collected_at = next(iter(collected_times))
         return {
             "city": "New York City",
             "state": "NY",
@@ -168,7 +162,7 @@ class EvChargingSilverTransformer(Transformer):
             "free_station_count": free_station_count,
             "missing_price_count": missing_price_count,
             "unsupported_price_count": unsupported_price_count,
-            "source_url": next(iter(source_urls)),
+            "source_url": source_url,
             "collected_at": collected_at,
-            "bronze_path": next(iter(bronze_paths)),
+            "bronze_path": bronze_path,
         }

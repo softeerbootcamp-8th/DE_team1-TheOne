@@ -31,6 +31,5 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "locations": [result.write_result.location],
         "state": STATE,
         "fuel_type_code": FUEL_TYPE_CODE,
-        # Silver 배치가 이 하루치 파티션을 읽습니다 (Bronze 파티션 키와 동일).
         "collected_date": f"{collected_at:%Y-%m-%d}",
     }
