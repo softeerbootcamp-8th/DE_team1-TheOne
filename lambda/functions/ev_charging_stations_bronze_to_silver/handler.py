@@ -30,10 +30,10 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
 
     row = loader.written_row or {}
     return {
-        "collected_date": collected_date,
         # 0이면 기존 Silver JSON이 더 최신이라 다시 쓰지 않았다는 뜻입니다.
-        "written_count": result.write_result.row_count,
+        "row_count": result.write_result.row_count,
+        "locations": [result.write_result.location],
+        "collected_date": collected_date,
         "average_price_usd_per_kwh": row.get("average_price_usd_per_kwh"),
         **{field: row.get(field) for field in COUNT_FIELDS},
-        "path": result.write_result.location,
     }

@@ -30,10 +30,10 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     ).run()
 
     return {
-        "collected_date": collected_date,
         "row_count": result.write_result.row_count,
-        "source_count": len(loader.paths),
-        "paths": loader.paths,
+        # 출처(source)별로 파일 하나씩 씁니다 — 출처 수는 len(locations) 입니다.
+        "locations": loader.paths,
+        "collected_date": collected_date,
     }
 
 

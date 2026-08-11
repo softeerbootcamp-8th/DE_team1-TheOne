@@ -29,9 +29,10 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     ).run()
 
     return {
+        "row_count": result.write_result.row_count,
+        "locations": [result.write_result.location],
         "city_slug": city_slug,
         "collected_date": f"{collected_at:%Y-%m-%d}",
-        "row_count": result.write_result.row_count,
+        # Bronze 산출물이 아니라 함께 남긴 Raw 스냅샷이라 locations 에 넣지 않습니다.
         "raw_path": str(raw_file(raw_dir, city_slug, collected_at)),
-        "path": result.write_result.location,
     }

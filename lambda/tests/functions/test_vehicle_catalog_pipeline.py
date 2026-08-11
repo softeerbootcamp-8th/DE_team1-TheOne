@@ -64,9 +64,9 @@ def test_bronze_to_silver(tmp_path):
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
     assert result["row_count"] == 2
-    assert result["vendor_count"] == 1
+    assert len(result["locations"]) == 1
 
-    silver_path = Path(result["paths"][0])
+    silver_path = Path(result["locations"][0])
     assert silver_path == layout.silver_file(
         str(silver_dir), COLLECTED_AT.date(), "fasttrack"
     )
@@ -85,7 +85,7 @@ def test_업체가_여럿이면_파티션도_나뉜다(tmp_path):
 
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    assert result["vendor_count"] == 2
+    assert len(result["locations"]) == 2
     assert result["row_count"] == 4
 
 
@@ -97,8 +97,8 @@ def test_같은_수집일을_다시_변환하면_덮어쓴다(tmp_path):
     first = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
     second = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    assert first["paths"] == second["paths"]
-    partition = Path(first["paths"][0]).parent
+    assert first["locations"] == second["locations"]
+    partition = Path(first["locations"][0]).parent
     assert len(list(partition.glob("*.parquet"))) == 1
 
 

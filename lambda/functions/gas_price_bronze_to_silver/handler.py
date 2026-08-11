@@ -49,8 +49,9 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         )
 
     return {
+        "row_count": result.write_result.row_count,
+        "locations": [result.write_result.location],
         "target": collected_date or collected_month,
+        # 이번 실행이 처리한 price_date 개수 (row_count 와 다릅니다).
         "processed_count": len(loader.handled),
-        "written_count": result.write_result.row_count,
-        "location": result.write_result.location,
     }

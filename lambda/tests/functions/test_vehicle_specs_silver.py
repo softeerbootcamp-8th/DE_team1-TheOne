@@ -49,9 +49,9 @@ def test_문자열_원본을_숫자와_조인_키로_정제한다(tmp_path):
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
     assert result["row_count"] == 2
-    assert result["source_count"] == 1
+    assert len(result["locations"]) == 1
 
-    silver_path = Path(result["paths"][0])
+    silver_path = Path(result["locations"][0])
     assert silver_path == layout.silver_file(
         str(silver_dir), COLLECTED_AT.date(), SOURCE
     )
@@ -86,7 +86,7 @@ def test_대장과_붙일_조인_키가_만들어진다(tmp_path):
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
     specs = {
         row["source_id"]: row
-        for row in pq.ParquetFile(result["paths"][0]).read().to_pylist()
+        for row in pq.ParquetFile(result["locations"][0]).read().to_pylist()
     }["1"]
 
     catalog = VehicleCatalogSilverTransformer().transform(
@@ -143,8 +143,8 @@ def test_같은_수집일을_다시_변환하면_덮어쓴다(tmp_path):
     first = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
     second = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    assert first["paths"] == second["paths"]
-    partition = Path(first["paths"][0]).parent
+    assert first["locations"] == second["locations"]
+    partition = Path(first["locations"][0]).parent
     assert len(list(partition.glob("*.parquet"))) == 1
 
 

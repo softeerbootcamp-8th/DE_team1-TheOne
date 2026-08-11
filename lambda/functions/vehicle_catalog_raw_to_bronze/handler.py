@@ -27,10 +27,10 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     ).run()
 
     return {
+        "row_count": result.write_result.row_count,
+        "locations": [result.write_result.location],
         # Silver 배치가 이 하루치 파티션을 읽습니다 (Bronze 파티션 키와 동일).
         "collected_date": f"{collected_at:%Y-%m-%d}",
-        "row_count": result.write_result.row_count,
-        "path": result.write_result.location,
     }
 
 
