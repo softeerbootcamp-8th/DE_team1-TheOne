@@ -13,14 +13,17 @@ REGISTRY ?=
 PLATFORM ?= linux/amd64
 # 레이어 캐시. 기본값(빈 값)은 캐시를 쓰지 않습니다 — 로컬은 도커가 알아서 캐시합니다.
 # CI 는 매번 새 러너라 캐시가 없어서 `make build DOCKER_CACHE=gha` 로 켭니다.
+# type=gha 는 buildx 의 docker-container 드라이버에서만 되고, 그 드라이버는 결과를
+# 빌더 안에 둡니다 (워크플로의 setup-buildx-action install:true 가 그걸 깔아 줍니다).
 #   scope 를 런타임별로 나누는 이유: 한 scope 를 세 이미지가 공유하면 서로 덮어씁니다.
-#   --load: buildx 의 docker-container 드라이버는 결과를 빌더 안에만 두기 때문에,
-#           이게 없으면 뒤이어 도는 `docker run tlc-airflow:<sha>` 가 이미지를 못 찾습니다.
-#   type=gha 는 buildx docker-container 드라이버에서만 됩니다
-#   (워크플로의 docker/setup-buildx-action install:true 가 그걸 깔아 줍니다).
+#   --load 는 빌더 → 도커 스토어로 이미지를 한 벌 더 복사합니다. 러너 디스크가
+#   14GB 뿐이라 셋 다 내리면 spark(EMR 베이스, 수 GB)에서 넘칩니다. 그래서 뒤이어
+#   `docker run` 하는 airflow 만 내리고, 나머지는 빌드만 확인하고 버립니다(cacheonly).
 DOCKER_CACHE ?=
+LOADED_RUNTIME ?= airflow
 ifeq ($(DOCKER_CACHE),gha)
-CACHE_FLAGS = --load --cache-from type=gha,scope=$$r --cache-to type=gha,mode=max,scope=$$r
+CACHE_FLAGS = --cache-from type=gha,scope=$$r --cache-to type=gha,mode=max,scope=$$r \
+	$$([ "$$r" = "$(LOADED_RUNTIME)" ] && echo --load || echo --output=type=cacheonly)
 endif
 
 # uv 설치 스크립트는 ~/.local/bin 에 바이너리를 놓습니다. 이 make 실행 안에서
