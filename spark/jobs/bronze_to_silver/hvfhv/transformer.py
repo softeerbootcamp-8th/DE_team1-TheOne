@@ -2,7 +2,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import DataFrame, SparkSession, Column
 from pyspark.sql.functions import col, lit, when, date_format
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, DoubleType, LongType, TimestampType
@@ -21,6 +21,7 @@ FINAL_SCHEMA = StructType([
     StructField("trip_time", LongType(), True),
     StructField("base_passenger_fare", DoubleType(), True),
     StructField("tolls", DoubleType(), True),
+    StructField("bcf", DoubleType(), True),
     StructField("sales_tax", DoubleType(), True),
     StructField("congestion_surcharge", DoubleType(), True),
     StructField("airport_fee", DoubleType(), True),
@@ -111,28 +112,23 @@ class HVFHVCleanTransformer(Transformer):
                 if col_name not in df_transformed.columns:
                     df_transformed = df_transformed.withColumn(col_name, lit(None).cast("string"))
 
-        # 1.2 불필요 원본 컬럼 삭제
-        cols_to_drop = [
-            "hvfhs_license_num", "dispatching_base_num", "originating_base_num",
-            "request_datetime", "on_scene_datetime", "bcf",
-            "shared_request_flag", "shared_match_flag", "access_a_ride_flag",
-            "wav_request_flag", "wav_match_flag"
-        ]
-        df_transformed = df_transformed.drop(*[c for c in cols_to_drop if c in df_transformed.columns])
-
-        # 1.3 스키마 필수 필드 안전 패딩 및 결측치 처리 (Null -> 0.0)
+        # 1.2 FINAL_SCHEMA 필수 필드 안전 패딩 (원천 데이터 누락 필드는 Null로 채움)
         for field in FINAL_SCHEMA:
             if field.name not in df_transformed.columns:
                 df_transformed = df_transformed.withColumn(field.name, lit(None).cast(field.dataType))
 
+        # 1.3 driver_pay 결측치(Null) 제거
+        df_transformed = df_transformed.dropna(subset=["driver_pay"])
+
+        # 1.4 금액 관련 필드 결측치 처리 (Null -> 0.0)
         fare_cols = [
-            "base_passenger_fare", "tolls", "sales_tax",
-            "congestion_surcharge", "airport_fee", "tips", "driver_pay"
+            "base_passenger_fare", "tolls", "bcf", "sales_tax",
+            "congestion_surcharge", "airport_fee", "tips"
         ]
         df_transformed = df_transformed.fillna(0.0, subset=fare_cols)
 
-        # 1.4 스키마 순서 및 타입 강제
-        select_exprs = [col(field.name).cast(field.dataType).alias(field.name) for field in FINAL_SCHEMA]
+        # 1.5 FINAL_SCHEMA에 명시된 컬럼만 화이트리스트 선택 (미정의 신규 컬럼 차단)
+        select_exprs: list[Column] = [col(field.name).cast(field.dataType).alias(field.name) for field in FINAL_SCHEMA]
         df_transformed = df_transformed.select(*select_exprs)
 
         # 2. 클렌징 룰 (정상 조건)
