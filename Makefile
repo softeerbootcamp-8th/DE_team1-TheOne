@@ -21,6 +21,7 @@ help:
 	@echo "lock         - 전 런타임 uv.lock 재생성"
 	@echo "check        - 락파일 드리프트 검증"
 	@echo "sync         - 전 런타임 로컬 환경 동기화 (팀원은 이거만 하면 됨)"
+	@echo "test         - 전 프로젝트 pytest (활성화된 venv 와 무관하게 각자 것으로 실행)"
 	@echo "uv-bin       - uv 설치 확인/설치 (sync 가 먼저 호출)"
 	@echo "tesseract    - OCR 바이너리 확인/설치 (sync 가 먼저 호출)"
 	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: <runtime>:<git-sha>)"
@@ -35,6 +36,19 @@ lock:
 check:
 	@for r in $(RUNTIMES); do \
 		echo "==> checking $$r"; (cd $$r && uv lock --check) || exit 1; \
+	done
+
+# 프로젝트마다 venv 가 따로라, 어느 걸 활성화해뒀는지에 따라 pytest 결과가 달라집니다.
+# 예를 들어 airflow venv 를 켠 채 lambda 테스트를 돌리면 pipeline_core 가 없어
+# collection 단계에서 전부 죽습니다 (airflow 는 pipeline_core 를 선언하지 않음).
+# 그래서 VIRTUAL_ENV 를 지우고 각 프로젝트의 uv 환경으로 실행합니다.
+# tests 폴더가 없는 런타임은 건너뜁니다 — 생기면 자동으로 포함됩니다.
+.PHONY: test
+test:
+	@for p in $(RUNTIMES) libs/pipeline_core; do \
+		if [ ! -d "$$p/tests" ]; then echo "==> skip $$p (tests 없음)"; continue; fi; \
+		echo "==> testing $$p"; \
+		(cd $$p && env -u VIRTUAL_ENV uv run --frozen pytest -q) || exit 1; \
 	done
 
 .PHONY: sync
