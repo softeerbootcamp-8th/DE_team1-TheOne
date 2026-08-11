@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from pyspark.sql import DataFrame, SparkSession, Column
-from pyspark.sql.functions import col, lit, when, date_format
+from pyspark.sql.functions import col, count, lit, when, date_format
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, DoubleType, LongType, TimestampType
 )
@@ -60,7 +60,7 @@ class HVFHVCleanTransformer(Transformer):
         self,
         df_zone: Optional[DataFrame] = None,
         zone_lookup_path: Optional[str] = None,
-        error_threshold: float = 0.2,
+        error_threshold: float = 0.05,
     ):
         self._df_zone = df_zone
         self._zone_lookup_path = zone_lookup_path
@@ -68,11 +68,51 @@ class HVFHVCleanTransformer(Transformer):
 
     def transform(self, df: DataFrame) -> DataFrame:
         logger.info("데이터 정제 및 변환 시작...")
-        total_count = df.count()
-        if total_count == 0:
+        if df.isEmpty():
             return df
 
-        # df_zone 지연 로딩
+        # =========================================================================
+        # 1. 조기 검증 및 필터링
+        # =========================================================================
+        missing_required = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+        if missing_required:
+            error_msg = f"원천 데이터에 필수 컬럼이 누락되었습니다: {missing_required}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+
+        valid_condition = (
+            col("pickup_datetime").isNotNull() &
+            col("dropoff_datetime").isNotNull() &
+            col("PULocationID").isNotNull() &
+            col("trip_miles").isNotNull() & (col("trip_miles") > 0) & (col("trip_miles") <= 1000) &
+            col("trip_time").isNotNull() & (col("trip_time") > 0) & (col("trip_time") <= 86400) &
+            col("driver_pay").isNotNull() & (col("driver_pay") >= 0) & (col("driver_pay") <= 5000)
+        )
+
+        df_valid = df.filter(valid_condition)
+
+        # total_count 및 valid_count 동시 집계 
+        stats = df.select(
+            count(lit(1)).alias("total_count"),
+            count(when(valid_condition, 1)).alias("valid_count")
+        ).first()
+
+        total_count = stats["total_count"] if stats else 0
+        valid_count = stats["valid_count"] if stats else 0
+        invalid_count = total_count - valid_count
+
+        logger.info(f"정상(Valid) 데이터: {valid_count:,} 건 / 불합격(Invalid): {invalid_count:,} 건")
+
+        if total_count > 0:
+            invalid_ratio = invalid_count / total_count
+            if invalid_ratio >= self._error_threshold:
+                error_msg = f"불합격 비율이 {invalid_ratio:.2%}로 임계치({self._error_threshold:.2%})를 초과했습니다."
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
+        # =========================================================================
+        # 2. 파생 컬럼 생성 및 조인
+        # =========================================================================
         df_zone = self._df_zone
         if df_zone is None and self._zone_lookup_path:
             spark = df.sparkSession
@@ -81,8 +121,8 @@ class HVFHVCleanTransformer(Transformer):
                 zone_path = Path(__file__).resolve().parents[4] / zone_path
             df_zone = spark.read.option("header", "true").csv(str(zone_path))
 
-        # 1. 파생 컬럼 추가
-        df_transformed = df.withColumn(
+        # 2.1 파생 컬럼 추가
+        df_transformed = df_valid.withColumn(
             "platform_name",
             when(col("hvfhs_license_num") == "HV0002", "Juno")
             .when(col("hvfhs_license_num") == "HV0003", "Uber")
@@ -94,7 +134,7 @@ class HVFHVCleanTransformer(Transformer):
          .withColumn("taxi_model_id", lit(None).cast("string")) \
          .withColumn("year_month", date_format(col("pickup_datetime"), "yyyy-MM"))
 
-        # 1.1 Taxi Zone Join (Pickup & Dropoff)
+        # 2.2 Taxi Zone Join (Pickup & Dropoff)
         if df_zone is not None:
             df_zone_pu = df_zone.select(
                 col("LocationID").alias("PU_LocationID_join"),
@@ -122,45 +162,21 @@ class HVFHVCleanTransformer(Transformer):
                 if col_name not in df_transformed.columns:
                     df_transformed = df_transformed.withColumn(col_name, lit(None).cast("string"))
 
-        # 1.2 FINAL_SCHEMA 필수 필드 안전 패딩 (원천 데이터 누락 필드는 Null로 채움)
+        # =========================================================================
+        # 3. 최종 스키마 맞춤 및 패딩
+        # =========================================================================
+        # 3.1 FINAL_SCHEMA 필수 필드 안전 패딩
         for field in FINAL_SCHEMA:
             if field.name not in df_transformed.columns:
                 df_transformed = df_transformed.withColumn(field.name, lit(None).cast(field.dataType))
 
-        # 1.3 필수 컬럼(REQUIRED_COLUMNS) 결측치(Null) 행 제거 (Validation)
-        df_transformed = df_transformed.dropna(subset=REQUIRED_COLUMNS)
-
-        # 1.4 금액 관련 필드 결측치 처리 (Null -> 0.0)
+        # 3.2 금액 관련 선택 필드 결측치 처리 (Null -> 0.0)
         fare_cols = [
             "base_passenger_fare", "tolls", "bcf", "sales_tax",
             "congestion_surcharge", "airport_fee", "tips"
         ]
         df_transformed = df_transformed.fillna(0.0, subset=fare_cols)
 
-        # 1.5 FINAL_SCHEMA에 명시된 컬럼만 화이트리스트 선택 (미정의 신규 컬럼 차단)
+        # 3.3 FINAL_SCHEMA에 명시된 컬럼 화이트리스트 선택 및 캐스팅
         select_exprs: list[Column] = [col(field.name).cast(field.dataType).alias(field.name) for field in FINAL_SCHEMA]
-        df_transformed = df_transformed.select(*select_exprs)
-
-        # 2. 클렌징 룰 (정상 조건)
-        valid_condition = (
-            col("trip_miles").isNotNull() & (col("trip_miles") > 0) & (col("trip_miles") <= 1000) &
-            col("trip_time").isNotNull() & (col("trip_time") > 0) & (col("trip_time") <= 86400) &
-            col("driver_pay").isNotNull() & (col("driver_pay") >= 0) & (col("driver_pay") <= 5000)
-        )
-
-        df_valid = df_transformed.filter(valid_condition)
-        df_invalid = df_transformed.filter(~valid_condition)
-
-        valid_count = df_valid.count()
-        invalid_count = df_invalid.count()
-
-        logger.info(f"정상(Valid) 데이터: {valid_count:,} 건")
-        logger.info(f"불합격(Invalid) 데이터: {invalid_count:,} 건")
-
-        invalid_ratio = invalid_count / total_count
-        if invalid_ratio >= self._error_threshold:
-            error_msg = f"불합격 비율이 {invalid_ratio:.1%}로 임계치({self._error_threshold:.1%})를 초과했습니다."
-            logger.error(error_msg)
-            raise ValueError(error_msg)
-
-        return df_valid
+        return df_transformed.select(*select_exprs)
