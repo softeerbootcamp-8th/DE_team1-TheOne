@@ -10,6 +10,9 @@ from pathlib import Path
 import pyarrow as pa
 from pipeline_core.loader import Loader, WriteResult
 
+from ..common.schema_validator import validate_parquet_schema
+from ..common.slack_notifier import SlackNotifier
+
 logger = logging.getLogger(__name__)
 
 # 데이터셋 고유 명칭
@@ -62,6 +65,21 @@ class HvfhvBronzeLoader(Loader):
         )
 
     def write(self, data: bytes) -> WriteResult:
+        # 스키마 검증 및 Drift 감지 시 Slack 알림 발송 (적재 실패를 유발하지 않음)
+        try:
+            diffs:list[str] = validate_parquet_schema(data, SCHEMA)
+            if diffs:
+                logger.warning(
+                    "HVFHV 스키마 변동(Schema Drift) 감지 (%d건): %s",
+                    len(diffs),
+                    diffs,
+                )
+                SlackNotifier().send_schema_drift_alert(
+                    DATASET, self._year_month, diffs
+                )
+        except Exception as exc:
+            logger.error("스키마 검사 중 오류 발생 (Raw 데이터 적재는 진행): %s", exc)
+
         partition = self.partition_path()
         partition.mkdir(parents=True, exist_ok=True)
         path = partition / f"{self._collected_at:%Y%m%dT%H%M%SZ}.parquet"
@@ -73,3 +91,4 @@ class HvfhvBronzeLoader(Loader):
         # 원본 파일을 그대로 쓰므로 행 수를 세려면 parquet 을 열어야 합니다.
         # Bronze 는 원본 보존이 목적이라 파일 1개를 1로 셉니다.
         return WriteResult(location=str(path), row_count=1)
+
