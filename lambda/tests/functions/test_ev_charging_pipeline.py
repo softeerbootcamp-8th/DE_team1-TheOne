@@ -78,13 +78,13 @@ def test_bronze_to_silver(tmp_path):
 
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    assert result["written_count"] == 1
+    assert result["row_count"] == 1
     # NYC 의 kWh 요금만 평균에 들어갑니다 (Free 제외, NYC 밖 제외).
     assert result["average_price_usd_per_kwh"] == pytest.approx(0.40)
     assert result["nyc_station_count"] == 3
     assert result["normalized_price_count"] == 2
     assert result["free_station_count"] == 1
-    assert Path(result["path"]).exists()
+    assert Path(result["locations"][0]).exists()
 
 
 def test_같은_스냅샷을_다시_처리해도_덮어쓰지_않는다(tmp_path):
@@ -94,9 +94,9 @@ def test_같은_스냅샷을_다시_처리해도_덮어쓰지_않는다(tmp_path
     first = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
     second = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    assert first["written_count"] == 1
-    assert second["written_count"] == 0  # 동일 collected_at 이라 그대로 유지
-    assert first["path"] == second["path"]
+    assert first["row_count"] == 1
+    assert second["row_count"] == 0  # 동일 collected_at 이라 그대로 유지
+    assert first["locations"][0] == second["locations"][0]
 
 
 def test_요청한_수집일과_정제된_날짜가_다르면_실패한다(tmp_path):

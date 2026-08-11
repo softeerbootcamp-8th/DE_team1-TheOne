@@ -28,9 +28,9 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     ).run()
 
     return {
-        "collected_date": f"{collected_at:%Y-%m-%d}",
         "row_count": result.write_result.row_count,
-        "path": result.write_result.location,
+        "locations": [result.write_result.location],
+        "collected_date": f"{collected_at:%Y-%m-%d}",
     }
 
 

@@ -25,7 +25,7 @@ def write_bronze(bronze_dir: Path, row: dict, collected_at: datetime) -> str:
 
 def silver_json(result: dict, price_date: date) -> Path:
     return (
-        Path(result["location"])
+        Path(result["locations"][0])
         / f"price_date={price_date.isoformat()}"
         / "gas_price.json"
     )
@@ -55,7 +55,7 @@ def test_bronze_to_silver(tmp_path):
         }
     )
 
-    assert result["written_count"] == 1
+    assert result["row_count"] == 1
     assert silver_json(result, ROW["price_date"]).exists()
 
 
@@ -82,7 +82,7 @@ def test_과거_파티션이_깨져도_당일_처리는_성공한다(tmp_path):
         }
     )
 
-    assert result["written_count"] == 1
+    assert result["row_count"] == 1
     assert result["processed_count"] == 1
 
 

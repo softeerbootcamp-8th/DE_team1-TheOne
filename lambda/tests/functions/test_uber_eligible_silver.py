@@ -60,9 +60,9 @@ def test_상품별로_한_행씩_펼친다(tmp_path):
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
     assert result["row_count"] == 3
-    assert result["city_count"] == 1
+    assert len(result["locations"]) == 1
 
-    silver_path = Path(result["paths"][0])
+    silver_path = Path(result["locations"][0])
     assert silver_path == layout.silver_file(
         str(silver_dir), COLLECTED_AT.date(), CITY
     )
@@ -88,7 +88,7 @@ def test_같은_상품이_여러_연식에_나오면_낮은_쪽을_남긴다(tmp
 
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    written = pq.ParquetFile(result["paths"][0]).read().to_pylist()
+    written = pq.ParquetFile(result["locations"][0]).read().to_pylist()
     assert len(written) == 1
     assert written[0]["min_year"] == 2015
 
@@ -104,7 +104,7 @@ def test_조인_키가_차량_대장과_같은_규칙으로_만들어진다(tmp_
         bronze_dir, [vehicle("Mitsubishi", "Outlander  Sport", 2018, ["UberX"])]
     )
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
-    uber_row = pq.ParquetFile(result["paths"][0]).read().to_pylist()[0]
+    uber_row = pq.ParquetFile(result["locations"][0]).read().to_pylist()[0]
 
     catalog_row = VehicleCatalogSilverTransformer().transform(
         [
@@ -135,7 +135,7 @@ def test_도시가_여럿이면_파티션도_나뉜다(tmp_path):
 
     result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    assert result["city_count"] == 2
+    assert len(result["locations"]) == 2
     assert result["row_count"] == 2
 
 
@@ -146,8 +146,8 @@ def test_같은_수집일을_다시_변환하면_덮어쓴다(tmp_path):
     first = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
     second = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
 
-    assert first["paths"] == second["paths"]
-    partition = Path(first["paths"][0]).parent
+    assert first["locations"] == second["locations"]
+    partition = Path(first["locations"][0]).parent
     assert len(list(partition.glob("*.parquet"))) == 1
 
 

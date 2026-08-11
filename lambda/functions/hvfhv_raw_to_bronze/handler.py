@@ -36,12 +36,15 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
 
     path = result.write_result.location
     return {
+        # 원본 parquet 을 그대로 받아 쓰기 때문에 행을 세지 않습니다 — 파일 1개 = 1.
+        # 실제 트립 수는 Silver 단계에서 잡힙니다.
+        "row_count": result.write_result.row_count,
+        "locations": [path],
         "year": year_str,
         "month": month_str,
         "year_month": year_month,
         "collected_date": f"{collected_at:%Y-%m-%d}",
         "file_size_bytes": Path(path).stat().st_size,
-        "path": path,
     }
 
 
