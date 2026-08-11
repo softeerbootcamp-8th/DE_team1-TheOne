@@ -1,7 +1,6 @@
 """AAA New York 정규 휘발유 평균 가격 Raw 수집."""
 
 import re
-from datetime import datetime
 
 import requests
 from bs4 import BeautifulSoup
@@ -29,7 +28,7 @@ def fetch(timeout: int = 30) -> str:
     response.raise_for_status()
     return response.text
 
-# New York 평균 가격 카드에서 정규 휘발유 가격과 기준일을 읽습니다.
+# New York 평균 가격 카드에서 정규 휘발유 가격과 기준일 원문을 읽습니다.
 def parse(html: str) -> dict:
     card = BeautifulSoup(html, "lxml").select_one(CARD_SELECTOR)
     price_element = card.select_one("p.numb") if card else None
@@ -43,8 +42,8 @@ def parse(html: str) -> dict:
     return {
         "state": STATE,
         "fuel_type": FUEL_TYPE,
-        "price_usd_per_gallon": float(price_match.group(1)),
-        "price_date": datetime.strptime(date_match.group(1), "%m/%d/%y").date(),
+        "price_raw": price_match.group(0),
+        "price_date_raw": date_match.group(1),
         "source_url": PAGE_URL,
     }
 
