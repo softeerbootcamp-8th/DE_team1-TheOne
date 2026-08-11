@@ -71,8 +71,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 기본 docker 드라이버는 --cache-to type=gha 를 못 씁니다. install:true 로
+      # docker-container 드라이버를 깔고 `docker build` 를 buildx 로 바꿔치웁니다.
+      - uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+
+      # 캐시는 브랜치 스코프입니다 — PR 첫 실행은 develop 캐시를 읽고,
+      # 자기 브랜치에 씁니다. develop 에 캐시가 없는 첫 회차는 그냥 miss 입니다.
       - name: 이미지 빌드
-        run: make build
+        run: make build DOCKER_CACHE=gha
 
       # Airflow 는 import 에 실패한 DAG 를 조용히 건너뜁니다. 배포 후 "화면에 안 보인다"
       # 로 발견되기 전에 여기서 잡습니다. 위에서 만든 이미지를 그대로 쓰므로

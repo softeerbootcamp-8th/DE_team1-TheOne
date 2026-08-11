@@ -11,6 +11,17 @@ REGISTRY ?=
 # Lambda/EMR 기본 아키텍처. 고정하지 않으면 Apple Silicon 팀원은 arm64 이미지를 만들고,
 # 그건 x86_64 Lambda 에서 "exec format error" 로 죽습니다. Graviton 으로 갈 때만 바꾸세요.
 PLATFORM ?= linux/amd64
+# 레이어 캐시. 기본값(빈 값)은 캐시를 쓰지 않습니다 — 로컬은 도커가 알아서 캐시합니다.
+# CI 는 매번 새 러너라 캐시가 없어서 `make build DOCKER_CACHE=gha` 로 켭니다.
+#   scope 를 런타임별로 나누는 이유: 한 scope 를 세 이미지가 공유하면 서로 덮어씁니다.
+#   --load: buildx 의 docker-container 드라이버는 결과를 빌더 안에만 두기 때문에,
+#           이게 없으면 뒤이어 도는 `docker run tlc-airflow:<sha>` 가 이미지를 못 찾습니다.
+#   type=gha 는 buildx docker-container 드라이버에서만 됩니다
+#   (워크플로의 docker/setup-buildx-action install:true 가 그걸 깔아 줍니다).
+DOCKER_CACHE ?=
+ifeq ($(DOCKER_CACHE),gha)
+CACHE_FLAGS = --load --cache-from type=gha,scope=$$r --cache-to type=gha,mode=max,scope=$$r
+endif
 
 # uv 설치 스크립트는 ~/.local/bin 에 바이너리를 놓습니다. 이 make 실행 안에서
 # 바로 이어서 `uv` 를 호출해도 찾을 수 있도록 PATH 에 미리 넣어둡니다.
@@ -88,6 +99,6 @@ tesseract:
 build:
 	@for r in $(RUNTIMES); do \
 		echo "==> building $(REGISTRY)tlc-$$r:$(GIT_SHA)"; \
-		docker build --platform $(PLATFORM) -f $$r/Dockerfile \
+		docker build --platform $(PLATFORM) $(CACHE_FLAGS) -f $$r/Dockerfile \
 			-t $(REGISTRY)tlc-$$r:$(GIT_SHA) . || exit 1; \
 	done
