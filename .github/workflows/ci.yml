@@ -44,7 +44,9 @@ jobs:
           echo "고친 런타임 폴더에서 'uv lock' 을 돌리고, uv.lock 도 같이 커밋하세요."
           echo "  예) cd airflow && uv lock"
 
-  # 테스트는 lambda 에만 있습니다. spark / airflow 에 생기면 여기에 붙이세요.
+  # `make test` 는 tests 폴더가 있는 런타임만 각자의 uv 환경으로 돌립니다.
+  # 런타임에 테스트가 새로 생겨도 여기를 고칠 일이 없습니다 (지금은 airflow / lambda /
+  # libs/pipeline_core, spark 는 skip).
   # tesseract 바이너리는 필요 없습니다 — 테스트가 OCR 경로를 타지 않습니다.
   test:
     name: 테스트
@@ -61,8 +63,7 @@ jobs:
       # --frozen 이라 lock 을 다시 풀지 않습니다. 어긋나 있으면 version-lock 이 먼저 잡습니다.
       # uv run 이 설치까지 겸하므로 별도 sync 단계는 두지 않습니다.
       - name: pytest
-        working-directory: lambda
-        run: uv run --frozen pytest tests -q
+        run: make test
 
   # 푸시하지 않고 빌드만 합니다. Dockerfile 이 깨진 PR 을 여기서 막는 게 목적입니다.
   docker-build:
