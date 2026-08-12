@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# pre-push stdin: <local ref> <local sha> <remote ref> <remote sha>.
+# 브랜치를 생성·갱신할 때만 PR 범위 검토를 요구합니다. 태그와 삭제는 코드 변경을
+# develop에 제안하는 행위가 아니므로 여기서 막지 않습니다.
+zero_oid="0000000000000000000000000000000000000000"
+check_pr=false
+while read -r local_ref local_sha remote_ref remote_sha; do
+    if [[ "$remote_ref" == refs/heads/* && "$local_sha" != "$zero_oid" ]]; then
+        check_pr=true
+        break
+    fi
+done
+
+if [[ "$check_pr" != true ]]; then
+    exit 0
+fi
+
+repo_root="$(git rev-parse --show-toplevel)"
+cd "$repo_root"
+exec python3 .claude/hooks/review_gate.py --check pr
