@@ -1,7 +1,4 @@
-"""기사 마스터 테이블 월별 신규·탈퇴 배치 Lambda 핸들러.
-
-Extractor(전월 스냅샷 + 신규·탈퇴 반영) 와 Loader(적재) 를 Pipeline 으로 이어붙이기만 합니다.
-"""
+"""회사 고객·택시·리스 원천 스냅샷을 Bronze로 적재하는 Lambda 핸들러."""
 
 import json
 import os
@@ -10,37 +7,33 @@ from datetime import datetime, timezone
 from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
-from .extractor import DEFAULT_SEED_PATH, DriverMasterExtractor
-from .loader import DriverMasterBronzeLoader
+from .loader import CompanySnapshotBronzeLoader
+from .source_snapshot import CompanySnapshotExtractor
 
 configure_lambda_logging()
 
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
+    snapshot_date = event.get("snapshot_date") or os.getenv("SNAPSHOT_DATE")
+    if not snapshot_date:
+        raise ValueError("snapshot_date 또는 SNAPSHOT_DATE가 필요합니다.")
 
-    year_str = event.get("year") or os.getenv("YEAR")
-    month_str = event.get("month") or os.getenv("MONTH")
-    if not year_str or not month_str:
-        raise ValueError("year와 month 파라미터가 누락되었습니다.")
-
-    base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze/driver_master")
-    seed_path = event.get("seed_path") or os.getenv("DRIVER_MASTER_SEED_PATH", DEFAULT_SEED_PATH)
+    source_dir = event.get("source_dir") or os.getenv("COMPANY_SOURCE_DIR", "data/source/company")
+    bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
-    year_month = f"{year_str}-{str(month_str).zfill(2)}"
-
+    loader = CompanySnapshotBronzeLoader(bronze_dir, snapshot_date, collected_at)
     result = Pipeline(
-        DriverMasterExtractor(year_str, month_str, base_dir, seed_path),
-        DriverMasterBronzeLoader(base_dir, year_month, collected_at),
+        CompanySnapshotExtractor(source_dir, snapshot_date),
+        loader,
     ).run()
 
     return {
         "row_count": result.write_result.row_count,
-        "locations": [result.write_result.location],
-        "year": year_str,
-        "month": month_str,
-        "year_month": year_month,
-        "collected_date": f"{collected_at:%Y-%m-%d}",
+        "row_counts": loader.row_counts,
+        "locations": loader.paths,
+        "snapshot_date": snapshot_date,
+        "collected_date": collected_at.date().isoformat(),
     }
 
 
