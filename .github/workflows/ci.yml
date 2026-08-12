@@ -66,19 +66,28 @@ jobs:
         run: make test
 
   # 푸시하지 않고 빌드만 합니다. Dockerfile 이 깨진 PR 을 여기서 막는 게 목적입니다.
+  # 세 빌드는 서로 의존이 없어서 런타임별로 러너를 나눠 씁니다 — 벽시계 시간이
+  # 셋의 합이 아니라 가장 느린 하나(airflow)가 됩니다.
+  # 레이어 캐시로 줄이는 방향은 오히려 느려서 접었습니다 (#184).
   docker-build:
     name: 이미지 빌드
     runs-on: ubuntu-latest
+    strategy:
+      # 한 런타임이 깨져도 나머지 결과를 봐야 어디까지 성한지 압니다.
+      fail-fast: false
+      matrix:
+        runtime: [airflow, spark, lambda]
     steps:
       - uses: actions/checkout@v4
 
       - name: 이미지 빌드
-        run: make build
+        run: make build RUNTIMES=${{ matrix.runtime }}
 
       # Airflow 는 import 에 실패한 DAG 를 조용히 건너뜁니다. 배포 후 "화면에 안 보인다"
       # 로 발견되기 전에 여기서 잡습니다. 위에서 만든 이미지를 그대로 쓰므로
       # 의존성 설치가 다시 필요 없습니다. 태그는 Makefile 의 GIT_SHA 와 같은 규칙입니다.
       - name: DAG import 검증
+        if: matrix.runtime == 'airflow'
         run: |
           docker run --rm -v "$PWD/airflow:/airflow:ro" \
             tlc-airflow:$(git rev-parse --short HEAD) \
@@ -89,5 +98,5 @@ jobs:
         run: |
           echo "::error::이미지 빌드 또는 DAG import 검증이 실패했습니다."
           echo "로컬에서 같은 검사를 돌릴 수 있습니다:"
-          echo "  make build"
+          echo "  make build RUNTIMES=${{ matrix.runtime }}"
           echo "  cd airflow && .venv/bin/python scripts/check_dags.py"
