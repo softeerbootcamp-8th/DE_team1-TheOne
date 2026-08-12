@@ -231,6 +231,23 @@ def test_도시_파일이_0바이트면_실패한다(tmp_path):
         )
 
 
+def test_도시_하나가_0행이면_합계가_맞아도_실패한다(tmp_path):
+    """0바이트가 아니라 **정상 Parquet 인데 행이 0** 인 경우입니다.
+
+    합계만 보면 통과합니다 — 다른 도시가 4행이고 row_count 가 4면 총합이 맞습니다.
+    그래서 도시별로 따로 봐야 잡힙니다.
+    """
+    paths = [
+        write_silver(tmp_path, "new-york", silver_rows(4)),
+        write_silver(tmp_path, "chicago", []),  # 정상 스키마, 0행
+    ]
+
+    with pytest.raises(ValueError, match="행이 없습니다"):
+        validate_silver(
+            silver_result(paths, row_count=4), params={"silver_dir": str(tmp_path)}
+        )
+
+
 def test_layout_규칙과_다른_경로면_실패한다(tmp_path):
     stray = tmp_path / "city=new-york" / "lyft_eligible_vehicles.parquet"
     stray.parent.mkdir(parents=True, exist_ok=True)
