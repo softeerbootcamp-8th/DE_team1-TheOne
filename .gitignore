@@ -34,7 +34,8 @@ airflow/**/*.pyc
 data/
 
 # AI
-.claude/settings.json
 .claude/settings.local.json
 graphify-out
 CLAUDE.md
+.claude/skills/skill-creator
+.claude/.review-cache/
