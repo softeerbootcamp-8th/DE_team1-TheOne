@@ -1,9 +1,10 @@
-"""Gas Price Bronze -> Silver DAG와 적재 결과 검증 조건을 확인합니다.
+"""Gas Price Bronze -> Silver DAG 경계와 GX Silver Suite를 확인합니다.
 
 1. 정기 실행은 직전 완료 월을, 수동 파라미터가 있으면 지정 월을 처리한다.
 2. DAG는 월별 Silver 적재 후 검증을 실행한다.
 3. layout 경로의 정상 Parquet은 통과한다.
-4. Handler 응답, 경로, 파일, 행 수, 스키마가 잘못되면 거부한다.
+4. Handler 응답·경로·파일 경계와 GX 행·값·날짜 규칙을 검증한다.
+5. 정확한 Arrow 물리 스키마가 다르면 거부한다.
 """
 
 import importlib
@@ -30,8 +31,8 @@ COLLECTED_MONTH = "2026-07"
 COLLECTED_AT = datetime(2026, 7, 2, 9, 0, tzinfo=timezone.utc)
 
 
-def row(price_date: date = date(2026, 7, 1)) -> dict:
-    return {
+def row(price_date: date = date(2026, 7, 1), **overrides) -> dict:
+    values = {
         "state": "NY",
         "fuel_type": "regular",
         "price_usd_per_gallon": 3.159,
@@ -40,6 +41,8 @@ def row(price_date: date = date(2026, 7, 1)) -> dict:
         "collected_at": COLLECTED_AT,
         "bronze_path": "data/bronze/gas_price/collected_date=2026-07-02/gas_price.json",
     }
+    values.update(overrides)
+    return values
 
 
 @pytest.fixture
@@ -124,6 +127,15 @@ def test_정상_silver_parquet은_검증을_통과한다(silver_dir):
     validate_silver(result_of(path, row_count=2))
 
 
+def test_전월_price_date도_수집월이_맞으면_통과한다(silver_dir):
+    path = write_silver(
+        silver_dir,
+        [row(date(2026, 6, 30), collected_at=COLLECTED_AT)],
+    )
+
+    validate_silver(result_of(path))
+
+
 # --- Handler 응답이 잘못된 경우 -------------------------------------------------
 
 
@@ -181,7 +193,7 @@ def test_parquet이_아닌_파일이면_거부한다(silver_dir):
 def test_실제_행_수와_row_count가_다르면_거부한다(silver_dir):
     path = write_silver(silver_dir, [row()])
 
-    with pytest.raises(ValueError, match="행 수"):
+    with pytest.raises(ValueError, match="expect_table_row_count_to_equal"):
         validate_silver(result_of(path, row_count=2))
 
 
@@ -197,5 +209,127 @@ def test_loader_schema와_다르면_거부한다(silver_dir):
         schema=broken_schema,
     )
 
+    with pytest.raises(ValueError, match="expect_column_values_to_be_of_type"):
+        validate_silver(result_of(path))
+
+
+def test_silver_필수_컬럼이_누락되면_gx가_거부한다(silver_dir, caplog):
+    fields = [field for field in loader.SCHEMA if field.name != "source_url"]
+    broken_schema = pa.schema(fields)
+    broken_row = row()
+    broken_row.pop("source_url")
+    path = write_silver(silver_dir, [broken_row], schema=broken_schema)
+
+    with pytest.raises(
+        ValueError,
+        match="expect_table_columns_to_match_ordered_list",
+    ):
+        validate_silver(result_of(path))
+
+    assert "gx_validation failed layer=silver" in caplog.text
+
+
+def test_arrow_timestamp_단위가_loader_schema와_다르면_거부한다(silver_dir):
+    timestamp_index = loader.SCHEMA.get_field_index("collected_at")
+    broken_schema = loader.SCHEMA.set(
+        timestamp_index,
+        pa.field("collected_at", pa.timestamp("ms", tz="UTC")),
+    )
+    path = write_silver(silver_dir, [row()], schema=broken_schema)
+
     with pytest.raises(ValueError, match="스키마"):
         validate_silver(result_of(path))
+
+
+def test_gx_silver_가격일은_중복될_수_없다(silver_dir, caplog):
+    path = write_silver(silver_dir, [row(), row()])
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_unique\[price_date\]",
+    ):
+        validate_silver(result_of(path, row_count=2))
+
+    assert "expectation=expect_column_values_to_be_unique" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("rows", "failed_rule", "column"),
+    [
+        pytest.param(
+            [row(state="NJ")],
+            "expect_column_values_to_be_in_set",
+            "state",
+            id="뉴욕주가 아님",
+        ),
+        pytest.param(
+            [row(fuel_type="premium")],
+            "expect_column_values_to_be_in_set",
+            "fuel_type",
+            id="regular가 아님",
+        ),
+        pytest.param(
+            [row(source_url=None)],
+            "expect_column_values_to_not_be_null",
+            "source_url",
+            id="필수값 NULL",
+        ),
+        pytest.param(
+            [row(price_usd_per_gallon=0.0)],
+            "expect_column_values_to_be_between",
+            "price_usd_per_gallon",
+            id="가격 0",
+        ),
+        pytest.param(
+            [row(price_usd_per_gallon=-1.0)],
+            "expect_column_values_to_be_between",
+            "price_usd_per_gallon",
+            id="가격 음수",
+        ),
+        pytest.param(
+            [row(price_usd_per_gallon=float("nan"))],
+            "expect_column_values_to_not_be_null",
+            "price_usd_per_gallon",
+            id="가격 NaN",
+        ),
+        pytest.param(
+            [row(price_usd_per_gallon=float("inf"))],
+            "expect_column_values_to_be_in_set",
+            "price_is_finite",
+            id="가격 Infinity",
+        ),
+        pytest.param(
+            [row(collected_at=datetime(2026, 8, 1, tzinfo=timezone.utc))],
+            "expect_column_values_to_be_in_set",
+            "collected_month_utc",
+            id="대상 수집월 불일치",
+        ),
+        pytest.param(
+            [row(date(2026, 7, 3))],
+            "expect_column_pair_values_a_to_be_greater_than_b",
+            "collected_date_utc/price_date",
+            id="가격일이 수집일보다 미래",
+        ),
+        pytest.param(
+            [row(source_url="   ")],
+            "expect_column_values_to_match_regex",
+            "source_url",
+            id="출처 URL 공백",
+        ),
+        pytest.param(
+            [row(bronze_path="")],
+            "expect_column_values_to_match_regex",
+            "bronze_path",
+            id="Bronze 경로 공백",
+        ),
+    ],
+)
+def test_gx_silver_규칙_위반을_거부하고_로그에_남긴다(
+    silver_dir, rows, failed_rule, column, caplog
+):
+    path = write_silver(silver_dir, rows)
+
+    with pytest.raises(ValueError, match=rf"{failed_rule}\[{column}\]"):
+        validate_silver(result_of(path, row_count=len(rows)))
+
+    assert f"expectation={failed_rule}" in caplog.text

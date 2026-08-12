@@ -47,6 +47,89 @@ def lambda_handler_for(function_name: str):
     return module.lambda_handler
 
 
+def run_gx_bronze_validation(stations: list[dict], total_results: int) -> None:
+    """EV 충전소 원문의 데이터 품질 규칙을 GX로 검증합니다."""
+    logging.getLogger("great_expectations").setLevel(logging.WARNING)
+
+    # DAG 파싱과 실제 검증 실행을 분리하기 위해 Task 실행 시점에 import합니다.
+    import great_expectations as gx
+    import pandas as pd
+
+    dataframe = pd.DataFrame(stations)
+
+    # Suite를 코드로 관리하므로 디스크에 설정을 남기지 않는 Context를 사용합니다.
+    context = gx.get_context(mode="ephemeral")
+    context.variables.progress_bars = {"globally": False}
+
+    # fuel_stations 전체를 이번 실행의 단일 Batch로 등록합니다.
+    batch = (
+        context.data_sources.add_pandas(name="ev_charging_bronze_source")
+        .add_dataframe_asset(name="ev_charging_bronze_asset")
+        .add_batch_definition_whole_dataframe("ev_charging_bronze_batch")
+        .get_batch(batch_parameters={"dataframe": dataframe})
+    )
+
+    # 경로·파일 검사는 DAG 경계에서 하고, Suite는 JSON 내용만 검증합니다.
+    suite = gx.ExpectationSuite(
+        name="ev_charging_bronze_suite",
+        expectations=[
+            gx.expectations.ExpectTableRowCountToBeBetween(min_value=1),
+            gx.expectations.ExpectTableRowCountToEqual(value=total_results),
+            *(
+                gx.expectations.ExpectColumnToExist(column=column)
+                for column in ("state", "fuel_type_code", "ev_pricing")
+            ),
+            *(
+                gx.expectations.ExpectColumnValuesToNotBeNull(column=column)
+                for column in ("state", "fuel_type_code")
+            ),
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="state", value_set=["NY"]
+            ),
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="fuel_type_code", value_set=["ELEC"]
+            ),
+            # NULL과 "Free"는 Silver 변환 단계에서 별도로 분류하므로 Bronze에서 허용합니다.
+            gx.expectations.ExpectColumnValuesToBeOfType(
+                column="ev_pricing", type_="str"
+            ),
+        ],
+    )
+
+    # SUMMARY로 원문 전체 대신 실패 건수와 일부 예시만 받습니다.
+    validation = batch.validate(suite, result_format="SUMMARY")
+
+    failures = [result for result in validation.results if not result.success]
+    for failure in failures:
+        result = dict(failure.result)
+        kwargs = failure.expectation_config.kwargs
+        column = kwargs.get("column") or "/".join(
+            filter(None, (kwargs.get("column_A"), kwargs.get("column_B")))
+        )
+        logger.error(
+            "gx_validation failed layer=bronze expectation=%s column=%s "
+            "unexpected_count=%s observed_value=%s",
+            failure.expectation_config.type,
+            column or "table",
+            result.get("unexpected_count"),
+            result.get("observed_value"),
+        )
+
+    # 실패를 예외로 전파해야 Airflow 재시도와 Slack 콜백이 동작합니다.
+    if failures:
+        rules = ", ".join(
+            f"{failure.expectation_config.type}"
+            f"[{failure.expectation_config.kwargs.get('column') or 'table'}]"
+            for failure in failures
+        )
+        raise ValueError(f"EV Charging Bronze GX 검증 실패: {rules}")
+
+    logger.info(
+        "gx_validation passed layer=bronze expectations=%s",
+        validation.statistics["evaluated_expectations"],
+    )
+
+
 default_args = {
     "owner": "DE_team1",
     "depends_on_past": False,
@@ -121,22 +204,16 @@ def ev_charging_price_raw_to_bronze_pipeline():
 
         stations = payload.get("fuel_stations")
         total_results = payload.get("total_results")
-        if not isinstance(stations, list) or not stations:
-            raise ValueError("Bronze fuel_stations가 비어 있습니다.")
-        if (
-            isinstance(total_results, bool)
-            or not isinstance(total_results, int)
-            or total_results != len(stations)
-        ):
-            raise ValueError("Bronze total_results와 충전소 수가 다릅니다.")
+        if not isinstance(stations, list):
+            raise ValueError("Bronze fuel_stations가 목록 형식이 아닙니다.")
+        if isinstance(total_results, bool) or not isinstance(total_results, int):
+            raise ValueError("Bronze total_results가 정수가 아닙니다.")
         if any(not isinstance(station, dict) for station in stations):
             raise ValueError("Bronze 충전소 데이터가 객체 형식이 아닙니다.")
-        if any(
-            station.get("state") != "NY"
-            or station.get("fuel_type_code") != "ELEC"
-            for station in stations
-        ):
-            raise ValueError("Bronze에 NY 전기차 충전소가 아닌 데이터가 있습니다.")
+
+        # 위에서는 Handler 응답·경로·파일 형식을 확인했고,
+        # 여기서는 파일 안의 충전소 데이터 품질 규칙을 GX로 검증합니다.
+        run_gx_bronze_validation(stations, total_results)
 
     validate_bronze_task(raw_to_bronze_task())
 

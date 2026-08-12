@@ -1,7 +1,7 @@
-"""EV Charging Bronze -> Silver DAG 의 구조와 validate_silver 검증 분기를 확인합니다.
+"""EV Charging Bronze -> Silver DAG 경계와 GX Silver Suite를 확인합니다.
 
 CI 의 `check_dags.py` 는 DAG 가 import 되는지만 봅니다. 여기서는 그 다음,
-`validate_silver` 가 잘못된 Silver Parquet 을 실제로 걸러내는지를 봅니다.
+`validate_silver` 가 경계 오류와 데이터 품질 오류를 실제로 걸러내는지를 봅니다.
 """
 
 import importlib
@@ -25,13 +25,10 @@ DAG = dag_module.ev_charging_price_bronze_to_silver_dag
 validate_silver = DAG.get_task("validate_silver").python_callable
 
 COLLECTED_MONTH = "2026-07"
-COLLECTED_AT = datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc)
-
-
-def row(price_date: str = "2026-07-01") -> dict:
+def row(price_date: str = "2026-07-01", **overrides) -> dict:
     year, month, day = (int(part) for part in price_date.split("-"))
-    return {
-        "city": "New York",
+    values = {
+        "city": "New York City",
         "state": "NY",
         "fuel_type_code": "ELEC",
         "average_price_usd_per_kwh": 0.31,
@@ -44,9 +41,11 @@ def row(price_date: str = "2026-07-01") -> dict:
         "missing_price_count": 1,
         "unsupported_price_count": 0,
         "source_url": "https://developer.nlr.gov/",
-        "collected_at": COLLECTED_AT,
+        "collected_at": datetime(year, month, day, 10, 0, tzinfo=timezone.utc),
         "bronze_path": "s3://bronze/ev_charging_stations",
     }
+    values.update(overrides)
+    return values
 
 
 @pytest.fixture
@@ -187,7 +186,7 @@ def test_non_parquet_file_is_rejected(silver_dir):
 def test_row_count_must_match_file(silver_dir):
     path = write_silver(silver_dir, [row()])
 
-    with pytest.raises(ValueError, match="행 수"):
+    with pytest.raises(ValueError, match="expect_table_row_count_to_equal"):
         validate_silver(result_of(path, row_count=2))
 
 
@@ -198,6 +197,211 @@ def test_schema_must_match_loader(silver_dir):
         pa.field("average_price_usd_per_kwh", pa.string()),
     )
     path = write_silver(silver_dir, [{**row(), "average_price_usd_per_kwh": "0.31"}], broken)
+
+    with pytest.raises(ValueError, match="expect_column_values_to_be_of_type"):
+        validate_silver(result_of(path))
+
+
+def test_missing_count_column_is_reported_as_gx_failure(silver_dir, caplog):
+    fields = [
+        field
+        for field in loader.SCHEMA
+        if field.name != "normalized_price_count"
+    ]
+    broken = pa.schema(fields)
+    broken_row = row()
+    broken_row.pop("normalized_price_count")
+    path = write_silver(silver_dir, [broken_row], broken)
+
+    with pytest.raises(
+        ValueError,
+        match="expect_table_columns_to_match_ordered_list",
+    ):
+        validate_silver(result_of(path))
+
+    assert "gx_validation failed layer=silver" in caplog.text
+
+
+def test_invalid_collected_at_type_is_reported_as_gx_failure(
+    silver_dir, caplog
+):
+    broken = loader.SCHEMA.set(
+        loader.SCHEMA.get_field_index("collected_at"),
+        pa.field("collected_at", pa.string()),
+    )
+    path = write_silver(
+        silver_dir,
+        [row(collected_at="not-a-datetime")],
+        broken,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_of_type\[collected_at\]",
+    ):
+        validate_silver(result_of(path))
+
+    assert "gx_validation failed layer=silver" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        pytest.param("city", "Albany", id="city"),
+        pytest.param("state", "CA", id="state"),
+        pytest.param("fuel_type_code", "LPG", id="fuel_type_code"),
+        pytest.param("currency", "KRW", id="currency"),
+        pytest.param("price_unit", "hour", id="price_unit"),
+    ],
+)
+def test_gx_silver_constant_value_is_enforced(silver_dir, column, value):
+    path = write_silver(silver_dir, [row(**{column: value})])
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_be_in_set\[{column}\]",
+    ):
+        validate_silver(result_of(path))
+
+
+@pytest.mark.parametrize(
+    ("price", "failed_rule"),
+    [
+        pytest.param(-0.01, "expect_column_values_to_be_between", id="음수"),
+        pytest.param(5.01, "expect_column_values_to_be_between", id="상한 초과"),
+        pytest.param(float("inf"), "expect_column_values_to_be_between", id="무한대"),
+        pytest.param(float("nan"), "expect_column_values_to_not_be_null", id="NaN"),
+    ],
+)
+def test_gx_silver_invalid_price_is_rejected(
+    silver_dir, price, failed_rule, caplog
+):
+    path = write_silver(
+        silver_dir, [row(average_price_usd_per_kwh=price)]
+    )
+
+    with pytest.raises(ValueError, match=failed_rule):
+        validate_silver(result_of(path))
+
+    assert f"expectation={failed_rule}" in caplog.text
+
+
+def test_gx_silver_zero_price_is_allowed(silver_dir):
+    path = write_silver(
+        silver_dir, [row(average_price_usd_per_kwh=0.0)]
+    )
+
+    validate_silver(result_of(path))
+
+
+def test_gx_silver_required_value_cannot_be_null(silver_dir):
+    path = write_silver(silver_dir, [row(source_url=None)])
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_not_be_null\[source_url\]",
+    ):
+        validate_silver(result_of(path))
+
+
+@pytest.mark.parametrize("column", ["source_url", "bronze_path"])
+def test_gx_silver_lineage_value_cannot_be_blank(silver_dir, column):
+    path = write_silver(silver_dir, [row(**{column: "   "})])
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_match_regex\[{column}\]",
+    ):
+        validate_silver(result_of(path))
+
+
+def test_gx_silver_price_date_must_be_in_target_month(silver_dir):
+    path = write_silver(silver_dir, [row("2026-08-01")])
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_between\[price_date\]",
+    ):
+        validate_silver(result_of(path))
+
+
+def test_gx_silver_price_date_must_be_unique(silver_dir):
+    path = write_silver(silver_dir, [row(), row()])
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_unique\[price_date\]",
+    ):
+        validate_silver(result_of(path, row_count=2))
+
+
+def test_gx_silver_station_counts_must_add_up(silver_dir):
+    path = write_silver(
+        silver_dir,
+        [row(nyc_station_count=10, normalized_price_count=1)],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_pair_values_to_be_equal\[table\]",
+    ):
+        validate_silver(result_of(path))
+
+
+def test_gx_silver_collected_at_date_must_match_price_date(silver_dir):
+    path = write_silver(
+        silver_dir,
+        [row(collected_at=datetime(2026, 7, 2, tzinfo=timezone.utc))],
+    )
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_pair_values_to_be_equal\[table\]",
+    ):
+        validate_silver(result_of(path))
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [
+        pytest.param("nyc_station_count", -1, id="전체 충전소 음수"),
+        pytest.param("normalized_price_count", -1, id="정규화 요금 음수"),
+        pytest.param("normalized_price_count", 0, id="정규화 요금 0건"),
+        pytest.param("free_station_count", -1, id="무료 충전소 음수"),
+        pytest.param("missing_price_count", -1, id="요금 누락 음수"),
+        pytest.param("unsupported_price_count", -1, id="미지원 요금 음수"),
+    ],
+)
+def test_gx_silver_count_rule_is_enforced(silver_dir, column, value):
+    path = write_silver(silver_dir, [row(**{column: value})])
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_be_between\[{column}\]",
+    ):
+        validate_silver(result_of(path))
+
+
+def test_gx_silver_columns_must_follow_loader_order(silver_dir):
+    reordered = pa.schema(
+        [
+            loader.SCHEMA.field(1),
+            loader.SCHEMA.field(0),
+            *(loader.SCHEMA.field(index) for index in range(2, len(loader.SCHEMA))),
+        ]
+    )
+    path = write_silver(silver_dir, [row()], reordered)
+
+    with pytest.raises(ValueError, match="expect_table_columns_to_match_ordered_list"):
+        validate_silver(result_of(path))
+
+
+def test_arrow_schema_timestamp_unit_must_match_loader(silver_dir):
+    broken = loader.SCHEMA.set(
+        loader.SCHEMA.get_field_index("collected_at"),
+        pa.field("collected_at", pa.timestamp("ms", tz="UTC")),
+    )
+    path = write_silver(silver_dir, [row()], broken)
 
     with pytest.raises(ValueError, match="스키마"):
         validate_silver(result_of(path))
