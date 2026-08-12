@@ -1,10 +1,10 @@
-"""Gas Price Raw -> Bronze DAG와 적재 결과 검증 조건을 확인합니다.
+"""Gas Price Raw -> Bronze DAG 경계와 GX Bronze Suite를 확인합니다.
 
 1. DAG는 Raw 적재 후 Bronze 검증을 실행한다.
 2. layout 경로에 저장된 정상 Bronze JSON은 통과한다.
-3. Handler 응답, 파일 경로·존재 여부, JSON 필수값이 잘못되면 거부한다.
-4. 0·음수·NaN 가격과 NY/regular가 아닌 데이터는 거부한다.
-5. collected_at 시간대와 UTC 수집일이 파티션 날짜와 다르면 거부한다.
+3. Handler 응답, 파일 경로·존재 여부, JSON 형식이 잘못되면 거부한다.
+4. GX는 필수값·NY·regular·양수 가격·날짜·URL 규칙을 검증한다.
+5. GX 실패 규칙은 로그와 예외에 노출된다.
 """
 
 import importlib
@@ -25,8 +25,8 @@ COLLECTED_DATE = "2026-08-09"
 VALID_RECORD = {
     "state": "NY",
     "fuel_type": "regular",
-    "price_raw": "$3.159",
-    "price_date_raw": "08/08/26",
+    "price_raw": "$4.1540",
+    "price_date_raw": "8/8/26",
     "source_url": "https://gasprices.aaa.com/?state=NY",
     "collected_at": "2026-08-09T12:00:00+00:00",
 }
@@ -129,74 +129,112 @@ def test_적재_파일이_없으면_거부한다(bronze_dir):
         validate_bronze(result_of(path))
 
 
-# --- Bronze JSON 내용이 잘못된 경우 --------------------------------------------
+# --- JSON 경계가 잘못된 경우 ---------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "body",
+    ("body", "message"),
     [
-        pytest.param("{not json", id="JSON 파싱 실패"),
-        pytest.param([], id="최상위가 객체가 아님"),
-        pytest.param(
-            {key: value for key, value in VALID_RECORD.items() if key != "price_raw"},
-            id="price_raw 누락",
-        ),
-        pytest.param(record_of(price_date_raw="2026-08-08"), id="가격 기준일 형식 오류"),
-        pytest.param(record_of(collected_at="not-a-datetime"), id="수집시각 형식 오류"),
+        pytest.param("{not json", "JSON을 읽지", id="JSON 파싱 실패"),
+        pytest.param([], "객체 형식", id="최상위가 객체가 아님"),
     ],
 )
-def test_json_파싱이나_필수값_변환에_실패하면_거부한다(bronze_dir, body):
+def test_json_경계가_깨지면_거부한다(bronze_dir, body, message):
     path = write_bronze(bronze_dir, body)
 
-    with pytest.raises(ValueError, match="JSON 값"):
-        validate_bronze(result_of(path))
-
-
-@pytest.mark.parametrize("price_raw", ["$0.00", "-$1.00", "NaN"])
-def test_0원_음수_nan_가격은_거부한다(bronze_dir, price_raw):
-    path = write_bronze(bronze_dir, record_of(price_raw=price_raw))
-
-    with pytest.raises(ValueError, match="가격은 0보다"):
+    with pytest.raises(ValueError, match=message):
         validate_bronze(result_of(path))
 
 
 @pytest.mark.parametrize(
-    "overrides",
+    ("body", "failed_rule", "column"),
     [
-        pytest.param({"state": "NJ"}, id="뉴욕주가 아님"),
-        pytest.param({"fuel_type": "diesel"}, id="regular가 아님"),
+        pytest.param(
+            {key: value for key, value in VALID_RECORD.items() if key != "price_raw"},
+            "expect_column_to_exist",
+            "price_raw",
+            id="필수 컬럼 누락",
+        ),
+        pytest.param(
+            record_of(state=None),
+            "expect_column_values_to_not_be_null",
+            "state",
+            id="state NULL",
+        ),
+        pytest.param(
+            record_of(state="NJ"),
+            "expect_column_values_to_be_in_set",
+            "state",
+            id="뉴욕주가 아님",
+        ),
+        pytest.param(
+            record_of(fuel_type="diesel"),
+            "expect_column_values_to_be_in_set",
+            "fuel_type",
+            id="regular가 아님",
+        ),
+        pytest.param(
+            record_of(price_raw="$0.00"),
+            "expect_column_values_to_be_between",
+            "parsed_price",
+            id="가격 0",
+        ),
+        pytest.param(
+            record_of(price_raw="-$1.00"),
+            "expect_column_values_to_match_regex",
+            "price_raw",
+            id="가격 음수",
+        ),
+        pytest.param(
+            record_of(price_raw="NaN"),
+            "expect_column_values_to_be_in_set",
+            "price_is_finite",
+            id="가격 NaN",
+        ),
+        pytest.param(
+            record_of(price_raw="$Infinity"),
+            "expect_column_values_to_be_in_set",
+            "price_is_finite",
+            id="가격 Infinity",
+        ),
+        pytest.param(
+            record_of(price_date_raw="2026-08-08"),
+            "expect_column_values_to_match_strftime_format",
+            "price_date_raw",
+            id="가격 기준일 형식 오류",
+        ),
+        pytest.param(
+            record_of(collected_at="not-a-datetime"),
+            "expect_column_values_to_be_in_set",
+            "collected_at_has_timezone",
+            id="수집시각 형식 오류",
+        ),
+        pytest.param(
+            record_of(collected_at="2026-08-09T12:00:00"),
+            "expect_column_values_to_be_in_set",
+            "collected_at_has_timezone",
+            id="수집시각 시간대 누락",
+        ),
+        pytest.param(
+            record_of(collected_at="2026-08-09T23:30:00-04:00"),
+            "expect_column_values_to_be_in_set",
+            "collected_date_utc",
+            id="UTC 수집일 불일치",
+        ),
+        pytest.param(
+            record_of(source_url="   "),
+            "expect_column_values_to_match_regex",
+            "source_url",
+            id="출처 URL 공백",
+        ),
     ],
 )
-def test_ny_regular_데이터가_아니면_거부한다(bronze_dir, overrides):
-    path = write_bronze(bronze_dir, record_of(**overrides))
+def test_gx_bronze_규칙_위반을_거부하고_로그에_남긴다(
+    bronze_dir, body, failed_rule, column, caplog
+):
+    path = write_bronze(bronze_dir, body)
 
-    with pytest.raises(ValueError, match="state 또는 fuel_type"):
+    with pytest.raises(ValueError, match=rf"{failed_rule}\[{column}\]"):
         validate_bronze(result_of(path))
 
-
-def test_collected_at에_시간대가_없으면_거부한다(bronze_dir):
-    path = write_bronze(
-        bronze_dir,
-        record_of(collected_at="2026-08-09T12:00:00"),
-    )
-
-    with pytest.raises(ValueError, match="시간대"):
-        validate_bronze(result_of(path))
-
-
-def test_collected_at의_utc_날짜가_수집일과_다르면_거부한다(bronze_dir):
-    path = write_bronze(
-        bronze_dir,
-        record_of(collected_at="2026-08-09T23:30:00-04:00"),
-    )
-
-    with pytest.raises(ValueError, match="collected_at과 collected_date"):
-        validate_bronze(result_of(path))
-
-
-@pytest.mark.parametrize("source_url", [None, "", "   "])
-def test_source_url이_비어_있으면_거부한다(bronze_dir, source_url):
-    path = write_bronze(bronze_dir, record_of(source_url=source_url))
-
-    with pytest.raises(ValueError, match="source_url"):
-        validate_bronze(result_of(path))
+    assert f"expectation={failed_rule}" in caplog.text

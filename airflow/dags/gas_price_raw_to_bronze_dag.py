@@ -5,7 +5,7 @@ import json
 import logging
 import math
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import dag, task
@@ -40,6 +40,148 @@ BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 def lambda_handler_for(function_name: str):
     module = importlib.import_module(f"lambda.functions.{function_name}.handler")
     return module.lambda_handler
+
+
+def run_gx_bronze_validation(record: dict, target_date: date) -> None:
+    """Gas Price Bronze JSON의 데이터 품질 규칙을 GX로 검증합니다."""
+    logging.getLogger("great_expectations").setLevel(logging.WARNING)
+
+    # DAG 파싱과 실제 검증 실행을 분리하기 위해 Task 실행 시점에 import합니다.
+    import great_expectations as gx
+    import pandas as pd
+
+    dataframe = pd.DataFrame([record])
+    required_columns = (
+        "state",
+        "fuel_type",
+        "price_raw",
+        "price_date_raw",
+        "source_url",
+        "collected_at",
+    )
+
+    raw_price = (
+        dataframe["price_raw"]
+        if "price_raw" in dataframe.columns
+        else pd.Series([None], index=dataframe.index)
+    )
+    parsed_price = pd.to_numeric(
+        raw_price.astype("string").str.replace("$", "", regex=False).str.strip(),
+        errors="coerce",
+    )
+    dataframe["price_is_finite"] = parsed_price.map(
+        lambda value: bool(pd.notna(value) and math.isfinite(value))
+    )
+    dataframe["parsed_price"] = parsed_price
+
+    def parse_collected_at(value):
+        try:
+            parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return False, None
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return False, None
+        return True, parsed.astimezone(timezone.utc).date()
+
+    collected_at = record.get("collected_at")
+    has_timezone, collected_date_utc = parse_collected_at(collected_at)
+    dataframe["collected_at_has_timezone"] = has_timezone
+    dataframe["collected_date_utc"] = collected_date_utc
+
+    # 파일 경계는 DAG에서 확인하고, Suite는 원문 필드와 값만 검증합니다.
+    expectations = [
+        *(
+            gx.expectations.ExpectColumnToExist(column=column)
+            for column in required_columns
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="price_is_finite", value_set=[True]
+        ),
+        gx.expectations.ExpectColumnValuesToBeBetween(
+            column="parsed_price", min_value=0, strict_min=True
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_at_has_timezone", value_set=[True]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_date_utc", value_set=[target_date]
+        ),
+    ]
+    for column in required_columns:
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToNotBeNull(column=column)
+            )
+    if "state" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="state", value_set=["NY"]
+            )
+        )
+    if "fuel_type" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="fuel_type", value_set=["regular"]
+            )
+        )
+    if "price_raw" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToMatchRegex(
+                column="price_raw", regex=r"^\$\s*\d+(?:\.\d+)?$"
+            )
+        )
+    if "price_date_raw" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToMatchStrftimeFormat(
+                column="price_date_raw", strftime_format="%m/%d/%y"
+            )
+        )
+    if "source_url" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToMatchRegex(
+                column="source_url", regex=r"\S"
+            )
+        )
+
+    context = gx.get_context(mode="ephemeral")
+    context.variables.progress_bars = {"globally": False}
+    batch = (
+        context.data_sources.add_pandas(name="gas_price_bronze_source")
+        .add_dataframe_asset(name="gas_price_bronze_asset")
+        .add_batch_definition_whole_dataframe("gas_price_bronze_batch")
+        .get_batch(batch_parameters={"dataframe": dataframe})
+    )
+    validation = batch.validate(
+        gx.ExpectationSuite(
+            name="gas_price_bronze_suite", expectations=expectations
+        ),
+        result_format="SUMMARY",
+    )
+
+    failures = [result for result in validation.results if not result.success]
+    for failure in failures:
+        result = dict(failure.result)
+        kwargs = failure.expectation_config.kwargs
+        logger.error(
+            "gx_validation failed layer=bronze expectation=%s column=%s "
+            "unexpected_count=%s observed_value=%s",
+            failure.expectation_config.type,
+            kwargs.get("column") or "table",
+            result.get("unexpected_count"),
+            result.get("observed_value"),
+        )
+    if failures:
+        rules = ", ".join(
+            f"{failure.expectation_config.type}"
+            f"[{failure.expectation_config.kwargs.get('column') or 'table'}]"
+            for failure in failures
+        )
+        raise ValueError(f"Gas Price Bronze GX 검증 실패: {rules}")
+
+    logger.info(
+        "gx_validation passed layer=bronze expectations=%s",
+        validation.statistics["evaluated_expectations"],
+    )
 
 
 default_args = {
@@ -105,23 +247,12 @@ def gas_price_raw_to_bronze_pipeline():
 
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
-            price = float(str(record["price_raw"]).replace("$", "").strip())
-            datetime.strptime(str(record["price_date_raw"]), "%m/%d/%y")
-            collected_at = datetime.fromisoformat(
-                str(record["collected_at"]).replace("Z", "+00:00")
-            )
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            raise ValueError("Bronze JSON 값이 올바르지 않습니다.") from exc
-        if record.get("state") != "NY" or record.get("fuel_type") != "regular":
-            raise ValueError("Bronze state 또는 fuel_type이 올바르지 않습니다.")
-        if not math.isfinite(price) or price <= 0:
-            raise ValueError("Bronze 가격은 0보다 커야 합니다.")
-        if collected_at.tzinfo is None:
-            raise ValueError("Bronze collected_at에 시간대가 없습니다.")
-        if collected_at.astimezone(timezone.utc).date() != target_date:
-            raise ValueError("Bronze collected_at과 collected_date가 다릅니다.")
-        if not str(record.get("source_url") or "").strip():
-            raise ValueError("Bronze source_url이 비어 있습니다.")
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ValueError("Bronze JSON을 읽지 못했습니다.") from exc
+        if not isinstance(record, dict):
+            raise ValueError("Bronze JSON이 객체 형식이 아닙니다.")
+
+        run_gx_bronze_validation(record, target_date)
 
     validate_bronze_task(raw_to_bronze_task())
 
