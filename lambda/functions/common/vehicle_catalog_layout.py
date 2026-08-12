@@ -3,6 +3,8 @@
 Bronze 를 쓰는 쪽(`vehicle_catalog_raw_to_bronze`)과 읽는 쪽
 (`vehicle_catalog_bronze_to_silver`)이 같은 규칙을 봐야 하므로 한 곳에 모읍니다.
 
+    <base>/vehicle_catalog/raw/collected_at=<수집시각>/source.html
+    <base>/vehicle_catalog/raw/collected_at=<수집시각>/images/<URL-SHA256>.bin
     <base>/vehicle_catalog/collected_date=YYYY-MM-DD/vendor=<업체>/<수집시각>.parquet
     <base>/vehicle_catalog/collected_date=YYYY-MM-DD/vendor=<업체>/vehicle_catalog.parquet
 
@@ -10,17 +12,38 @@ Bronze 를 쓰는 쪽(`vehicle_catalog_raw_to_bronze`)과 읽는 쪽
 데이터셋 이름은 그대로입니다.
 """
 
-from datetime import date, datetime
+import hashlib
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 DATASET = "vehicle_catalog"
 DATE_PARTITION_KEY = "collected_date"
 VENDOR_PARTITION_KEY = "vendor"
+RAW_DIR_NAME = "raw"
+SNAPSHOT_PARTITION_KEY = "collected_at"
+HTML_SNAPSHOT_FILE_NAME = "source.html"
+IMAGE_SNAPSHOT_DIR_NAME = "images"
 SILVER_FILE_NAME = f"{DATASET}.parquet"
 
 
 def dataset_path(base_dir: str) -> Path:
     return Path(base_dir) / DATASET
+
+
+def snapshot_partition(base_dir: str, collected_at: datetime) -> Path:
+    if collected_at.tzinfo is None:
+        raise ValueError("collected_at에 시간대가 필요합니다.")
+    timestamp = collected_at.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+    return dataset_path(base_dir) / RAW_DIR_NAME / f"{SNAPSHOT_PARTITION_KEY}={timestamp}"
+
+
+def html_snapshot_file(base_dir: str, collected_at: datetime) -> Path:
+    return snapshot_partition(base_dir, collected_at) / HTML_SNAPSHOT_FILE_NAME
+
+
+def image_snapshot_file(base_dir: str, collected_at: datetime, source_url: str) -> Path:
+    digest = hashlib.sha256(source_url.encode("utf-8")).hexdigest()
+    return snapshot_partition(base_dir, collected_at) / IMAGE_SNAPSHOT_DIR_NAME / f"{digest}.bin"
 
 
 def date_partition(base_dir: str, collected_date: str) -> Path:
