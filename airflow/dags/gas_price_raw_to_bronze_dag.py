@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import dag, task
+from common.validation import parse_handler_result, parse_iso_date, require_file
 
 logger = logging.getLogger(__name__)
 
@@ -78,30 +79,16 @@ def gas_price_raw_to_bronze_pipeline():
         on_failure_callback=slack_failure_callback,
     )
     def validate_bronze_task(result: dict) -> None:
-        if not isinstance(result, dict):
-            raise TypeError("Handler 결과가 dict가 아닙니다.")
-
-        row_count = result.get("row_count")
-        locations = result.get("locations")
+        parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
         collected_date = result.get("collected_date")
-        if row_count != 1:
-            raise ValueError("Bronze row_count는 1이어야 합니다.")
-        if not isinstance(locations, list) or len(locations) != 1:
-            raise ValueError("locations에는 파일 경로가 하나 있어야 합니다.")
-        if not isinstance(collected_date, str):
-            raise ValueError("collected_date가 문자열이 아닙니다.")
-        try:
-            target_date = datetime.strptime(collected_date, "%Y-%m-%d").date()
-        except ValueError as exc:
-            raise ValueError("collected_date는 YYYY-MM-DD 형식이어야 합니다.") from exc
+        target_date = parse_iso_date(collected_date)
 
         layout = importlib.import_module("lambda.functions.common.gas_price_layout")
-        path = Path(locations[0])
+        path = parsed.locations[0]
         expected = layout.bronze_file(BRONZE_DIR, collected_date)
         if path.resolve() != expected.resolve():
             raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
-        if not path.is_file():
-            raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
+        require_file(path)
 
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
