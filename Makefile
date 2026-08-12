@@ -25,6 +25,7 @@ help:
 	@echo "uv-bin       - uv 설치 확인/설치 (sync 가 먼저 호출)"
 	@echo "tesseract    - OCR 바이너리 확인/설치 (sync 가 먼저 호출)"
 	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: <runtime>:<git-sha>)"
+	@echo "setup-hooks  - review-engineering 검토 기록 Git 훅 설치"
 
 .PHONY: lock
 lock:
@@ -91,3 +92,8 @@ build:
 		docker build --platform $(PLATFORM) -f $$r/Dockerfile \
 			-t $(REGISTRY)tlc-$$r:$(GIT_SHA) . || exit 1; \
 	done
+
+.PHONY: setup-hooks
+setup-hooks:
+	@git config core.hooksPath .githooks
+	@echo "==> Git review hooks enabled (.githooks)"

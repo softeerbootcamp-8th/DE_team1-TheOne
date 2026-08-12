@@ -40,6 +40,15 @@
 ![System Architecture](architecture.png)
 
 ## Team Rule
+
+### 리뷰 검토 Git 훅
+
+팀원은 clone 후 한 번 `make setup-hooks`를 실행합니다. 커밋 전과 푸시 전 훅은 `review-engineering` 스킬을 실행했을 때 남긴 변경 해시 기록만 확인합니다. 스킬 자체를 Git 훅이 실행하지는 않습니다.
+
+검토 후 `python3 .claude/hooks/review_gate.py --pass commit` 또는 `--pass pr`로 해당 기록을 남깁니다. `--no-verify`는 긴급 복구 외에는 사용하지 않으며, 사용했다면 즉시 후속 검토를 남깁니다.
+
+공유 워크플로우 스킬의 기준본은 `.agents/skills`입니다. Claude 환경의 `.claude/skills`는 동일한 정책을 따르되, Claude 전용 훅과 그 경로는 유지합니다. 스킬 정책을 바꿀 때는 두 경로의 대응 파일을 함께 검토합니다.
+
 ### Ground Rule
 1. 10:00 - 10:15에 점심밥 정하기
 2. 생각나는 의견 있으면 숨기지 않고 말하기

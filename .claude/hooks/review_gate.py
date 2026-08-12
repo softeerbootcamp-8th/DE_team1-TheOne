@@ -11,7 +11,7 @@ Claude Code 의 PreToolUse 훅으로 등록해 두면 Bash 도구 호출을 가�
 검토 기록은 **변경 내용의 해시**로 남습니다. 검토 후 코드를 더 고치면 해시가 달라져
 다시 검토를 요구합니다 — 검토한 것과 커밋하는 것이 같은 물건이어야 의미가 있습니다.
 
-기록은 `.claude/.review-cache/` 에 두고 git 에는 올리지 않습니다. 이 게이트는
+기록은 `.git/review-cache/` 에 두고 git 에는 올리지 않습니다. 이 게이트는
 암호학적 강제가 아니라 **검토 단계를 흐름에 끼워 넣는 장치**입니다. 사람이 판단해서
 건너뛰어야 할 때는 `--pass` 를 직접 실행하면 됩니다.
 """
@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-CACHE_REL = Path(".claude/.review-cache")
+CACHE_REL = Path(".git/review-cache")
 
 
 class Stage(NamedTuple):
@@ -37,6 +37,17 @@ class Stage(NamedTuple):
     label: str
     # PR 범위는 원격 기준이라, 로컬 원격 추적이 오래됐으면 조용히 잘못된 범위를 검토합니다.
     refresh: list[str] | None = None
+
+
+class DiffState(NamedTuple):
+    """검토 대상 diff의 획득 여부와 지문.
+
+    빈 diff는 정상 상태이므로 `digest=None`만으로는 원격 ref 누락·git 오류와
+    구분할 수 없습니다. Git 훅은 후자를 통과시키면 안 되므로 별도로 보존합니다.
+    """
+
+    available: bool
+    digest: str | None
 
 
 STAGES = {
@@ -55,22 +66,34 @@ STAGES = {
 
 
 def run(cmd: list[str]) -> str:
+    code, stdout = run_result(cmd)
+    return stdout if code == 0 else ""
+
+
+def run_result(cmd: list[str]) -> tuple[int, str]:
     try:
         done = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
-        return ""
-    return done.stdout
+        return 1, ""
+    return done.returncode, done.stdout
 
 
-def diff_hash(stage: str) -> str | None:
-    """검토 대상의 지문. 대상이 비어 있으면 None (검토할 게 없음)."""
+def diff_state(stage: str, *, refresh: bool = True) -> DiffState:
+    """diff를 읽고 빈 변경과 읽기 실패를 구분합니다."""
     spec = STAGES[stage]
-    if spec.refresh:
-        run(spec.refresh)  # 실패해도 진행합니다 — 오프라인에서 커밋을 막지 않으려고.
-    diff = run(spec.diff)
+    if refresh and spec.refresh:
+        run(spec.refresh)  # Claude 경로와 `--pass`는 기존처럼 최신 원격을 시도합니다.
+    code, diff = run_result(spec.diff)
+    if code != 0:
+        return DiffState(available=False, digest=None)
     if not diff.strip():
-        return None
-    return hashlib.sha256(diff.encode("utf-8")).hexdigest()[:16]
+        return DiffState(available=True, digest=None)
+    return DiffState(available=True, digest=hashlib.sha256(diff.encode("utf-8")).hexdigest()[:16])
+
+
+def diff_hash(stage: str, *, refresh: bool = True) -> str | None:
+    """검토 대상의 지문. 대상이 비어 있으면 None (검토할 게 없음)."""
+    return diff_state(stage, refresh=refresh).digest
 
 
 def cache_dir() -> Path:
@@ -97,6 +120,47 @@ def record(stage: str) -> int:
     target.write_text("reviewed\n", encoding="utf-8")
     print(f"검토 기록 완료: {stage} {digest}")
     return 0
+
+
+def block(stage: str) -> int:
+    """누락된 검토 기록의 공통 안내를 출력합니다."""
+    what = STAGES[stage].label
+    sys.stderr.write(
+        f"[review-engineering] {what} 에 대한 검토 기록이 없습니다.\n\n"
+        f"1. `review-engineering` 스킬로 {what} 를 평가하세요 "
+        "(과잉/부족/적정 3분류 + 근거 명령과 출력).\n"
+        "2. 판정 결과를 사용자에게 보여주세요. 차단 사유가 없으면 그렇게 쓰면 됩니다.\n"
+        f"3. 그다음 `python3 .claude/hooks/review_gate.py --pass {stage}` 로 기록하고 "
+        "명령을 다시 실행하세요.\n\n"
+        "검토를 건너뛰고 기록만 남기지 마세요. 그러면 이 게이트가 존재할 이유가 없습니다.\n"
+    )
+    return 2
+
+
+def check(stage: str) -> int:
+    """Git 훅이 호출하는 오프라인 검토 기록 검사.
+
+    이 함수는 `git fetch`를 하지 않습니다. PR 훅은 이미 로컬에 있는
+    `origin/develop`을 기준으로 검토 기록을 대조하므로, 훅 실행이 네트워크 상태에
+    따라 느려지거나 멈추지 않습니다.
+    """
+    state = diff_state(stage, refresh=False)
+    if not state.available:
+        if stage == "pr":
+            sys.stderr.write(
+                "[review-engineering] PR 기준 `origin/develop...HEAD` diff를 확인할 수 없습니다.\n"
+                "`git fetch origin develop`로 기준 ref를 준비한 뒤 다시 푸시하세요.\n"
+            )
+        else:
+            sys.stderr.write("[review-engineering] 커밋 대상 diff를 확인할 수 없습니다.\n")
+        return 2
+
+    digest = state.digest
+    if digest is None:
+        return 0
+    if marker(stage, digest).exists():
+        return 0
+    return block(stage)
 
 
 # 셸 구분자. `cd x && git commit` 을 잡으려면 부분 문자열로 봐야 하는데, 그러면
@@ -143,24 +207,14 @@ def gate() -> int:
     if stage is None:
         return 0
 
+    # Claude PreToolUse는 기존처럼 PR 직전에 origin/develop 갱신을 시도합니다.
+    # Git 훅 전용 `--check`만 오프라인 검사로 분리합니다.
     digest = diff_hash(stage)
     if digest is None:
-        return 0  # 비어 있으면 명령 자체가 알아서 실패합니다.
-
+        return 0
     if marker(stage, digest).exists():
         return 0
-
-    what = STAGES[stage].label
-    sys.stderr.write(
-        f"[review-engineering] {what} 에 대한 검토 기록이 없습니다.\n\n"
-        f"1. `review-engineering` 스킬로 {what} 를 평가하세요 "
-        "(과잉/부족/적정 3분류 + 근거 명령과 출력).\n"
-        "2. 판정 결과를 사용자에게 보여주세요. 차단 사유가 없으면 그렇게 쓰면 됩니다.\n"
-        f"3. 그다음 `python3 .claude/hooks/review_gate.py --pass {stage}` 로 기록하고 "
-        "이 명령을 다시 실행하세요.\n\n"
-        "검토를 건너뛰고 기록만 남기지 마세요. 그러면 이 게이트가 존재할 이유가 없습니다.\n"
-    )
-    return 2  # PreToolUse 에서 2 = 도구 호출 차단 + stderr 를 Claude 에게 전달
+    return block(stage)  # PreToolUse 에서 2 = 도구 호출 차단 + stderr 를 Claude 에게 전달
 
 
 def main() -> int:
@@ -171,6 +225,13 @@ def main() -> int:
             print(f"사용법: --pass {'|'.join(STAGES)}", file=sys.stderr)
             return 1
         return record(stage)
+    if "--check" in sys.argv:
+        i = sys.argv.index("--check")
+        stage = sys.argv[i + 1] if len(sys.argv) > i + 1 else ""
+        if stage not in STAGES:
+            print(f"사용법: --check {'|'.join(STAGES)}", file=sys.stderr)
+            return 1
+        return check(stage)
     if "--self-check" in sys.argv:
         return self_check()
     return gate()
