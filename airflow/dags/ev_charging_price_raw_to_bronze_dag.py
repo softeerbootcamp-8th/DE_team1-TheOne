@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import Variable, dag, task
+from common.validation import parse_handler_result, parse_iso_date, require_file
 
 logger = logging.getLogger(__name__)
 
@@ -172,35 +173,12 @@ def ev_charging_price_raw_to_bronze_pipeline():
         on_failure_callback=slack_failure_callback,
     )
     def validate_bronze_task(result: dict) -> None:
-        if not isinstance(result, dict):
-            raise TypeError("Handler 결과가 dict가 아닙니다.")
-
-        row_count = result.get("row_count")
-        locations = result.get("locations")
-        collected_date = result.get("collected_date")
-        if isinstance(row_count, bool) or row_count != 1:
-            raise ValueError("Bronze row_count는 1이어야 합니다.")
-        if (
-            not isinstance(locations, list)
-            or len(locations) != 1
-            or not isinstance(locations[0], str)
-            or not locations[0]
-        ):
-            raise ValueError("locations에는 파일 경로가 하나 있어야 합니다.")
-        if not isinstance(collected_date, str):
-            raise ValueError("collected_date가 문자열이 아닙니다.")
-        try:
-            target_date = datetime.strptime(collected_date, "%Y-%m-%d").date()
-        except ValueError as exc:
-            raise ValueError("collected_date는 YYYY-MM-DD 형식이어야 합니다.") from exc
-        if target_date.isoformat() != collected_date:
-            raise ValueError("collected_date는 YYYY-MM-DD 형식이어야 합니다.")
+        parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
+        target_date = parse_iso_date(result.get("collected_date"))
         if result.get("state") != "NY" or result.get("fuel_type_code") != "ELEC":
             raise ValueError("Handler의 state 또는 fuel_type_code가 올바르지 않습니다.")
 
-        path = Path(locations[0])
-        if not path.is_file():
-            raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
+        path = require_file(parsed.locations[0])
         try:
             collected_at = datetime.strptime(path.stem, "%Y%m%dT%H%M%SZ").replace(
                 tzinfo=timezone.utc

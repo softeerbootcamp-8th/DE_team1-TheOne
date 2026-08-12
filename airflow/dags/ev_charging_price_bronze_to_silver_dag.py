@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import Param, dag, task
-import pyarrow.parquet as pq
+from common.validation import parse_handler_result, parse_year_month, read_parquet
 
 logger = logging.getLogger(__name__)
 
@@ -299,46 +299,17 @@ def ev_charging_price_bronze_to_silver_pipeline():
         on_failure_callback=slack_failure_callback,
     )
     def validate_silver_task(result: dict) -> None:
-        if not isinstance(result, dict):
-            raise TypeError("Handler 결과가 dict가 아닙니다.")
-
-        row_count = result.get("row_count")
-        locations = result.get("locations")
-        collected_month = result.get("collected_month")
-        if isinstance(row_count, bool) or not isinstance(row_count, int):
-            raise ValueError("row_count가 정수가 아닙니다.")
-        if row_count <= 0:
-            raise ValueError("Silver row_count는 1 이상이어야 합니다.")
-        if (
-            not isinstance(locations, list)
-            or len(locations) != 1
-            or not isinstance(locations[0], str)
-            or not locations[0]
-        ):
-            raise ValueError("locations에는 파일 경로가 하나 있어야 합니다.")
-        if not isinstance(collected_month, str):
-            raise ValueError("collected_month가 문자열이 아닙니다.")
-        try:
-            target_month = datetime.strptime(collected_month, "%Y-%m")
-        except ValueError as exc:
-            raise ValueError("collected_month는 YYYY-MM 형식이어야 합니다.") from exc
-        if target_month.strftime("%Y-%m") != collected_month:
-            raise ValueError("collected_month는 YYYY-MM 형식이어야 합니다.")
+        parsed = parse_handler_result(result, expected_locations=1)
+        collected_month = parse_year_month(result.get("collected_month"))
 
         layout = importlib.import_module(
             "lambda.functions.common.ev_charging_layout"
         )
-        path = Path(locations[0])
+        path = parsed.locations[0]
         expected = layout.silver_file(SILVER_DIR, collected_month)
         if path.resolve() != expected.resolve():
             raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
-        if not path.is_file():
-            raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
-
-        try:
-            table = pq.ParquetFile(path).read()
-        except Exception as exc:
-            raise RuntimeError(f"Silver Parquet을 읽지 못했습니다: {path}") from exc
+        table = read_parquet(path)
         loader = importlib.import_module(
             "lambda.functions.ev_charging_stations_bronze_to_silver.loader"
         )
@@ -346,7 +317,10 @@ def ev_charging_price_bronze_to_silver_pipeline():
         # 위에서는 Handler 응답·경로·파일 존재와 Parquet 읽기를 확인했고,
         # 여기서는 Parquet 안의 행·값·날짜·집계 품질 규칙을 GX로 검증합니다.
         run_gx_silver_validation(
-            table, loader.SCHEMA.names, row_count, target_month
+            table,
+            loader.SCHEMA.names,
+            parsed.row_count,
+            datetime.strptime(collected_month, "%Y-%m"),
         )
         # Pandas 기반 GX 타입은 Arrow timestamp 단위와 timezone까지 구분하지 못하므로,
         # Loader가 정의한 정확한 Arrow 물리 스키마 비교는 경계 검사로 유지합니다.
