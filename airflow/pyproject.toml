@@ -31,6 +31,11 @@ dependencies = [
     # tesseract 바이너리는 Dockerfile 에서 설치합니다.
     "pytesseract==0.3.13",
     "pillow==11.3.0",
+    # 적재 결과의 값 수준 검증용. DAG 검증 태스크가 보는 건 경로·행 수·스키마까지라
+    # 값 범위나 널 비율은 못 봅니다.
+    # ★ marshmallow 를 4.3.0 -> 3.26.2 로 끌어내립니다. providers-amazon 도 같은 걸
+    #   쓰므로, 이 버전을 올릴 때 Airflow 기동까지 확인해야 합니다 (#256).
+    "great-expectations==1.20.0",
 ]
 
 [dependency-groups]
