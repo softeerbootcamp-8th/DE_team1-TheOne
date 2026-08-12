@@ -126,9 +126,11 @@ def lyft_eligible_vehicles_raw_to_silver_pipeline():
     def raw_to_bronze_task(**context) -> dict:
         """Lyft 자격 페이지를 수집해 Bronze 에 적재합니다."""
         params = context.get("params", {})
+        # 이 핸들러는 Bronze 경로를 `base_dir` 로 받습니다. Param 이름은 다른 DAG 와
+        # 같은 `bronze_dir` 이지만 event 키는 raw_to_bronze 공통 규칙을 따릅니다.
         result = lambda_handler_for("lyft_eligible_vehicles_raw_to_bronze")(
             event={
-                "bronze_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
+                "base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
                 "city_slug": params.get("city_slug") or DEFAULT_CITY_SLUG,
             }
         )
