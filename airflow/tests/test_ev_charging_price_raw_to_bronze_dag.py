@@ -1,7 +1,7 @@
-"""EV Charging Raw -> Bronze DAG 의 구조와 validate_bronze 검증 분기를 확인합니다.
+"""EV Charging Raw -> Bronze DAG 경계와 GX Bronze Suite를 확인합니다.
 
 CI 의 `check_dags.py` 는 DAG 가 import 되는지만 봅니다. 여기서는 그 다음,
-`validate_bronze` 가 잘못된 Bronze 를 실제로 걸러내는지를 봅니다.
+`validate_bronze` 가 경계 오류와 데이터 품질 오류를 실제로 걸러내는지를 봅니다.
 """
 
 import importlib
@@ -23,13 +23,17 @@ COLLECTED_AT = datetime(2026, 8, 9, 12, 0, tzinfo=timezone.utc)
 COLLECTED_DATE = "2026-08-09"
 
 
-def station(state: str = "NY", fuel_type_code: str = "ELEC") -> dict:
+def station(
+    state: object = "NY",
+    fuel_type_code: object = "ELEC",
+    ev_pricing: object = "$0.30/kWh",
+) -> dict:
     return {
         "id": 1,
         "state": state,
         "fuel_type_code": fuel_type_code,
         "zip": "10001",
-        "ev_pricing": "$0.30/kWh",
+        "ev_pricing": ev_pricing,
     }
 
 
@@ -83,7 +87,10 @@ def test_validate_runs_after_load():
 
 
 def test_valid_bronze_passes(bronze_dir):
-    path = write_bronze(bronze_dir, payload_of([station(), station()]))
+    path = write_bronze(
+        bronze_dir,
+        payload_of([station(), station(ev_pricing="Free"), station(ev_pricing=None)]),
+    )
 
     validate_bronze(result_of(path))
 
@@ -158,13 +165,9 @@ def test_file_date_must_match_collected_date(bronze_dir):
     [
         pytest.param("{not json", id="JSON 파싱 실패"),
         pytest.param([{"fuel_stations": []}], id="최상위가 객체가 아님"),
-        pytest.param(payload_of([]), id="fuel_stations가 비어 있음"),
         pytest.param({"total_results": 1}, id="fuel_stations 키 없음"),
-        pytest.param(payload_of([station()], total_results=2), id="total_results 불일치"),
         pytest.param(payload_of([station()], total_results=True), id="total_results가 bool"),
         pytest.param({"total_results": 1, "fuel_stations": ["문자열"]}, id="충전소가 객체가 아님"),
-        pytest.param(payload_of([station(state="CA")]), id="NY 충전소가 아님"),
-        pytest.param(payload_of([station(fuel_type_code="LPG")]), id="전기 충전소가 아님"),
     ],
 )
 def test_invalid_bronze_payload_is_rejected(bronze_dir, body):
@@ -172,3 +175,60 @@ def test_invalid_bronze_payload_is_rejected(bronze_dir, body):
 
     with pytest.raises(ValueError):
         validate_bronze(result_of(path))
+
+
+@pytest.mark.parametrize(
+    ("body", "failed_rule"),
+    [
+        pytest.param(
+            payload_of([]),
+            "expect_table_row_count_to_be_between[table]",
+            id="충전소 목록이 비어 있음",
+        ),
+        pytest.param(
+            payload_of([station()], total_results=2),
+            "expect_table_row_count_to_equal[table]",
+            id="total_results와 실제 건수 불일치",
+        ),
+        pytest.param(
+            payload_of([station(state="CA")]),
+            "expect_column_values_to_be_in_set[state]",
+            id="NY 이외의 주",
+        ),
+        pytest.param(
+            payload_of([station(fuel_type_code="LPG")]),
+            "expect_column_values_to_be_in_set[fuel_type_code]",
+            id="ELEC 이외의 연료",
+        ),
+        pytest.param(
+            payload_of([station(state=None)]),
+            "expect_column_values_to_not_be_null[state]",
+            id="state가 NULL",
+        ),
+        pytest.param(
+            payload_of([station(fuel_type_code=None)]),
+            "expect_column_values_to_not_be_null[fuel_type_code]",
+            id="fuel_type_code가 NULL",
+        ),
+        pytest.param(
+            payload_of([{key: value for key, value in station().items() if key != "ev_pricing"}]),
+            "expect_column_to_exist[ev_pricing]",
+            id="ev_pricing 컬럼 누락",
+        ),
+        pytest.param(
+            payload_of([station(ev_pricing=0.3)]),
+            "expect_column_values_to_be_of_type[ev_pricing]",
+            id="ev_pricing이 문자열이 아님",
+        ),
+    ],
+)
+def test_gx_bronze_expectation_failure_is_rejected_and_logged(
+    bronze_dir, body, failed_rule, caplog
+):
+    path = write_bronze(bronze_dir, body)
+
+    with pytest.raises(ValueError, match=failed_rule.replace("[", r"\[")):
+        validate_bronze(result_of(path))
+
+    expectation = failed_rule.split("[", 1)[0]
+    assert f"expectation={expectation}" in caplog.text
