@@ -2,7 +2,7 @@
 
 시나리오:
 
-1. DAG 구조 — dag_id, task 2개, raw_to_bronze -> bronze_to_silver 의존 순서
+1. DAG 구조 — dag_id, task 3개, raw_to_bronze -> validate_bronze -> bronze_to_silver 의존 순서
 2. [필수] 1월 실행 시 직전 달이 전년 12월
 3. [필수] params.year/month 지정 시 자동 계산을 무시하고 month가 0패딩됨
 4. [필수] logical_date가 naive여도 UTC로 간주하고 죽지 않음
@@ -24,11 +24,13 @@ resolve_target_year_month = dag_module.resolve_target_year_month
 # --- DAG 구조 -------------------------------------------------------------
 
 
-def test_DAG_는_두_태스크를_갖고_raw_to_bronze_다음에_bronze_to_silver_가_온다():
+def test_DAG_는_세_태스크를_갖고_raw_to_bronze_validate_bronze_bronze_to_silver_순서다():
     assert DAG.dag_id == DAG_ID
-    assert set(DAG.task_ids) == {"raw_to_bronze", "bronze_to_silver"}
-    assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"bronze_to_silver"}
-    assert DAG.get_task("bronze_to_silver").upstream_task_ids == {"raw_to_bronze"}
+    assert set(DAG.task_ids) == {"raw_to_bronze", "validate_bronze", "bronze_to_silver"}
+    assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
+    assert DAG.get_task("validate_bronze").upstream_task_ids == {"raw_to_bronze"}
+    assert DAG.get_task("validate_bronze").downstream_task_ids == {"bronze_to_silver"}
+    assert DAG.get_task("bronze_to_silver").upstream_task_ids == {"validate_bronze"}
 
 
 # --- 대상 연월 자동 계산 -----------------------------------------------------
