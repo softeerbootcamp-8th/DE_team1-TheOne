@@ -21,3 +21,8 @@
 3. Airflow 호스팅 위치 : EC2에 올리기로 결정
 4. Airflow task 단위 : 기본적으로 논리적 단위로 묶은 것을 Task로 정의, 5분 이상 걸리는 작업은 Task 분리
 
+
+### 8/11 ([상세 정리 문서 링크](/docs/decision_making/0811.md))
+1. 지역 확장성 모델링 고려 : City,State도 함께 저장
+2. Docker CI 시간 단축 : setup-buildx-action을 사용하여 캐시 이용
+3. ISSUE/PR skill 제작 : Skill로 개발 외의 작업을 AI가 대신해주도록 제작
