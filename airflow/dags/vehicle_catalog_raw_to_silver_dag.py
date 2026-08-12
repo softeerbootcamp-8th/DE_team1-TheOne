@@ -70,6 +70,7 @@ default_args = {
     schedule="0 3 * * 1",  # 매주 월요일 03:00 UTC
     start_date=datetime(2026, 8, 1),
     catchup=False,
+    max_active_runs=1,
     tags=["vehicle_catalog", "raw", "bronze", "silver", "lambda"],
     params={
         "collected_date": Param(
