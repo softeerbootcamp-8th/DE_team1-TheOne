@@ -1,11 +1,13 @@
 # =============================================================================
-# PR 마다 자동 실행되는 검증 — 세 가지를 병렬로 봅니다.
+# PR 마다 자동 실행되는 검증.
 #
-#   version-lock  pyproject.toml 을 고치고 `uv lock` 을 안 돌린 PR 을 막습니다.
-#   test          lambda 테스트를 돌립니다.
-#   docker-build  런타임 3개 이미지가 실제로 빌드되는지 봅니다.
+#   changes       무엇이 바뀌었는지 판정 (아래 job 들의 실행 여부를 정합니다)
+#   version-lock  pyproject.toml 을 고치고 `uv lock` 을 안 돌린 PR 을 막습니다.  [항상]
+#   test          tests 폴더가 있는 런타임을 각자의 uv 환경으로 돌립니다.        [항상]
+#   docker-build  이미지가 실제로 빌드되는지 봅니다.              [이미지 입력이 바뀔 때]
+#   dag-import    Airflow 가 DAG 를 읽을 수 있는지 봅니다.            [airflow 가 바뀔 때]
 #
-# 전부 로컬에서 `make check` / `pytest` / `make build` 를 돌리는 것과 같습니다.
+# 전부 로컬에서 `make check` / `make test` / `make build` 를 돌리는 것과 같습니다.
 # AWS 자격증명은 쓰지 않습니다 — 빌드만 하고 어디에도 푸시하지 않습니다.
 # =============================================================================
 name: CI
@@ -21,6 +23,66 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # 이미지에 들어가는 파일이 안 바뀌었으면 굽는 결과가 직전과 같습니다. 각 Dockerfile 이
+  # COPY 하는 건 의존성 파일과 libs/pipeline_core 뿐이라, DAG·테스트·핸들러를 고쳐도
+  # 이미지는 그대로입니다. 그래서 소스가 아니라 **이미지의 입력**을 기준으로 거릅니다.
+  #
+  #   airflow/Dockerfile   airflow/pyproject.toml, airflow/uv.lock
+  #   lambda/Dockerfile    lambda/pyproject.toml,  lambda/uv.lock,  libs/pipeline_core
+  #   spark/Dockerfile     spark/pyproject.toml,   spark/uv.lock,   libs/pipeline_core
+  #
+  # airflow 만 libs/pipeline_core 를 COPY 하지 않아 조건에서 빠져 있습니다.
+  changes:
+    name: 변경 판정
+    runs-on: ubuntu-latest
+    outputs:
+      # 이미지를 다시 구워야 하는 런타임 이름 배열. 예) ["airflow","lambda"]
+      runtimes: ${{ steps.images.outputs.changes }}
+      dags: ${{ steps.dags.outputs.dags }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dorny/paths-filter@v3
+        id: images
+        with:
+          filters: |
+            airflow:
+              - 'airflow/Dockerfile'
+              - 'airflow/pyproject.toml'
+              - 'airflow/uv.lock'
+              - 'Makefile'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
+            spark:
+              - 'spark/Dockerfile'
+              - 'spark/pyproject.toml'
+              - 'spark/uv.lock'
+              - 'libs/pipeline_core/**'
+              - 'Makefile'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
+            lambda:
+              - 'lambda/Dockerfile'
+              - 'lambda/pyproject.toml'
+              - 'lambda/uv.lock'
+              - 'libs/pipeline_core/**'
+              - 'Makefile'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
+
+      # DAG 검증은 이미지와 조건이 다릅니다. dags/ 를 고치면 이미지는 그대로지만
+      # DAG 는 다시 읽어봐야 합니다.
+      - uses: dorny/paths-filter@v3
+        id: dags
+        with:
+          filters: |
+            dags:
+              - 'airflow/dags/**'
+              - 'airflow/scripts/check_dags.py'
+              - 'airflow/pyproject.toml'
+              - 'airflow/uv.lock'
+              - '.github/workflows/ci.yml'
+
   version-lock:
     name: 버전 잠금 검증
     runs-on: ubuntu-latest
@@ -45,9 +107,12 @@ jobs:
           echo "  예) cd airflow && uv lock"
 
   # `make test` 는 tests 폴더가 있는 런타임만 각자의 uv 환경으로 돌립니다.
-  # 런타임에 테스트가 새로 생겨도 여기를 고칠 일이 없습니다 (지금은 airflow / lambda /
-  # libs/pipeline_core, spark 는 skip).
+  # 런타임에 테스트가 새로 생겨도 여기를 고칠 일이 없습니다.
   # tesseract 바이너리는 필요 없습니다 — 테스트가 OCR 경로를 타지 않습니다.
+  #
+  # 런타임별로 쪼개지 않습니다. 전체가 1분 안쪽이라 쪼개도 가장 느린 하나가 남고,
+  # libs/pipeline_core 는 세 런타임 공용이며 DAG 는 lambda/functions 핸들러를 직접
+  # 부릅니다 — 조건을 좁히면 아끼는 시간보다 놓치는 회귀가 비쌉니다.
   test:
     name: 테스트
     runs-on: ubuntu-latest
@@ -71,32 +136,56 @@ jobs:
   # 레이어 캐시로 줄이는 방향은 오히려 느려서 접었습니다 (#184).
   docker-build:
     name: 이미지 빌드
+    needs: changes
+    # 바뀐 런타임이 하나도 없으면 job 자체가 뜨지 않습니다 (빈 matrix 는 에러라 먼저 거릅니다).
+    if: needs.changes.outputs.runtimes != '[]'
     runs-on: ubuntu-latest
     strategy:
       # 한 런타임이 깨져도 나머지 결과를 봐야 어디까지 성한지 압니다.
       fail-fast: false
       matrix:
-        runtime: [airflow, spark, lambda]
+        runtime: ${{ fromJSON(needs.changes.outputs.runtimes) }}
     steps:
       - uses: actions/checkout@v4
 
       - name: 이미지 빌드
         run: make build RUNTIMES=${{ matrix.runtime }}
 
-      # Airflow 는 import 에 실패한 DAG 를 조용히 건너뜁니다. 배포 후 "화면에 안 보인다"
-      # 로 발견되기 전에 여기서 잡습니다. 위에서 만든 이미지를 그대로 쓰므로
-      # 의존성 설치가 다시 필요 없습니다. 태그는 Makefile 의 GIT_SHA 와 같은 규칙입니다.
-      - name: DAG import 검증
-        if: matrix.runtime == 'airflow'
+      - name: 실패 시 안내
+        if: failure()
         run: |
-          docker run --rm -v "$PWD/airflow:/airflow:ro" \
-            tlc-airflow:$(git rev-parse --short HEAD) \
-            python /airflow/scripts/check_dags.py /airflow/dags
+          echo "::error::${{ matrix.runtime }} 이미지 빌드가 실패했습니다."
+          echo "로컬에서 같은 검사를 돌릴 수 있습니다:"
+          echo "  make build RUNTIMES=${{ matrix.runtime }}"
+
+  # Airflow 는 import 에 실패한 DAG 를 조용히 건너뜁니다. 배포 후 "화면에 안 보인다"
+  # 로 발견되기 전에 여기서 잡습니다.
+  #
+  # 이미지 빌드 job 에서 떼어냈습니다. 붙어 있으면 dags/ 만 고친 PR 에서 이미지가
+  # 스킵되면서 이 검증까지 함께 스킵됩니다 — 정작 필요한 때 안 돌게 됩니다.
+  # 이미지 대신 airflow 의 uv 환경으로 돌립니다. import 되는지만 보므로 결과는 같고
+  # 이미지를 굽지 않아 훨씬 빠릅니다.
+  dag-import:
+    name: DAG import 검증
+    needs: changes
+    if: needs.changes.outputs.dags == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: uv 설치
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.12.2"
+          enable-cache: true
+
+      - name: DAG import 검증
+        working-directory: airflow
+        run: uv run --frozen python scripts/check_dags.py
 
       - name: 실패 시 안내
         if: failure()
         run: |
-          echo "::error::이미지 빌드 또는 DAG import 검증이 실패했습니다."
+          echo "::error::DAG import 검증이 실패했습니다."
           echo "로컬에서 같은 검사를 돌릴 수 있습니다:"
-          echo "  make build RUNTIMES=${{ matrix.runtime }}"
-          echo "  cd airflow && .venv/bin/python scripts/check_dags.py"
+          echo "  cd airflow && uv run --frozen python scripts/check_dags.py"
