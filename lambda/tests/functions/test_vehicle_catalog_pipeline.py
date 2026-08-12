@@ -1,4 +1,10 @@
-"""차량 대장 Raw -> Bronze -> Silver 배선 검증 (네트워크/OCR 없이 Loader부터 실행)."""
+"""차량 대장 원문 스냅샷 -> Bronze -> Silver 파이프라인 시나리오.
+
+1. 저장된 HTML에서 카드를 읽고 저장된 이미지 bytes로 OCR
+2. Bronze Parquet에서 HTML·이미지 원문 경로를 참조
+3. OCR 실패 후에도 HTML·이미지 스냅샷 보존
+4. 경계 분리 후에도 기존 Bronze -> Silver 결과 유지
+"""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -10,6 +16,8 @@ from functions.common import vehicle_catalog_layout as layout
 from functions.vehicle_catalog_bronze_to_silver.handler import (
     lambda_handler as to_silver,
 )
+from functions.vehicle_catalog_raw_to_bronze import extractor as raw_extractor
+from functions.vehicle_catalog_raw_to_bronze.handler import lambda_handler as to_bronze
 from functions.vehicle_catalog_raw_to_bronze.loader import VehicleCatalogBronzeLoader
 
 COLLECTED_AT = datetime(2026, 8, 10, 3, 0, tzinfo=timezone.utc)
@@ -37,6 +45,30 @@ ROWS = [
     vehicle("Kia", "RAV4", 649.0),
 ]
 
+SOURCE_HTML = """
+<main>
+  <div class="elementor-column">
+    <div class="elementor-widget-image">
+      <img src="https://example.com/wp-content/uploads/card.png" alt="Kia RAV4">
+    </div>
+    <a class="elementor-button" href="https://example.com/book">Book Now!</a>
+  </div>
+</main>
+"""
+IMAGE_BYTES = b"raw-card-image"
+
+
+def fake_get(url, **kwargs):
+    class Response:
+        text = SOURCE_HTML
+        content = IMAGE_BYTES
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    return Response()
+
 
 def write_bronze(bronze_dir: Path, rows: list[dict], collected_at=COLLECTED_AT) -> str:
     return VehicleCatalogBronzeLoader(str(bronze_dir), collected_at).write(rows).location
@@ -50,6 +82,44 @@ def run_silver(bronze_dir: Path, silver_dir: Path, collected_date: str) -> dict:
             "silver_dir": str(silver_dir),
         }
     )
+
+
+def test_handler가_저장된_이미지를_OCR하고_Bronze에서_원문을_참조한다(
+    tmp_path, monkeypatch
+):
+    ocr_inputs: list[bytes] = []
+
+    def fake_ocr(image_bytes: bytes) -> dict:
+        ocr_inputs.append(image_bytes)
+        return {"make": "Kia", "model": "RAV4", "price_usd": 649.0}
+
+    monkeypatch.setattr(raw_extractor.requests, "get", fake_get)
+    monkeypatch.setattr(raw_extractor, "ocr_card", fake_ocr)
+
+    result = to_bronze({"base_dir": str(tmp_path)})
+    rows = pq.ParquetFile(result["locations"][0]).read().to_pylist()
+    html_path = next(tmp_path.glob("vehicle_catalog/raw/*/source.html"))
+    image_path = next(tmp_path.glob("vehicle_catalog/raw/*/images/*.bin"))
+
+    assert ocr_inputs == [IMAGE_BYTES]
+    assert html_path.read_text(encoding="utf-8") == SOURCE_HTML
+    assert image_path.read_bytes() == IMAGE_BYTES
+    assert rows[0]["source_html_path"] == str(html_path)
+    assert rows[0]["source_image_path"] == str(image_path)
+
+
+def test_OCR이_실패해도_HTML과_이미지_스냅샷은_남는다(tmp_path, monkeypatch):
+    def fail_ocr(image_bytes: bytes):
+        raise raw_extractor.pytesseract.TesseractNotFoundError()
+
+    monkeypatch.setattr(raw_extractor.requests, "get", fake_get)
+    monkeypatch.setattr(raw_extractor, "ocr_card", fail_ocr)
+
+    with pytest.raises(RuntimeError, match="tesseract 바이너리"):
+        to_bronze({"base_dir": str(tmp_path)})
+
+    assert next(tmp_path.glob("vehicle_catalog/raw/*/source.html")).is_file()
+    assert next(tmp_path.glob("vehicle_catalog/raw/*/images/*.bin")).read_bytes() == IMAGE_BYTES
 
 
 def test_bronze_to_silver(tmp_path):

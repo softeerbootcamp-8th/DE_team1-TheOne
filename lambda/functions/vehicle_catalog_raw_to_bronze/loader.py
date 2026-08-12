@@ -27,6 +27,8 @@ SCHEMA = pa.schema(
         ("image_url", pa.string()),  # 가격이 바뀌면 이 URL 이 바뀜
         ("booking_url", pa.string()),
         ("source_url", pa.string()),
+        ("source_html_path", pa.string()),
+        ("source_image_path", pa.string()),
         ("collected_at", pa.timestamp("us", tz="UTC")),
     ]
 )

@@ -25,6 +25,7 @@ import io
 import logging
 import re
 from datetime import datetime
+from pathlib import Path
 from urllib.parse import urljoin
 
 import pytesseract
@@ -119,54 +120,75 @@ def ocr_card(image_bytes: bytes) -> dict:
     }
 
 
-def extract(collected_at: datetime, timeout: int = 30) -> list[dict]:
-    """수집 진입점 — 페이지 파싱 후 카드 이미지를 OCR 해 행 목록을 만듭니다."""
-    logger.info("수집 시작: %s", PAGE_URL)
-    cards = parse_cards(fetch(timeout))
-    rows: list[dict] = []
+class VehicleCatalogHtmlExtractor(Extractor):
+    """렌탈 업체 페이지의 HTML 원문을 수집합니다."""
 
-    for card in cards:
-        image_bytes = requests.get(card["image_url"], headers=HEADERS, timeout=timeout).content
-        try:
-            read = ocr_card(image_bytes)
-        except pytesseract.TesseractNotFoundError as exc:
-            raise RuntimeError(
-                "tesseract 바이너리를 찾을 수 없습니다. "
-                "설치 방법은 docs/GETTING_STARTED.md 를 참고하세요 (macOS: brew install tesseract)."
-            ) from exc
+    name = "vehicle_catalog_html"
 
-        # 한 장이 안 읽혀도 나머지는 살립니다. 값은 None 으로 남습니다.
-        if read["price_usd"] is None:
-            logger.warning("가격 OCR 실패: %s", card["image_url"])
-        if read["model"] is None:
-            logger.warning("차종 OCR 실패: %s", card["image_url"])
-
-        rows.append(
-            {
-                "vendor": VENDOR,
-                **read,
-                "raw_name": card["raw_name"],  # HTML img alt 원문
-                "price_period": "week",  # 페이지 제목의 "Weekly ... Pricing Guide" 기준
-                "image_url": card["image_url"],  # 가격이 바뀌면 이 URL 이 바뀜
-                "booking_url": card["booking_url"],
-                "source_url": PAGE_URL,
-                "collected_at": collected_at,
-            }
-        )
-
-    priced = sum(1 for r in rows if r["price_usd"] is not None)
-    logger.info("catalog_extract done rows=%d priced=%d", len(rows), priced)
-    return rows
-
-
-class VehicleCatalogExtractor(Extractor):
-    """렌탈 업체 페이지의 차량 카드를 OCR 해 차량 대장 행 목록을 만듭니다."""
-
-    name = "vehicle_catalog"
-
-    def __init__(self, collected_at: datetime, timeout: int = 30):
-        self._collected_at = collected_at
+    def __init__(self, timeout: int = 30):
         self._timeout = timeout
 
+    def extract(self) -> str:
+        logger.info("수집 시작: %s", PAGE_URL)
+        return fetch(self._timeout)
+
+
+class VehicleCatalogCardsExtractor(Extractor):
+    """저장된 HTML 스냅샷에서 카드 메타데이터를 읽습니다."""
+
+    name = "vehicle_catalog_cards"
+
+    def __init__(self, html_snapshot_path: str):
+        self._html_snapshot_path = Path(html_snapshot_path)
+
     def extract(self) -> list[dict]:
-        return extract(self._collected_at, self._timeout)
+        return parse_cards(self._html_snapshot_path.read_text(encoding="utf-8"))
+
+
+class VehicleCatalogImageExtractor(Extractor):
+    """카드 이미지 원문 bytes를 수집합니다."""
+
+    name = "vehicle_catalog_image"
+
+    def __init__(self, image_url: str, timeout: int = 30):
+        self._image_url = image_url
+        self._timeout = timeout
+
+    def extract(self) -> bytes:
+        response = requests.get(self._image_url, headers=HEADERS, timeout=self._timeout)
+        response.raise_for_status()
+        return response.content
+
+
+def row_from_snapshot(
+    card: dict,
+    html_snapshot_path: str,
+    image_snapshot_path: str,
+    collected_at: datetime,
+) -> dict:
+    """저장된 카드 이미지 한 장을 OCR해 Bronze 행을 만듭니다."""
+    try:
+        read = ocr_card(Path(image_snapshot_path).read_bytes())
+    except pytesseract.TesseractNotFoundError as exc:
+        raise RuntimeError(
+            "tesseract 바이너리를 찾을 수 없습니다. "
+            "설치 방법은 docs/GETTING_STARTED.md 를 참고하세요 (macOS: brew install tesseract)."
+        ) from exc
+
+    if read["price_usd"] is None:
+        logger.warning("가격 OCR 실패: %s", card["image_url"])
+    if read["model"] is None:
+        logger.warning("차종 OCR 실패: %s", card["image_url"])
+
+    return {
+        "vendor": VENDOR,
+        **read,
+        "raw_name": card["raw_name"],
+        "price_period": "week",
+        "image_url": card["image_url"],
+        "booking_url": card["booking_url"],
+        "source_url": PAGE_URL,
+        "source_html_path": html_snapshot_path,
+        "source_image_path": image_snapshot_path,
+        "collected_at": collected_at,
+    }

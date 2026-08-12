@@ -224,6 +224,61 @@ brew/apt 기본 패키지에 포함되어 있습니다.
 > Debian 베이스(`python:3.11-slim` + `awslambdaric`, tesseract 5.5.0 설치 확인)나
 > AWS Textract 로 바꾸면 됩니다 — `ocr_card()` 함수 하나만 바뀝니다.
 
+### Gas Price·차량 대장 원문 재처리
+
+두 수집기는 네트워크 응답을 파싱하거나 OCR 하기 전에 `data/bronze` 아래의 불변
+스냅샷으로 저장합니다. 파싱이 실패해도 원문은 남고, 같은 수집시각의 파일은 덮어쓰지
+않습니다.
+
+```text
+data/bronze/gas_price/raw/collected_at=<UTC 수집시각>/source.html
+data/bronze/gas_price/collected_date=YYYY-MM-DD/gas_price.json
+
+data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html
+data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/images/<URL-SHA256>.bin
+data/bronze/vehicle_catalog/collected_date=YYYY-MM-DD/vendor=fasttrack/<수집시각>.parquet
+```
+
+Gas Price HTML을 다시 파싱할 때는 스냅샷 경로와 경로에 기록된 UTC 수집시각을 사용합니다.
+
+```python
+from datetime import datetime, timezone
+from pathlib import Path
+
+from functions.gas_price_raw_to_bronze.extractor import GasPriceSnapshotExtractor
+from functions.gas_price_raw_to_bronze.loader import GasPriceBronzeLoader
+
+snapshot = Path("data/bronze/gas_price/raw/collected_at=<UTC 수집시각>/source.html")
+timestamp = snapshot.parent.name.removeprefix("collected_at=")
+collected_at = datetime.strptime(timestamp, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+row = GasPriceSnapshotExtractor(str(snapshot)).extract()
+print(GasPriceBronzeLoader("data/bronze", collected_at).write(row))
+```
+
+차량 대장은 저장 HTML에서 카드 URL을 복원하고 URL 해시로 저장 이미지를 찾은 뒤 OCR 합니다.
+
+```python
+from datetime import datetime, timezone
+from pathlib import Path
+
+from functions.common import vehicle_catalog_layout as layout
+from functions.vehicle_catalog_raw_to_bronze.extractor import VehicleCatalogCardsExtractor, row_from_snapshot
+from functions.vehicle_catalog_raw_to_bronze.loader import VehicleCatalogBronzeLoader
+
+snapshot = Path("data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html")
+timestamp = snapshot.parent.name.removeprefix("collected_at=")
+collected_at = datetime.strptime(timestamp, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+rows = []
+for card in VehicleCatalogCardsExtractor(str(snapshot)).extract():
+    image = layout.image_snapshot_file("data/bronze", collected_at, card["image_url"])
+    rows.append(row_from_snapshot(card, str(snapshot), str(image), collected_at))
+print(VehicleCatalogBronzeLoader("data/bronze", collected_at).write(rows))
+```
+
+위 코드는 `lambda` 디렉터리에서 `uv run --frozen python`으로 실행합니다. 재처리는 원문
+스냅샷을 바꾸지 않고 같은 수집일의 파생 Bronze JSON 또는 같은 수집시각의 Parquet만
+다시 생성합니다. 이후 기존 Bronze → Silver 명령을 실행하면 됩니다.
+
 ---
 
 ## 5. 하지 말 것
