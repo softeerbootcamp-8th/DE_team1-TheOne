@@ -16,13 +16,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-logger = logging.getLogger(__name__)
+from ..common import vehicle_specs_layout as layout
 
-DATASET = "fueleconomy_vehicle_specs"
+logger = logging.getLogger(__name__)
 
 # source 는 파티션 키(source=)로만 남깁니다. 파일 안에 같은 이름의 컬럼을 또 두면
 # 읽을 때 파티션 값(dictionary)과 타입이 충돌합니다.
-PARTITION_KEY = "source"
+PARTITION_KEY = layout.SOURCE_PARTITION_KEY
 # 유일하게 문자열이 아닌 컬럼. 나머지는 원본 그대로 문자열입니다.
 TIMESTAMP_COLUMN = "collected_at"
 
@@ -48,20 +48,17 @@ class VehicleSpecsBronzeLoader(Loader):
     def partition_path(self, source: str) -> Path:
         """collected_date / source 로 나눈 Hive 파티션 경로.
 
-        1년에 한 번 수집이라 실제로는 연 1개 파티션이 쌓입니다. 다른 데이터셋과
-        모양을 맞추기 위해 날짜 단위 키를 그대로 씁니다.
+        경로 규칙은 `common.vehicle_specs_layout` 이 단독으로 정합니다. 여기서 따로
+        조립하면 읽는 쪽·검증하는 쪽과 조용히 어긋납니다.
         """
-        return (
-            Path(self._base_dir)
-            / DATASET
-            / f"collected_date={self._collected_at:%Y-%m-%d}"
-            / f"{PARTITION_KEY}={source}"
+        return layout.source_partition(
+            self._base_dir, f"{self._collected_at:%Y-%m-%d}", source
         )
 
     def write(self, data: list[dict]) -> WriteResult:
-        partition = self.partition_path(data[0][PARTITION_KEY])
-        partition.mkdir(parents=True, exist_ok=True)
-        path = partition / f"{self._collected_at:%Y%m%dT%H%M%SZ}.parquet"
+        source = data[0][PARTITION_KEY]
+        path = layout.bronze_file(self._base_dir, source, self._collected_at)
+        path.parent.mkdir(parents=True, exist_ok=True)
 
         table = pa.Table.from_pylist(data, schema=build_schema(data[0]))
         pq.write_table(table, path, compression="snappy")
