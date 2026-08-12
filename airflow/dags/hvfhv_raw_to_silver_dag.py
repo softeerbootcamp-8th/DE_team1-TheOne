@@ -11,6 +11,8 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import pyarrow.parquet as pq
+
 try:
     from airflow.sdk import Param, dag, task
 except ImportError:
@@ -149,6 +151,34 @@ def hvfhv_raw_to_silver_pipeline():
         logger.info("raw_to_bronze 작업 완료: result=%s", result)
         return result
 
+    @task(
+        task_id="validate_bronze",
+        retries=1,
+        retry_delay=timedelta(minutes=10),
+        on_failure_callback=slack_failure_callback,
+    )
+    def validate_bronze_task(result: dict) -> None:
+        """다운로드가 잘려도 파일 자체는 생기므로, 크기/스키마/행 수를 직접 열어서 봅니다."""
+        path = Path(result["locations"][0])
+        if not path.is_file() or path.stat().st_size != result["file_size_bytes"]:
+            raise ValueError(f"Bronze 파일이 없거나 크기가 다릅니다: {path}")
+
+        expected_partition = f"year_month={result['year_month']}"
+        if path.parent.name != expected_partition:
+            raise ValueError(
+                f"파티션이 year_month와 다릅니다: {path.parent.name} != {expected_partition}"
+            )
+
+        loader = importlib.import_module("lambda.functions.hvfhv_raw_to_bronze.loader")
+        try:
+            table = pq.ParquetFile(path).read()
+        except Exception as exc:
+            raise ValueError(f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}") from exc
+        if table.schema != loader.SCHEMA:
+            raise ValueError(f"Bronze 스키마가 loader.SCHEMA 와 다릅니다: {path}")
+        if table.num_rows == 0:
+            raise ValueError(f"Bronze 행 수가 0입니다: {path}")
+
     # Spark 클렌징 실행 태스크 (spark/jobs/bronze_to_silver/hvfhv/job.py)
     # BashOperator를 사용하여 spark python 스크립트 실행
     bronze_to_silver_task = BashOperator(
@@ -168,8 +198,9 @@ def hvfhv_raw_to_silver_pipeline():
         },
     )
 
-    # 태스크 의존성 연결
-    raw_to_bronze_task() >> bronze_to_silver_task
+    # 태스크 의존성 연결: Bronze 검증을 통과해야 Spark 가 돈다
+    bronze_checked = validate_bronze_task(raw_to_bronze_task())
+    bronze_checked >> bronze_to_silver_task
 
 
 # DAG 인스턴스 생성
