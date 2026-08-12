@@ -1,6 +1,7 @@
 """AAA New York 정규 휘발유 평균 가격 Raw 수집."""
 
 import re
+from pathlib import Path
 
 import requests
 from bs4 import BeautifulSoup
@@ -48,13 +49,26 @@ def parse(html: str) -> dict:
     }
 
 
-class GasPriceExtractor(Extractor):
-    """AAA 뉴욕주 페이지에서 정규 휘발유 평균 가격 한 건을 수집합니다."""
+class GasPriceHtmlExtractor(Extractor):
+    """AAA 뉴욕주 페이지의 HTML 원문을 수집합니다."""
 
-    name = "gas_price"
+    name = "gas_price_html"
 
     def __init__(self, timeout: int = 30):
         self._timeout = timeout
 
+    def extract(self) -> str:
+        return fetch(self._timeout)
+
+
+class GasPriceSnapshotExtractor(Extractor):
+    """저장된 HTML 스냅샷을 읽어 가격 한 건을 파싱합니다."""
+
+    name = "gas_price_snapshot"
+
+    def __init__(self, snapshot_path: str):
+        self._snapshot_path = Path(snapshot_path)
+
     def extract(self) -> dict:
-        return parse(fetch(self._timeout))
+        record = parse(self._snapshot_path.read_text(encoding="utf-8"))
+        return {**record, "source_snapshot_path": str(self._snapshot_path)}

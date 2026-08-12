@@ -1,4 +1,9 @@
-"""Gas Price 일별 Bronze와 월별 Silver 파이프라인을 검증합니다."""
+"""Gas Price 원문 스냅샷 -> Bronze -> Silver 파이프라인 시나리오.
+
+1. Handler가 HTML 스냅샷을 먼저 저장하고 Bronze JSON에서 원문 경로를 참조
+2. HTML 파싱 실패 후에도 원문 스냅샷은 보존
+3. 경계 분리 후에도 기존 Bronze -> Silver 변환 결과 유지
+"""
 
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -92,7 +97,35 @@ def test_raw_to_bronze_handler가_DAG에_필요한_응답을_반환한다(
     assert result["state"] == "NY"
     assert result["fuel_type"] == "regular"
     assert result["price_date"] == "2026-08-08"
-    assert Path(result["locations"][0]).exists()
+    bronze_path = Path(result["locations"][0])
+    record = json.loads(bronze_path.read_text(encoding="utf-8"))
+    snapshot_path = Path(record["source_snapshot_path"])
+
+    assert bronze_path.exists()
+    assert snapshot_path == next(tmp_path.glob("gas_price/raw/*/source.html"))
+    assert snapshot_path.read_text(encoding="utf-8") == Response.text
+
+
+def test_HTML_파싱이_실패해도_원문_스냅샷은_남는다(tmp_path, monkeypatch):
+    class Response:
+        text = "<html><body>페이지 구조 변경</body></html>"
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setattr(
+        raw_extractor.requests,
+        "get",
+        lambda *args, **kwargs: Response(),
+    )
+
+    with pytest.raises(RuntimeError, match="페이지 구조 변경 의심"):
+        to_bronze({"base_dir": str(tmp_path)})
+
+    snapshots = list(tmp_path.glob("gas_price/raw/*/source.html"))
+    assert len(snapshots) == 1
+    assert snapshots[0].read_text(encoding="utf-8") == Response.text
 
 
 def test_bronze_원문을_월별_silver_parquet으로_변환한다(tmp_path):
