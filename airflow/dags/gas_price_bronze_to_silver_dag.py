@@ -6,6 +6,7 @@ DAG를 수동 실행하면서 ``collected_month``에 ``YYYY-MM``을 입력하세
 
 import importlib
 import logging
+import math
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -48,6 +49,169 @@ def lambda_handler_for(function_name: str):
 
 def previous_month(data_interval_end: datetime) -> str:
     return (data_interval_end.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+
+
+def run_gx_silver_validation(
+    table,
+    expected_columns: list[str],
+    expected_rows: int,
+    target_month: datetime,
+) -> None:
+    """Gas Price Silver Parquet의 데이터 품질 규칙을 GX로 검증합니다."""
+    logging.getLogger("great_expectations").setLevel(logging.WARNING)
+
+    # DAG 파싱과 실제 검증 실행을 분리하기 위해 Task 실행 시점에 import합니다.
+    import great_expectations as gx
+    import pandas as pd
+
+    dataframe = table.to_pandas()
+    price = (
+        dataframe["price_usd_per_gallon"]
+        if "price_usd_per_gallon" in dataframe.columns
+        else pd.Series([None] * len(dataframe), index=dataframe.index)
+    )
+    numeric_price = pd.to_numeric(price, errors="coerce")
+    dataframe["price_is_finite"] = numeric_price.map(
+        lambda value: bool(pd.notna(value) and math.isfinite(value))
+    )
+
+    collected_at = (
+        dataframe["collected_at"]
+        if "collected_at" in dataframe.columns
+        else pd.Series([None] * len(dataframe), index=dataframe.index)
+    )
+    collected_at_utc = pd.to_datetime(collected_at, errors="coerce", utc=True)
+    dataframe["collected_month_utc"] = collected_at_utc.dt.strftime("%Y-%m")
+    dataframe["collected_date_utc"] = collected_at_utc.dt.date
+
+    context = gx.get_context(mode="ephemeral")
+    context.variables.progress_bars = {"globally": False}
+    batch = (
+        context.data_sources.add_pandas(name="gas_price_silver_source")
+        .add_dataframe_asset(name="gas_price_silver_asset")
+        .add_batch_definition_whole_dataframe("gas_price_silver_batch")
+        .get_batch(batch_parameters={"dataframe": dataframe})
+    )
+
+    string_columns = ("state", "fuel_type", "source_url", "bronze_path")
+    expectations = [
+        gx.expectations.ExpectTableRowCountToEqual(value=expected_rows),
+        gx.expectations.ExpectTableColumnsToMatchOrderedList(
+            column_list=[
+                *expected_columns,
+                "price_is_finite",
+                "collected_month_utc",
+                "collected_date_utc",
+            ]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="price_is_finite", value_set=[True]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_month_utc",
+            value_set=[target_month.strftime("%Y-%m")],
+        ),
+    ]
+    for column in expected_columns:
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToNotBeNull(column=column)
+            )
+    for column in string_columns:
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToBeOfType(
+                    column=column, type_="str"
+                )
+            )
+    if "price_usd_per_gallon" in dataframe.columns:
+        expectations.extend(
+            [
+                gx.expectations.ExpectColumnValuesToBeOfType(
+                    column="price_usd_per_gallon", type_="float64"
+                ),
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="price_usd_per_gallon", min_value=0, strict_min=True
+                ),
+            ]
+        )
+    if "price_date" in dataframe.columns:
+        expectations.extend(
+            [
+                gx.expectations.ExpectColumnValuesToBeOfType(
+                    column="price_date", type_="date"
+                ),
+                gx.expectations.ExpectColumnValuesToBeUnique(column="price_date"),
+                gx.expectations.ExpectColumnPairValuesAToBeGreaterThanB(
+                    column_A="collected_date_utc",
+                    column_B="price_date",
+                    or_equal=True,
+                    ignore_row_if="neither",
+                ),
+            ]
+        )
+    if "collected_at" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeOfType(
+                column="collected_at", type_="Timestamp"
+            )
+        )
+    if "state" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="state", value_set=["NY"]
+            )
+        )
+    if "fuel_type" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="fuel_type", value_set=["regular"]
+            )
+        )
+    for column in ("source_url", "bronze_path"):
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToMatchRegex(
+                    column=column, regex=r"\S"
+                )
+            )
+
+    validation = batch.validate(
+        gx.ExpectationSuite(
+            name="gas_price_silver_suite", expectations=expectations
+        ),
+        result_format="SUMMARY",
+    )
+    failures = [result for result in validation.results if not result.success]
+
+    def failure_column(failure) -> str:
+        kwargs = failure.expectation_config.kwargs
+        return kwargs.get("column") or "/".join(
+            filter(None, (kwargs.get("column_A"), kwargs.get("column_B")))
+        ) or "table"
+
+    for failure in failures:
+        result = dict(failure.result)
+        logger.error(
+            "gx_validation failed layer=silver expectation=%s column=%s "
+            "unexpected_count=%s observed_value=%s",
+            failure.expectation_config.type,
+            failure_column(failure),
+            result.get("unexpected_count"),
+            result.get("observed_value"),
+        )
+    if failures:
+        rules = ", ".join(
+            f"{failure.expectation_config.type}"
+            f"[{failure_column(failure)}]"
+            for failure in failures
+        )
+        raise ValueError(f"Gas Price Silver GX 검증 실패: {rules}")
+
+    logger.info(
+        "gx_validation passed layer=silver expectations=%s",
+        validation.statistics["evaluated_expectations"],
+    )
 
 
 default_args = {
@@ -138,10 +302,12 @@ def gas_price_bronze_to_silver_pipeline():
             table = pq.ParquetFile(path).read()
         except Exception as exc:
             raise RuntimeError(f"Silver Parquet을 읽지 못했습니다: {path}") from exc
-        if table.num_rows != row_count:
-            raise ValueError("Silver 파일 행 수와 Handler row_count가 다릅니다.")
         loader = importlib.import_module(
             "lambda.functions.gas_price_bronze_to_silver.loader"
+        )
+
+        run_gx_silver_validation(
+            table, loader.SCHEMA.names, row_count, target_month
         )
         if table.schema != loader.SCHEMA:
             raise ValueError("Silver 스키마가 올바르지 않습니다.")
