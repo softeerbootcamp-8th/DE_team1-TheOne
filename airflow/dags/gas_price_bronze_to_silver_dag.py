@@ -278,21 +278,15 @@ def gas_price_bronze_to_silver_pipeline():
         if path.resolve() != expected.resolve():
             raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
         table = read_parquet(path)
-        if table.num_rows != parsed.row_count:
-            raise ValueError("Silver 파일 행 수와 Handler row_count가 다릅니다.")
-        if not path.is_file():
-            raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
-
-        try:
-            table = pq.ParquetFile(path).read()
-        except Exception as exc:
-            raise RuntimeError(f"Silver Parquet을 읽지 못했습니다: {path}") from exc
         loader = importlib.import_module(
             "lambda.functions.gas_price_bronze_to_silver.loader"
         )
 
         run_gx_silver_validation(
-            table, loader.SCHEMA.names, row_count, target_month
+            table,
+            loader.SCHEMA.names,
+            parsed.row_count,
+            datetime.strptime(collected_month, "%Y-%m"),
         )
         if table.schema != loader.SCHEMA:
             raise ValueError("Silver 스키마가 올바르지 않습니다.")
