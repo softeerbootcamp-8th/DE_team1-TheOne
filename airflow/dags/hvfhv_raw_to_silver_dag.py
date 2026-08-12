@@ -198,9 +198,56 @@ def hvfhv_raw_to_silver_pipeline():
         },
     )
 
-    # 태스크 의존성 연결: Bronze 검증을 통과해야 Spark 가 돈다
-    bronze_checked = validate_bronze_task(raw_to_bronze_task())
+    @task(
+        task_id="validate_silver",
+        retries=1,
+        retry_delay=timedelta(minutes=10),
+        on_failure_callback=slack_failure_callback,
+    )
+    def validate_silver_task(raw_result: dict) -> None:
+        """BashOperator 라 handler 결과 dict 가 없어, Silver 파티션을 직접 열어서 확인합니다."""
+        year_month = raw_result["year_month"]
+        # job.py 는 파티션 내 최신 파일 1개만 골라 Spark 에 넘긴다 (재시도로 남은 옛 파일은 안 씀).
+        bronze_rows = pq.ParquetFile(raw_result["locations"][0]).metadata.num_rows
+
+        silver_partition = Path(DEFAULT_SILVER_DIR) / f"year_month={year_month}"
+        silver_files = sorted(silver_partition.glob("*.parquet"))
+        if not silver_files:
+            raise ValueError(f"Silver 파티션에 Parquet 파일이 없습니다: {silver_partition}")
+
+        transformer = importlib.import_module("jobs.bronze_to_silver.hvfhv.transformer")
+        expected_columns = {field.name for field in transformer.FINAL_SCHEMA.fields} - {"year_month"}
+
+        silver_rows = 0
+        for path in silver_files:
+            parquet_file = pq.ParquetFile(path)
+            if set(parquet_file.schema_arrow.names) != expected_columns:
+                raise ValueError(f"Silver 스키마 컬럼이 FINAL_SCHEMA 와 다릅니다: {path}")
+            silver_rows += parquet_file.metadata.num_rows
+
+        if silver_rows == 0:
+            raise ValueError(f"Silver 행 수가 0입니다: {silver_partition}")
+        if silver_rows > bronze_rows:
+            raise ValueError(f"Silver 행 수가 Bronze 보다 많습니다: {silver_rows} > {bronze_rows}")
+
+        # 다른 달 파티션이 이미 있는데 직전 달만 없으면 #165(정적 overwrite로 다른 달을 지움) 재발입니다.
+        other_partitions = [
+            p for p in Path(DEFAULT_SILVER_DIR).glob("year_month=*")
+            if p.name != silver_partition.name
+        ]
+        if other_partitions:
+            prev_first_day = datetime.strptime(year_month, "%Y-%m").replace(day=1) - timedelta(days=1)
+            prev_partition = Path(DEFAULT_SILVER_DIR) / f"year_month={prev_first_day:%Y-%m}"
+            if not any(prev_partition.glob("*.parquet")):
+                raise ValueError(f"직전 달 파티션이 사라졌습니다 (#165 재발): {prev_partition}")
+
+    # 태스크 의존성 연결: Bronze 검증을 통과해야 Spark 가 돌고, Spark 결과도 검증한다
+    raw_result = raw_to_bronze_task()
+    bronze_checked = validate_bronze_task(raw_result)
     bronze_checked >> bronze_to_silver_task
+
+    silver_checked = validate_silver_task(raw_result)
+    bronze_to_silver_task >> silver_checked
 
 
 # DAG 인스턴스 생성
