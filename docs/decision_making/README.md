@@ -26,3 +26,8 @@
 1. 지역 확장성 모델링 고려 : City,State도 함께 저장
 2. Docker CI 시간 단축 : setup-buildx-action을 사용하여 캐시 이용
 3. ISSUE/PR skill 제작 : Skill로 개발 외의 작업을 AI가 대신해주도록 제작
+
+### 8/12 ([상세 정리 문서 링크](/docs/decision_making/0812.md))
+1. Airflow 인프라(EC2 v.s. ECS Fargate) : EC2 사용
+2. Iceberg 도입 여부 : 도입 찬성
+3. Hive Style Partitioning 도입 : S3 기준 모든 데이터에 도입 / Iceberg 파티셔닝은 HVFHV에만
