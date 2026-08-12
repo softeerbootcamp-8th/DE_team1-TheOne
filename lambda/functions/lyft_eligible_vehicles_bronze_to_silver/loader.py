@@ -9,7 +9,6 @@ from pipeline_core.loader import Loader, WriteResult
 from ..common import lyft_eligible_vehicles_layout as layout
 
 logger = logging.getLogger(__name__)
-SILVER_FILE_NAME = f"{layout.DATASET}.parquet"
 
 # Uber Eligible Silver와 같은 컬럼을 사용해 차량 대장에서 함께 조인합니다.
 SCHEMA = pa.schema(
@@ -51,11 +50,7 @@ class LyftEligibleVehiclesSilverLoader(Loader):
                     f"{self._expect_collected_date} != {collected_date.isoformat()}"
                 )
 
-            path = (
-                layout.date_partition(self._base_dir, collected_date.isoformat())
-                / f"{layout.CITY_PARTITION_KEY}={city}"
-                / SILVER_FILE_NAME
-            )
+            path = layout.silver_file(self._base_dir, collected_date, city)
             path.parent.mkdir(parents=True, exist_ok=True)
 
             table = pa.Table.from_pylist(city_rows, schema=SCHEMA)
