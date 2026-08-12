@@ -2,15 +2,14 @@
 
 import logging
 from datetime import datetime
-from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-logger = logging.getLogger(__name__)
+from ..common import lyft_eligible_vehicles_layout as layout
 
-DATASET = "lyft_eligible_vehicles"
+logger = logging.getLogger(__name__)
 
 SCHEMA = pa.schema(
     [
@@ -27,21 +26,6 @@ SCHEMA = pa.schema(
 )
 
 
-def partition_path(base_dir: str, city_slug: str, collected_at: datetime) -> Path:
-    return (
-        Path(base_dir)
-        / DATASET
-        / f"collected_date={collected_at:%Y-%m-%d}"
-        / f"city={city_slug}"
-    )
-
-
-def bronze_file(base_dir: str, city_slug: str, collected_at: datetime) -> Path:
-    return partition_path(base_dir, city_slug, collected_at) / (
-        f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
-    )
-
-
 class LyftEligibleVehiclesBronzeLoader(Loader):
     """추출 결과를 선별하지 않고 일별 Bronze 파일 하나로 저장합니다."""
 
@@ -51,7 +35,7 @@ class LyftEligibleVehiclesBronzeLoader(Loader):
         self._collected_at = collected_at
 
     def write(self, data: list[dict]) -> WriteResult:
-        path = bronze_file(self._base_dir, self._city_slug, self._collected_at)
+        path = layout.bronze_file(self._base_dir, self._city_slug, self._collected_at)
         path.parent.mkdir(parents=True, exist_ok=True)
 
         table = pa.Table.from_pylist(data, schema=SCHEMA)
