@@ -10,6 +10,7 @@ from jobs.driver_master.traits import DISTANCE_LABELS, TIME_BLOCK_LABELS, WEEKDA
 
 TOP_SHARE_THRESHOLD = 0.20  # 점유율 이 이상인 카테고리를 "주요"로 채택
 MIN_CHURN_TENURE_DAYS = 30  # 이보다 짧게 다닌 기사는 이탈 처리하지 않음
+DRIVER_ID_NAMESPACE = uuid.UUID("4ab15f51-c492-5bb4-a228-18d98eab0e29")
 
 
 def _top_categories(counts: np.ndarray, labels: list[str]) -> list[str]:
@@ -32,7 +33,18 @@ def _resolve_churn_at(joined_at: np.datetime64, today: np.datetime64, churn_flag
     return joined_at + np.timedelta64(offset, "D")
 
 
-def aggregate_driver(trait_row: pd.Series, today: np.datetime64, rng: np.random.Generator) -> dict:
+def _driver_id(seed: int | None, row_number: int) -> str:
+    if seed is None:
+        return str(uuid.uuid4())
+    return str(uuid.uuid5(DRIVER_ID_NAMESPACE, f"{seed}:{row_number}"))
+
+
+def aggregate_driver(
+    trait_row: pd.Series,
+    today: np.datetime64,
+    rng: np.random.Generator,
+    driver_id: str | None = None,
+) -> dict:
     churn_at = _resolve_churn_at(trait_row["joined_at"], today, trait_row["churn_flag"], rng)
     log = simulate_driver(trait_row, today, churn_at, rng)
 
@@ -47,7 +59,7 @@ def aggregate_driver(trait_row: pd.Series, today: np.datetime64, rng: np.random.
     active_weekdays_labels = [WEEKDAY_LABELS[i] for i in trait_row["active_weekdays"]]
 
     return {
-        "driver_id": str(uuid.uuid4()),
+        "driver_id": driver_id or str(uuid.uuid4()),
         "driver_name": trait_row["driver_name"],
         "primary_distance_bands": _top_categories(log.distance_bucket_counts, DISTANCE_LABELS),
         "primary_time_blocks": _top_categories(log.time_block_counts, TIME_BLOCK_LABELS),
@@ -67,5 +79,8 @@ def aggregate_driver(trait_row: pd.Series, today: np.datetime64, rng: np.random.
 
 def build_driver_master_table(traits_df: pd.DataFrame, today: np.datetime64, seed: int | None = None) -> pd.DataFrame:
     rng = np.random.default_rng(seed)
-    rows = [aggregate_driver(row, today, rng) for _, row in traits_df.iterrows()]
+    rows = [
+        aggregate_driver(row, today, rng, driver_id=_driver_id(seed, row_number))
+        for row_number, (_, row) in enumerate(traits_df.iterrows())
+    ]
     return pd.DataFrame(rows)
