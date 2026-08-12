@@ -10,8 +10,17 @@ from datetime import datetime, timezone
 from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
-from .extractor import VehicleCatalogExtractor
+from .extractor import (
+    VehicleCatalogCardsExtractor,
+    VehicleCatalogHtmlExtractor,
+    VehicleCatalogImageExtractor,
+    row_from_snapshot,
+)
 from .loader import VehicleCatalogBronzeLoader
+from .snapshot import (
+    VehicleCatalogHtmlSnapshotLoader,
+    VehicleCatalogImageSnapshotLoader,
+)
 
 configure_lambda_logging()
 
@@ -21,14 +30,35 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
 
-    result = Pipeline(
-        VehicleCatalogExtractor(collected_at),
-        VehicleCatalogBronzeLoader(base_dir, collected_at),
+    html_result = Pipeline(
+        VehicleCatalogHtmlExtractor(),
+        VehicleCatalogHtmlSnapshotLoader(base_dir, collected_at),
     ).run()
+    html_snapshot_path = html_result.write_result.location
+
+    cards = VehicleCatalogCardsExtractor(html_snapshot_path).extract()
+    rows: list[dict] = []
+    for card in cards:
+        image_result = Pipeline(
+            VehicleCatalogImageExtractor(card["image_url"]),
+            VehicleCatalogImageSnapshotLoader(
+                base_dir, collected_at, card["image_url"]
+            ),
+        ).run()
+        rows.append(
+            row_from_snapshot(
+                card,
+                html_snapshot_path,
+                image_result.write_result.location,
+                collected_at,
+            )
+        )
+
+    write_result = VehicleCatalogBronzeLoader(base_dir, collected_at).write(rows)
 
     return {
-        "row_count": result.write_result.row_count,
-        "locations": [result.write_result.location],
+        "row_count": write_result.row_count,
+        "locations": [write_result.location],
         # Silver 배치가 이 하루치 파티션을 읽습니다 (Bronze 파티션 키와 동일).
         "collected_date": f"{collected_at:%Y-%m-%d}",
     }
