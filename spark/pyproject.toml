@@ -33,4 +33,4 @@ dev = [
 pipeline-core = { path = "../libs/pipeline_core" }
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", ".."]
