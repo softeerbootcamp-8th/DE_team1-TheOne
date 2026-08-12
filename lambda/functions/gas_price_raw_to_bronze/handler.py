@@ -8,8 +8,9 @@ from pathlib import Path
 from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
-from .extractor import GasPriceExtractor
+from .extractor import GasPriceHtmlExtractor, GasPriceSnapshotExtractor
 from .loader import GasPriceBronzeLoader
+from .snapshot import GasPriceSnapshotLoader
 
 configure_lambda_logging()
 
@@ -19,8 +20,14 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     collected_at = datetime.now(timezone.utc)
 
+    snapshot_result = Pipeline(
+        GasPriceHtmlExtractor(),
+        GasPriceSnapshotLoader(base_dir, collected_at),
+    ).run()
+    snapshot_location = snapshot_result.write_result.location
+
     result = Pipeline(
-        GasPriceExtractor(),
+        GasPriceSnapshotExtractor(snapshot_location),
         GasPriceBronzeLoader(base_dir, collected_at),
     ).run()
     location = result.write_result.location
