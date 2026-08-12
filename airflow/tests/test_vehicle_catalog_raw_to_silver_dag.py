@@ -78,14 +78,29 @@ def silver_event(events: list[tuple[str, dict]]) -> dict:
     return matched[0]
 
 
-def test_DAG_는_두_태스크를_갖고_Bronze_다음에_Silver_가_온다(dag_module):
+def test_적재와_검증이_번갈아_이어진다(dag_module):
+    """raw_to_bronze -> validate_bronze -> bronze_to_silver -> validate_silver.
+
+    검증이 변환 앞에 있어야 깨진 Bronze 를 읽지 않습니다. 이 순서가 뒤집히면
+    Silver 가 먼저 돌아 검증이 사후 통보가 됩니다.
+    """
     dag = dag_module.vehicle_catalog_dag
 
     assert dag.dag_id == DAG_ID
-    assert set(dag.task_ids) == {"raw_to_bronze", "bronze_to_silver"}
-    # 순서가 뒤집히면 Silver 가 아직 없는 Bronze 파티션을 읽습니다.
-    assert dag.get_task("bronze_to_silver").upstream_task_ids == {"raw_to_bronze"}
+    assert set(dag.task_ids) == {
+        "raw_to_bronze",
+        "validate_bronze",
+        "bronze_to_silver",
+        "validate_silver",
+    }
     assert dag.get_task("raw_to_bronze").upstream_task_ids == set()
+    assert dag.get_task("validate_bronze").upstream_task_ids == {"raw_to_bronze"}
+    # Bronze 결과(collected_date)가 필요해서 raw_to_bronze 에도 붙어 있습니다.
+    assert dag.get_task("bronze_to_silver").upstream_task_ids == {
+        "raw_to_bronze",
+        "validate_bronze",
+    }
+    assert dag.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}
 
 
 def test_Bronze_event_는_base_dir_하나만_넘긴다(dag_module, events):
