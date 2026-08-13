@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+from airflow.sdk.exceptions import AirflowSkipException
 
 try:
     from airflow.sdk import Param, dag, task
@@ -214,6 +215,65 @@ def resolve_target_year_month(logical_date: datetime, params: dict) -> tuple[str
     return year_str, month_str
 
 
+# 직전 달부터 몇 달까지 거슬러 보며 찾을지. TLC 지연은 두 달 안팎이지만 공백이
+# 길어질 수 있어 여유를 둡니다. 상한이 없으면 원본이 통째로 사라졌을 때 수십 번
+# HEAD 를 던지게 됩니다.
+MAX_MONTH_LOOKBACK = 6
+
+
+def already_collected(base_dir: str, year_month: str) -> bool:
+    """그 달 Bronze 파티션에 파일이 이미 있는지."""
+    partition = Path(base_dir) / "hvfhv" / f"year_month={year_month}"
+    return partition.is_dir() and any(partition.glob("*.parquet"))
+
+
+def resolve_collectable_year_month(
+    logical_date: datetime, params: dict, base_dir: str, is_available=None
+) -> tuple[str, str] | None:
+    """**아직 안 받았고 TLC 에 올라와 있는** 가장 최신 달을 고릅니다.
+
+    직전 달을 그대로 쓰면 안 됩니다 — TLC 는 두 달쯤 늦게 공개해서 그 파일은
+    존재한 적이 없습니다(#345). "2개월 전" 같은 상수도 지연 폭이 일정하지 않아
+    다시 틀립니다. 그래서 있는지 물어보고 정합니다.
+
+    이미 받은 달을 건너뛰는 이유는 따로 있습니다. "있는 것 중 최신" 만 보면 새
+    달이 공개될 때까지 매달 같은 수백 MB 를 다시 받아 파티션에 파일만 쌓입니다.
+
+    새로 받을 달이 없으면 `None` 입니다. 실패가 아닙니다 — 아직 공개되지 않은
+    것은 오류가 아니고, 다음 달에 다시 보면 됩니다.
+    """
+    if params.get("year") and params.get("month"):
+        # 수동 지정은 존중합니다. 백필은 이미 받은 달을 다시 받는 것이 목적입니다.
+        return resolve_target_year_month(logical_date, params)
+
+    if is_available is None:
+        is_available = importlib.import_module(
+            "lambda.functions.hvfhv_raw_to_bronze.extractor"
+        ).is_available
+
+    if logical_date.tzinfo is None:
+        logical_date = logical_date.replace(tzinfo=timezone.utc)
+
+    cursor = logical_date.replace(day=1)
+    for _ in range(MAX_MONTH_LOOKBACK):
+        cursor = (cursor - timedelta(days=1)).replace(day=1)
+        year_str, month_str = cursor.strftime("%Y"), cursor.strftime("%m")
+        year_month = f"{year_str}-{month_str}"
+
+        if already_collected(base_dir, year_month):
+            logger.info("이미 수집한 달입니다: %s", year_month)
+            continue
+        if is_available(year_str, month_str):
+            logger.info("수집 대상 연월: %s", year_month)
+            return year_str, month_str
+
+    logger.info(
+        "새로 받을 달이 없습니다 (최근 %d개월 확인). 다음 실행에서 다시 봅니다.",
+        MAX_MONTH_LOOKBACK,
+    )
+    return None
+
+
 default_args = {
     "owner": "DE_team1",
     "depends_on_past": False,
@@ -257,8 +317,13 @@ def hvfhv_raw_to_silver_pipeline():
         logical_date = context.get("logical_date") or context.get("data_interval_start") or datetime.now(timezone.utc)
         params = context.get("params", {})
 
-        year_str, month_str = resolve_target_year_month(logical_date, params)
         base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
+        target = resolve_collectable_year_month(logical_date, params, base_dir)
+        if target is None:
+            raise AirflowSkipException(
+                "TLC 에 새로 공개된 달이 없습니다. 다음 실행에서 다시 확인합니다."
+            )
+        year_str, month_str = target
 
         event = {
             "year": year_str,

@@ -49,3 +49,42 @@ def test_연월이_없으면_수집_전에_실패한다(event, monkeypatch):
 
     with pytest.raises(ValueError, match="year와 month"):
         lambda_handler(event)
+
+
+# --- 원본 공개 여부 확인 (#345) -------------------------------------------
+#
+# TLC 는 두 달쯤 늦게 공개합니다. 받기 전에 있는지 물어봐야 스케줄 실행이 매번
+# 죽지 않습니다. 네트워크를 타지 않도록 `requests.head` 만 대체합니다.
+
+
+class FakeResponse:
+    def __init__(self, status_code: int):
+        self.status_code = status_code
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}")
+
+
+@pytest.mark.parametrize(
+    ("status_code", "expected"),
+    [(200, True), (403, False), (404, False)],
+)
+def test_공개_여부를_상태코드로_판단한다(monkeypatch, status_code, expected):
+    from functions.hvfhv_raw_to_bronze import extractor
+
+    monkeypatch.setattr(
+        extractor.requests, "head", lambda *a, **kw: FakeResponse(status_code)
+    )
+
+    assert extractor.is_available("2026", "07") is expected
+
+
+def test_서버_오류는_아직_없음_으로_삼키지_않는다(monkeypatch):
+    """삼키면 일시 장애가 '미공개'로 둔갑해 조용히 아무것도 안 하게 됩니다."""
+    from functions.hvfhv_raw_to_bronze import extractor
+
+    monkeypatch.setattr(extractor.requests, "head", lambda *a, **kw: FakeResponse(500))
+
+    with pytest.raises(RuntimeError):
+        extractor.is_available("2026", "07")
