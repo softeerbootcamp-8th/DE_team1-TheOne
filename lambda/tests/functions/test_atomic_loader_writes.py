@@ -7,12 +7,32 @@ import pyarrow as pa
 import pytest
 
 from functions.driver_master_raw_to_bronze.loader import CompanySnapshotBronzeLoader
+from functions.ev_charging_stations_bronze_to_silver.loader import (
+    SCHEMA as EV_SILVER_SCHEMA,
+    EvChargingSilverLoader,
+)
+from functions.fueleconomy_vehicle_specs_bronze_to_silver.loader import (
+    SCHEMA as SPECS_SILVER_SCHEMA,
+    VehicleSpecsSilverLoader,
+)
 from functions.fueleconomy_vehicle_specs_raw_to_bronze.loader import (
     VehicleSpecsBronzeLoader,
 )
 from functions.lyft_eligible_vehicles_raw_to_bronze.loader import (
     SCHEMA as LYFT_BRONZE_SCHEMA,
     LyftEligibleVehiclesBronzeLoader,
+)
+from functions.lyft_eligible_vehicles_bronze_to_silver.loader import (
+    SCHEMA as LYFT_SILVER_SCHEMA,
+    LyftEligibleVehiclesSilverLoader,
+)
+from functions.gas_price_bronze_to_silver.loader import (
+    SCHEMA as GAS_SILVER_SCHEMA,
+    GasPriceSilverLoader,
+)
+from functions.uber_eligible_vehicles_bronze_to_silver.loader import (
+    SCHEMA as UBER_SILVER_SCHEMA,
+    UberEligibleVehiclesSilverLoader,
 )
 from functions.uber_eligible_vehicles_raw_to_bronze.loader import (
     SCHEMA as UBER_BRONZE_SCHEMA,
@@ -21,6 +41,14 @@ from functions.uber_eligible_vehicles_raw_to_bronze.loader import (
 from functions.vehicle_catalog_raw_to_bronze.loader import (
     SCHEMA as CATALOG_BRONZE_SCHEMA,
     VehicleCatalogBronzeLoader,
+)
+from functions.vehicle_catalog_bronze_to_silver.loader import (
+    SCHEMA as CATALOG_SILVER_SCHEMA,
+    VehicleCatalogSilverLoader,
+)
+from functions.vehicle_master_silver.loader import (
+    SCHEMA as MASTER_SILVER_SCHEMA,
+    VehicleMasterSilverLoader,
 )
 
 COLLECTED_AT = datetime(2026, 8, 13, 3, tzinfo=timezone.utc)
@@ -37,6 +65,8 @@ def _row(schema: pa.Schema) -> dict:
             values[field.name] = 1.0
         elif pa.types.is_timestamp(field.type):
             values[field.name] = COLLECTED_AT
+        elif pa.types.is_date(field.type):
+            values[field.name] = COLLECTED_AT.date()
         elif pa.types.is_list(field.type):
             values[field.name] = ["value"]
         else:
@@ -82,6 +112,79 @@ def _catalog(root):
     "factory", [_company, _specs, _lyft, _uber, _catalog], ids=lambda fn: fn.__name__
 )
 def test_Raw_Bronze_교체실패는_기존파일을_보존하고_tmp를_정리한다(
+    factory, tmp_path, monkeypatch
+):
+    loader, data = factory(tmp_path)
+    loader.write(data)
+    originals = {path: path.read_bytes() for path in tmp_path.rglob("*.parquet")}
+    attempted_sources = []
+
+    def fail_replace(source, target):
+        attempted_sources.append(source)
+        raise OSError("교체 실패")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    for _ in range(2):
+        with pytest.raises(OSError, match="교체 실패"):
+            loader.write(data)
+
+    assert len(set(attempted_sources)) == 2
+    assert {path: path.read_bytes() for path in originals} == originals
+    assert not [path for path in tmp_path.rglob("*") if path.suffix == ".tmp"]
+
+
+def _gas_silver(root):
+    return GasPriceSilverLoader(str(root), "2026-08"), [_row(GAS_SILVER_SCHEMA)]
+
+
+def _ev_silver(root):
+    return EvChargingSilverLoader(str(root), "2026-08"), [_row(EV_SILVER_SCHEMA)]
+
+
+def _specs_silver(root):
+    row = _row(SPECS_SILVER_SCHEMA)
+    row.update({"source": "fueleconomy.gov", "collected_at": COLLECTED_AT})
+    return VehicleSpecsSilverLoader(str(root)), [row]
+
+
+def _lyft_silver(root):
+    row = _row(LYFT_SILVER_SCHEMA)
+    row.update({"city": "new-york", "collected_at": COLLECTED_AT})
+    return LyftEligibleVehiclesSilverLoader(str(root)), [row]
+
+
+def _uber_silver(root):
+    row = _row(UBER_SILVER_SCHEMA)
+    row.update({"city": "new-york", "collected_at": COLLECTED_AT})
+    return UberEligibleVehiclesSilverLoader(str(root)), [row]
+
+
+def _catalog_silver(root):
+    row = _row(CATALOG_SILVER_SCHEMA)
+    row.update({"vendor": "fasttrack", "collected_at": COLLECTED_AT})
+    return VehicleCatalogSilverLoader(str(root)), [row]
+
+
+def _master_silver(root):
+    row = _row(MASTER_SILVER_SCHEMA)
+    row["city"] = "new-york"
+    return VehicleMasterSilverLoader(str(root), "2026-08-13"), [row]
+
+
+@pytest.mark.parametrize(
+    "factory",
+    [
+        _gas_silver,
+        _ev_silver,
+        _specs_silver,
+        _lyft_silver,
+        _uber_silver,
+        _catalog_silver,
+        _master_silver,
+    ],
+    ids=lambda fn: fn.__name__,
+)
+def test_Silver_교체실패는_기존파일을_보존하고_tmp를_정리한다(
     factory, tmp_path, monkeypatch
 ):
     loader, data = factory(tmp_path)

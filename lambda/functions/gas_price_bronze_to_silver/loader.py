@@ -1,13 +1,13 @@
 """정제된 Gas Price 데이터를 월별 Silver Parquet으로 적재합니다."""
 
 import logging
-from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from pipeline_core.loader import Loader, WriteResult
 
+from ..common.atomic_write import atomic_write
 from ..common import gas_price_layout as layout
 
 logger = logging.getLogger(__name__)
@@ -33,14 +33,13 @@ class GasPriceSilverLoader(Loader):
 
         path = layout.silver_file(self._base_dir, self._collected_month)
         path.parent.mkdir(parents=True, exist_ok=True)
-        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
         table = pa.Table.from_pylist(data, schema=SCHEMA)
-
-        try:
-            pq.write_table(table, temporary_path, compression="snappy")
-            temporary_path.replace(path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
+        atomic_write(
+            path,
+            lambda temporary: pq.write_table(
+                table, temporary, compression="snappy"
+            ),
+        )
 
         logger.info(
             "silver_load done path=%s collected_month=%s rows=%d",

@@ -1,12 +1,12 @@
 """뉴욕시 일별 평균 충전 요금을 월별 Silver Parquet으로 적재합니다."""
 
 import logging
-from uuid import uuid4
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from ..common.atomic_write import atomic_write
 from ..common import ev_charging_layout as layout
 
 logger = logging.getLogger(__name__)
@@ -33,12 +33,12 @@ class EvChargingSilverLoader(Loader):
         path = layout.silver_file(self._base_dir, self._collected_month)
         path.parent.mkdir(parents=True, exist_ok=True)
         table = pa.Table.from_pylist(data, schema=SCHEMA)
-        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        try:
-            pq.write_table(table, temporary_path, compression="snappy")
-            temporary_path.replace(path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
+        atomic_write(
+            path,
+            lambda temporary: pq.write_table(
+                table, temporary, compression="snappy"
+            ),
+        )
 
         logger.info(
             "silver_load done path=%s collected_month=%s rows=%d",
