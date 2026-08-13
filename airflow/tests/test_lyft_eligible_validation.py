@@ -2,11 +2,12 @@
 
 실제 Parquet을 tmp_path에 만들고 validate_bronze·validate_silver Task 함수를
 직접 호출합니다. Handler 응답·경로·파일 경계와 Bronze/Silver GX 실패를 분리해
-검증하며 네트워크는 사용하지 않습니다.
+검증합니다. Silver의 논리 문자열 타입과 숫자 폭도 확인하며 네트워크는 사용하지 않습니다.
 """
 
 import importlib
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -308,6 +309,37 @@ def test_Bronze_collected_at에_시간대가_없으면_GX가_실패한다(tmp_pa
         )
 
 
+def test_Bronze_collected_at의_UTC_날짜가_같아도_시간대가_UTC가_아니면_GX가_실패한다(
+    tmp_path,
+):
+    collected_at = COLLECTED_AT.astimezone(ZoneInfo("America/New_York"))
+    records = bronze_rows()
+    for record in records:
+        record["collected_at"] = collected_at
+    schema = pa.schema(
+        pa.field(
+            field.name,
+            pa.timestamp(field.type.unit, tz="America/New_York"),
+        )
+        if field.name == "collected_at"
+        else field
+        for field in bronze_loader.SCHEMA
+    )
+    path = write_bronze_records(tmp_path, records, schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"expect_column_values_to_be_in_set"
+            r"\[collected_at_timezone_is_utc\]"
+        ),
+    ):
+        validate_bronze(
+            bronze_result([path]),
+            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+        )
+
+
 def test_도시가_여럿이어도_행_수_합계가_맞으면_통과한다(tmp_path):
     paths = [
         write_silver(tmp_path, "new-york", silver_rows()),
@@ -466,13 +498,10 @@ def test_Silver_스키마가_다르면_실패한다(tmp_path):
 
 def test_Silver_min_year_타입이_다르면_GX가_실패한다(tmp_path):
     schema = pa.schema(
-        pa.field(field.name, pa.string()) if field.name == "min_year" else field
+        pa.field(field.name, pa.int32()) if field.name == "min_year" else field
         for field in silver_loader.SCHEMA
     )
-    records = silver_rows()
-    for record in records:
-        record["min_year"] = "2018"
-    path = write_silver(tmp_path, CITY, records, schema=schema)
+    path = write_silver(tmp_path, CITY, silver_rows(), schema=schema)
 
     with pytest.raises(
         ValueError,
@@ -483,7 +512,7 @@ def test_Silver_min_year_타입이_다르면_GX가_실패한다(tmp_path):
         )
 
 
-def test_GX가_구분하지_못하는_Arrow_물리_스키마가_다르면_실패한다(tmp_path):
+def test_Silver_string과_large_string은_논리_타입이_같아_통과한다(tmp_path):
     schema = pa.schema(
         pa.field(field.name, pa.large_string())
         if field.name == "make_key"
@@ -492,10 +521,7 @@ def test_GX가_구분하지_못하는_Arrow_물리_스키마가_다르면_실패
     )
     path = write_silver(tmp_path, CITY, silver_rows(), schema=schema)
 
-    with pytest.raises(ValueError, match="Silver 스키마"):
-        validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
-        )
+    validate_silver(silver_result([path]), params={"silver_dir": str(tmp_path)})
 
 
 def test_행_수_합계가_row_count_와_다르면_실패한다(tmp_path):

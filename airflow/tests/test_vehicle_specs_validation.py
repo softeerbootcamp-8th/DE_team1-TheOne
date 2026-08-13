@@ -4,7 +4,7 @@
 한 달 동안 아무도 모릅니다. 매일 도는 DAG 보다 검증이 더 중요한 이유입니다.
 
 검증 태스크의 값어치는 "통과한다" 가 아니라 "불량을 통과시키지 않는다" 입니다.
-그래서 이 파일은 **정상 2건 + 불량 여러 건** 으로 짜여 있습니다.
+그래서 이 파일은 정상·논리 타입 경계·불량 시나리오로 짜여 있습니다.
 
 Bronze는 원본 84컬럼 전체를 고정하지 않고 Silver에 필요한 컬럼과 변환 가능한 행 비율을
 검증합니다. Silver는 조인 키·연식·선택형 제원 값과 출처별 ID 중복을 검증합니다.
@@ -15,6 +15,7 @@ Bronze는 원본 84컬럼 전체를 고정하지 않고 Silver에 필요한 컬�
 import importlib
 import math
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -243,6 +244,36 @@ def test_Bronze_collected_at에_시간대가_없으면_GX가_실패한다(tmp_pa
         )
 
 
+def test_Bronze_collected_at의_UTC_날짜가_같아도_시간대가_UTC가_아니면_GX가_실패한다(
+    tmp_path,
+):
+    collected_at = COLLECTED_AT.astimezone(ZoneInfo("America/New_York"))
+    records = bronze_rows()
+    for record in records:
+        record["collected_at"] = collected_at
+    schema = pa.schema(
+        pa.field(
+            field.name,
+            pa.timestamp(field.type.unit, tz="America/New_York"),
+        )
+        if field.name == "collected_at"
+        else field
+        for field in bronze_loader.build_schema(records[0])
+    )
+    path = write_bronze_records(tmp_path, records, schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"expect_column_values_to_be_in_set"
+            r"\[collected_at_timezone_is_utc\]"
+        ),
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
 def test_출처가_여럿이어도_행_수_합계가_맞으면_통과한다(tmp_path):
     paths = [
         write_silver(tmp_path, "fueleconomy.gov", silver_rows()),
@@ -340,6 +371,22 @@ def test_Silver_제원_값이_비정상이면_GX가_실패한다(
     assert "observed_value=" in caplog.text
 
 
+def test_Silver_int32_연식은_int16_계약과_달라_GX가_실패한다(tmp_path):
+    schema = pa.schema(
+        pa.field(field.name, pa.int32()) if field.name == "year" else field
+        for field in silver_loader.SCHEMA
+    )
+    path = write_silver(tmp_path, SOURCE, silver_rows(), schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_of_type\[year\]",
+    ):
+        validate_silver(
+            silver_result([path]), params={"silver_dir": str(tmp_path)}
+        )
+
+
 def test_Silver_source_id가_중복되면_GX가_실패한다(tmp_path):
     records = silver_rows()
     records[1]["source_id"] = records[0]["source_id"]
@@ -354,7 +401,7 @@ def test_Silver_source_id가_중복되면_GX가_실패한다(tmp_path):
         )
 
 
-def test_GX가_구분하지_못하는_Arrow_물리_스키마가_다르면_실패한다(tmp_path):
+def test_Silver_string과_large_string은_논리_타입이_같아_통과한다(tmp_path):
     schema = pa.schema(
         pa.field(field.name, pa.large_string())
         if field.name == "source_id"
@@ -363,10 +410,7 @@ def test_GX가_구분하지_못하는_Arrow_물리_스키마가_다르면_실패
     )
     path = write_silver(tmp_path, SOURCE, silver_rows(), schema=schema)
 
-    with pytest.raises(ValueError, match="Silver 스키마"):
-        validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
-        )
+    validate_silver(silver_result([path]), params={"silver_dir": str(tmp_path)})
 
 
 # --------------------------------------------------------------------------

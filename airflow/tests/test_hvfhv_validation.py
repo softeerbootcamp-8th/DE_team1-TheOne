@@ -7,6 +7,7 @@ BashOperator 라 handler 결과 dict 자체가 없어 파티션을 직접 열어
 
 대용량 원본을 Pandas 에 모두 올리지 않도록 Parquet 을 배치 단위로 검사합니다.
 실제 Parquet 을 tmp_path 에 쓰며 네트워크와 Spark 는 사용하지 않습니다.
+Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 """
 
 import importlib
@@ -348,6 +349,42 @@ def test_silver_FINAL_SCHEMA_타입이_다르면_GX가_실패한다(
     schema = pa.schema(
         pa.field(field.name, pa.int32())
         if field.name == "trip_time"
+        else field
+        for field in SILVER_SCHEMA
+    )
+    write_silver(tmp_path / "silver", rows=5, schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_in_set\[schema_signature\]",
+    ):
+        validate_silver(result_for(bronze_path))
+
+
+def test_silver_timestamp_unit이_달라도_논리_타입이_같으면_통과한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    schema = pa.schema(
+        pa.field(field.name, pa.timestamp("ms"))
+        if field.name == "pickup_datetime"
+        else field
+        for field in SILVER_SCHEMA
+    )
+    write_silver(tmp_path / "silver", rows=5, schema=schema)
+
+    validate_silver(result_for(bronze_path))
+
+
+def test_silver_timestamp_timezone이_기대_스키마와_다르면_실패한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    schema = pa.schema(
+        pa.field(field.name, pa.timestamp("ms", tz="UTC"))
+        if field.name == "pickup_datetime"
         else field
         for field in SILVER_SCHEMA
     )
