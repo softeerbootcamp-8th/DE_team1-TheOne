@@ -3,10 +3,14 @@
 1. [필수] 불합격 비율이 error_threshold 이상이면 ValueError (경계값 포함)
 2. [필수] REQUIRED_COLUMNS 가 하나라도 없으면 ValueError
 3. [필수] 출력이 FINAL_SCHEMA 와 컬럼 순서·타입까지 일치
-4. trip_miles/trip_time/base_passenger_fare/driver_pay 경계값이 걸러짐
-5. hvfhs_license_num 4종이 플랫폼명으로, 미지값은 Unknown으로 매핑
-6. 플랫폼·OD별 관측 20건 이상이고 중앙값의 115% 이상인 운임에 추정 서비스 등급 부여
-7. zone 조인에 실패한 행이 null로 남고 사라지지 않음 (left join)
+4. 동일 원본은 입력 순서·재실행과 무관하게 같은 trip_key 생성
+5. 키 구성 원본값이 다르면 다른 trip_key 생성
+6. 완전히 동일한 원본 운행이 중복되면 명시적으로 실패
+7. trip_key 는 Parquet 왕복 후에도 null 없는 문자열로 보존
+8. trip_miles/trip_time/base_passenger_fare/driver_pay 경계값이 걸러짐
+9. hvfhs_license_num 4종이 플랫폼명으로, 미지값은 Unknown으로 매핑
+10. 플랫폼·OD별 관측 20건 이상이고 중앙값의 115% 이상인 운임에 추정 서비스 등급 부여
+11. zone 조인에 실패한 행이 null로 남고 사라지지 않음 (left join)
 """
 
 from datetime import datetime
@@ -50,7 +54,7 @@ def test_불합격_비율이_error_threshold와_정확히_같으면_ValueError(s
 
 
 def test_불합격_비율이_error_threshold보다_낮으면_통과한다(spark):
-    rows = [_row(), _row(), _row(trip_miles=0.0)]
+    rows = [_row(trip_miles=1.0), _row(trip_miles=2.0), _row(trip_miles=0.0)]
     df = spark.createDataFrame(rows)
     transformer = HVFHVCleanTransformer(error_threshold=0.5)
 
@@ -78,6 +82,60 @@ def test_출력_스키마가_FINAL_SCHEMA와_순서_타입까지_일치한다(sp
 
     assert [field.name for field in result.schema] == [field.name for field in FINAL_SCHEMA]
     assert [field.dataType for field in result.schema] == [field.dataType for field in FINAL_SCHEMA]
+
+
+def test_동일_원본은_입력_순서와_재실행에_관계없이_같은_trip_key를_갖는다(spark):
+    rows = [_row(trip_miles=1.0), _row(trip_miles=2.0)]
+    transformer = HVFHVCleanTransformer(error_threshold=1.0)
+
+    first = transformer.transform(spark.createDataFrame(rows))
+    second = transformer.transform(spark.createDataFrame(list(reversed(rows))))
+
+    first_keys = {row["trip_miles"]: row["trip_key"] for row in first.collect()}
+    second_keys = {row["trip_miles"]: row["trip_key"] for row in second.collect()}
+    assert first_keys == second_keys
+    assert all(first_keys.values())
+
+
+@pytest.mark.parametrize(
+    ("field", "changed_value"),
+    [
+        ("pickup_datetime", datetime(2024, 3, 1, 10, 1, 0)),
+        ("PULocationID", 3),
+        ("trip_miles", 6.0),
+        ("trip_time", 601),
+        ("base_passenger_fare", 11.0),
+        ("hvfhs_license_num", "HV0005"),
+    ],
+)
+def test_키_구성_원본값이_달라지면_trip_key도_달라진다(spark, field, changed_value):
+    rows = [_row(), _row(**{field: changed_value})]
+
+    result = HVFHVCleanTransformer(error_threshold=1.0).transform(spark.createDataFrame(rows))
+
+    keys = [row["trip_key"] for row in result.select("trip_key").collect()]
+    assert len(set(keys)) == 2
+
+
+def test_완전히_동일한_원본_운행이_중복되면_ValueError(spark):
+    df = spark.createDataFrame([_row(), _row()])
+
+    with pytest.raises(ValueError, match="trip_key 중복"):
+        HVFHVCleanTransformer(error_threshold=1.0).transform(df)
+
+
+def test_trip_key는_Parquet_왕복_후에도_null_없는_문자열로_보존된다(spark, tmp_path):
+    result = HVFHVCleanTransformer(error_threshold=1.0).transform(
+        spark.createDataFrame([_row(trip_miles=1.0), _row(trip_miles=2.0)])
+    )
+    output_path = tmp_path / "hvfhv"
+
+    result.write.mode("overwrite").parquet(str(output_path))
+    restored = spark.read.parquet(str(output_path))
+
+    assert restored.schema["trip_key"].dataType.simpleString() == "string"
+    assert restored.filter(restored.trip_key.isNull()).count() == 0
+    assert restored.select("trip_key").distinct().count() == restored.count()
 
 
 def test_trip_miles_경계값이_걸러진다(spark):

@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from pyspark.sql import Column, DataFrame, Window
-from pyspark.sql.functions import col, count, date_format, lit, percentile_approx, when
+from pyspark.sql.functions import col, count, date_format, lit, percentile_approx, sha2, struct, to_json, when
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, DoubleType, LongType, TimestampType
 )
@@ -13,6 +13,7 @@ from pipeline_core.transformer import Transformer
 logger = logging.getLogger(__name__)
 
 FINAL_SCHEMA = StructType([
+    StructField("trip_key", StringType(), False),
     StructField("pickup_datetime", TimestampType(), True),
     StructField("dropoff_datetime", TimestampType(), True),
     StructField("PULocationID", IntegerType(), True),
@@ -42,6 +43,19 @@ FINAL_SCHEMA = StructType([
 ])
 
 REQUIRED_COLUMNS = [
+    "pickup_datetime",
+    "dropoff_datetime",
+    "PULocationID",
+    "DOLocationID",
+    "trip_miles",
+    "trip_time",
+    "base_passenger_fare",
+    "driver_pay",
+    "hvfhs_license_num",
+]
+
+TRIP_KEY_COLUMNS = [
+    "hvfhs_license_num",
     "pickup_datetime",
     "dropoff_datetime",
     "PULocationID",
@@ -130,7 +144,11 @@ class HVFHVCleanTransformer(Transformer):
             df_zone = spark.read.option("header", "true").csv(str(zone_path))
 
         # 2.1 파생 컬럼 추가
-        df_transformed = df_valid.withColumn(
+        canonical_trip = to_json(
+            struct(*(col(name).alias(name) for name in TRIP_KEY_COLUMNS)),
+            options={"ignoreNullFields": "false"},
+        )
+        df_transformed = df_valid.withColumn("trip_key", sha2(canonical_trip, 256)).withColumn(
             "platform_name",
             when(col("hvfhs_license_num") == "HV0002", "Juno")
             .when(col("hvfhs_license_num") == "HV0003", "Uber")
@@ -141,6 +159,19 @@ class HVFHVCleanTransformer(Transformer):
          .withColumn("driver_id", lit(None).cast("string")) \
          .withColumn("taxi_model_id", lit(None).cast("string")) \
          .withColumn("year_month", date_format(col("pickup_datetime"), "yyyy-MM"))
+
+        duplicate_key = (
+            df_transformed.groupBy("year_month", "trip_key")
+            .count()
+            .filter(col("count") > 1)
+            .limit(1)
+            .first()
+        )
+        if duplicate_key:
+            raise ValueError(
+                "대상 월에 trip_key 중복이 있습니다: "
+                f"year_month={duplicate_key['year_month']}, trip_key={duplicate_key['trip_key']}"
+            )
 
         # TLC 원천에는 실제 상품 등급이 없으므로 플랫폼·OD별 기본 운임으로만 추정한다.
         # 수요 할증 등 다른 원인도 포함될 수 있어 관측 등급이 아닌 estimated 값이다.
