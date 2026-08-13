@@ -309,7 +309,9 @@ def hvfhv_raw_to_silver_pipeline():
         }
 
         logger.info("raw_to_bronze 작업 시작: event=%s", event)
-        result = lambda_handler_for("hvfhv")(event=event)
+        # `lambda/functions/` 아래의 **디렉터리 이름**입니다. 데이터셋 이름("hvfhv")을
+        # 넘기면 import 가 실패합니다 (#322).
+        result = lambda_handler_for("hvfhv_raw_to_bronze")(event=event)
         logger.info("raw_to_bronze 작업 완료: result=%s", result)
         return result
 
