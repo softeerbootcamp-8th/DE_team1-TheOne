@@ -148,6 +148,39 @@ def test_Bronze_경로가_base_dir_layout과_다르면_막는다(tmp_path):
         validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
+# 2026-06 원본 Parquet 의 footer 에서 직접 읽은 실제 시그니처입니다.
+# `bronze_loader.SCHEMA` 로 픽스처를 만들면 SCHEMA 가 틀려도 자기 자신과 비교돼
+# 통과합니다. 실제 값과의 대조는 이렇게 문자열을 박아두어야만 됩니다 (#324).
+TLC_SCHEMA_SIGNATURE = (
+    "hvfhs_license_num:large_string|dispatching_base_num:large_string"
+    "|originating_base_num:large_string|request_datetime:timestamp[us]"
+    "|on_scene_datetime:timestamp[us]|pickup_datetime:timestamp[us]"
+    "|dropoff_datetime:timestamp[us]|PULocationID:int32|DOLocationID:int32"
+    "|trip_miles:double|trip_time:int64|base_passenger_fare:double|tolls:double"
+    "|bcf:double|sales_tax:double|congestion_surcharge:double|airport_fee:double"
+    "|tips:double|driver_pay:double|shared_request_flag:large_string"
+    "|shared_match_flag:large_string|access_a_ride_flag:large_string"
+    "|wav_request_flag:large_string|wav_match_flag:large_string"
+    "|cbd_congestion_fee:double"
+)
+
+
+def test_실제_TLC_원본_스키마와_SCHEMA_가_같다():
+    """틀리면 Bronze 검증이 **어떤 달을 넣어도** 통과하지 못합니다.
+
+    Bronze Loader 는 원본 바이트를 파싱 없이 그대로 씁니다. 따라서 읽어들인
+    스키마는 항상 TLC 의 물리 타입이고, `SCHEMA` 가 그와 다르면 영원히 불일치입니다.
+    """
+    assert dag_module._schema_signature(bronze_loader.SCHEMA) == TLC_SCHEMA_SIGNATURE
+
+
+def test_cbd_congestion_fee_가_없는_2024년_원본도_통과한다(tmp_path):
+    """부트스트랩 풀이 2024년 12개월을 쓰므로 그 달들도 백필할 수 있어야 합니다."""
+    path = write_bronze(tmp_path, schema=bronze_loader.LEGACY_SCHEMA)
+
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
 def test_스키마가_다르면_막는다_잘린_다운로드(tmp_path):
     broken_schema = pa.schema([("hvfhs_license_num", pa.string())])
     path = write_bronze(tmp_path, schema=broken_schema)
