@@ -189,7 +189,7 @@ def build_sources(
     uber: list[dict] = UBER,
     lyft: list[dict] = LYFT,
     catalog_date: str = "2026-08-12",
-    # 제원은 연 1회 수집이라 늘 훨씬 오래된 파티션에 있습니다.
+    # 제원은 월 1회 수집이라 주간 원천보다 오래된 파티션에 있습니다.
     specs_date: str = "2025-10-01",
     uber_date: str = "2026-08-11",
     lyft_date: str = "2026-08-12",
