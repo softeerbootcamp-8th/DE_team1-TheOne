@@ -373,7 +373,12 @@ def hvfhv_raw_to_silver_pipeline():
             ),
             gx.expectations.ExpectColumnValuesToBeInSet(
                 column="schema_signature",
-                value_set=[_schema_signature(loader.SCHEMA)],
+                # 2024-12 이전 원본에는 `cbd_congestion_fee` 가 없습니다. 두 벌을
+                # 다 받아 그 달들도 백필할 수 있게 합니다 (#324).
+                value_set=[
+                    _schema_signature(loader.SCHEMA),
+                    _schema_signature(loader.LEGACY_SCHEMA),
+                ],
             ),
             gx.expectations.ExpectColumnValuesToBeInSet(
                 column="missing_required_columns", value_set=[""]
