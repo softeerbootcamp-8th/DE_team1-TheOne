@@ -200,3 +200,52 @@ def test_전월_활성계약의_fk가_깨지면_실패한다():
 
     with pytest.raises(ValueError, match="customer_id"):
         evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12))
+
+
+# --- 저장 타입 고정 (#353) -------------------------------------------------
+#
+# 초기 스냅샷은 모든 계약이 진행 중이라 `lease_ended_on` 이 전량 결측입니다.
+# pandas 에 추론을 맡기면 Parquet 타입이 `null` 이 되고, Spark 가 날짜로 읽지
+# 못해 기사 배정이 분석 단계에서 죽습니다. 게다가 계약이 종료되기 시작하면
+# 타입이 달라져, 어느 달 스냅샷을 읽느냐에 따라 되기도 하고 안 되기도 합니다.
+
+
+def _written_schemas(tmp_path, tables, snapshot_date):
+    import pyarrow.parquet as pq
+
+    paths = write_snapshot(tables, tmp_path, snapshot_date)
+    return {path.stem: pq.ParquetFile(path).schema_arrow for path in paths}
+
+
+def test_전량_결측이어도_lease_ended_on_은_날짜로_저장된다(tmp_path):
+    import pyarrow as pa
+
+    tables = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    assert tables.lease_contract["lease_ended_on"].isna().all()  # 전제 확인
+
+    schema = _written_schemas(tmp_path, tables, date(2026, 8, 12))["lease_contract"]
+
+    assert schema.field("lease_ended_on").type == pa.date32()
+    assert schema.field("lease_started_on").type == pa.date32()
+
+
+def test_초기_스냅샷과_월별_갱신의_스키마가_같다(tmp_path):
+    """계약이 종료되기 시작해도 타입이 바뀌면 안 됩니다."""
+    previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    current = evolve_company_snapshot(
+        previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12), change_rate=0.01,
+    )
+    assert current.lease_contract["lease_ended_on"].notna().any()  # 전제 확인
+
+    initial = _written_schemas(tmp_path / "initial", previous, date(2026, 8, 12))
+    evolved = _written_schemas(tmp_path / "evolved", current, date(2026, 9, 12))
+
+    assert initial == evolved
+
+
+def test_스키마에_없는_컬럼이_빠지면_실패한다(tmp_path):
+    tables = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    tables.lease_contract.drop(columns=["lease_ended_on"], inplace=True)
+
+    with pytest.raises(ValueError, match="lease_ended_on"):
+        write_snapshot(tables, tmp_path, date(2026, 8, 12))
