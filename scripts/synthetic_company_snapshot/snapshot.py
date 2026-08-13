@@ -12,6 +12,9 @@ import pandas as pd
 
 DRIVER_COUNT = 2_000
 GROUP_COUNTS = {"BOTH": 400, "STANDARD": 1_200, "SINGLE": 400}
+GROUP_WEIGHTS = {group: count / DRIVER_COUNT for group, count in GROUP_COUNTS.items()}
+MIN_MONTHLY_CHANGE_RATE = 0.005
+MAX_MONTHLY_CHANGE_RATE = 0.01
 ID_NAMESPACE = uuid.UUID("f795ec33-9231-5f39-aade-fdf81c34bf62")
 
 
@@ -150,6 +153,131 @@ def build_company_snapshot(
         taxi=pd.DataFrame(taxis).sort_values("taxi_id").reset_index(drop=True),
         lease_contract=pd.DataFrame(contracts).sort_values("lease_id").reset_index(drop=True),
     )
+
+
+def _validate_previous_snapshot(tables: SnapshotTables) -> date:
+    for name in ("customer", "taxi", "lease_contract"):
+        table = getattr(tables, name)
+        if table.empty:
+            raise ValueError(f"전월 {name} 스냅샷이 비어 있습니다")
+        if table.iloc[:, 0].duplicated().any():
+            raise ValueError(f"전월 {name} 기본 키가 중복됩니다")
+
+    customer_ids = set(tables.customer["customer_id"])
+    taxi_ids = set(tables.taxi["taxi_id"])
+    if not set(tables.lease_contract["customer_id"]).issubset(customer_ids):
+        raise ValueError("전월 계약의 customer_id가 고객 스냅샷에 없습니다")
+    if not set(tables.lease_contract["taxi_id"]).issubset(taxi_ids):
+        raise ValueError("전월 계약의 taxi_id가 택시 스냅샷에 없습니다")
+
+    active = tables.lease_contract[tables.lease_contract["lease_ended_on"].isna()]
+    if active.empty:
+        raise ValueError("전월 활성 계약이 없습니다")
+    if active["customer_id"].duplicated().any() or active["taxi_id"].duplicated().any():
+        raise ValueError("기사 또는 택시에 활성 계약이 여러 건입니다")
+
+    dates = set(pd.to_datetime(tables.lease_contract["snapshot_date"]).dt.date)
+    if len(dates) != 1:
+        raise ValueError("전월 계약의 snapshot_date가 하나가 아닙니다")
+    return dates.pop()
+
+
+def evolve_company_snapshot(
+    previous: SnapshotTables,
+    vehicle_pool: pd.DataFrame,
+    *,
+    snapshot_date: date,
+    seed: int = 42,
+    change_rate: float | None = None,
+) -> SnapshotTables:
+    """전월 스냅샷에서 소수 계약을 종료하고 같은 수의 신규 계약을 만듭니다."""
+    previous_date = _validate_previous_snapshot(previous)
+    if snapshot_date <= previous_date:
+        raise ValueError("당월 snapshot_date는 전월 snapshot_date보다 늦어야 합니다")
+
+    rng = np.random.default_rng(seed)
+    rate = change_rate if change_rate is not None else rng.uniform(
+        MIN_MONTHLY_CHANGE_RATE, MAX_MONTHLY_CHANGE_RATE
+    )
+    if not MIN_MONTHLY_CHANGE_RATE <= rate <= MAX_MONTHLY_CHANGE_RATE:
+        raise ValueError("change_rate는 0.005 이상 0.01 이하여야 합니다")
+
+    customers = previous.customer.copy(deep=True)
+    taxis = previous.taxi.copy(deep=True)
+    contracts = previous.lease_contract.copy(deep=True)
+    active_indexes = contracts.index[contracts["lease_ended_on"].isna()].to_numpy()
+    change_count = max(1, int(round(len(active_indexes) * rate)))
+    ended_indexes = rng.choice(active_indexes, size=change_count, replace=False)
+    contracts.loc[ended_indexes, "lease_ended_on"] = snapshot_date
+
+    existing_driver_ids = set(customers["synthetic_driver_id"].astype(str))
+    month_key = snapshot_date.strftime("%Y%m")
+    groups = list(GROUP_WEIGHTS)
+    probabilities = list(GROUP_WEIGHTS.values())
+    new_customers: list[dict] = []
+    new_taxis: list[dict] = []
+    new_contracts: list[dict] = []
+
+    next_number = 1
+    for _ in range(change_count):
+        while (driver_id := f"DRIVER_{month_key}_{next_number:06d}") in existing_driver_ids:
+            next_number += 1
+        next_number += 1
+        existing_driver_ids.add(driver_id)
+
+        group = str(rng.choice(groups, p=probabilities))
+        candidates = vehicle_pool.loc[vehicle_pool["vehicle_group"] == group]
+        if candidates.empty:
+            raise ValueError(f"차량 후보가 없는 그룹: {group}")
+        vehicle = candidates.iloc[int(rng.integers(0, len(candidates)))]
+        customer_id = _stable_id("customer", seed, driver_id)
+        taxi_id = _stable_id("taxi", seed, driver_id)
+        lease_id = _stable_id("lease", seed, driver_id)
+
+        new_customers.append({
+            "customer_id": customer_id,
+            "synthetic_driver_id": driver_id,
+            "snapshot_date": snapshot_date,
+        })
+        new_taxis.append({
+            "taxi_id": taxi_id,
+            "make_key": vehicle["make_key"],
+            "model_key": vehicle["model_key"],
+            "model_year": int(vehicle["model_year"]),
+            "weekly_price_usd": float(vehicle["weekly_price_usd"]),
+            "uber_comfort_eligible": bool(vehicle["uber_comfort_eligible"]),
+            "lyft_extra_comfort_eligible": bool(vehicle["lyft_extra_comfort_eligible"]),
+            "vehicle_group": group,
+            "snapshot_date": snapshot_date,
+        })
+        new_contracts.append({
+            "lease_id": lease_id,
+            "customer_id": customer_id,
+            "taxi_id": taxi_id,
+            "lease_started_on": snapshot_date,
+            "lease_ended_on": None,
+            "snapshot_date": snapshot_date,
+        })
+
+    for table in (customers, taxis, contracts):
+        table["snapshot_date"] = snapshot_date
+
+    return SnapshotTables(
+        customer=pd.concat([customers, pd.DataFrame(new_customers)], ignore_index=True)
+        .sort_values("customer_id").reset_index(drop=True),
+        taxi=pd.concat([taxis, pd.DataFrame(new_taxis)], ignore_index=True)
+        .sort_values("taxi_id").reset_index(drop=True),
+        lease_contract=pd.concat([contracts, pd.DataFrame(new_contracts)], ignore_index=True)
+        .sort_values("lease_id").reset_index(drop=True),
+    )
+
+
+def read_snapshot(snapshot_dir: str | Path) -> SnapshotTables:
+    partition = Path(snapshot_dir)
+    return SnapshotTables(**{
+        name: pd.read_parquet(partition / f"{name}.parquet")
+        for name in ("customer", "taxi", "lease_contract")
+    })
 
 
 def write_snapshot(tables: SnapshotTables, output_dir: str | Path, snapshot_date: date) -> list[Path]:

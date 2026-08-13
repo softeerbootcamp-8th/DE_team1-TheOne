@@ -6,6 +6,9 @@
 4. 리스 시작일 → 2023-01-01~2026-08-12 범위
 5. 기사 수 또는 차량 후보 그룹 부족 → 명시적 실패
 6. 저장한 세 스냅샷 → PK/FK와 스키마 보존
+7. 월별 갱신 → 0.5~1% 계약 종료와 동일 수 신규 계약
+8. 월별 갱신 → 이력·PK/FK·활성 계약 수 보존 및 결정적 재실행
+9. 잘못된 월·변경률·전월 관계 → 명시적 실패
 """
 
 from datetime import date
@@ -17,6 +20,8 @@ from scripts.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
     build_vehicle_pool,
     driver_ids_from_mapping,
+    evolve_company_snapshot,
+    read_snapshot,
     write_snapshot,
 )
 
@@ -106,3 +111,73 @@ def test_저장한_세_스냅샷의_pk_fk와_스키마가_보존된다(tmp_path)
     assert set(written["taxi"].columns) >= {
         "taxi_id", "make_key", "model_key", "model_year", "vehicle_group", "snapshot_date"
     }
+
+
+def test_월별로_계약을_1퍼센트_해지하고_같은_수의_신규계약을_생성한다():
+    previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    current = evolve_company_snapshot(
+        previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12), change_rate=0.01,
+    )
+
+    ended = current.lease_contract["lease_ended_on"].notna().sum()
+    active = current.lease_contract["lease_ended_on"].isna().sum()
+    assert ended == 20
+    assert len(current.customer) == len(current.taxi) == len(current.lease_contract) == 2_020
+    assert active == 2_000
+
+
+def test_월별_갱신은_기존관계를_보존하고_신규관계만_추가한다():
+    previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    current = evolve_company_snapshot(
+        previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12), change_rate=0.005,
+    )
+
+    assert set(previous.customer["customer_id"]).issubset(set(current.customer["customer_id"]))
+    assert set(previous.taxi["taxi_id"]).issubset(set(current.taxi["taxi_id"]))
+    assert set(previous.lease_contract["lease_id"]).issubset(set(current.lease_contract["lease_id"]))
+    assert set(current.lease_contract["customer_id"]).issubset(set(current.customer["customer_id"]))
+    assert set(current.lease_contract["taxi_id"]).issubset(set(current.taxi["taxi_id"]))
+    active = current.lease_contract[current.lease_contract["lease_ended_on"].isna()]
+    assert active["customer_id"].is_unique
+    assert active["taxi_id"].is_unique
+
+
+def test_월별_갱신은_같은_입력과_seed에서_동일하다():
+    previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    first = evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12))
+    second = evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12))
+
+    for name in ("customer", "taxi", "lease_contract"):
+        pd.testing.assert_frame_equal(getattr(first, name), getattr(second, name))
+
+
+def test_저장한_전월_스냅샷을_읽어_다음달로_갱신한다(tmp_path):
+    previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    partition = tmp_path / "snapshot_date=2026-08-12"
+    write_snapshot(previous, tmp_path, date(2026, 8, 12))
+
+    current = evolve_company_snapshot(
+        read_snapshot(partition), _vehicle_pool(), snapshot_date=date(2026, 9, 12),
+    )
+    assert set(pd.to_datetime(current.customer["snapshot_date"]).dt.date) == {date(2026, 9, 12)}
+
+
+@pytest.mark.parametrize("snapshot_date,change_rate,error", [
+    (date(2026, 8, 12), 0.005, "늦어야"),
+    (date(2026, 9, 12), 0.004, "change_rate"),
+    (date(2026, 9, 12), 0.011, "change_rate"),
+])
+def test_월순서와_변경률이_범위를_벗어나면_실패한다(snapshot_date, change_rate, error):
+    previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    with pytest.raises(ValueError, match=error):
+        evolve_company_snapshot(
+            previous, _vehicle_pool(), snapshot_date=snapshot_date, change_rate=change_rate,
+        )
+
+
+def test_전월_활성계약의_fk가_깨지면_실패한다():
+    previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
+    previous.lease_contract.loc[0, "customer_id"] = "missing"
+
+    with pytest.raises(ValueError, match="customer_id"):
+        evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12))
