@@ -6,6 +6,7 @@ from datetime import datetime
 from pipeline_core.loader import Loader, WriteResult
 
 from ..common import ev_charging_layout as layout
+from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -24,9 +25,7 @@ class EvChargingBronzeLoader(Loader):
         path = layout.bronze_file(self._base_dir, self._collected_at)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        temporary_path = path.with_suffix(".tmp")
-        temporary_path.write_bytes(data)
-        temporary_path.replace(path)
+        atomic_write(path, lambda temporary: temporary.write_bytes(data))
 
         logger.info(
             "bronze_load done path=%s files=1 bytes=%d",

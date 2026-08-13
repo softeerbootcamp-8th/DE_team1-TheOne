@@ -8,6 +8,7 @@ import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
 from ..common import lyft_eligible_vehicles_layout as layout
+from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +40,12 @@ class LyftEligibleVehiclesBronzeLoader(Loader):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         table = pa.Table.from_pylist(data, schema=SCHEMA)
-        temporary = path.with_suffix(".tmp")
-        pq.write_table(table, temporary, compression="snappy")
-        temporary.replace(path)
+        atomic_write(
+            path,
+            lambda temporary: pq.write_table(
+                table, temporary, compression="snappy"
+            ),
+        )
 
         logger.info(
             "bronze_load done path=%s rows=%d bytes=%d",

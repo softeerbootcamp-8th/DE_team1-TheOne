@@ -7,6 +7,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from ..common.atomic_write import atomic_write
+
 
 class CompanySnapshotBronzeLoader(Loader):
     def __init__(self, base_dir: str, snapshot_date: str, collected_at: datetime):
@@ -29,7 +31,12 @@ class CompanySnapshotBronzeLoader(Loader):
                 / f"{timestamp}.parquet"
             )
             path.parent.mkdir(parents=True, exist_ok=True)
-            pq.write_table(table, path, compression="snappy")
+            atomic_write(
+                path,
+                lambda temporary, table=table: pq.write_table(
+                    table, temporary, compression="snappy"
+                ),
+            )
             self.paths.append(str(path))
             self.row_counts[name] = table.num_rows
 

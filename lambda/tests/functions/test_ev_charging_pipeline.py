@@ -1,4 +1,7 @@
-"""EV Charging 원본 Bronze와 월별 Silver 파이프라인을 검증합니다."""
+"""EV Charging 원본 Bronze와 월별 Silver 파이프라인을 검증합니다.
+
+Bronze 교체 실패 시 기존 파일을 보존하고 고유 임시 파일을 정리합니다.
+"""
 
 import json
 from datetime import date, datetime, timedelta, timezone
@@ -99,6 +102,28 @@ def test_raw_to_bronze가_전체_JSON_원문을_그대로_저장한다(tmp_path)
     assert path.read_bytes() == RAW_RESPONSE
     assert list(path.parent.iterdir()) == [path]
     assert result.row_count == 1
+
+
+def test_raw_to_bronze_교체실패는_기존파일을_보존하고_임시파일을_정리한다(
+    tmp_path, monkeypatch
+):
+    loader = EvChargingBronzeLoader(str(tmp_path), COLLECTED_AT)
+    path = Path(loader.write(RAW_RESPONSE).location)
+    original = path.read_bytes()
+    attempted_sources = []
+
+    def fail_replace(source, target):
+        attempted_sources.append(source)
+        raise OSError("교체 실패")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    for _ in range(2):
+        with pytest.raises(OSError, match="교체 실패"):
+            loader.write(response([station(99, "10001", "$9.99/kWh")]))
+
+    assert len(set(attempted_sources)) == 2
+    assert path.read_bytes() == original
+    assert list(path.parent.iterdir()) == [path]
 
 
 def test_bronze_원문_여러날짜를_월별_silver_parquet으로_변환한다(tmp_path):

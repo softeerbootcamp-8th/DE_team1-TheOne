@@ -6,6 +6,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from ..common.atomic_write import atomic_write
 from ..common import vehicle_catalog_layout as layout
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,12 @@ class VehicleCatalogSilverLoader(Loader):
             path.parent.mkdir(parents=True, exist_ok=True)
 
             table = pa.Table.from_pylist(vendor_rows, schema=SCHEMA)
-            pq.write_table(table, path, compression="snappy")
+            atomic_write(
+                path,
+                lambda temporary: pq.write_table(
+                    table, temporary, compression="snappy"
+                ),
+            )
 
             logger.info(
                 "silver_load done path=%s vendor=%s rows=%d",

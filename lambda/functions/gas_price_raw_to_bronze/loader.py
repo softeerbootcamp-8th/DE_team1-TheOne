@@ -10,6 +10,7 @@ from datetime import datetime
 from pipeline_core.loader import Loader, WriteResult
 
 from ..common import gas_price_layout as layout
+from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -30,12 +31,13 @@ class GasPriceBronzeLoader(Loader):
             "collected_at": self._collected_at.isoformat(),
         }
 
-        temporary_path = path.with_suffix(".tmp")
-        temporary_path.write_text(
-            json.dumps(record, ensure_ascii=False) + "\n",
-            encoding="utf-8",
+        atomic_write(
+            path,
+            lambda temporary: temporary.write_text(
+                json.dumps(record, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            ),
         )
-        temporary_path.replace(path)
 
         logger.info("적재 완료: %s (%d bytes)", path, path.stat().st_size)
         return WriteResult(location=str(path), row_count=1)
