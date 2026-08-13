@@ -1,15 +1,16 @@
-"""HVFHV DAG의 validate_bronze/validate_silver 태스크가 실제로 불량을 잡는지 봅니다.
+"""HVFHV DAG의 경계 검사와 GX 데이터 품질 규칙을 검증합니다.
 
 Bronze 는 원본 Parquet 을 파싱 없이 그대로 받아 쓰고, 행 수도 세지 않고 파일 1개를
 1로 셉니다. 그래서 다운로드가 잘려도 핸들러는 성공으로 끝납니다. Silver 는 Spark
 BashOperator 라 handler 결과 dict 자체가 없어 파티션을 직접 열어서 봐야 합니다.
 검증 태스크의 값어치는 "통과한다"가 아니라 "불량을 통과시키지 않는다"입니다.
 
-실제 Parquet 을 tmp_path 에 씁니다. 네트워크는 타지 않고 Spark 도 띄우지 않습니다.
+대용량 원본을 Pandas 에 모두 올리지 않도록 Parquet 을 배치 단위로 검사합니다.
+실제 Parquet 을 tmp_path 에 쓰며 네트워크와 Spark 는 사용하지 않습니다.
 """
 
 import importlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -25,13 +26,38 @@ DAG = dag_module.hvfhv_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 YEAR_MONTH = "2026-07"
 SILVER_COLUMNS = [field.name for field in transformer.FINAL_SCHEMA.fields if field.name != "year_month"]
+BRONZE_REQUIRED_COLUMNS = transformer.REQUIRED_COLUMNS
+SILVER_REQUIRED_COLUMNS = [
+    field.name
+    for field in transformer.FINAL_SCHEMA.fields
+    if not field.nullable and field.name != "year_month"
+]
+
+
+def spark_type_to_arrow(data_type):
+    return {
+        "string": pa.string(),
+        "timestamp": pa.timestamp("us"),
+        "int": pa.int32(),
+        "bigint": pa.int64(),
+        "double": pa.float64(),
+    }[data_type.simpleString()]
+
+
+SILVER_SCHEMA = pa.schema(
+    [
+        pa.field(field.name, spark_type_to_arrow(field.dataType))
+        for field in transformer.FINAL_SCHEMA.fields
+        if field.name != "year_month"
+    ]
+)
 
 validate_bronze = DAG.get_task("validate_bronze").python_callable
 validate_silver = DAG.get_task("validate_silver").python_callable
 
 
-def write_bronze(base_dir, year_month: str = YEAR_MONTH, rows: int = 3, schema=None) -> str:
-    schema = schema or bronze_loader.SCHEMA
+def bronze_rows(count: int = 3, schema=None) -> list[dict]:
+    schema = bronze_loader.SCHEMA if schema is None else schema
     row = {
         field.name: COLLECTED_AT if pa.types.is_timestamp(field.type)
         else 1 if pa.types.is_integer(field.type)
@@ -39,30 +65,65 @@ def write_bronze(base_dir, year_month: str = YEAR_MONTH, rows: int = 3, schema=N
         else "x"
         for field in schema
     }
-    path = bronze_loader.HvfhvBronzeLoader(str(base_dir), year_month, COLLECTED_AT).partition_path() / "x.parquet"
+    return [row.copy() for _ in range(count)]
+
+
+def write_bronze(
+    base_dir,
+    year_month: str = YEAR_MONTH,
+    rows: int = 3,
+    schema=None,
+    records: list[dict] | None = None,
+) -> str:
+    schema = bronze_loader.SCHEMA if schema is None else schema
+    records = bronze_rows(rows, schema) if records is None else records
+    path = (
+        bronze_loader.HvfhvBronzeLoader(
+            str(base_dir), year_month, COLLECTED_AT
+        ).partition_path()
+        / f"{COLLECTED_AT:%Y%m%dT%H%M%SZ}.parquet"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist([row] * rows, schema=schema), path)
+    pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
     return str(path)
 
 
 def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
     return {
+        "row_count": 1,
         "locations": [path],
         "year_month": year_month,
         "file_size_bytes": Path(path).stat().st_size,
     }
 
 
+def bronze_params(base_dir) -> dict:
+    return {"base_dir": str(base_dir)}
+
+
+def test_Validation_Task에_재시도와_Slack_콜백이_연결된다():
+    for task_id in ("validate_bronze", "validate_silver"):
+        validation_task = DAG.get_task(task_id)
+        assert validation_task.retries == 1
+        assert validation_task.retry_delay == timedelta(minutes=10)
+        assert dag_module.slack_failure_callback in validation_task.on_failure_callback
+
+
 def test_정상_적재는_통과한다(tmp_path):
     path = write_bronze(tmp_path)
-    validate_bronze(result_for(path))
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
 def test_파일이_없으면_막는다(tmp_path):
     missing = tmp_path / "hvfhv" / f"year_month={YEAR_MONTH}" / "missing.parquet"
-    result = {"locations": [str(missing)], "year_month": YEAR_MONTH, "file_size_bytes": 0}
+    result = {
+        "row_count": 1,
+        "locations": [str(missing)],
+        "year_month": YEAR_MONTH,
+        "file_size_bytes": 0,
+    }
     with pytest.raises(ValueError, match="파일이 없거나"):
-        validate_bronze(result)
+        validate_bronze(result, params=bronze_params(tmp_path))
 
 
 def test_크기가_다르면_막는다_잘린_다운로드(tmp_path):
@@ -70,39 +131,116 @@ def test_크기가_다르면_막는다_잘린_다운로드(tmp_path):
     result = result_for(path)
     result["file_size_bytes"] += 1
     with pytest.raises(ValueError, match="크기가 다릅니다"):
-        validate_bronze(result)
+        validate_bronze(result, params=bronze_params(tmp_path))
 
 
 def test_파티션이_year_month와_다르면_막는다(tmp_path):
     path = write_bronze(tmp_path)
     result = result_for(path, year_month="2026-08")
     with pytest.raises(ValueError, match="파티션이 year_month와 다릅니다"):
-        validate_bronze(result)
+        validate_bronze(result, params=bronze_params(tmp_path))
+
+
+def test_Bronze_경로가_base_dir_layout과_다르면_막는다(tmp_path):
+    path = write_bronze(tmp_path / "elsewhere")
+
+    with pytest.raises(ValueError, match="layout 규칙과 다릅니다"):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
 def test_스키마가_다르면_막는다_잘린_다운로드(tmp_path):
     broken_schema = pa.schema([("hvfhs_license_num", pa.string())])
     path = write_bronze(tmp_path, schema=broken_schema)
-    with pytest.raises(ValueError, match="스키마가 loader.SCHEMA"):
-        validate_bronze(result_for(path))
+    with pytest.raises(
+        ValueError, match=r"expect_column_values_to_be_in_set\[schema_signature\]"
+    ):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_Spark_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
+    missing = "pickup_datetime"
+    schema = pa.schema(
+        field for field in bronze_loader.SCHEMA if field.name != missing
+    )
+    path = write_bronze(tmp_path, schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_in_set\[missing_required_columns\]",
+    ):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
 def test_행_수가_0이면_막는다(tmp_path):
     path = write_bronze(tmp_path, rows=0)
-    with pytest.raises(ValueError, match="행 수가 0"):
-        validate_bronze(result_for(path))
+    with pytest.raises(
+        ValueError, match=r"expect_column_values_to_be_between\[row_count\]"
+    ):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_필수값_NULL_행이_20퍼센트_미만이면_기존_Spark_정책대로_통과한다(tmp_path):
+    records = bronze_rows(10)
+    records[0]["pickup_datetime"] = None
+    path = write_bronze(tmp_path, records=records)
+
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_필수값_NULL_행이_정확히_20퍼센트면_GX가_실패한다(
+    tmp_path, caplog
+):
+    records = bronze_rows(10)
+    records[0]["pickup_datetime"] = None
+    records[1]["dropoff_datetime"] = None
+    path = write_bronze(tmp_path, records=records)
+
+    with caplog.at_level("ERROR"), pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_between\[invalid_required_row_ratio\]",
+    ):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+    assert "gx_validation failed layer=bronze" in caplog.text
+    assert "column=invalid_required_row_ratio" in caplog.text
+    assert "observed_value=[0.2]" in caplog.text
 
 
 # --- validate_silver -------------------------------------------------------
 
 
-def write_silver(silver_dir, year_month: str = YEAR_MONTH, rows: int = 3, columns=None) -> Path:
-    columns = SILVER_COLUMNS if columns is None else columns
-    schema = pa.schema([(name, pa.string()) for name in columns])
-    row = {name: "x" for name in columns}
+def silver_rows(count: int = 3, schema=None) -> list[dict]:
+    schema = SILVER_SCHEMA if schema is None else schema
+    row = {
+        field.name: (
+            COLLECTED_AT
+            if pa.types.is_timestamp(field.type)
+            else 1
+            if pa.types.is_integer(field.type)
+            else 1.0
+            if pa.types.is_floating(field.type)
+            else "x"
+        )
+        for field in schema
+    }
+    return [row.copy() for _ in range(count)]
+
+
+def write_silver(
+    silver_dir,
+    year_month: str = YEAR_MONTH,
+    rows: int = 3,
+    schema=None,
+    records: list[dict] | None = None,
+) -> Path:
+    schema = SILVER_SCHEMA if schema is None else schema
+    records = silver_rows(rows, schema) if records is None else records
     partition = Path(silver_dir) / f"year_month={year_month}"
     partition.mkdir(parents=True, exist_ok=True)
-    pq.write_table(pa.Table.from_pylist([row] * rows, schema=schema), partition / "part-0.parquet")
+    pq.write_table(
+        pa.Table.from_pylist(records, schema=schema),
+        partition / "part-0.parquet",
+    )
     return partition
 
 
@@ -125,9 +263,15 @@ def test_silver_파티션에_파일이_없으면_막는다(tmp_path, monkeypatch
 def test_silver_스키마_컬럼이_다르면_막는다(tmp_path, monkeypatch):
     monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    write_silver(tmp_path / "silver", rows=5, columns=SILVER_COLUMNS[:-1])
+    schema = pa.schema(
+        field for field in SILVER_SCHEMA if field.name != SILVER_COLUMNS[-1]
+    )
+    write_silver(tmp_path / "silver", rows=5, schema=schema)
 
-    with pytest.raises(ValueError, match="스키마 컬럼이 FINAL_SCHEMA"):
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_in_set\[schema_signature\]",
+    ):
         validate_silver(result_for(bronze_path))
 
 
@@ -136,7 +280,50 @@ def test_silver_행_수가_0이면_막는다(tmp_path, monkeypatch):
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", rows=0)
 
-    with pytest.raises(ValueError, match="Silver 행 수가 0"):
+    with pytest.raises(
+        ValueError, match=r"expect_column_values_to_be_between\[row_count\]"
+    ):
+        validate_silver(result_for(bronze_path))
+
+
+@pytest.mark.parametrize("column", SILVER_REQUIRED_COLUMNS)
+def test_silver_필수값이_NULL이면_GX가_실패한다(
+    tmp_path, monkeypatch, caplog, column
+):
+    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    records = silver_rows(5)
+    records[0][column] = None
+    write_silver(tmp_path / "silver", records=records)
+
+    with caplog.at_level("ERROR"), pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_be_in_set\[{column}_null_count\]",
+    ):
+        validate_silver(result_for(bronze_path))
+
+    assert "gx_validation failed layer=silver" in caplog.text
+    assert f"column={column}_null_count" in caplog.text
+    assert "observed_value=[1]" in caplog.text
+
+
+def test_silver_FINAL_SCHEMA_타입이_다르면_GX가_실패한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    schema = pa.schema(
+        pa.field(field.name, pa.int32())
+        if field.name == "trip_time"
+        else field
+        for field in SILVER_SCHEMA
+    )
+    write_silver(tmp_path / "silver", rows=5, schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_in_set\[schema_signature\]",
+    ):
         validate_silver(result_for(bronze_path))
 
 
@@ -168,3 +355,46 @@ def test_직전_달_파티션이_있으면_통과한다(tmp_path, monkeypatch):
     write_silver(tmp_path / "silver", year_month="2026-06", rows=5)
 
     validate_silver(result_for(bronze_path))
+
+
+def test_Bronze_GX_실패는_재시도후_Spark와_Silver를_실행하지_않는다(
+    tmp_path, monkeypatch, caplog
+):
+    records = bronze_rows(10)
+    records[0]["pickup_datetime"] = None
+    records[1]["dropoff_datetime"] = None
+    path = write_bronze(tmp_path, records=records)
+    result = result_for(path)
+    result.update({"year": "2026", "month": "07"})
+
+    raw_task = DAG.get_task("raw_to_bronze")
+    validation_task = DAG.get_task("validate_bronze")
+    callbacks = []
+    monkeypatch.setattr(raw_task, "python_callable", lambda **_: result)
+    monkeypatch.setattr(validation_task, "retry_delay", timedelta(0))
+    monkeypatch.setattr(
+        validation_task,
+        "on_failure_callback",
+        [lambda context: callbacks.append(context["task_instance"].task_id)],
+    )
+
+    run = DAG.test(
+        logical_date=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        run_conf={
+            "year": "2026",
+            "month": "07",
+            "base_dir": str(tmp_path),
+        },
+    )
+    instances = {instance.task_id: instance for instance in run.get_task_instances()}
+
+    assert run.state == "failed"
+    assert instances["raw_to_bronze"].state == "success"
+    assert instances["validate_bronze"].state == "failed"
+    assert instances["validate_bronze"].try_number == 2
+    assert instances["bronze_to_silver"].state == "upstream_failed"
+    assert instances["validate_silver"].state == "upstream_failed"
+    assert callbacks == ["validate_bronze"]
+    assert "gx_validation failed layer=bronze" in caplog.text
+    assert "column=invalid_required_row_ratio" in caplog.text
+    assert "observed_value=[0.2]" in caplog.text
