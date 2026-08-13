@@ -1,7 +1,7 @@
 """fueleconomy.gov 차종별 제원 수집/적재 Lambda 핸들러.
 
 Extractor(수집) 와 Loader(적재) 를 Pipeline 으로 이어붙이기만 합니다.
-1년에 한 번 도는 것을 전제로, 매번 전량 스냅샷을 새 파티션에 씁니다.
+한 달에 한 번 도는 것을 전제로, 매번 전량 스냅샷을 새 파티션에 씁니다.
 """
 
 import json

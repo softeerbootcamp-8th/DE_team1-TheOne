@@ -1,17 +1,20 @@
-"""fueleconomy.gov 차종별 제원 Raw -> Bronze -> Silver 연 1회 파이프라인.
+"""fueleconomy.gov 차종별 제원 Raw -> Bronze -> Silver 월 1회 파이프라인.
 
 EPA/DOE 벌크 CSV 전량을 Bronze 에 원본 그대로 적재하고, 조인 키와 연비/전비를
 정제해 Silver 로 변환합니다. 두 단계 모두 lambda/functions 의 핸들러를 그대로
 호출합니다.
 
-제원 자체는 바뀌지 않고 신규 차종이 추가될 뿐이라 1년에 한 번만 돕니다.
+제원 값 자체는 거의 안 바뀌고 신규 차종이 추가될 뿐입니다. 그럼에도 월 1회로
+도는 이유는 **신규 차종이 `vehicle_master` 에 붙기까지의 지연**을 한 달로
+묶기 위해서입니다. 연 1회로 두면 그 지연이 최대 1년이고, 그동안 리스 대장에
+새로 들어온 차는 연비 없이(`spec_match_level=NONE`) 추천 대상에서 밀립니다.
 매 실행은 전량 스냅샷을 새 파티션에 씁니다.
 
-주의: `catchup=False` + 연 1회 스케줄이라 배포 직후에는 실행되지 않습니다.
-다음 스케줄이 1년 뒤이므로, 처음 한 번은 Airflow UI 에서 수동 트리거하세요.
+주의: `catchup=False` + 월 1회 스케줄이라 배포 직후에는 실행되지 않습니다.
+다음 스케줄이 최대 한 달 뒤이므로, 처음 한 번은 Airflow UI 에서 수동 트리거하세요.
 
 이미 적재된 Bronze 를 다시 변환하려면 수동 트리거하면서 `collected_date`
-파라미터에 대상 수집일(예: "2026-01-01")을 넣으세요.
+파라미터에 대상 수집일(예: "2026-08-01")을 넣으세요.
 """
 
 import importlib
@@ -317,8 +320,8 @@ default_args = {
 @dag(
     dag_id="fueleconomy_vehicle_specs_raw_to_silver_pipeline",
     default_args=default_args,
-    description="fueleconomy.gov 차종별 제원 Raw -> Bronze -> Silver 연 1회 파이프라인",
-    schedule="0 4 1 1 *",  # 매년 1월 1일 04:00 UTC
+    description="fueleconomy.gov 차종별 제원 Raw -> Bronze -> Silver 월 1회 파이프라인",
+    schedule="0 4 1 * *",  # 매월 1일 04:00 UTC
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,

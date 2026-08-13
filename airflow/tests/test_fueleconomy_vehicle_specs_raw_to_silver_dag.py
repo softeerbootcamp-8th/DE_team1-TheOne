@@ -1,13 +1,13 @@
-"""차종별 제원 DAG 의 연 1회 스케줄 계약과 event 계약을 고정합니다.
+"""차종별 제원 DAG 의 월 1회 스케줄 계약과 event 계약을 고정합니다.
 
-이 DAG 는 **매년 1월 1일에만** 돕니다. 그래서 다른 DAG 보다 테스트가 더 필요합니다 —
-스케줄이나 event 조립이 리팩터로 깨져도 다음 실행까지 1년이라, 그때까지 아무도
-모릅니다. 매일 도는 DAG 라면 다음 날 아침에 드러날 사고가 여기서는 1년을 갑니다.
+이 DAG 는 **매월 1일에만** 돕니다. 그래서 다른 DAG 보다 테스트가 더 필요합니다 —
+스케줄이나 event 조립이 리팩터로 깨져도 다음 실행까지 한 달이라, 그때까지 아무도
+모릅니다. 매일 도는 DAG 라면 다음 날 아침에 드러날 사고가 여기서는 한 달을 갑니다.
 
 스케줄 세 값이 한 묶음입니다.
 
-    schedule="0 4 1 1 *"   매년 1월 1일 04:00 UTC
-    catchup=False          배포 시점 이전 연도를 소급 실행하지 않음
+    schedule="0 4 1 * *"   매월 1일 04:00 UTC
+    catchup=False          배포 시점 이전 달을 소급 실행하지 않음
     max_active_runs=1      수동 트리거가 겹쳐 같은 파티션을 동시에 쓰는 것을 막음
 
 event 쪽은 다른 DAG 와 같은 규칙입니다. `collected_date` 는 Bronze 가 돌려준 값을
@@ -84,14 +84,14 @@ def test_적재와_검증이_번갈아_이어진다():
     assert DAG.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}
 
 
-def test_연_1회_스케줄_계약을_지킨다():
-    """[필수] 깨져도 다음 실행이 1년 뒤라 운영 중에는 드러나지 않습니다.
+def test_월_1회_스케줄_계약을_지킨다():
+    """[필수] 깨져도 다음 실행이 한 달 뒤라 운영 중에는 드러나지 않습니다.
 
     셋을 한 테스트에 묶은 이유: 따로 보면 각각 그럴듯해 보이지만, 셋이 함께여야
-    "매년 1월 1일에 한 번만, 소급 없이" 라는 의도가 됩니다.
+    "매월 1일에 한 번만, 소급 없이" 라는 의도가 됩니다.
     """
-    assert DAG.schedule == "0 4 1 1 *"  # 매년 1월 1일 04:00 UTC
-    assert DAG.catchup is False  # 배포 시점 이전 연도를 소급 실행하지 않음
+    assert DAG.schedule == "0 4 1 * *"  # 매월 1일 04:00 UTC
+    assert DAG.catchup is False  # 배포 시점 이전 달을 소급 실행하지 않음
     assert DAG.max_active_runs == 1  # 수동 트리거가 겹쳐 같은 파티션을 동시에 쓰는 것 방지
 
 
@@ -132,7 +132,7 @@ def test_collected_date_가_공백_문자열이어도_Bronze_값으로_떨어진
 
 
 def test_collected_date_를_주면_그_값이_Silver_로_간다(events):
-    """작년 스냅샷을 다시 변환하는 경로입니다. 연 1회라 이 경로를 쓸 일이 실제로 있습니다."""
+    """지난달 스냅샷을 다시 변환하는 경로입니다. 월 1회라 이 경로를 쓸 일이 실제로 있습니다."""
     call_task(
         "bronze_to_silver", raw_result=RAW_RESULT, params={"collected_date": PARAM_DATE}
     )

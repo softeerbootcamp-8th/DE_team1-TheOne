@@ -110,7 +110,7 @@ def test_대장과_붙일_조인_키가_만들어진다(tmp_path):
 
 
 def test_조인_키를_못_만드는_행이_조금이면_건너뛴다(tmp_path):
-    """공공 CSV 5만 행이라 결측이 섞입니다. 전량 실패시키면 연 1회 수집이 날아갑니다."""
+    """공공 CSV 5만 행이라 결측이 섞입니다. 전량 실패시키면 그달 수집이 날아갑니다."""
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
     rows = parse(CSV, COLLECTED_AT)
     # 200행 중 1행만 model 이 비어 있는 상황 (0.5% < 임계치 1%)
