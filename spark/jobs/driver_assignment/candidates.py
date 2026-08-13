@@ -85,6 +85,10 @@ def build_trip_candidates(
               leases.taxi_id == col("_candidate_taxi_id"), "inner")
         .drop(leases.taxi_id)
         .withColumn("_driver_index", row_number().over(Window.orderBy("driver_id", "lease_id")))
+        # 2,000행이지만 파티션 없는 윈도우가 붙어 있어, 캐시하지 않으면 아래 조인과
+        # 이후 모든 action 에서 조인 3개 + 윈도우가 통째로 다시 돕니다. 로그에
+        # `WindowExec: No Partition Defined` 경고가 반복되는 것이 그 흔적입니다 (#360).
+        .cache()
     )
     driver_count = drivers.count()
     if driver_count == 0:

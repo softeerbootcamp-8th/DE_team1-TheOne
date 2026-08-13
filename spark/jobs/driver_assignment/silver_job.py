@@ -3,6 +3,7 @@
 import argparse
 from datetime import date
 
+from pyspark import StorageLevel
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lit, to_date
 
@@ -86,15 +87,30 @@ def main(args_list: list[str] | None = None):
     read = spark.read.parquet
     trips, preferences = read(args.trips_path), read(args.preferences_path)
     customers, leases, taxis = read(args.customers_path), read(args.leases_path), read(args.taxis_path)
+    # 캐시가 없으면 action 마다 트립 2천만 행부터 다시 계산합니다. `candidates` 는
+    # 검증에서 두 번, `assignments` 는 검증에서 세 번 더 읽히는데 그때마다 슬롯
+    # 전개와 greedy 배정(Python UDF)이 통째로 재실행됩니다 (#360).
+    #
+    # MEMORY_AND_DISK 인 이유: 후보가 수억 행이라 메모리만으로는 축출되고,
+    # 축출되면 캐시가 없는 것과 같아집니다.
     candidates = build_trip_candidates(
         trips, preferences, customers, leases, taxis, seed=args.seed, pool_size=args.pool_size,
+    ).persist(StorageLevel.MEMORY_AND_DISK)
+    assignments = allocate_trips(candidates, read(args.travel_times_path)).persist(
+        StorageLevel.MEMORY_AND_DISK
     )
-    assignments = allocate_trips(candidates, read(args.travel_times_path))
     silver = build_driver_trip_silver(
         trips, assignments, preferences, customers, leases, taxis,
         year_month=args.year_month, snapshot_date=date.fromisoformat(args.snapshot_date), seed=args.seed,
-    )
-    return SparkParquetLoader(args.output_path, partition_by=["year_month"]).write(silver)
+    ).persist(StorageLevel.MEMORY_AND_DISK)
+
+    try:
+        # Loader 가 쓰기 직후 row_count 를 세려고 한 번 더 읽습니다(common/io.py).
+        # `silver` 캐시가 없으면 그 한 줄에 전체 파이프라인이 다시 돕니다.
+        return SparkParquetLoader(args.output_path, partition_by=["year_month"]).write(silver)
+    finally:
+        for frame in (silver, assignments, candidates):
+            frame.unpersist()
 
 
 if __name__ == "__main__":
