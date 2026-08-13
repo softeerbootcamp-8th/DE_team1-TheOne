@@ -16,9 +16,15 @@
 없으므로 자격 목록에만 있는 차종은 버립니다. 반대로 대장에 있으면 자격이 하나도
 없어도 남깁니다 — 아무 상품도 못 받는 차라는 사실 자체가 Gold 에서 필요합니다
 (현재 차량이 그런 차라면 그게 바로 교체 후보이기 때문입니다).
+
+제원은 **대표 1건이 아니라 후보 트림의 범위**로 내보냅니다. 대장에는 트림이 없고
+(`SPORTAGE`) 제원에는 트림마다 행이 있어(`SPORTAGE FWD` 28mpg / `SPORTAGE HYBRID
+FWD` 41mpg) 어느 쪽이 맞는지 알 수 없기 때문입니다. 하나를 골라 적으면 그 값이
+그대로 Gold 의 에너지비가 되고, 틀려도 아무도 모릅니다(#320).
 """
 
 import logging
+from datetime import date
 from typing import Optional
 
 from pipeline_core.transformer import Transformer
@@ -30,10 +36,30 @@ logger = logging.getLogger(__name__)
 PLATFORM_UBER = "uber"
 PLATFORM_LYFT = "lyft"
 
-# 제원을 어느 키로 붙였는지. 조인이 헐거워지는 순간을 Gold 가 알아야 합니다.
+# 제원을 어떻게 붙였는지. 조인이 헐거워지는 순간을 Gold 가 알아야 합니다.
 MATCH_MODEL = "MODEL"  # model_key 로 정확히 붙음
-MATCH_BASE_MODEL = "BASE_MODEL"  # 구동방식 접미사를 뗀 base_model_key 로 붙음
+MATCH_DRIVETRAIN = "DRIVETRAIN"  # 구동방식 접미사만 다른 행에 붙음
 MATCH_NONE = "NONE"  # 제원을 못 찾음 (연비/전비 전부 NULL)
+
+# 대장의 차종명 뒤에 이 토큰만 더 붙어 있으면 **같은 차**로 봅니다.
+#
+# 대장은 "SPORTAGE" 처럼 트림 없이 적히는데 제원은 트림마다 행이 따로입니다.
+# 실측 접미사 분포에서 같은 차인 것과 아닌 것이 뚜렷하게 갈렸습니다.
+#
+#     같은 차   2WD 144 · 4WD 144 · AWD 107 · FWD 89
+#     다른 차   WAGON 40 · SOLARA 34 · SPORT 33 · KOUP 27 · HYBRID 22
+#
+# `HYBRID` 를 넣지 않는 이유가 중요합니다. `SPORTAGE`(내연 24~28mpg)와
+# `SPORTAGE HYBRID`(41mpg)를 한 후보로 묶으면 대장에 트림 정보가 없는 상태에서
+# 연비를 최대 40% 과대평가하게 됩니다(#320). 하이브리드를 취급하게 되면 대장
+# 표기부터 구분돼야 하고, 그때 이 목록이 아니라 대장 파싱을 고쳐야 합니다.
+DRIVETRAIN_SUFFIXES = frozenset({"2WD", "4WD", "AWD", "FWD", "RWD"})
+
+# 후보로 삼을 연식 범위 (기준일 연도 대비). 제원 원본에는 1984년식부터 들어 있고
+# 미출시 연식도 미리 올라옵니다 — 실제로 2026-08 수집분에 2027년식이 있었습니다.
+# 리스 대장은 최근 연식 차량이라 그 바깥은 후보에서 뺍니다.
+SPEC_YEAR_LOOKBACK = 3
+SPEC_YEAR_LOOKAHEAD = 1
 
 # atv_type -> 연료 구분. 에너지 단가를 어느 쪽(휘발유 $/gal, 전기 $/kWh)으로
 # 곱할지가 여기서 갈립니다. 디젤·CNG 는 별도 단가를 수집하지 않아 GAS 로 둡니다
@@ -42,6 +68,9 @@ FUEL_TYPE_EV = "EV"
 FUEL_TYPE_PHEV = "PHEV"
 FUEL_TYPE_HYBRID = "HYBRID"
 FUEL_TYPE_GAS = "GAS"
+# 후보 트림의 연료가 갈릴 때. Gold 가 어느 단가를 곱할지 정할 수 없으므로
+# 임의로 하나를 고르지 않고 그 사실을 그대로 넘깁니다.
+FUEL_TYPE_MIXED = "MIXED"
 
 
 def _fuel_type(atv_type: object) -> str:
@@ -57,24 +86,12 @@ def _fuel_type(atv_type: object) -> str:
     return FUEL_TYPE_GAS
 
 
-def _better_spec(current: Optional[dict], candidate: dict) -> dict:
-    """대표 제원 고르는 순서 — 연비 있는 것 > 최신 연식 > source_id 작은 것.
-
-    연비가 비면 Gold 의 에너지비 계산이 통째로 NULL 이 되므로, 최신 연식보다
-    값이 있는 쪽을 먼저 봅니다. source_id 는 동점일 때 결과를 고정하려고 씁니다
-    (같은 입력이면 같은 행이 나와야 재실행 결과를 비교할 수 있습니다).
-    """
-    if current is None:
-        return candidate
-
-    def rank(spec: dict) -> tuple[bool, int]:
-        return (spec.get("combined_mpg") is not None, spec.get("year") or 0)
-
-    if rank(candidate) != rank(current):
-        return candidate if rank(candidate) > rank(current) else current
-    current_id = str(current.get("source_id") or "")
-    candidate_id = str(candidate.get("source_id") or "")
-    return candidate if candidate_id < current_id else current
+def _minmax(specs: list[dict], column: str) -> tuple[Optional[float], Optional[float]]:
+    """후보 트림에서 관측된 값의 범위. 값이 하나도 없으면 (None, None)."""
+    values = [spec[column] for spec in specs if spec.get(column) is not None]
+    if not values:
+        return None, None
+    return min(values), max(values)
 
 
 class VehicleMasterSilverTransformer(Transformer):
@@ -82,7 +99,7 @@ class VehicleMasterSilverTransformer(Transformer):
 
     def transform(self, data: SourceTables) -> list[dict]:
         catalog = self._catalog_rows(data.catalog)
-        by_model, by_base_model = self._build_spec_index(data.specs)
+        spec_index = self._build_spec_index(data.specs, data.as_of)
         eligibility = self._eligibility_index(data.uber, data.lyft)
 
         cities = sorted(eligibility)
@@ -95,7 +112,7 @@ class VehicleMasterSilverTransformer(Transformer):
             city_eligibility = eligibility[city]
             for vehicle in catalog:
                 identity = (vehicle["make_key"], vehicle["model_key"])
-                spec, match_level = self._resolve_spec(identity, by_model, by_base_model)
+                specs, match_level = self._resolve_specs(identity, spec_index)
                 if match_level == MATCH_NONE:
                     unmatched_specs += 1
 
@@ -103,7 +120,7 @@ class VehicleMasterSilverTransformer(Transformer):
                 # 자격이 하나도 없으면 플랫폼·상품이 빈 행 하나를 남깁니다.
                 for product in products or [None]:
                     rows.append(
-                        self._row(city, vehicle, spec, match_level, product)
+                        self._row(city, vehicle, specs, match_level, product)
                     )
 
         if not rows:
@@ -144,41 +161,60 @@ class VehicleMasterSilverTransformer(Transformer):
         return sorted(rows, key=lambda r: (r["vendor"], r["make_key"], r["model_key"]))
 
     @staticmethod
-    def _build_spec_index(specs: list[dict]) -> tuple[dict, dict]:
-        """(make, model) 과 (make, base_model) 두 벌의 대표 제원 색인을 만듭니다."""
+    def _build_spec_index(
+        specs: list[dict], as_of: Optional[date]
+    ) -> dict[tuple[str, str], list[dict]]:
+        """(make, model) -> 그 표기의 제원 행 전체.
+
+        대표 1건을 여기서 고르지 않습니다. 대장에 트림 정보가 없어 어느 행이
+        맞는지 알 수 없기 때문입니다. 후보를 통째로 넘기고 범위로 내보냅니다.
+
+        `base_model_key` 는 쓰지 않습니다. 원본의 `baseModel` 이 뭉툭해서
+        `OUTLANDER` 아래에 `OUTLANDER SPORT 2WD` 까지 들어옵니다 — 다른 차입니다.
+        """
         if not specs:
             raise ValueError("차량 제원 Silver 가 비어 있습니다.")
 
-        by_model: dict[tuple[str, str], dict] = {}
-        by_base_model: dict[tuple[str, str], dict] = {}
-        for spec in specs:
-            make_key = spec.get("make_key")
-            if not make_key:
-                continue
-            model_key = spec.get("model_key")
-            if model_key:
-                key = (make_key, model_key)
-                by_model[key] = _better_spec(by_model.get(key), spec)
-            base_model_key = spec.get("base_model_key")
-            if base_model_key:
-                key = (make_key, base_model_key)
-                by_base_model[key] = _better_spec(by_base_model.get(key), spec)
+        min_year, max_year = None, None
+        if as_of is not None:
+            min_year = as_of.year - SPEC_YEAR_LOOKBACK
+            max_year = as_of.year + SPEC_YEAR_LOOKAHEAD
 
-        return by_model, by_base_model
+        index: dict[tuple[str, str], list[dict]] = {}
+        for spec in specs:
+            make_key, model_key = spec.get("make_key"), spec.get("model_key")
+            if not make_key or not model_key:
+                continue
+            year = spec.get("year")
+            if min_year is not None and not (min_year <= (year or 0) <= max_year):
+                continue
+            index.setdefault((make_key, model_key), []).append(spec)
+
+        return index
 
     @staticmethod
-    def _resolve_spec(
-        identity: tuple[str, str], by_model: dict, by_base_model: dict
-    ) -> tuple[Optional[dict], str]:
-        spec = by_model.get(identity)
-        if spec is not None:
-            return spec, MATCH_MODEL
-        # 대장은 "OUTLANDER SPORT", 제원은 "OUTLANDER SPORT 4WD" 처럼 구동방식이
-        # 붙어 안 붙는 경우가 있습니다. 접미사를 뗀 키로 한 번 더 봅니다.
-        spec = by_base_model.get(identity)
-        if spec is not None:
-            return spec, MATCH_BASE_MODEL
-        return None, MATCH_NONE
+    def _resolve_specs(
+        identity: tuple[str, str], index: dict[tuple[str, str], list[dict]]
+    ) -> tuple[list[dict], str]:
+        exact = index.get(identity)
+        if exact:
+            return exact, MATCH_MODEL
+
+        # 대장은 "SPORTAGE", 제원은 "SPORTAGE FWD" / "SPORTAGE AWD" 처럼 구동방식이
+        # 붙어 정확히 안 붙습니다. 남는 토큰이 전부 구동방식일 때만 같은 차로 봅니다 —
+        # "SPORTAGE HYBRID FWD" 나 "OUTLANDER SPORT 4WD" 는 여기서 걸러집니다.
+        make_key, model_key = identity
+        prefix = f"{model_key} "
+        variants = [
+            spec
+            for (spec_make, spec_model), rows in index.items()
+            if spec_make == make_key and spec_model.startswith(prefix)
+            for spec in rows
+            if set(spec_model[len(prefix):].split()) <= DRIVETRAIN_SUFFIXES
+        ]
+        if variants:
+            return variants, MATCH_DRIVETRAIN
+        return [], MATCH_NONE
 
     @staticmethod
     def _eligibility_index(uber: list[dict], lyft: list[dict]) -> dict:
@@ -222,12 +258,26 @@ class VehicleMasterSilverTransformer(Transformer):
     def _row(
         city: str,
         vehicle: dict,
-        spec: Optional[dict],
+        specs: list[dict],
         match_level: str,
         product: Optional[dict],
     ) -> dict:
-        spec = spec or {}
         product = product or {}
+        mpg_min, mpg_max = _minmax(specs, "combined_mpg")
+        kwh_min, kwh_max = _minmax(specs, "combined_kwh_per_100mi")
+        range_min, _ = _minmax(specs, "range_miles")
+        year_min, year_max = _minmax(specs, "year")
+
+        fuel_types = {_fuel_type(spec.get("atv_type")) for spec in specs}
+        if not fuel_types:
+            # 제원을 못 붙였으면 연료 구분도 비웁니다. GAS 로 채우면 Gold 가
+            # 없는 연비로 에너지비를 계산하려 듭니다.
+            fuel_type = None
+        elif len(fuel_types) == 1:
+            fuel_type = fuel_types.pop()
+        else:
+            fuel_type = FUEL_TYPE_MIXED
+
         return {
             "city": city,
             "vendor": vehicle["vendor"],
@@ -237,17 +287,22 @@ class VehicleMasterSilverTransformer(Transformer):
             "product": product.get("product"),
             "min_year": product.get("min_year"),
             "weekly_price_usd": vehicle.get("weekly_price_usd"),
-            "spec_year": spec.get("year"),
-            "combined_mpg": spec.get("combined_mpg"),
-            "combined_kwh_per_100mi": spec.get("combined_kwh_per_100mi"),
-            "range_miles": spec.get("range_miles"),
-            "atv_type": spec.get("atv_type"),
-            # 제원을 못 붙였으면 연료 구분도 비웁니다. GAS 로 채우면 Gold 가
-            # 없는 연비로 에너지비를 계산하려 듭니다.
-            "fuel_type": _fuel_type(spec.get("atv_type")) if spec else None,
             "spec_match_level": match_level,
+            # 후보 트림 수. 1 이면 값이 확정이고, 여러 개면 아래 범위만큼 불확실합니다.
+            "spec_trim_count": len(specs),
+            "spec_year_min": year_min,
+            "spec_year_max": year_max,
+            # 대표 1건이 아니라 범위입니다. 대장에 트림이 없어 어느 값이 맞는지
+            # 모르므로, 고르는 것은 Gold 가 합니다 (보수적으로 가려면 min).
+            "combined_mpg_min": mpg_min,
+            "combined_mpg_max": mpg_max,
+            "combined_kwh_per_100mi_min": kwh_min,
+            "combined_kwh_per_100mi_max": kwh_max,
+            "range_miles_min": range_min,
+            "fuel_type": fuel_type,
             # 계보 — 원천 Silver 가 물고 온 Bronze 경로를 그대로 옮깁니다.
+            # 후보가 여러 개여도 같은 스냅샷에서 왔으므로 첫 행이면 충분합니다.
             "catalog_bronze_path": vehicle.get("bronze_path"),
-            "specs_bronze_path": spec.get("bronze_path"),
+            "specs_bronze_path": specs[0].get("bronze_path") if specs else None,
             "eligibility_bronze_path": product.get("bronze_path"),
         }

@@ -4,13 +4,16 @@
  2. as_of 이후 파티션은 건너뜀
  3. 차종 1대가 자격 수만큼 펼쳐지고 platform 이 uber / lyft 로 구분됨
  4. 자격 없는 차종도 platform · product NULL 로 남음
- 5. base_model_key 폴백 + spec_match_level=BASE_MODEL
- 6. 제원을 못 찾으면 NONE, 연비 · fuel_type NULL
- 7. 대표 제원은 "연비 있는 것 > 최신 연식"
- 8. 대장에 중복 차종이면 실패
- 9. 자격 목록에 중복 행이면 실패
-10. 같은 날 재실행하면 덮어씀
-11. Loader 가 layout 경로에 SCHEMA 대로 쓰고 city 는 컬럼에 없음
+ 5. 구동방식만 다른 트림은 같은 차 (spec_match_level=DRIVETRAIN)
+ 6. 하이브리드 트림은 후보에서 제외 (#320)
+ 7. 이름이 더 긴 다른 차종이 후보에 안 섞임 (#320)
+ 8. 기준일에서 먼 연식 · 미출시 연식 제외 (#320)
+ 9. 후보의 연료가 갈리면 fuel_type=MIXED
+10. 제원을 못 찾으면 NONE, 연비 · fuel_type NULL
+11. 대장에 중복 차종이면 실패
+12. 자격 목록에 중복 행이면 실패
+13. 같은 날 재실행하면 덮어씀
+14. Loader 가 layout 경로에 SCHEMA 대로 쓰고 city 는 컬럼에 없음
 """
 
 from datetime import date
@@ -63,100 +66,83 @@ ELIGIBILITY_SCHEMA = pa.schema(
     ]
 )
 
+def catalog_row(make, model, price):
+    return {
+        "make_key": make,
+        "model_key": model,
+        "weekly_price_usd": price,
+        "bronze_path": "bronze/vehicle_catalog.parquet",
+    }
+
+
+# 대장에는 트림이 없습니다. "SPORTAGE" 이지 "SPORTAGE FWD" 가 아닙니다.
 CATALOG = [
-    {
-        "make_key": "TOYOTA",
-        "model_key": "CAMRY",
-        "weekly_price_usd": 614.0,
-        "bronze_path": "bronze/vehicle_catalog.parquet",
-    },
-    {
-        "make_key": "MITSUBISHI",
-        "model_key": "OUTLANDER SPORT",
-        "weekly_price_usd": 529.0,
-        "bronze_path": "bronze/vehicle_catalog.parquet",
-    },
-    {
-        "make_key": "HONDA",
-        "model_key": "FIT",
-        "weekly_price_usd": 514.0,
-        "bronze_path": "bronze/vehicle_catalog.parquet",
-    },
+    catalog_row("TOYOTA", "CAMRY", 614.0),
+    catalog_row("KIA", "SPORTAGE", 574.0),
+    catalog_row("MITSUBISHI", "OUTLANDER", 549.0),
+    catalog_row("MITSUBISHI", "OUTLANDER SPORT", 529.0),
+    catalog_row("HONDA", "FIT", 514.0),
 ]
 
+def spec(source_id, year, make, model, base_model, mpg, atv_type=None, kwh=0.0):
+    return {
+        "source_id": source_id,
+        "year": year,
+        "make_key": make,
+        "model_key": model,
+        "base_model_key": base_model,
+        "combined_mpg": mpg,
+        "combined_kwh_per_100mi": kwh,
+        "range_miles": None,
+        "atv_type": atv_type,
+        "bronze_path": "bronze/specs.parquet",
+    }
+
+
+# 실제 fueleconomy 원본의 모양을 따릅니다 (#320 에서 실수집분으로 확인한 것):
+#   - 같은 차종이 연식 × 구동방식 × 파워트레인으로 여러 행
+#   - `baseModel` 이 뭉툭해서 OUTLANDER SPORT 의 base 도 "OUTLANDER"
+#   - 미출시 연식이 미리 올라옴 (2026-08 수집분에 2027년식)
 SPECS = [
-    # 같은 차종의 두 연식. 최신(2024)이 대표가 되어야 합니다.
-    {
-        "source_id": "1",
-        "year": 2022,
-        "make_key": "TOYOTA",
-        "model_key": "CAMRY",
-        "base_model_key": "CAMRY",
-        "combined_mpg": 32.0,
-        "combined_kwh_per_100mi": 0.0,
-        "range_miles": None,
-        "atv_type": None,
-        "bronze_path": "bronze/specs.parquet",
-    },
-    {
-        "source_id": "2",
-        "year": 2024,
-        "make_key": "TOYOTA",
-        "model_key": "CAMRY",
-        "base_model_key": "CAMRY",
-        "combined_mpg": 51.0,
-        "combined_kwh_per_100mi": 0.0,
-        "range_miles": None,
-        "atv_type": "Hybrid",
-        "bronze_path": "bronze/specs.parquet",
-    },
-    # 대장은 "OUTLANDER SPORT", 제원은 구동방식이 붙어 model_key 로 안 붙습니다.
-    {
-        "source_id": "3",
-        "year": 2023,
-        "make_key": "MITSUBISHI",
-        "model_key": "OUTLANDER SPORT 4WD",
-        "base_model_key": "OUTLANDER SPORT",
-        "combined_mpg": 26.0,
-        "combined_kwh_per_100mi": 0.0,
-        "range_miles": None,
-        "atv_type": None,
-        "bronze_path": "bronze/specs.parquet",
-    },
+    # CAMRY: model_key 로 정확히 붙는 케이스. 연식 두 개.
+    spec("1", 2024, "TOYOTA", "CAMRY", "CAMRY", 32.0),
+    spec("2", 2025, "TOYOTA", "CAMRY", "CAMRY", 30.0),
+    # SPORTAGE: 대장에는 트림이 없고 제원에는 내연/하이브리드가 섞여 있습니다.
+    # 하이브리드(41)가 후보에 들어가면 연비를 40% 과대평가합니다.
+    spec("3", 2025, "KIA", "SPORTAGE FWD", "SPORTAGE", 28.0),
+    spec("4", 2025, "KIA", "SPORTAGE AWD", "SPORTAGE", 25.0),
+    spec("5", 2025, "KIA", "SPORTAGE HYBRID FWD", "SPORTAGE", 41.0, "Hybrid"),
+    spec("6", 2025, "KIA", "SPORTAGE X-PRO", "SPORTAGE", 24.0),
+    # OUTLANDER 와 OUTLANDER SPORT 는 다른 차인데 base 가 둘 다 "OUTLANDER".
+    spec("7", 2025, "MITSUBISHI", "OUTLANDER 4WD", "OUTLANDER", 26.0),
+    spec("8", 2025, "MITSUBISHI", "OUTLANDER SPORT 2WD", "OUTLANDER", 27.0),
+    spec("9", 2025, "MITSUBISHI", "OUTLANDER SPORT 4WD", "OUTLANDER", 25.0),
+    # 미출시 연식. 기준일(2026-08-13) 기준 +1년까지만 후보입니다.
+    spec("10", 2028, "MITSUBISHI", "OUTLANDER 4WD", "OUTLANDER", 99.0),
+    # 오래된 연식. 기준일 -3년보다 이전이라 후보에서 빠집니다.
+    spec("11", 2015, "TOYOTA", "CAMRY", "CAMRY", 12.0),
 ]
+
+def eligibility_row(make, model, product, min_year, source):
+    return {
+        "make_key": make,
+        "model_key": model,
+        "product": product,
+        "min_year": min_year,
+        "bronze_path": f"bronze/{source}.parquet",
+    }
+
 
 UBER = [
-    {
-        "make_key": "TOYOTA",
-        "model_key": "CAMRY",
-        "product": "UberX",
-        "min_year": 2010,
-        "bronze_path": "bronze/uber.parquet",
-    },
-    {
-        "make_key": "TOYOTA",
-        "model_key": "CAMRY",
-        "product": "Comfort",
-        "min_year": 2015,
-        "bronze_path": "bronze/uber.parquet",
-    },
-    {
-        "make_key": "MITSUBISHI",
-        "model_key": "OUTLANDER SPORT",
-        "product": "UberX",
-        "min_year": 2010,
-        "bronze_path": "bronze/uber.parquet",
-    },
+    eligibility_row("TOYOTA", "CAMRY", "UberX", 2010, "uber"),
+    eligibility_row("TOYOTA", "CAMRY", "Comfort", 2015, "uber"),
+    eligibility_row("KIA", "SPORTAGE", "UberX", 2010, "uber"),
+    eligibility_row("MITSUBISHI", "OUTLANDER", "UberX", 2010, "uber"),
+    eligibility_row("MITSUBISHI", "OUTLANDER SPORT", "UberX", 2010, "uber"),
 ]
 
 LYFT = [
-    {
-        "make_key": "TOYOTA",
-        "model_key": "CAMRY",
-        "product": "Extra Comfort",
-        "min_year": 2016,
-        "bronze_path": "bronze/lyft.parquet",
-    },
+    eligibility_row("TOYOTA", "CAMRY", "Extra Comfort", 2016, "lyft"),
 ]
 
 
@@ -254,7 +240,7 @@ def test_원천마다_수집일이_달라도_각자의_최신_파티션을_읽�
     }
     rows = read_rows(result)
     assert all(row["weekly_price_usd"] != 111.0 for row in rows)
-    assert find(rows, "CAMRY", "lyft", "Extra Comfort")["combined_mpg"] == 51.0
+    assert find(rows, "CAMRY", "lyft", "Extra Comfort")["combined_mpg_max"] == 32.0
 
 
 def test_기준일_이후에_수집된_파티션은_쓰지_않는다(tmp_path):
@@ -304,14 +290,63 @@ def test_자격이_하나도_없는_차종도_남는다(tmp_path):
     assert fit["min_year"] is None
 
 
-def test_구동방식_접미사가_붙은_제원은_base_model_key로_붙인다(tmp_path):
+def test_구동방식만_다른_트림은_같은_차로_붙인다(tmp_path):
     build_sources(tmp_path)
 
     row = find(read_rows(run(tmp_path)), "OUTLANDER SPORT", "uber", "UberX")
 
-    assert row["spec_match_level"] == "BASE_MODEL"
-    assert row["combined_mpg"] == 26.0
-    assert row["spec_year"] == 2023
+    # 제원의 base_model_key 는 "OUTLANDER" 입니다. 그걸로 붙이면 못 찾습니다.
+    assert row["spec_match_level"] == "DRIVETRAIN"
+    assert row["spec_trim_count"] == 2  # SPORT 2WD / SPORT 4WD
+    assert (row["combined_mpg_min"], row["combined_mpg_max"]) == (25.0, 27.0)
+
+
+def test_하이브리드_트림은_후보에서_뺀다(tmp_path):
+    build_sources(tmp_path)
+
+    row = find(read_rows(run(tmp_path)), "SPORTAGE", "uber", "UberX")
+
+    # 대장은 트림 없이 "SPORTAGE" 입니다. 하이브리드(41mpg)를 후보에 넣으면
+    # 내연기관 차의 에너지비를 40% 과소평가합니다.
+    assert row["spec_trim_count"] == 2  # FWD 28 / AWD 25 만. HYBRID·X-PRO 제외
+    assert (row["combined_mpg_min"], row["combined_mpg_max"]) == (25.0, 28.0)
+    assert row["fuel_type"] == "GAS"
+
+
+def test_이름이_더_긴_다른_차종이_후보에_섞이지_않는다(tmp_path):
+    build_sources(tmp_path)
+
+    outlander = find(read_rows(run(tmp_path)), "OUTLANDER", "uber", "UberX")
+
+    # "OUTLANDER SPORT 2WD/4WD" 는 base_model_key 가 똑같이 "OUTLANDER" 라
+    # 예전 폴백에서는 여기 섞여 들어왔습니다. 다른 차입니다.
+    assert outlander["spec_trim_count"] == 1  # OUTLANDER 4WD 하나뿐
+    assert outlander["combined_mpg_min"] == 26.0
+
+
+def test_기준일에서_너무_멀거나_미출시인_연식은_후보에서_뺀다(tmp_path):
+    build_sources(tmp_path)
+
+    rows = read_rows(run(tmp_path))
+
+    # 2028년식 OUTLANDER 4WD(99mpg) 와 2015년식 CAMRY(12mpg) 가 fixture 에 있습니다.
+    outlander = find(rows, "OUTLANDER", "uber", "UberX")
+    assert outlander["combined_mpg_max"] == 26.0
+    camry = find(rows, "CAMRY", "uber", "UberX")
+    assert camry["combined_mpg_max"] == 32.0
+    assert camry["spec_year_min"] == 2024
+
+
+def test_후보의_연료가_갈리면_MIXED_로_남긴다(tmp_path):
+    # 같은 model_key 아래 내연과 하이브리드가 함께 있는 경우 (RAV4 가 그렇습니다).
+    specs = SPECS + [spec("12", 2025, "TOYOTA", "CAMRY", "CAMRY", 51.0, "Hybrid")]
+    build_sources(tmp_path, specs=specs)
+
+    camry = find(read_rows(run(tmp_path)), "CAMRY", "uber", "UberX")
+
+    # 어느 단가를 곱할지 Gold 가 정할 수 없다는 사실을 그대로 넘깁니다.
+    assert camry["fuel_type"] == "MIXED"
+    assert (camry["combined_mpg_min"], camry["combined_mpg_max"]) == (30.0, 51.0)
 
 
 def test_제원을_못_찾으면_연료_구분까지_비운다(tmp_path):
@@ -320,34 +355,10 @@ def test_제원을_못_찾으면_연료_구분까지_비운다(tmp_path):
     fit = find(read_rows(run(tmp_path)), "FIT")
 
     assert fit["spec_match_level"] == "NONE"
-    assert fit["combined_mpg"] is None
+    assert fit["spec_trim_count"] == 0
+    assert fit["combined_mpg_min"] is None
     # GAS 로 채우면 Gold 가 없는 연비로 에너지비를 계산하려 듭니다.
     assert fit["fuel_type"] is None
-
-
-def test_대표_제원은_최신_연식보다_연비_있는_행을_먼저_고른다(tmp_path):
-    # 최신 연식(2025)에 연비가 비어 있고, 직전 연식(2024)에만 값이 있는 경우.
-    specs = SPECS + [
-        {
-            "source_id": "4",
-            "year": 2025,
-            "make_key": "TOYOTA",
-            "model_key": "CAMRY",
-            "base_model_key": "CAMRY",
-            "combined_mpg": None,
-            "combined_kwh_per_100mi": None,
-            "range_miles": None,
-            "atv_type": "Hybrid",
-            "bronze_path": "bronze/specs.parquet",
-        }
-    ]
-    build_sources(tmp_path, specs=specs)
-
-    row = find(read_rows(run(tmp_path)), "CAMRY", "uber", "UberX")
-
-    assert row["spec_year"] == 2024
-    assert row["combined_mpg"] == 51.0
-    assert row["fuel_type"] == "HYBRID"
 
 
 def test_대장에_같은_차종이_두_번_있으면_실패한다(tmp_path):
