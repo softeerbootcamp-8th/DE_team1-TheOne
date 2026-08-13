@@ -2,6 +2,7 @@
 
 import logging
 from datetime import datetime
+from uuid import uuid4
 
 from pipeline_core.loader import Loader, WriteResult
 
@@ -24,9 +25,12 @@ class EvChargingBronzeLoader(Loader):
         path = layout.bronze_file(self._base_dir, self._collected_at)
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        temporary_path = path.with_suffix(".tmp")
-        temporary_path.write_bytes(data)
-        temporary_path.replace(path)
+        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+        try:
+            temporary_path.write_bytes(data)
+            temporary_path.replace(path)
+        finally:
+            temporary_path.unlink(missing_ok=True)
 
         logger.info(
             "bronze_load done path=%s files=1 bytes=%d",

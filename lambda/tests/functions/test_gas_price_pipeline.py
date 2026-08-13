@@ -2,7 +2,8 @@
 
 1. Handler가 HTML 스냅샷을 먼저 저장하고 Bronze JSON에서 원문 경로를 참조
 2. HTML 파싱 실패 후에도 원문 스냅샷은 보존
-3. 월별 Silver는 UTC 수집일별 ``date, gas_price``만 저장
+3. Bronze 교체 실패 시 기존 파일을 보존하고 고유 임시 파일을 정리
+4. 월별 Silver는 UTC 수집일별 ``date, gas_price``만 저장
 """
 
 import json
@@ -64,6 +65,28 @@ def test_raw_to_bronze는_수집일별_json에_원문을_저장한다(tmp_path):
         "collected_at": COLLECTED_AT.isoformat(),
     }
     assert result.row_count == 1
+
+
+def test_raw_to_bronze_교체실패는_기존파일을_보존하고_임시파일을_정리한다(
+    tmp_path, monkeypatch
+):
+    loader = GasPriceBronzeLoader(str(tmp_path), COLLECTED_AT)
+    path = Path(loader.write(RAW_ROW).location)
+    original = path.read_bytes()
+    attempted_sources = []
+
+    def fail_replace(source, target):
+        attempted_sources.append(source)
+        raise OSError("교체 실패")
+
+    monkeypatch.setattr(Path, "replace", fail_replace)
+    for _ in range(2):
+        with pytest.raises(OSError, match="교체 실패"):
+            loader.write({**RAW_ROW, "price_raw": "$9.999"})
+
+    assert len(set(attempted_sources)) == 2
+    assert path.read_bytes() == original
+    assert list(path.parent.iterdir()) == [path]
 
 
 def test_raw_to_bronze_handler가_DAG에_필요한_응답을_반환한다(
