@@ -415,7 +415,10 @@ def hvfhv_raw_to_silver_pipeline():
         ),
         env={
             **os.environ,
-            "PYTHONPATH": f"{PROJECT_ROOT}:{PROJECT_ROOT}/spark:{os.getenv('PYTHONPATH', '')}",
+            "PYTHONPATH": (
+                f"{PROJECT_ROOT}:{PROJECT_ROOT}/spark"
+                f":{PROJECT_ROOT}/libs/pipeline_core:{os.getenv('PYTHONPATH', '')}"
+            ),
         },
     )
 
