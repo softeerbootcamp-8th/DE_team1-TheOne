@@ -16,13 +16,19 @@ EPA/DOE 벌크 CSV 전량을 Bronze 에 원본 그대로 적재하고, 조인 �
 
 import importlib
 import logging
+import math
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-import pyarrow.parquet as pq
 from airflow.sdk import Param, dag, task
+from common.validation import (
+    parse_handler_result,
+    parse_iso_date,
+    read_parquet,
+    require_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -58,55 +64,244 @@ def lambda_handler_for(function_name: str):
     return module.lambda_handler
 
 
-def _unpack(result: dict) -> tuple[int, list[str], str]:
-    """핸들러 응답에서 검증에 쓰는 세 값을 꺼내며 모양을 확인합니다."""
-    if not isinstance(result, dict):
-        raise TypeError(f"핸들러 결과가 dict 가 아닙니다: {type(result).__name__}")
+def _run_gx_validation(dataframe, expectations, *, layer: str) -> None:
+    """차량 제원 품질 규칙을 실행하고 실패 내용을 Airflow 로그로 남깁니다."""
+    logging.getLogger("great_expectations").setLevel(logging.WARNING)
 
-    row_count = result.get("row_count")
-    # bool 은 int 의 하위 타입이라 따로 막습니다 (True 가 1 로 통과합니다).
-    if isinstance(row_count, bool) or not isinstance(row_count, int):
-        raise ValueError(f"row_count 가 정수가 아닙니다: {row_count!r}")
-    # 빈 벌크 CSV 가 그대로 적재되는 걸 여기서 막습니다.
-    if row_count <= 0:
-        raise ValueError(f"row_count 는 1 이상이어야 합니다: {row_count}")
+    import great_expectations as gx
 
-    locations = result.get("locations")
-    if not isinstance(locations, list) or not locations:
-        raise ValueError(f"locations 가 비어 있습니다: {locations!r}")
-    if not all(isinstance(p, str) and p for p in locations):
-        raise ValueError(f"locations 에 빈 경로가 있습니다: {locations!r}")
+    context = gx.get_context(mode="ephemeral")
+    context.variables.progress_bars = {"globally": False}
+    batch = (
+        context.data_sources.add_pandas(name=f"vehicle_specs_{layer}_source")
+        .add_dataframe_asset(name=f"vehicle_specs_{layer}_asset")
+        .add_batch_definition_whole_dataframe(f"vehicle_specs_{layer}_batch")
+        .get_batch(batch_parameters={"dataframe": dataframe})
+    )
+    validation = batch.validate(
+        gx.ExpectationSuite(
+            name=f"fueleconomy_vehicle_specs_{layer}_suite",
+            expectations=expectations,
+        ),
+        result_format="SUMMARY",
+    )
+    failures = [result for result in validation.results if not result.success]
 
-    collected_date = result.get("collected_date")
-    if not isinstance(collected_date, str):
-        raise ValueError(f"collected_date 가 문자열이 아닙니다: {collected_date!r}")
-    try:
-        parsed = datetime.strptime(collected_date, "%Y-%m-%d").date()
-    except ValueError as exc:
-        raise ValueError(
-            f"collected_date 가 YYYY-MM-DD 가 아닙니다: {collected_date}"
-        ) from exc
-    if parsed.isoformat() != collected_date:
-        raise ValueError(f"collected_date 가 YYYY-MM-DD 가 아닙니다: {collected_date}")
+    for failure in failures:
+        result = dict(failure.result)
+        kwargs = failure.expectation_config.kwargs
+        observed_value = result.get("observed_value")
+        if observed_value is None:
+            observed_value = result.get("partial_unexpected_list")
+        logger.error(
+            "gx_validation failed layer=%s expectation=%s column=%s "
+            "unexpected_count=%s observed_value=%s",
+            layer,
+            failure.expectation_config.type,
+            kwargs.get("column") or "table",
+            result.get("unexpected_count"),
+            observed_value,
+        )
 
-    return row_count, locations, collected_date
+    if failures:
+        rules = ", ".join(
+            f"{failure.expectation_config.type}"
+            f"[{failure.expectation_config.kwargs.get('column') or 'table'}]"
+            for failure in failures
+        )
+        raise ValueError(f"Vehicle Specs {layer.title()} GX 검증 실패: {rules}")
+
+    logger.info(
+        "gx_validation passed layer=%s expectations=%s",
+        layer,
+        validation.statistics["evaluated_expectations"],
+    )
 
 
-def _require_nonempty_file(path: Path) -> None:
-    """파일이 있고 0바이트가 아닌지 봅니다. 출처 하나가 통째로 빠지는 걸 여기서 잡습니다."""
-    if not path.is_file():
-        raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
-    if path.stat().st_size == 0:
-        raise ValueError(f"적재 파일이 0바이트입니다: {path}")
+def run_gx_bronze_validation(
+    table,
+    expected_rows: int,
+    required_columns: tuple[str, ...],
+    target_date: date,
+    min_model_year: int,
+    max_model_year: int,
+    max_skip_ratio: float,
+) -> None:
+    """Bronze의 Silver 입력 컬럼과 변환 가능한 행 비율을 검증합니다."""
+    import great_expectations as gx
+    import pandas as pd
+
+    dataframe = table.to_pandas()
+
+    def series(column: str):
+        if column in dataframe.columns:
+            return dataframe[column]
+        return pd.Series([None] * len(dataframe), index=dataframe.index)
+
+    def nonblank(value: object) -> bool:
+        return bool(pd.notna(value) and str(value).strip())
+
+    def optional_nonnegative_number(value: object) -> bool:
+        if pd.isna(value) or not str(value).strip():
+            return True
+        try:
+            number = float(str(value).strip())
+        except (TypeError, ValueError):
+            return False
+        return math.isfinite(number) and number >= 0
+
+    year = pd.to_numeric(series("year"), errors="coerce")
+    dataframe["row_is_transformable"] = (
+        series("id").map(nonblank)
+        & series("make").map(nonblank)
+        & series("model").map(nonblank)
+        & year.between(min_model_year, max_model_year)
+        & series("comb08").map(optional_nonnegative_number)
+        & series("combE").map(optional_nonnegative_number)
+        & series("range").map(optional_nonnegative_number)
+    )
+
+    collected_at = series("collected_at")
+    dataframe["collected_at_has_timezone"] = collected_at.map(
+        lambda value: bool(
+            pd.notna(value)
+            and getattr(value, "tzinfo", None) is not None
+            and value.utcoffset() is not None
+        )
+    )
+    dataframe["collected_date_utc"] = pd.to_datetime(
+        collected_at, errors="coerce", utc=True
+    ).dt.date
+
+    expectations = [
+        gx.expectations.ExpectTableRowCountToEqual(value=expected_rows),
+        *(gx.expectations.ExpectColumnToExist(column=column) for column in required_columns),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="row_is_transformable",
+            value_set=[True],
+            mostly=1 - max_skip_ratio,
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_at_has_timezone", value_set=[True]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_date_utc", value_set=[target_date]
+        ),
+    ]
+    for column in required_columns:
+        if column not in dataframe.columns:
+            continue
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeOfType(
+                column=column,
+                type_="Timestamp" if column == "collected_at" else "str",
+            )
+        )
+
+    _run_gx_validation(dataframe, expectations, layer="bronze")
 
 
-def _read_parquet(path: Path):
-    if not path.name.endswith(".parquet"):
-        raise ValueError(f"Parquet 파일이 아닙니다: {path}")
-    try:
-        return pq.ParquetFile(path).read()
-    except Exception as exc:
-        raise RuntimeError(f"Parquet 을 읽지 못했습니다: {path}") from exc
+def run_gx_silver_validation(
+    table,
+    expected_columns: list[str],
+    min_model_year: int,
+    max_model_year: int,
+) -> None:
+    """Silver의 조인 키·연식·제원 값·출처 ID를 검증합니다."""
+    import great_expectations as gx
+    import pandas as pd
+
+    dataframe = table.to_pandas()
+    metric_columns = (
+        "combined_mpg",
+        "combined_kwh_per_100mi",
+        "range_miles",
+    )
+    for column in metric_columns:
+        values = (
+            table[column].to_pylist()
+            if column in table.column_names
+            else [None] * table.num_rows
+        )
+        dataframe[f"{column}_is_valid"] = [
+            value is None
+            or (
+                isinstance(value, (int, float))
+                and math.isfinite(value)
+                and value >= 0
+            )
+            for value in values
+        ]
+
+    derived_columns = [f"{column}_is_valid" for column in metric_columns]
+    expectations = [
+        gx.expectations.ExpectTableRowCountToBeBetween(min_value=1),
+        gx.expectations.ExpectTableColumnsToMatchOrderedList(
+            column_list=[*expected_columns, *derived_columns]
+        ),
+    ]
+    required_columns = ("source_id", "year", "make_key", "model_key", "bronze_path")
+    for column in required_columns:
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToNotBeNull(column=column)
+            )
+    string_columns = (
+        "source_id",
+        "make_key",
+        "model_key",
+        "base_model_key",
+        "atv_type",
+        "bronze_path",
+    )
+    for column in string_columns:
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToBeOfType(column=column, type_="str")
+            )
+    for column in ("source_id", "make_key", "model_key", "bronze_path"):
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToMatchRegex(
+                    column=column, regex=r"\S"
+                )
+            )
+    if "year" in dataframe.columns:
+        expectations.extend(
+            [
+                gx.expectations.ExpectColumnValuesToBeOfType(
+                    column="year", type_="int16"
+                ),
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="year",
+                    min_value=min_model_year,
+                    max_value=max_model_year,
+                ),
+            ]
+        )
+    for column in metric_columns:
+        if column in dataframe.columns:
+            expectations.extend(
+                [
+                    gx.expectations.ExpectColumnValuesToBeOfType(
+                        column=column, type_="float64"
+                    ),
+                    gx.expectations.ExpectColumnValuesToBeBetween(
+                        column=column, min_value=0
+                    ),
+                ]
+            )
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column=f"{column}_is_valid", value_set=[True]
+            )
+        )
+    if "source_id" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeUnique(column="source_id")
+        )
+
+    _run_gx_validation(dataframe, expectations, layer="silver")
 
 
 default_args = {
@@ -190,22 +385,20 @@ def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
         on_failure_callback=slack_failure_callback,
     )
     def validate_bronze_task(result: dict, **context) -> None:
-        """Bronze 적재 결과가 layout 규칙과 맞는지 봅니다.
-
-        Bronze 는 원본 84컬럼을 그대로 싣느라 스키마가 고정이 아니라서
-        (`build_schema` 가 행을 보고 만듭니다) 스키마 대조는 하지 않습니다.
-        대신 행 수가 0이 아닌지를 봅니다 — 빈 벌크 CSV 차단이 이 단계의 목적입니다.
-        """
+        """Bronze 적재 경계를 확인한 뒤 Silver 입력 품질을 GX로 검증합니다."""
         params = context.get("params", {})
         bronze_dir = params.get("bronze_dir") or DEFAULT_BRONZE_DIR
         layout = importlib.import_module("lambda.functions.common.vehicle_specs_layout")
+        extractor = importlib.import_module(
+            "lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.extractor"
+        )
+        transformer = importlib.import_module(
+            "lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.transformer"
+        )
 
-        row_count, locations, collected_date = _unpack(result)
-        if len(locations) != 1:
-            raise ValueError(f"Bronze locations 는 하나여야 합니다: {locations}")
-
-        path = Path(locations[0])
-        _require_nonempty_file(path)
+        parsed = parse_handler_result(result, expected_locations=1)
+        target_date = parse_iso_date(result.get("collected_date"))
+        path = require_file(parsed.locations[0])
 
         # 파일명이 수집 시각입니다. 여기서 되짚어 layout 이 정한 자리와 맞춰봅니다.
         try:
@@ -221,18 +414,25 @@ def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
         expected = layout.bronze_file(bronze_dir, source, collected_at)
         if path.resolve() != expected.resolve():
             raise ValueError(f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}")
-        if f"{collected_at:%Y-%m-%d}" != collected_date:
+        if collected_at.date() != target_date:
             raise ValueError(
                 f"파일명의 수집일과 collected_date 가 다릅니다: "
-                f"{path.name} != {collected_date}"
+                f"{path.name} != {target_date.isoformat()}"
             )
 
-        table = _read_parquet(path)
-        if table.num_rows != row_count:
-            raise ValueError(
-                f"Bronze 행 수가 row_count 와 다릅니다: {table.num_rows} != {row_count}"
-            )
-        logger.info("Bronze 검증 통과: source=%s rows=%d", source, row_count)
+        table = read_parquet(path)
+        run_gx_bronze_validation(
+            table,
+            parsed.row_count,
+            extractor.NEEDED_COLUMNS,
+            target_date,
+            transformer.MIN_MODEL_YEAR,
+            transformer.MAX_MODEL_YEAR,
+            transformer.MAX_SKIP_RATIO,
+        )
+        logger.info(
+            "Bronze 검증 통과: source=%s rows=%d", source, parsed.row_count
+        )
 
     @task(
         task_id="validate_silver",
@@ -248,15 +448,17 @@ def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
         loader = importlib.import_module(
             "lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.loader"
         )
+        transformer = importlib.import_module(
+            "lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.transformer"
+        )
 
-        row_count, locations, collected_date = _unpack(result)
-        target_date = datetime.strptime(collected_date, "%Y-%m-%d").date()
+        parsed = parse_handler_result(result)
+        target_date = parse_iso_date(result.get("collected_date"))
 
         total_rows = 0
         seen_sources: set[str] = set()
-        for location in locations:
-            path = Path(location)
-            _require_nonempty_file(path)
+        for path in parsed.locations:
+            require_file(path)
 
             source = layout.source_from_partition(path.parent)
             if source in seen_sources:
@@ -269,17 +471,21 @@ def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
                     f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}"
                 )
 
-            table = _read_parquet(path)
+            table = read_parquet(path)
+            run_gx_silver_validation(
+                table,
+                loader.SCHEMA.names,
+                transformer.MIN_MODEL_YEAR,
+                transformer.MAX_MODEL_YEAR,
+            )
             if table.schema != loader.SCHEMA:
                 raise ValueError(f"Silver 스키마가 loader.SCHEMA 와 다릅니다: {path}")
-            # 출처 하나가 통째로 비면 여기서 걸립니다. 합계만 보면 못 잡습니다.
-            if table.num_rows == 0:
-                raise ValueError(f"출처 파일에 행이 없습니다: {source}")
             total_rows += table.num_rows
 
-        if total_rows != row_count:
+        if total_rows != parsed.row_count:
             raise ValueError(
-                f"Silver 행 수 합계가 row_count 와 다릅니다: {total_rows} != {row_count}"
+                "Silver 행 수 합계가 row_count 와 다릅니다: "
+                f"{total_rows} != {parsed.row_count}"
             )
         logger.info(
             "Silver 검증 통과: sources=%d rows=%d", len(seen_sources), total_rows
