@@ -63,7 +63,7 @@ CASES = {
         "validate_silver",
         "silver",
         "expect_column_values_to_be_unique",
-        "price_date",
+        "date",
     ),
 }
 
@@ -92,13 +92,8 @@ def _ev_silver_row(**overrides) -> dict:
 
 def _gas_silver_row(**overrides) -> dict:
     row = {
-        "state": "NY",
-        "fuel_type": "regular",
-        "price_usd_per_gallon": 3.159,
-        "price_date": date(2026, 7, 1),
-        "source_url": "https://gasprices.aaa.com/?state=NY",
-        "collected_at": datetime(2026, 7, 2, 9, tzinfo=timezone.utc),
-        "bronze_path": "data/bronze/gas_price/collected_date=2026-07-02/gas_price.json",
+        "date": date(2026, 7, 1),
+        "gas_price": 3.159,
     }
     row.update(overrides)
     return row

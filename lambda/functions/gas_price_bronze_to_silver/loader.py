@@ -14,13 +14,8 @@ logger = logging.getLogger(__name__)
 
 SCHEMA = pa.schema(
     [
-        ("state", pa.string()),
-        ("fuel_type", pa.string()),
-        ("price_usd_per_gallon", pa.float64()),
-        ("price_date", pa.date32()),
-        ("source_url", pa.string()),
-        ("collected_at", pa.timestamp("us", tz="UTC")),
-        ("bronze_path", pa.string()),
+        ("date", pa.date32()),
+        ("gas_price", pa.float64()),
     ]
 )
 
