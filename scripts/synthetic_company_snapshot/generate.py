@@ -10,8 +10,8 @@ import pandas as pd
 
 from scripts.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
+    build_driver_ids,
     build_vehicle_pool,
-    driver_ids_from_mapping,
     evolve_company_snapshot,
     read_snapshot,
     write_snapshot,
@@ -20,23 +20,14 @@ from scripts.synthetic_company_snapshot.snapshot import (
 
 def main(args_list: list[str] | None = None):
     parser = argparse.ArgumentParser(description="합성 회사 원천 DB 스냅샷 생성")
-    parser.add_argument("--mapping_path", default="../data/bronze/driver_trip_mapping.parquet")
     parser.add_argument(
         "--previous_snapshot_dir",
         default=None,
         help="지정하면 초기 생성 대신 이 파티션을 기준으로 월별 스냅샷 갱신",
     )
     parser.add_argument(
-        "--vehicle_catalog_path",
-        default="../data/silver/vehicle_catalog/collected_date=2026-08-12/vendor=fasttrack/vehicle_catalog.parquet",
-    )
-    parser.add_argument(
-        "--uber_eligibility_path",
-        default="../data/silver/uber_eligible_vehicles/collected_date=2026-08-12/city=new-york/uber_eligible_vehicles.parquet",
-    )
-    parser.add_argument(
-        "--lyft_eligibility_path",
-        default="../data/silver/lyft_eligible_vehicles/collected_date=2026-08-12/city=new-york/lyft_eligible_vehicles.parquet",
+        "--vehicle_master_path",
+        default="../data/bronze/vehicle_master.parquet",
     )
     parser.add_argument("--output_dir", default="../data/source/company")
     parser.add_argument("--snapshot_date", default="2026-08-12")
@@ -48,9 +39,7 @@ def main(args_list: list[str] | None = None):
 
     snapshot_date = date.fromisoformat(args.snapshot_date)
     vehicle_pool = build_vehicle_pool(
-        pd.read_parquet(args.vehicle_catalog_path),
-        pd.read_parquet(args.uber_eligibility_path),
-        pd.read_parquet(args.lyft_eligibility_path),
+        pd.read_parquet(args.vehicle_master_path),
         model_year=args.model_year,
     )
     if args.previous_snapshot_dir:
@@ -62,9 +51,8 @@ def main(args_list: list[str] | None = None):
             change_rate=args.change_rate,
         )
     else:
-        driver_ids = driver_ids_from_mapping(pd.read_parquet(args.mapping_path))
         tables = build_company_snapshot(
-            driver_ids,
+            build_driver_ids(),
             vehicle_pool,
             seed=args.seed,
             snapshot_date=snapshot_date,
