@@ -1,4 +1,4 @@
-"""차량 대장 DAG 의 적재 결과 검증 태스크가 실제로 불량을 잡는지 봅니다.
+"""차량 대장 DAG의 적재 경계와 GX 데이터 품질 규칙을 검증합니다.
 
 핸들러는 쓰기에 성공하기만 하면 돌아옵니다. 그래서 **적재 결과가 비어 있어도 DAG 는
 성공으로 끝납니다.** 특히 Silver 는 업체별로 파일을 여러 개 쓰는데, 그중 하나가 비어도
@@ -7,30 +7,15 @@
 검증 태스크의 값어치는 "통과한다" 가 아니라 "불량을 통과시키지 않는다" 입니다.
 그래서 이 파일은 **정상 1건 + 불량 여러 건** 으로 짜여 있습니다.
 
-시나리오:
-
-정상
- 1. layout 규칙대로 적재된 Bronze / Silver 는 통과
- 2. 업체가 여럿이어도 행 수 합계가 맞으면 통과
-
-불량 — 핸들러 응답
- 3. row_count 가 0 / 정수 아님 / bool
- 4. locations 가 비었거나 빈 문자열을 담음
- 5. collected_date 형식이 틀림
-
-불량 — 실제 파일
- 6. 파일이 없음
- 7. 파일이 0바이트 (업체 누락)
- 8. layout 이 정한 경로가 아님
- 9. Bronze 파일명의 수집일이 collected_date 와 다름
-10. Silver 스키마가 loader.SCHEMA 와 다름
-11. Silver 행 수 합계가 row_count 와 다름
-12. 같은 업체가 두 번 적재됨
+Bronze는 Loader 컬럼·필수값·업체·주간 요금·수집일을 검증합니다. Silver는
+업체별 행 수·조인 키·주간 요금·차량 중복을 검증합니다. Handler 응답과 파일·layout은
+GX 실행 전 경계 검사로 남깁니다.
 
 실제 Parquet 을 tmp_path 에 씁니다. 네트워크는 타지 않습니다.
 """
 
 import importlib
+import math
 from datetime import datetime, timezone
 
 import pyarrow as pa
@@ -40,6 +25,9 @@ import pytest
 from dags import vehicle_catalog_raw_to_silver_dag as dag_module
 
 layout = importlib.import_module("lambda.functions.common.vehicle_catalog_layout")
+bronze_loader = importlib.import_module(
+    "lambda.functions.vehicle_catalog_raw_to_bronze.loader"
+)
 silver_loader = importlib.import_module(
     "lambda.functions.vehicle_catalog_bronze_to_silver.loader"
 )
@@ -51,6 +39,36 @@ VENDOR = "fasttrack"
 
 validate_bronze = DAG.get_task("validate_bronze").python_callable
 validate_silver = DAG.get_task("validate_silver").python_callable
+
+
+def test_Validation_Task에_재시도와_Slack_콜백이_연결된다():
+    for task_id in ("validate_bronze", "validate_silver"):
+        validation_task = DAG.get_task(task_id)
+        assert validation_task.retries == 1
+        assert validation_task.retry_delay.total_seconds() == 600
+        assert (
+            dag_module.slack_failure_callback
+            in validation_task.on_failure_callback
+        )
+
+
+def bronze_rows(count: int = 3) -> list[dict]:
+    return [
+        {
+            "make": "Toyota",
+            "model": f"Camry {index}",
+            "raw_name": f"TOYOTA CAMRY {index}",
+            "price_usd": 514.0 + index,
+            "price_period": "week",
+            "image_url": f"https://example.com/camry-{index}.png",
+            "booking_url": "https://example.com/book",
+            "source_url": "https://example.com/catalog",
+            "source_html_path": "/raw/source.html",
+            "source_image_path": f"/raw/camry-{index}.png",
+            "collected_at": COLLECTED_AT,
+        }
+        for index in range(count)
+    ]
 
 
 def silver_rows(count: int = 2) -> list[dict]:
@@ -73,12 +91,25 @@ def write_silver(silver_dir, vendor: str, rows: list[dict], schema=None) -> str:
     return str(path)
 
 
-def write_bronze(bronze_dir, vendor: str = VENDOR, rows: int = 3) -> str:
+def write_bronze_records(
+    bronze_dir,
+    records: list[dict],
+    *,
+    vendor: str = VENDOR,
+    schema=None,
+) -> str:
     path = layout.bronze_file(str(bronze_dir), vendor, COLLECTED_AT)
     path.parent.mkdir(parents=True, exist_ok=True)
-    table = pa.table({"make": ["Toyota"] * rows, "model": ["Camry"] * rows})
+    table = pa.Table.from_pylist(
+        records,
+        schema=bronze_loader.SCHEMA if schema is None else schema,
+    )
     pq.write_table(table, path)
     return str(path)
+
+
+def write_bronze(bronze_dir, vendor: str = VENDOR, rows: int = 3) -> str:
+    return write_bronze_records(bronze_dir, bronze_rows(rows), vendor=vendor)
 
 
 def bronze_result(locations: list[str], **overrides) -> dict:
@@ -108,6 +139,176 @@ def test_규칙대로_적재된_Bronze_는_통과한다(tmp_path):
     validate_bronze(bronze_result([path]), params={"bronze_dir": str(tmp_path)})
 
 
+def test_Bronze_실제_행_수와_Handler_row_count가_다르면_GX가_실패한다(tmp_path):
+    path = write_bronze(tmp_path)
+
+    with pytest.raises(ValueError, match=r"expect_table_row_count_to_equal\[table\]"):
+        validate_bronze(
+            bronze_result([path], row_count=4),
+            params={"bronze_dir": str(tmp_path)},
+        )
+
+
+def test_Bronze_Loader_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
+    records = bronze_rows()
+    for record in records:
+        record.pop("model")
+    schema = pa.schema(
+        field for field in bronze_loader.SCHEMA if field.name != "model"
+    )
+    path = write_bronze_records(tmp_path, records, schema=schema)
+
+    with pytest.raises(
+        ValueError, match=r"expect_table_columns_to_match_ordered_list\[table\]"
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "make",
+        "model",
+        "price_usd",
+        "price_period",
+        "image_url",
+        "source_url",
+        "source_html_path",
+        "source_image_path",
+        "collected_at",
+    ],
+)
+def test_Bronze_필수값이_NULL이면_GX가_실패한다(tmp_path, column):
+    records = bronze_rows()
+    records[0][column] = None
+    path = write_bronze_records(tmp_path, records)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_not_be_null\[{column}\]",
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
+def test_Bronze_원본에서_허용한_NULL은_통과한다(tmp_path):
+    records = bronze_rows()
+    records[0]["raw_name"] = None
+    records[0]["booking_url"] = None
+    path = write_bronze_records(tmp_path, records)
+
+    validate_bronze(
+        bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+    )
+
+
+@pytest.mark.parametrize(
+    "column",
+    [
+        "make",
+        "model",
+        "raw_name",
+        "image_url",
+        "booking_url",
+        "source_url",
+        "source_html_path",
+        "source_image_path",
+    ],
+)
+def test_Bronze_필수_문자열이_비어있으면_GX가_실패한다(tmp_path, column):
+    records = bronze_rows()
+    records[0][column] = "   "
+    path = write_bronze_records(tmp_path, records)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_match_regex\[{column}\]",
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
+def test_Bronze_업체가_수집_대상과_다르면_GX가_실패한다(tmp_path):
+    path = write_bronze(tmp_path, vendor="unknown")
+
+    with pytest.raises(
+        ValueError, match=r"expect_column_values_to_be_in_set\[vendor\]"
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
+def test_Bronze_요금_주기가_week가_아니면_GX가_실패한다(tmp_path):
+    records = bronze_rows()
+    records[0]["price_period"] = "day"
+    path = write_bronze_records(tmp_path, records)
+
+    with pytest.raises(
+        ValueError, match=r"expect_column_values_to_be_in_set\[price_period\]"
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
+@pytest.mark.parametrize("price", [49.99, 5000.01, math.inf, math.nan])
+def test_Bronze_주간_요금이_범위를_벗어나면_GX가_실패한다(
+    tmp_path, caplog, price
+):
+    records = bronze_rows()
+    records[0]["price_usd"] = price
+    path = write_bronze_records(tmp_path, records)
+
+    with caplog.at_level("ERROR"), pytest.raises(ValueError, match="price_usd"):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+    assert "gx_validation failed layer=bronze" in caplog.text
+    assert "column=price_usd" in caplog.text
+    assert "unexpected_count=1" in caplog.text
+    assert "observed_value=" in caplog.text
+
+
+def test_Bronze_collected_at_UTC_날짜가_수집일과_다르면_GX가_실패한다(tmp_path):
+    records = bronze_rows()
+    records[0]["collected_at"] = COLLECTED_AT.replace(day=10)
+    path = write_bronze_records(tmp_path, records)
+
+    with pytest.raises(
+        ValueError, match=r"expect_column_values_to_be_in_set\[collected_date_utc\]"
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
+def test_Bronze_collected_at에_시간대가_없으면_GX가_실패한다(tmp_path):
+    records = bronze_rows()
+    for record in records:
+        record["collected_at"] = COLLECTED_AT.replace(tzinfo=None)
+    schema = pa.schema(
+        pa.field(field.name, pa.timestamp("us"))
+        if field.name == "collected_at"
+        else field
+        for field in bronze_loader.SCHEMA
+    )
+    path = write_bronze_records(tmp_path, records, schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=r"expect_column_values_to_be_in_set\[collected_at_has_timezone\]",
+    ):
+        validate_bronze(
+            bronze_result([path]), params={"bronze_dir": str(tmp_path)}
+        )
+
+
 def test_업체가_여럿이어도_행_수_합계가_맞으면_통과한다(tmp_path):
     paths = [
         write_silver(tmp_path, "fasttrack", silver_rows()),
@@ -115,6 +316,108 @@ def test_업체가_여럿이어도_행_수_합계가_맞으면_통과한다(tmp_
     ]
 
     validate_silver(silver_result(paths), params={"silver_dir": str(tmp_path)})
+
+
+def test_Silver_업체_파일_하나가_0행이면_GX가_실패한다(tmp_path):
+    paths = [
+        write_silver(tmp_path, "fasttrack", silver_rows(4)),
+        write_silver(tmp_path, "othervendor", []),
+    ]
+
+    with pytest.raises(
+        ValueError, match=r"expect_table_row_count_to_be_between\[table\]"
+    ):
+        validate_silver(
+            silver_result(paths), params={"silver_dir": str(tmp_path)}
+        )
+
+
+def test_Silver_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
+    schema = pa.schema(
+        field for field in silver_loader.SCHEMA if field.name != "model_key"
+    )
+    records = silver_rows()
+    for record in records:
+        record.pop("model_key")
+    path = write_silver(tmp_path, VENDOR, records, schema=schema)
+
+    with pytest.raises(
+        ValueError, match=r"expect_table_columns_to_match_ordered_list\[table\]"
+    ):
+        validate_silver(
+            silver_result([path]), params={"silver_dir": str(tmp_path)}
+        )
+
+
+@pytest.mark.parametrize("column", silver_loader.SCHEMA.names)
+def test_Silver_필수값이_NULL이면_GX가_실패한다(tmp_path, column):
+    records = silver_rows()
+    records[0][column] = None
+    path = write_silver(tmp_path, VENDOR, records)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_not_be_null\[{column}\]",
+    ):
+        validate_silver(
+            silver_result([path]), params={"silver_dir": str(tmp_path)}
+        )
+
+
+@pytest.mark.parametrize("column", ["make_key", "model_key", "bronze_path"])
+def test_Silver_필수_문자열이_비어있으면_GX가_실패한다(tmp_path, column):
+    records = silver_rows()
+    records[0][column] = "   "
+    path = write_silver(tmp_path, VENDOR, records)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_match_regex\[{column}\]",
+    ):
+        validate_silver(
+            silver_result([path]), params={"silver_dir": str(tmp_path)}
+        )
+
+
+@pytest.mark.parametrize("price", [49.99, 5000.01, math.inf, math.nan])
+def test_Silver_주간_요금이_범위를_벗어나면_GX가_실패한다(tmp_path, price):
+    records = silver_rows()
+    records[0]["weekly_price_usd"] = price
+    path = write_silver(tmp_path, VENDOR, records)
+
+    with pytest.raises(ValueError, match="weekly_price_usd"):
+        validate_silver(
+            silver_result([path]), params={"silver_dir": str(tmp_path)}
+        )
+
+
+def test_Silver_같은_업체의_차량_조인키가_중복되면_GX가_실패한다(tmp_path):
+    records = silver_rows()
+    records[1]["make_key"] = records[0]["make_key"]
+    records[1]["model_key"] = records[0]["model_key"]
+    path = write_silver(tmp_path, VENDOR, records)
+
+    with pytest.raises(
+        ValueError, match=r"expect_compound_columns_to_be_unique\[make_key/model_key\]"
+    ):
+        validate_silver(
+            silver_result([path]), params={"silver_dir": str(tmp_path)}
+        )
+
+
+def test_GX가_구분하지_못하는_Arrow_물리_스키마가_다르면_실패한다(tmp_path):
+    schema = pa.schema(
+        pa.field(field.name, pa.large_string())
+        if field.name == "make_key"
+        else field
+        for field in silver_loader.SCHEMA
+    )
+    path = write_silver(tmp_path, VENDOR, silver_rows(), schema=schema)
+
+    with pytest.raises(ValueError, match="Silver 스키마"):
+        validate_silver(
+            silver_result([path]), params={"silver_dir": str(tmp_path)}
+        )
 
 
 # --------------------------------------------------------------------------
@@ -177,7 +480,7 @@ def test_업체_파일이_0바이트면_실패한다(tmp_path):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
 
-    with pytest.raises(ValueError, match="0바이트"):
+    with pytest.raises(ValueError, match="비어 있습니다"):
         validate_silver(
             silver_result([str(path)]), params={"silver_dir": str(tmp_path)}
         )
@@ -207,7 +510,7 @@ def test_Bronze_파일명의_수집일이_다르면_실패한다(tmp_path):
         )
 
 
-def test_Silver_스키마가_다르면_실패한다(tmp_path):
+def test_Silver_스키마가_다르면_GX가_실패한다(tmp_path):
     other = pa.schema([("make_key", pa.string()), ("weekly_price_usd", pa.float64())])
     path = write_silver(
         tmp_path,
@@ -216,7 +519,9 @@ def test_Silver_스키마가_다르면_실패한다(tmp_path):
         schema=other,
     )
 
-    with pytest.raises(ValueError, match="스키마"):
+    with pytest.raises(
+        ValueError, match=r"expect_table_columns_to_match_ordered_list\[table\]"
+    ):
         validate_silver(
             silver_result([path]), params={"silver_dir": str(tmp_path)}
         )
