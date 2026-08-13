@@ -82,8 +82,8 @@
 
 ```
 energy_cost_per_mile =
-  내연/하이브리드 : gas_price_usd_per_gallon / combined_mpg
-  EV              : (kwh_100mi / 100) * average_price_usd_per_kwh
+  내연/하이브리드 : gas_price / combined_mpg
+  EV              : (kwh_100mi / 100) * ev_price
 
 net_earnings      = driver_pay + tips - energy_cost - lease_cost
 company_arpu_gain = Σ(new weekly_price - old weekly_price)
