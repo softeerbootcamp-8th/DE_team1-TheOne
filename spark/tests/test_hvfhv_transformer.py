@@ -5,7 +5,7 @@
 3. [필수] 출력이 FINAL_SCHEMA 와 컬럼 순서·타입까지 일치
 4. 동일 원본은 입력 순서·재실행과 무관하게 같은 trip_key 생성
 5. 키 구성 원본값이 다르면 다른 trip_key 생성
-6. 완전히 동일한 원본 운행이 중복되면 명시적으로 실패
+6. 완전히 동일한 원본 운행도 서로 다른 trip_key 로 보존되고, 전량 중복 적재만 실패
 7. trip_key 는 Parquet 왕복 후에도 null 없는 문자열로 보존
 8. trip_miles/trip_time/base_passenger_fare/driver_pay 경계값이 걸러짐
 9. hvfhs_license_num 4종이 플랫폼명으로, 미지값은 Unknown으로 매핑
@@ -117,11 +117,33 @@ def test_키_구성_원본값이_달라지면_trip_key도_달라진다(spark, fi
     assert len(set(keys)) == 2
 
 
-def test_완전히_동일한_원본_운행이_중복되면_ValueError(spark):
-    df = spark.createDataFrame([_row(), _row()])
+def test_완전히_동일한_원본_운행도_서로_다른_trip_key로_보존된다(spark):
+    """실데이터(2024-01, 19,663,930행)에 9컬럼이 완전히 같은 별개 운행이 2쌍 있다.
+    실제로 다른 운행이므로 지워서도, 실패해서도 안 된다."""
+    rows = [_row(), _row()] + [_row(trip_miles=float(i)) for i in range(2, 100)]
 
-    with pytest.raises(ValueError, match="trip_key 중복"):
-        HVFHVCleanTransformer(error_threshold=1.0).transform(df)
+    result = HVFHVCleanTransformer(error_threshold=1.0).transform(spark.createDataFrame(rows))
+
+    keys = [row["trip_key"] for row in result.select("trip_key").collect()]
+    assert len(keys) == len(rows)
+    assert len(set(keys)) == len(rows)
+
+
+def test_같은_달을_통째로_중복_적재하면_ValueError(spark):
+    rows = [_row(trip_miles=float(i)) for i in range(1, 51)]
+
+    with pytest.raises(ValueError, match="자연키 충돌"):
+        HVFHVCleanTransformer(error_threshold=1.0).transform(spark.createDataFrame(rows + rows))
+
+
+def test_동일_원본_운행이_중복돼도_재실행하면_같은_trip_key_집합이_나온다(spark):
+    rows = [_row(), _row()] + [_row(trip_miles=float(i)) for i in range(2, 100)]
+    transformer = HVFHVCleanTransformer(error_threshold=1.0)
+
+    first = transformer.transform(spark.createDataFrame(rows))
+    second = transformer.transform(spark.createDataFrame(list(reversed(rows))))
+
+    assert {row["trip_key"] for row in first.collect()} == {row["trip_key"] for row in second.collect()}
 
 
 def test_trip_key는_Parquet_왕복_후에도_null_없는_문자열로_보존된다(spark, tmp_path):

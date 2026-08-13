@@ -3,7 +3,9 @@ from pathlib import Path
 from typing import Optional
 
 from pyspark.sql import Column, DataFrame, Window
-from pyspark.sql.functions import col, count, date_format, lit, percentile_approx, sha2, struct, to_json, when
+from pyspark.sql.functions import (
+    col, count, date_format, lit, percentile_approx, row_number, sha2, struct, to_json, when
+)
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, DoubleType, LongType, TimestampType
 )
@@ -68,6 +70,12 @@ TRIP_KEY_COLUMNS = [
 
 PREMIUM_FARE_RATIO = 1.15
 MIN_OD_OBSERVATIONS = 20
+
+# 실측 자연키 충돌률은 2024-01 기준 4/19,663,930 ≈ 2e-7 이고, 같은 기간을 통째로 다시
+# 적재하면 0.5 다. 6자릿수 차이라 그 사이면 되는데, 하루치 백필처럼 입력이 작을 때
+# 정상 충돌 1건이 비율을 끌어올리는 쪽만 피하면 된다.
+# ponytail: 고정 비율. 월별 충돌률이 자릿수로 움직이면 관측 기반으로 바꿀 것
+NATURAL_KEY_COLLISION_RATIO_LIMIT = 0.05
 
 
 class HVFHVCleanTransformer(Transformer):
@@ -144,11 +152,36 @@ class HVFHVCleanTransformer(Transformer):
             df_zone = spark.read.option("header", "true").csv(str(zone_path))
 
         # 2.1 파생 컬럼 추가
+        # 9개 자연키가 완전히 같은 별개 운행이 실데이터에 존재한다 (2024-01 기준 2쌍).
+        # 그룹 내 순번을 키에 섞어 유일성을 만든다 — 구성 값이 모두 같은 행들이라 정렬
+        # 기준과 무관하게 생성되는 키 집합이 같고, 재실행 결정성은 그대로 유지된다.
+        occurrence_window = Window.partitionBy(*TRIP_KEY_COLUMNS).orderBy(lit(1))
+        df_keyed = df_valid.withColumn("_trip_occurrence", row_number().over(occurrence_window))
+
+        # 순번이 유일성을 만들어 주는 대신, 같은 달을 통째로 다시 적재해도 키가 갈려
+        # 조용히 2배가 된다. 그 경우만 비율로 가려낸다.
+        collided_count = df_keyed.filter(col("_trip_occurrence") > 1).count()
+        if valid_count > 0:
+            collision_ratio = collided_count / valid_count
+            if collision_ratio >= NATURAL_KEY_COLLISION_RATIO_LIMIT:
+                error_msg = (
+                    f"자연키 충돌 비율이 {collision_ratio:.2%}로 임계치"
+                    f"({NATURAL_KEY_COLLISION_RATIO_LIMIT:.2%})를 초과했습니다. "
+                    "같은 기간을 중복 적재했는지 확인하세요."
+                )
+                logger.error(error_msg)
+                raise ValueError(error_msg)
+
         canonical_trip = to_json(
-            struct(*(col(name).alias(name) for name in TRIP_KEY_COLUMNS)),
+            struct(
+                *(col(name).alias(name) for name in TRIP_KEY_COLUMNS),
+                col("_trip_occurrence"),
+            ),
             options={"ignoreNullFields": "false"},
         )
-        df_transformed = df_valid.withColumn("trip_key", sha2(canonical_trip, 256)).withColumn(
+        df_transformed = df_keyed.withColumn(
+            "trip_key", sha2(canonical_trip, 256)
+        ).drop("_trip_occurrence").withColumn(
             "platform_name",
             when(col("hvfhs_license_num") == "HV0002", "Juno")
             .when(col("hvfhs_license_num") == "HV0003", "Uber")
@@ -159,19 +192,6 @@ class HVFHVCleanTransformer(Transformer):
          .withColumn("driver_id", lit(None).cast("string")) \
          .withColumn("taxi_model_id", lit(None).cast("string")) \
          .withColumn("year_month", date_format(col("pickup_datetime"), "yyyy-MM"))
-
-        duplicate_key = (
-            df_transformed.groupBy("year_month", "trip_key")
-            .count()
-            .filter(col("count") > 1)
-            .limit(1)
-            .first()
-        )
-        if duplicate_key:
-            raise ValueError(
-                "대상 월에 trip_key 중복이 있습니다: "
-                f"year_month={duplicate_key['year_month']}, trip_key={duplicate_key['trip_key']}"
-            )
 
         # TLC 원천에는 실제 상품 등급이 없으므로 플랫폼·OD별 기본 운임으로만 추정한다.
         # 수요 할증 등 다른 원인도 포함될 수 있어 관측 등급이 아닌 estimated 값이다.
