@@ -116,6 +116,9 @@ def _allocate_day(frame: pd.DataFrame, travel: dict[tuple[int, int], float]) -> 
 
 def allocate_trips(candidates: DataFrame, travel_times: DataFrame) -> DataFrame:
     """날짜별 greedy 배정으로 운행 단일성과 기사별 시공간 연결을 보장합니다."""
+    # 검증에서 두 번, 아래 collect 에서 한 번 읽습니다. 캐시하지 않으면 원본
+    # Parquet 을 세 번 스캔합니다 (#360).
+    travel_times = travel_times.cache()
     _validate(candidates, travel_times)
     if candidates.isEmpty():
         return candidates.sparkSession.createDataFrame([], ASSIGNMENT_SCHEMA)

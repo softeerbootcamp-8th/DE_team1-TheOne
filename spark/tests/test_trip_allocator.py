@@ -127,3 +127,21 @@ def test_빈_후보는_고정_스키마의_빈_결과다(spark):
 
     assert result.count() == 0
     assert result.schema == ASSIGNMENT_SCHEMA
+
+
+# --- 재계산 방지 (#360) ----------------------------------------------------
+#
+# 캐시가 없으면 action 마다 원본부터 다시 계산합니다. 기사 배정은 검증에서
+# 여러 번 읽히는 구조라, 캐시가 빠지면 실패하지 않고 **몇 배 느려지기만** 합니다.
+# 시간은 테스트로 못 잡으니 캐시 여부를 직접 확인합니다.
+
+
+def test_이동시간을_캐시해_원본을_반복_스캔하지_않는다(spark):
+    travel_times = _travel(spark)
+    assert not travel_times.is_cached  # 전제 확인
+
+    allocate_trips(spark.createDataFrame([_candidate("t1", "d1",
+        datetime(2024, 3, 4, 9), datetime(2024, 3, 4, 9, 30))]), travel_times)
+
+    # 검증 2회 + collect 1회 = 3회 읽습니다. 캐시가 없으면 매번 Parquet 스캔입니다.
+    assert travel_times.is_cached
