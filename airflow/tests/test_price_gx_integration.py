@@ -239,9 +239,12 @@ def _prepare_silver_dag(root, monkeypatch, invalid_layer=None, callback=None):
     return dag
 
 
-def test_통합_Silver_DAG의_6개_Task가_모두_성공한다(tmp_path, monkeypatch):
+def test_통합_Silver_DAG의_7개_Task가_모두_성공한다(tmp_path, monkeypatch):
     dag = _prepare_silver_dag(tmp_path, monkeypatch)
-    run = dag.test(logical_date=datetime(2026, 8, 13, tzinfo=timezone.utc))
+    run = dag.test(
+        logical_date=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        run_conf={"require_complete_month": 0},
+    )
     instances = {instance.task_id: instance for instance in run.get_task_instances()}
 
     assert run.state == "success"
@@ -271,7 +274,10 @@ def test_통합_Silver_GX_실패는_재시도후_DAG를_실패시킨다(
         invalid_layer,
         lambda context: callbacks.append(context["task_instance"].task_id),
     )
-    run = dag.test(logical_date=datetime(2026, 8, 13, tzinfo=timezone.utc))
+    run = dag.test(
+        logical_date=datetime(2026, 8, 13, tzinfo=timezone.utc),
+        run_conf={"require_complete_month": 0},
+    )
     instances = {instance.task_id: instance for instance in run.get_task_instances()}
 
     assert run.state == "failed"

@@ -1,13 +1,16 @@
 """Gas·EV 월별 Silver DAG 실행·통합 시나리오.
 
-1. Gas·EV 변환과 검증은 병렬이고 두 검증 뒤 통합·최종 검증이 실행된다.
-2. 수동 월이 없으면 실행 시점 기준 직전 완료 월을 두 Lambda에 전달한다.
-3. 검증된 두 Silver는 같은 날짜끼리 1:1 결합한다.
-4. 날짜 중복·집합 불일치는 통합을 실패시킨다.
-5. 같은 월 재실행은 통합 Parquet 하나를 교체한다.
+1. 월 완결성 검사 뒤 Gas·EV 변환·검증과 통합·최종 검증이 실행된다.
+2. 운영 모드는 누락일을 거부하고 테스트 모드는 경고 후 부분 월을 허용한다.
+3. 2월 윤년을 포함한 실제 월 일수로 일별 Bronze 파일을 확인한다.
+4. 수동 월이 없으면 실행 시점 기준 직전 완료 월을 두 Lambda에 전달한다.
+5. 검증된 두 Silver는 같은 날짜끼리 1:1 결합한다.
+6. 날짜 중복·집합 불일치는 통합을 실패시킨다.
+7. 같은 월 재실행은 통합 Parquet 하나를 교체한다.
 """
 
 import importlib
+from calendar import monthrange
 from datetime import date, datetime, timezone
 
 import pyarrow as pa
@@ -55,15 +58,37 @@ def result(path, rows: int) -> dict:
     }
 
 
-def test_dag는_6개_task를_검증_후_통합_순서로_연결한다():
+def write_monthly_bronze(root, month: str, missing: dict[str, set[str]] | None = None):
+    missing = missing or {}
+    year, month_number = map(int, month.split("-"))
+    for day in range(1, monthrange(year, month_number)[1] + 1):
+        collected_date = f"{month}-{day:02d}"
+        if collected_date not in missing.get("gas", set()):
+            path = gas_layout.bronze_file(str(root), collected_date)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("{}")
+        if collected_date not in missing.get("ev", set()):
+            partition = ev_layout.bronze_partition(str(root), collected_date)
+            partition.mkdir(parents=True, exist_ok=True)
+            (partition / f"{collected_date.replace('-', '')}T090000Z.json").write_text(
+                "{}"
+            )
+
+
+def test_dag는_7개_task를_완결성_검사후_통합_순서로_연결한다():
     assert DAG.dag_id == "gas_ev_price_bronze_to_silver_pipeline"
     assert {task.task_id for task in DAG.tasks} == {
+        "check_month_completeness",
         "gas_bronze_to_silver",
         "validate_gas_silver",
         "ev_bronze_to_silver",
         "validate_ev_silver",
         "integrate_silver",
         "validate_integrated_silver",
+    }
+    assert DAG.get_task("check_month_completeness").downstream_task_ids == {
+        "gas_bronze_to_silver",
+        "ev_bronze_to_silver",
     }
     assert DAG.get_task("validate_gas_silver").downstream_task_ids == {
         "integrate_silver"
@@ -100,6 +125,68 @@ def test_수동_collected_month가_실행시점보다_우선한다():
 def test_collected_month_param은_비표준_월을_거부한다(month):
     with pytest.raises(ParamValidationError):
         DAG.params.get_param("collected_month").resolve(month)
+
+
+@pytest.mark.parametrize("value", [0, 1])
+def test_월_완결성_param은_0과_1을_허용한다(value):
+    assert DAG.params.get_param("require_complete_month").resolve(value) == value
+
+
+@pytest.mark.parametrize("value", [-1, 2, "0", None, True])
+def test_월_완결성_param은_0과_1_외의_값을_거부한다(value):
+    with pytest.raises(ParamValidationError):
+        DAG.params.get_param("require_complete_month").resolve(value)
+
+
+@pytest.mark.parametrize(
+    ("month", "expected_days"),
+    [("2025-02", 28), ("2024-02", 29), ("2026-04", 30), ("2026-07", 31)],
+)
+def test_실제_월_일수로_Gas_EV_Bronze를_확인한다(tmp_path, month, expected_days):
+    missing = dag_module.find_missing_bronze_dates(str(tmp_path), month)
+
+    assert len(missing["gas_price"]) == expected_days
+    assert len(missing["ev_charging_price"]) == expected_days
+
+
+def test_완결된_월은_누락일이_없다(tmp_path):
+    write_monthly_bronze(tmp_path, "2026-07")
+
+    assert dag_module.find_missing_bronze_dates(str(tmp_path), "2026-07") == {
+        "gas_price": [],
+        "ev_charging_price": [],
+    }
+
+
+def test_운영_모드는_누락일이_있으면_실패한다(tmp_path, monkeypatch):
+    write_monthly_bronze(
+        tmp_path,
+        "2026-07",
+        {"gas": {"2026-07-03"}, "ev": {"2026-07-18"}},
+    )
+    monkeypatch.setattr(dag_module, "BRONZE_DIR", str(tmp_path))
+
+    with pytest.raises(ValueError, match="gas_price=2026-07-03.*ev_charging_price=2026-07-18"):
+        DAG.get_task("check_month_completeness").python_callable(
+            params={"collected_month": "2026-07", "require_complete_month": 1}
+        )
+
+
+def test_테스트_모드는_누락일을_경고하고_계속한다(tmp_path, monkeypatch, caplog):
+    write_monthly_bronze(
+        tmp_path,
+        "2026-07",
+        {"gas": {"2026-07-03"}, "ev": {"2026-07-18"}},
+    )
+    monkeypatch.setattr(dag_module, "BRONZE_DIR", str(tmp_path))
+
+    DAG.get_task("check_month_completeness").python_callable(
+        params={"collected_month": "2026-07", "require_complete_month": 0}
+    )
+
+    assert "부분 월 처리를 허용" in caplog.text
+    assert "gas_price=2026-07-03" in caplog.text
+    assert "ev_charging_price=2026-07-18" in caplog.text
 
 
 def test_Gas와_EV_lambda에_같은_월을_전달한다(monkeypatch):

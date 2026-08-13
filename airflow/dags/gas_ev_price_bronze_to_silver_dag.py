@@ -8,6 +8,7 @@ import importlib
 import logging
 import math
 import sys
+from calendar import monthrange
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -83,6 +84,45 @@ def integrated_silver_file(base_dir: str, collected_month: str) -> Path:
         / f"collected_month={collected_month}"
         / INTEGRATED_FILE_NAME
     )
+
+
+def find_missing_bronze_dates(
+    base_dir: str, collected_month: str
+) -> dict[str, list[str]]:
+    """대상 월에서 실제 Bronze 파일이 없는 Gas·EV 수집일을 반환합니다."""
+    collected_month = parse_year_month(collected_month)
+    year, month = map(int, collected_month.split("-"))
+    dates = [
+        f"{collected_month}-{day:02d}"
+        for day in range(1, monthrange(year, month)[1] + 1)
+    ]
+    gas_layout = importlib.import_module("lambda.functions.common.gas_price_layout")
+    ev_layout = importlib.import_module(
+        "lambda.functions.common.ev_charging_layout"
+    )
+
+    gas_missing = [
+        collected_date
+        for collected_date in dates
+        if not (
+            (path := gas_layout.bronze_file(base_dir, collected_date)).is_file()
+            and path.stat().st_size > 0
+        )
+    ]
+    ev_missing = [
+        collected_date
+        for collected_date in dates
+        if not any(
+            path.is_file() and path.stat().st_size > 0
+            for path in ev_layout.bronze_partition(
+                base_dir, collected_date
+            ).glob("*.json")
+        )
+    ]
+    return {
+        "gas_price": gas_missing,
+        "ev_charging_price": ev_missing,
+    }
 
 
 def run_gx_price_validation(
@@ -234,10 +274,42 @@ default_args = {
             type=["null", "string"],
             pattern=r"^\d{4}-(0[1-9]|1[0-2])$",
             description="처리할 Bronze 수집월(YYYY-MM). 비우면 직전 완료 월입니다.",
-        )
+        ),
+        "require_complete_month": Param(
+            1,
+            type="integer",
+            enum=[0, 1],
+            description="1이면 일별 Bronze가 모두 있어야 하며, 0이면 부분 월을 허용합니다.",
+        ),
     },
 )
 def gas_ev_price_bronze_to_silver_pipeline():
+    @task(task_id="check_month_completeness")
+    def check_month_completeness_task(**context) -> None:
+        collected_month = target_month(context)
+        required = context.get("params", {}).get("require_complete_month", 1)
+        if isinstance(required, bool) or required not in (0, 1):
+            raise ValueError("require_complete_month는 0 또는 1이어야 합니다.")
+
+        missing = find_missing_bronze_dates(BRONZE_DIR, collected_month)
+        missing = {dataset: dates for dataset, dates in missing.items() if dates}
+        if not missing:
+            logger.info("월 Bronze 완결성 확인 완료: month=%s", collected_month)
+            return
+
+        details = " ".join(
+            f"{dataset}={','.join(dates)}" for dataset, dates in missing.items()
+        )
+        if required == 1:
+            raise ValueError(
+                f"월 Bronze 완결성 검사 실패: month={collected_month} {details}"
+            )
+        logger.warning(
+            "월 Bronze 누락이 있지만 부분 월 처리를 허용합니다: month=%s %s",
+            collected_month,
+            details,
+        )
+
     @task(task_id="gas_bronze_to_silver")
     def gas_bronze_to_silver_task(**context) -> dict:
         result = lambda_handler_for("gas_price_bronze_to_silver")(
@@ -358,10 +430,12 @@ def gas_ev_price_bronze_to_silver_pipeline():
             "integrated_silver",
         )
 
+    completeness_checked = check_month_completeness_task()
     gas_result = gas_bronze_to_silver_task()
     gas_validated = validate_gas_silver_task(gas_result)
     ev_result = ev_bronze_to_silver_task()
     ev_validated = validate_ev_silver_task(ev_result)
+    completeness_checked >> [gas_result, ev_result]
     integrated_result = integrate_silver_task(gas_result, ev_result)
     [gas_validated, ev_validated] >> integrated_result
     validate_integrated_silver_task(integrated_result)
