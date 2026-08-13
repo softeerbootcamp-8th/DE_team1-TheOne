@@ -20,8 +20,14 @@ try:
 except ImportError:
     from airflow.operators.bash import BashOperator
 try:
-    from common.slack_failure_callback import slack_failure_callback
+    from common.slack_failure_callback import (
+        slack_failure_callback,
+        slack_retry_alert_callback,
+    )
 except Exception:
+    def slack_retry_alert_callback(context):
+        return None
+
     def slack_failure_callback(context):
         return None
 
@@ -133,6 +139,7 @@ def validate_silver_partition(output_dir: str | Path, year_month: str) -> None:
 
 default_args = {
     "owner": "DE_team1", "retries": 1, "retry_delay": timedelta(minutes=30),
+    "on_retry_callback": slack_retry_alert_callback,
     "on_failure_callback": slack_failure_callback,
 }
 
