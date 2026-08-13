@@ -1,4 +1,7 @@
-"""Gas·EV 개별·통합 Silver Validation Task의 GX 계약을 확인합니다."""
+"""Gas·EV 개별·통합 Silver Validation Task의 GX 계약을 확인합니다.
+
+논리 스키마는 nullable 차이를 허용하지만 숫자 폭과 컬럼 순서는 엄격히 검증합니다.
+"""
 
 import importlib
 from datetime import date, timedelta
@@ -68,6 +71,34 @@ def integrated_path(silver_dir, rows, schema=None):
     )
 
 
+VALIDATION_CASES = [
+    pytest.param(
+        validate_gas,
+        gas_path,
+        gas_loader.SCHEMA,
+        {"date": date(2026, 7, 1), "gas_price": 3.1},
+        "gas_price",
+        id="gas",
+    ),
+    pytest.param(
+        validate_ev,
+        ev_path,
+        ev_loader.SCHEMA,
+        {"date": date(2026, 7, 1), "ev_price": 0.3},
+        "ev_price",
+        id="ev",
+    ),
+    pytest.param(
+        validate_integrated,
+        integrated_path,
+        dag_module.INTEGRATED_SCHEMA,
+        {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3},
+        "gas_price",
+        id="integrated",
+    ),
+]
+
+
 def test_정상_개별_통합_silver는_모두_통과한다(silver_dir):
     gas = gas_path(
         silver_dir, [{"date": date(2026, 7, 1), "gas_price": 3.1}]
@@ -83,6 +114,68 @@ def test_정상_개별_통합_silver는_모두_통과한다(silver_dir):
     validate_gas(result(gas))
     validate_ev(result(ev))
     validate_integrated(result(integrated))
+
+
+@pytest.mark.parametrize(
+    ("validator", "writer", "schema", "row", "price_column"),
+    VALIDATION_CASES,
+)
+def test_nullable_차이는_논리_스키마에서_허용한다(
+    silver_dir, validator, writer, schema, row, price_column
+):
+    non_nullable_schema = pa.schema(
+        pa.field(field.name, field.type, nullable=False)
+        if field.name == price_column
+        else field
+        for field in schema
+    )
+    path = writer(silver_dir, [row], schema=non_nullable_schema)
+
+    validator(result(path))
+
+
+@pytest.mark.parametrize(
+    ("validator", "writer", "schema", "row", "price_column"),
+    VALIDATION_CASES,
+)
+def test_float32_가격은_float64_논리_계약과_달라_거부한다(
+    silver_dir, validator, writer, schema, row, price_column
+):
+    float32_schema = pa.schema(
+        pa.field(field.name, pa.float32(), nullable=field.nullable)
+        if field.name == price_column
+        else field
+        for field in schema
+    )
+    path = writer(silver_dir, [row], schema=float32_schema)
+
+    with pytest.raises(
+        ValueError,
+        match=rf"expect_column_values_to_be_of_type\[{price_column}\]",
+    ):
+        validator(result(path))
+
+
+@pytest.mark.parametrize(
+    ("validator", "writer", "schema", "row", "price_column"),
+    VALIDATION_CASES,
+)
+def test_컬럼_순서가_계약과_다르면_거부한다(
+    silver_dir, validator, writer, schema, row, price_column
+):
+    reordered_schema = pa.schema(
+        [
+            schema.field(price_column),
+            *(field for field in schema if field.name != price_column),
+        ]
+    )
+    path = writer(silver_dir, [row], schema=reordered_schema)
+
+    with pytest.raises(
+        ValueError,
+        match="expect_table_columns_to_match_ordered_list",
+    ):
+        validator(result(path))
 
 
 @pytest.mark.parametrize(

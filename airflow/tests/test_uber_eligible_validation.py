@@ -4,7 +4,7 @@
 1. 정상 Bronze와 여러 도시 Silver가 통과한다.
 2. Handler 응답·파일·layout·수집일·요청 도시·중복 도시·총 행 수 경계를 거부한다.
 3. Bronze GX가 행 수·필수 컬럼/값·문자열·products·연식·수집시각을 검증한다.
-4. Silver GX가 도시별 1행 이상·컬럼 순서·필수값·연식·복합 유일성을 검증한다.
+4. Silver GX가 컬럼 순서·논리 타입·숫자 폭·필수값·연식·복합 유일성을 검증한다.
 5. GX 실패 로그가 layer·expectation·column·unexpected_count·observed_value를 남긴다.
 6. Validation Task가 1회 재시도·10분 지연·실패 콜백을 사용한다.
 
@@ -14,6 +14,7 @@
 
 import importlib
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -295,6 +296,37 @@ def test_Bronze_collected_at에_시간대가_없으면_GX가_실패한다(tmp_pa
         )
 
 
+def test_Bronze_collected_at의_UTC_날짜가_같아도_시간대가_UTC가_아니면_GX가_실패한다(
+    tmp_path,
+):
+    collected_at = COLLECTED_AT.astimezone(ZoneInfo("America/New_York"))
+    records = bronze_rows()
+    for record in records:
+        record["collected_at"] = collected_at
+    schema = pa.schema(
+        pa.field(
+            field.name,
+            pa.timestamp(field.type.unit, tz="America/New_York"),
+        )
+        if field.name == "collected_at"
+        else field
+        for field in bronze_loader.SCHEMA
+    )
+    path = write_bronze_records(tmp_path, records, schema=schema)
+
+    with pytest.raises(
+        ValueError,
+        match=(
+            r"expect_column_values_to_be_in_set"
+            r"\[collected_at_timezone_is_utc\]"
+        ),
+    ):
+        validate_bronze(
+            bronze_result([path]),
+            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+        )
+
+
 def test_Bronze_collected_at의_UTC_날짜가_수집일과_다르면_GX가_실패한다(tmp_path):
     records = bronze_rows()
     records[0]["collected_at"] = COLLECTED_AT + timedelta(days=1)
@@ -485,6 +517,18 @@ def test_Silver_컬럼_순서가_loader_계약과_다르면_GX가_실패한다(t
         )
 
 
+def test_Silver_string과_large_string은_논리_타입이_같아_통과한다(tmp_path):
+    schema = pa.schema(
+        pa.field(field.name, pa.large_string())
+        if field.name == "make_key"
+        else field
+        for field in silver_loader.SCHEMA
+    )
+    path = write_silver(tmp_path, CITY, silver_rows(), schema=schema)
+
+    validate_silver(silver_result([path]), params={"silver_dir": str(tmp_path)})
+
+
 def test_행_수_합계가_row_count_와_다르면_실패한다(tmp_path):
     path = write_silver(tmp_path, CITY, silver_rows(2))
 
@@ -524,13 +568,10 @@ def test_Silver_필수_문자열이_공백이면_GX가_실패한다(tmp_path, co
 
 def test_Silver_min_year가_int16이_아니면_GX가_실패한다(tmp_path):
     schema = pa.schema(
-        pa.field(field.name, pa.string()) if field.name == "min_year" else field
+        pa.field(field.name, pa.int32()) if field.name == "min_year" else field
         for field in silver_loader.SCHEMA
     )
-    records = silver_rows()
-    for record in records:
-        record["min_year"] = "2010"
-    path = write_silver(tmp_path, CITY, records, schema=schema)
+    path = write_silver(tmp_path, CITY, silver_rows(), schema=schema)
 
     with pytest.raises(
         ValueError, match=r"expect_column_values_to_be_of_type\[min_year\]"

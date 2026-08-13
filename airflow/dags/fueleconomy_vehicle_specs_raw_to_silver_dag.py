@@ -32,6 +32,7 @@ from common.validation import (
     parse_iso_date,
     read_parquet,
     require_file,
+    run_gx_validation,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,60 +67,6 @@ def lambda_handler_for(function_name: str):
     """`lambda`가 파이썬 예약어라 정적 import가 안 돼 동적으로 불러옵니다."""
     module = importlib.import_module(f"lambda.functions.{function_name}.handler")
     return module.lambda_handler
-
-
-def _run_gx_validation(dataframe, expectations, *, layer: str) -> None:
-    """차량 제원 품질 규칙을 실행하고 실패 내용을 Airflow 로그로 남깁니다."""
-    logging.getLogger("great_expectations").setLevel(logging.WARNING)
-
-    import great_expectations as gx
-
-    context = gx.get_context(mode="ephemeral")
-    context.variables.progress_bars = {"globally": False}
-    batch = (
-        context.data_sources.add_pandas(name=f"vehicle_specs_{layer}_source")
-        .add_dataframe_asset(name=f"vehicle_specs_{layer}_asset")
-        .add_batch_definition_whole_dataframe(f"vehicle_specs_{layer}_batch")
-        .get_batch(batch_parameters={"dataframe": dataframe})
-    )
-    validation = batch.validate(
-        gx.ExpectationSuite(
-            name=f"fueleconomy_vehicle_specs_{layer}_suite",
-            expectations=expectations,
-        ),
-        result_format="SUMMARY",
-    )
-    failures = [result for result in validation.results if not result.success]
-
-    for failure in failures:
-        result = dict(failure.result)
-        kwargs = failure.expectation_config.kwargs
-        observed_value = result.get("observed_value")
-        if observed_value is None:
-            observed_value = result.get("partial_unexpected_list")
-        logger.error(
-            "gx_validation failed layer=%s expectation=%s column=%s "
-            "unexpected_count=%s observed_value=%s",
-            layer,
-            failure.expectation_config.type,
-            kwargs.get("column") or "table",
-            result.get("unexpected_count"),
-            observed_value,
-        )
-
-    if failures:
-        rules = ", ".join(
-            f"{failure.expectation_config.type}"
-            f"[{failure.expectation_config.kwargs.get('column') or 'table'}]"
-            for failure in failures
-        )
-        raise ValueError(f"Vehicle Specs {layer.title()} GX 검증 실패: {rules}")
-
-    logger.info(
-        "gx_validation passed layer=%s expectations=%s",
-        layer,
-        validation.statistics["evaluated_expectations"],
-    )
 
 
 def run_gx_bronze_validation(
@@ -173,12 +120,29 @@ def run_gx_bronze_validation(
             and value.utcoffset() is not None
         )
     )
+    collected_at_type = (
+        table.schema.field("collected_at").type
+        if "collected_at" in table.column_names
+        else None
+    )
+    dataframe["collected_at_timezone_is_utc"] = (
+        getattr(collected_at_type, "tz", None) == "UTC"
+    )
     dataframe["collected_date_utc"] = pd.to_datetime(
         collected_at, errors="coerce", utc=True
-    ).dt.date
+    ).dt.strftime("%Y-%m-%d")
 
+    derived_columns = [
+        "row_is_transformable",
+        "collected_at_has_timezone",
+        "collected_at_timezone_is_utc",
+        "collected_date_utc",
+    ]
     expectations = [
         gx.expectations.ExpectTableRowCountToEqual(value=expected_rows),
+        gx.expectations.ExpectTableColumnsToMatchOrderedList(
+            column_list=[*table.column_names, *derived_columns]
+        ),
         *(gx.expectations.ExpectColumnToExist(column=column) for column in required_columns),
         gx.expectations.ExpectColumnValuesToBeInSet(
             column="row_is_transformable",
@@ -189,7 +153,10 @@ def run_gx_bronze_validation(
             column="collected_at_has_timezone", value_set=[True]
         ),
         gx.expectations.ExpectColumnValuesToBeInSet(
-            column="collected_date_utc", value_set=[target_date]
+            column="collected_at_timezone_is_utc", value_set=[True]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_date_utc", value_set=[target_date.isoformat()]
         ),
     ]
     for column in required_columns:
@@ -202,7 +169,12 @@ def run_gx_bronze_validation(
             )
         )
 
-    _run_gx_validation(dataframe, expectations, layer="bronze")
+    run_gx_validation(
+        dataframe,
+        expectations,
+        suite_name="fueleconomy_vehicle_specs_bronze_suite",
+        layer="bronze",
+    )
 
 
 def run_gx_silver_validation(
@@ -305,7 +277,12 @@ def run_gx_silver_validation(
             gx.expectations.ExpectColumnValuesToBeUnique(column="source_id")
         )
 
-    _run_gx_validation(dataframe, expectations, layer="silver")
+    run_gx_validation(
+        dataframe,
+        expectations,
+        suite_name="fueleconomy_vehicle_specs_silver_suite",
+        layer="silver",
+    )
 
 
 default_args = {
@@ -380,8 +357,7 @@ def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
         logger.info("Bronze -> Silver 완료: %s", result)
         return result
 
-    # 검증 코드는 이 파일 안에 둡니다. 공통 모듈로 빼는 건 다른 DAG 들과 함께
-    # 정리할 별도 작업입니다 — 지금 추상화하면 데이터셋마다 다른 규칙이 섞입니다.
+    # 데이터셋 규칙은 이 파일에 두고, GX 실행과 결과 기록만 공통 모듈에 맡깁니다.
     @task(
         task_id="validate_bronze",
         retries=1,
@@ -485,8 +461,6 @@ def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
                 transformer.MIN_MODEL_YEAR,
                 transformer.MAX_MODEL_YEAR,
             )
-            if table.schema != loader.SCHEMA:
-                raise ValueError(f"Silver 스키마가 loader.SCHEMA 와 다릅니다: {path}")
             total_rows += table.num_rows
 
         if total_rows != parsed.row_count:

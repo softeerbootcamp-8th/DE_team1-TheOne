@@ -25,7 +25,11 @@ try:
 except ImportError:
     from airflow.operators.bash import BashOperator
 
-from common.validation import parse_handler_result, parse_year_month
+from common.validation import (
+    parse_handler_result,
+    parse_year_month,
+    run_gx_validation,
+)
 
 # 프로젝트 루트 디렉토리를 sys.path에 추가 (컨테이너 /opt/airflow/project-root 및 로컬 호환)
 CURRENT_DIR = Path(__file__).resolve().parent
@@ -73,62 +77,16 @@ def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> 
     """GX가 한 행짜리 품질 요약에서 비교할 Parquet 스키마 문자열을 만듭니다."""
     fields = []
     for field in schema:
-        field_type = "timestamp" if logical_timestamp and pa.types.is_timestamp(field.type) else str(field.type)
+        if logical_timestamp and pa.types.is_timestamp(field.type):
+            field_type = (
+                "timestamp"
+                if field.type.tz is None
+                else f"timestamp[tz={field.type.tz}]"
+            )
+        else:
+            field_type = str(field.type)
         fields.append(f"{field.name}:{field_type}")
     return "|".join(fields)
-
-
-def _run_gx_validation(dataframe, expectations: list, *, layer: str) -> None:
-    """품질 요약 DataFrame을 GX로 검증하고 실패 규칙을 Airflow 로그에 남깁니다."""
-    logging.getLogger("great_expectations").setLevel(logging.WARNING)
-    import great_expectations as gx
-
-    context = gx.get_context(mode="ephemeral")
-    context.variables.progress_bars = {"globally": False}
-    batch = (
-        context.data_sources.add_pandas(name=f"hvfhv_{layer}_source")
-        .add_dataframe_asset(name=f"hvfhv_{layer}_asset")
-        .add_batch_definition_whole_dataframe(f"hvfhv_{layer}_batch")
-        .get_batch(batch_parameters={"dataframe": dataframe})
-    )
-    validation = batch.validate(
-        gx.ExpectationSuite(
-            name=f"hvfhv_{layer}_suite",
-            expectations=expectations,
-        ),
-        result_format="SUMMARY",
-    )
-
-    failures = [result for result in validation.results if not result.success]
-    for failure in failures:
-        result = dict(failure.result)
-        column = failure.expectation_config.kwargs.get("column") or "table"
-        observed_value = result.get("observed_value")
-        if observed_value is None:
-            observed_value = result.get("partial_unexpected_list")
-        logger.error(
-            "gx_validation failed layer=%s expectation=%s column=%s "
-            "unexpected_count=%s observed_value=%s",
-            layer,
-            failure.expectation_config.type,
-            column,
-            result.get("unexpected_count"),
-            observed_value,
-        )
-
-    if failures:
-        rules = ", ".join(
-            f"{failure.expectation_config.type}"
-            f"[{failure.expectation_config.kwargs.get('column') or 'table'}]"
-            for failure in failures
-        )
-        raise ValueError(f"HVFHV {layer.title()} GX 검증 실패: {rules}")
-
-    logger.info(
-        "gx_validation passed layer=%s expectations=%s",
-        layer,
-        validation.statistics["evaluated_expectations"],
-    )
 
 
 def _bronze_quality_summary(parquet_file, expected_schema, required_columns):
@@ -393,7 +351,12 @@ def hvfhv_raw_to_silver_pipeline():
                     strict_max=True,
                 )
             )
-        _run_gx_validation(summary, expectations, layer="bronze")
+        run_gx_validation(
+            summary,
+            expectations,
+            suite_name="hvfhv_bronze_suite",
+            layer="bronze",
+        )
 
     # Spark 클렌징 실행 태스크 (spark/jobs/bronze_to_silver/hvfhv/job.py)
     # BashOperator를 사용하여 spark python 스크립트 실행
@@ -470,7 +433,12 @@ def hvfhv_raw_to_silver_pipeline():
                 for column in required_columns
             ),
         ]
-        _run_gx_validation(summary, expectations, layer="silver")
+        run_gx_validation(
+            summary,
+            expectations,
+            suite_name="hvfhv_silver_suite",
+            layer="silver",
+        )
 
         silver_rows = int(summary["row_count"].sum())
         if silver_rows > bronze_rows:

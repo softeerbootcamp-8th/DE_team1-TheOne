@@ -9,7 +9,12 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import dag, task
-from common.validation import parse_handler_result, parse_iso_date, require_file
+from common.validation import (
+    parse_handler_result,
+    parse_iso_date,
+    require_file,
+    run_gx_validation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -45,8 +50,6 @@ def lambda_handler_for(function_name: str):
 
 def run_gx_bronze_validation(record: dict, target_date: date) -> None:
     """Gas Price Bronze JSON의 데이터 품질 규칙을 GX로 검증합니다."""
-    logging.getLogger("great_expectations").setLevel(logging.WARNING)
-
     # DAG 파싱과 실제 검증 실행을 분리하기 위해 Task 실행 시점에 import합니다.
     import great_expectations as gx
     import pandas as pd
@@ -87,7 +90,9 @@ def run_gx_bronze_validation(record: dict, target_date: date) -> None:
     collected_at = record.get("collected_at")
     has_timezone, collected_date_utc = parse_collected_at(collected_at)
     dataframe["collected_at_has_timezone"] = has_timezone
-    dataframe["collected_date_utc"] = collected_date_utc
+    dataframe["collected_date_utc"] = (
+        collected_date_utc.isoformat() if collected_date_utc else None
+    )
 
     # 파일 경계는 DAG에서 확인하고, Suite는 원문 필드와 값만 검증합니다.
     expectations = [
@@ -105,7 +110,7 @@ def run_gx_bronze_validation(record: dict, target_date: date) -> None:
             column="collected_at_has_timezone", value_set=[True]
         ),
         gx.expectations.ExpectColumnValuesToBeInSet(
-            column="collected_date_utc", value_set=[target_date]
+            column="collected_date_utc", value_set=[target_date.isoformat()]
         ),
     ]
     for column in required_columns:
@@ -144,47 +149,11 @@ def run_gx_bronze_validation(record: dict, target_date: date) -> None:
             )
         )
 
-    context = gx.get_context(mode="ephemeral")
-    context.variables.progress_bars = {"globally": False}
-    batch = (
-        context.data_sources.add_pandas(name="gas_price_bronze_source")
-        .add_dataframe_asset(name="gas_price_bronze_asset")
-        .add_batch_definition_whole_dataframe("gas_price_bronze_batch")
-        .get_batch(batch_parameters={"dataframe": dataframe})
-    )
-    validation = batch.validate(
-        gx.ExpectationSuite(
-            name="gas_price_bronze_suite", expectations=expectations
-        ),
-        result_format="SUMMARY",
-    )
-
-    failures = [result for result in validation.results if not result.success]
-    for failure in failures:
-        result = dict(failure.result)
-        kwargs = failure.expectation_config.kwargs
-        observed_value = result.get("observed_value")
-        if observed_value is None:
-            observed_value = result.get("partial_unexpected_list")
-        logger.error(
-            "gx_validation failed layer=bronze expectation=%s column=%s "
-            "unexpected_count=%s observed_value=%s",
-            failure.expectation_config.type,
-            kwargs.get("column") or "table",
-            result.get("unexpected_count"),
-            observed_value,
-        )
-    if failures:
-        rules = ", ".join(
-            f"{failure.expectation_config.type}"
-            f"[{failure.expectation_config.kwargs.get('column') or 'table'}]"
-            for failure in failures
-        )
-        raise ValueError(f"Gas Price Bronze GX 검증 실패: {rules}")
-
-    logger.info(
-        "gx_validation passed layer=bronze expectations=%s",
-        validation.statistics["evaluated_expectations"],
+    run_gx_validation(
+        dataframe,
+        expectations,
+        suite_name="gas_price_bronze_suite",
+        layer="bronze",
     )
 
 
