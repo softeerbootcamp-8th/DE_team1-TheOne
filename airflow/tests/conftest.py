@@ -14,6 +14,9 @@ os.environ["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
 os.environ["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"] = (
     f"sqlite:///{Path(_TEST_HOME.name) / 'airflow.db'}"
 )
+# 데이터셋별 단위 테스트는 GX 규칙만 검증합니다. Data Docs 실발행은
+# test_common_validation.py가 tmp_path에서 별도로 검증합니다.
+os.environ["GX_DATA_DOCS_ENABLED"] = "false"
 
 
 def pytest_sessionstart(session):

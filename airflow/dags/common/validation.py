@@ -1,9 +1,23 @@
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime
+import logging
+import os
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+
+logger = logging.getLogger(__name__)
+
+_CONTAINER_ROOT = Path("/opt/airflow/project-root")
+_PROJECT_ROOT = (
+    _CONTAINER_ROOT
+    if _CONTAINER_ROOT.exists()
+    else Path(__file__).resolve().parents[3]
+)
+_DEFAULT_DATA_DOCS_DIR = _PROJECT_ROOT / "data" / "gx_data_docs"
 
 
 @dataclass(frozen=True)
@@ -79,3 +93,189 @@ def read_parquet(path: Path) -> pa.Table:
         return pq.ParquetFile(path).read()
     except (OSError, pa.ArrowInvalid) as exc:
         raise RuntimeError(f"Parquet 파일을 읽지 못했습니다: {path}") from exc
+
+
+def _failure_column(failure) -> str:
+    kwargs = failure.expectation_config.kwargs
+    expectation_type = failure.expectation_config.type
+    return (
+        kwargs.get("column")
+        or (
+            "/".join(map(str, kwargs.get("column_list") or []))
+            if expectation_type == "expect_compound_columns_to_be_unique"
+            else ""
+        )
+        or "/".join(
+            str(column)
+            for column in (kwargs.get("column_A"), kwargs.get("column_B"))
+            if column
+        )
+        or "table"
+    )
+
+
+def _data_docs_config(root: Path):
+    from great_expectations.data_context.types.base import DataContextConfig
+
+    stores = {
+        "expectations_store": {
+            "class_name": "ExpectationsStore",
+            "store_backend": {
+                "class_name": "TupleFilesystemStoreBackend",
+                "base_directory": str(root / ".gx_store" / "expectations"),
+            },
+        },
+        "validation_results_store": {
+            "class_name": "ValidationResultsStore",
+            "store_backend": {
+                "class_name": "TupleFilesystemStoreBackend",
+                "base_directory": str(root / ".gx_store" / "validations"),
+            },
+        },
+        # Runtime DataFrame의 datasource ID는 다음 Context에서 복원할 수 없습니다.
+        "validation_definition_store": {
+            "class_name": "ValidationDefinitionStore",
+            "store_backend": {"class_name": "InMemoryStoreBackend"},
+        },
+        "checkpoint_store": {
+            "class_name": "CheckpointStore",
+            "store_backend": {"class_name": "InMemoryStoreBackend"},
+        },
+    }
+    data_docs_sites = {
+        "local_site": {
+            "class_name": "SiteBuilder",
+            "show_how_to_buttons": False,
+            "store_backend": {
+                "class_name": "TupleFilesystemStoreBackend",
+                "base_directory": str(root),
+            },
+            "site_index_builder": {"class_name": "DefaultSiteIndexBuilder"},
+        }
+    }
+    return DataContextConfig(
+        config_version=4,
+        expectations_store_name="expectations_store",
+        validation_results_store_name="validation_results_store",
+        checkpoint_store_name="checkpoint_store",
+        stores=stores,
+        data_docs_sites=data_docs_sites,
+        analytics_enabled=False,
+    )
+
+
+class _DataDocsLock:
+    def __init__(self, root: Path):
+        self._root = root
+        self._handle = None
+
+    def __enter__(self):
+        import fcntl
+
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._handle = (self._root / ".build.lock").open("a+")
+        fcntl.flock(self._handle, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        import fcntl
+
+        assert self._handle is not None
+        fcntl.flock(self._handle, fcntl.LOCK_UN)
+        self._handle.close()
+
+
+def run_gx_validation(
+    dataframe,
+    expectations,
+    *,
+    suite_name: str,
+    layer: str,
+    data_docs_dir: str | Path | None = None,
+) -> None:
+    """GX Suite를 실행하고 결과 로그와 정적 Data Docs를 공통 발행합니다.
+
+    Suite 설정은 파일 저장을 거치므로 JSON으로 왕복 가능한 값을 사용합니다.
+    특히 ``InSet``의 날짜 값은 DataFrame과 Expectation 모두 ISO 문자열로 맞춥니다.
+    """
+    logging.getLogger("great_expectations").setLevel(logging.WARNING)
+
+    # DAG import 단계에서는 GX를 불러오지 않고 Validation Task 실행 시점에만 사용합니다.
+    import great_expectations as gx
+
+    configured_dir = os.getenv("GX_DATA_DOCS_DIR")
+    docs_enabled = data_docs_dir is not None or os.getenv(
+        "GX_DATA_DOCS_ENABLED", "true"
+    ).lower() not in {"0", "false", "no"}
+    docs_root = None
+    if docs_enabled:
+        docs_root = Path(
+            data_docs_dir or configured_dir or _DEFAULT_DATA_DOCS_DIR
+        ).resolve()
+
+    with _DataDocsLock(docs_root) if docs_root else nullcontext():
+        context = gx.get_context(
+            mode="ephemeral",
+            project_config=(
+                _data_docs_config(docs_root) if docs_root is not None else None
+            ),
+        )
+        context.variables.progress_bars = {"globally": False}
+
+        name_prefix = suite_name.removesuffix("_suite")
+        batch_definition = (
+            context.data_sources.add_pandas(name=f"{name_prefix}_source")
+            .add_dataframe_asset(name=f"{name_prefix}_asset")
+            .add_batch_definition_whole_dataframe(f"{name_prefix}_batch")
+        )
+        suite = context.suites.add_or_update(
+            gx.ExpectationSuite(name=suite_name, expectations=expectations)
+        )
+        validation = gx.ValidationDefinition(
+            name=f"{name_prefix}_validation",
+            data=batch_definition,
+            suite=suite,
+        ).run(
+            batch_parameters={"dataframe": dataframe},
+            result_format="SUMMARY",
+        )
+
+        failures = [result for result in validation.results if not result.success]
+        for failure in failures:
+            result = dict(failure.result)
+            observed_value = result.get("observed_value")
+            if observed_value is None:
+                observed_value = result.get("partial_unexpected_list")
+            if observed_value is None:
+                observed_value = "unavailable"
+            logger.error(
+                "gx_validation failed layer=%s expectation=%s column=%s "
+                "unexpected_count=%s observed_value=%s",
+                layer,
+                failure.expectation_config.type,
+                _failure_column(failure),
+                result.get("unexpected_count"),
+                observed_value,
+            )
+
+        if docs_root is not None:
+            try:
+                context.build_data_docs(site_names=["local_site"])
+                logger.info("gx_data_docs updated path=%s", docs_root / "index.html")
+            except Exception:
+                if not failures:
+                    raise
+                logger.exception("gx_data_docs build failed path=%s", docs_root)
+
+        if failures:
+            rules = ", ".join(
+                f"{failure.expectation_config.type}[{_failure_column(failure)}]"
+                for failure in failures
+            )
+            raise ValueError(f"GX 검증 실패 layer={layer}: {rules}")
+
+        logger.info(
+            "gx_validation passed layer=%s expectations=%s",
+            layer,
+            validation.statistics["evaluated_expectations"],
+        )
