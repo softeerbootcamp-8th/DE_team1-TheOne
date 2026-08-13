@@ -1,4 +1,4 @@
-from typing import Optional
+from typing import Optional, Union
 
 from pyspark.sql import DataFrame, SparkSession
 
@@ -10,15 +10,19 @@ class SparkParquetExtractor(Extractor):
     """
     Bronze/Silver파티션을 parquet으로 읽어 DataFrame 반환.
 
-    데이터셋마다 새로 안 만들고 경로만 다르게 재사용
+    데이터셋마다 새로 안 만들고 경로만 다르게 재사용.
+    path 에 여러 파티션 파일 경로를 리스트로 주면 한 번에 합쳐서 읽음 (예: year_month range 백필).
     """
 
-    def __init__(self, spark: SparkSession, path: str):
+    def __init__(self, spark: SparkSession, path: Union[str, list[str]]):
         self._spark = spark
         self._path = path
-        self.name = f"spark_parquet:{path}"
+        display_path = path if isinstance(path, str) else ",".join(path)
+        self.name = f"spark_parquet:{display_path}"
 
     def extract(self) -> DataFrame:
+        if isinstance(self._path, list):
+            return self._spark.read.parquet(*self._path)
         return self._spark.read.parquet(self._path)
 
 
