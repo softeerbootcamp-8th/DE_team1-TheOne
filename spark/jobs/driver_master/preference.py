@@ -25,10 +25,18 @@ PREFERENCE_COLUMNS = [
     "airport_preference",
     "manhattan_preference",
     "target_daily_trips",
+    "min_daily_trips",
+    "max_daily_trips",
     "target_work_minutes",
     "max_deadhead_minutes",
+    "buffer_seconds",
 ]
 TOP_TIME_BLOCK_COUNT = 2
+# 범위 근거는 synthetic-driver-mapping-guide.md — buffer 기본 60초(§6 조건 2),
+# 하루 trip 은 4개 미만이면 묶음 폐기·35개 상한(§9). 기사마다 그 안에서 다르게 뽑습니다.
+BUFFER_SECONDS_RANGE = (60, 181)
+MIN_DAILY_TRIPS_RANGE = (4, 9)
+MAX_DAILY_TRIPS_RANGE = (15, 36)
 
 
 def _driver_seed(seed: int, driver_id: str) -> int:
@@ -74,6 +82,13 @@ def build_driver_preferences(
         work_minutes = int(round(float(trait["work_mean_h"]) * 60))
         trip_minutes = max(float(trait["avg_trip_duration_min"]), 1.0)
 
+        min_daily_trips = int(rng.integers(*MIN_DAILY_TRIPS_RANGE))
+        max_daily_trips = max(min_daily_trips, int(rng.integers(*MAX_DAILY_TRIPS_RANGE)))
+        # 근무시간에서 나온 목표치가 기사의 하한·상한 밖이면 범위 안으로 당깁니다.
+        target_daily_trips = min(
+            max(int(round(work_minutes / trip_minutes)), min_daily_trips), max_daily_trips
+        )
+
         rows.append({
             "driver_id": driver_id,
             "active_weekdays": [WEEKDAY_LABELS[index] for index in trait["active_weekdays"]],
@@ -83,9 +98,12 @@ def build_driver_preferences(
             "preferred_distance_miles": distance_miles,
             "airport_preference": float(rng.beta(2.0, 5.0)),
             "manhattan_preference": float(rng.beta(2.5, 2.5)),
-            "target_daily_trips": max(1, int(round(work_minutes / trip_minutes))),
+            "target_daily_trips": target_daily_trips,
+            "min_daily_trips": min_daily_trips,
+            "max_daily_trips": max_daily_trips,
             "target_work_minutes": max(60, min(work_minutes, 12 * 60)),
             "max_deadhead_minutes": int(rng.integers(5, 16)),
+            "buffer_seconds": int(rng.integers(*BUFFER_SECONDS_RANGE)),
         })
     return pd.DataFrame(rows, columns=PREFERENCE_COLUMNS)
 
