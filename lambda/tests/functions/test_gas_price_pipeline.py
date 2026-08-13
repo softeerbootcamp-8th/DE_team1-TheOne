@@ -2,7 +2,7 @@
 
 1. Handler가 HTML 스냅샷을 먼저 저장하고 Bronze JSON에서 원문 경로를 참조
 2. HTML 파싱 실패 후에도 원문 스냅샷은 보존
-3. 경계 분리 후에도 기존 Bronze -> Silver 변환 결과 유지
+3. 월별 Silver는 UTC 수집일별 ``date, gas_price``만 저장
 """
 
 import json
@@ -130,14 +130,14 @@ def test_HTML_파싱이_실패해도_원문_스냅샷은_남는다(tmp_path, mon
 
 def test_bronze_원문을_월별_silver_parquet으로_변환한다(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-    first_path = write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
+    write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
     second_at = COLLECTED_AT + timedelta(days=1)
     second_row = {
         **RAW_ROW,
         "price_raw": "$3.250",
         "price_date_raw": "8/9/26",
     }
-    second_path = write_bronze(bronze_dir, second_row, second_at)
+    write_bronze(bronze_dir, second_row, second_at)
 
     result = to_silver(
         {
@@ -157,27 +157,17 @@ def test_bronze_원문을_월별_silver_parquet으로_변환한다(tmp_path):
     assert table.schema == SCHEMA
     assert table.to_pylist() == [
         {
-            "state": "NY",
-            "fuel_type": "regular",
-            "price_usd_per_gallon": 3.21,
-            "price_date": date(2026, 8, 8),
-            "source_url": PAGE_URL,
-            "collected_at": COLLECTED_AT,
-            "bronze_path": str(first_path),
+            "date": date(2026, 8, 9),
+            "gas_price": 3.21,
         },
         {
-            "state": "NY",
-            "fuel_type": "regular",
-            "price_usd_per_gallon": 3.25,
-            "price_date": date(2026, 8, 9),
-            "source_url": PAGE_URL,
-            "collected_at": second_at,
-            "bronze_path": str(second_path),
+            "date": date(2026, 8, 10),
+            "gas_price": 3.25,
         },
     ]
 
 
-def test_같은_가격일은_최신_수집본으로_월파일을_덮어쓴다(tmp_path):
+def test_같은_수집일은_최신_수집본으로_월파일을_덮어쓴다(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
     write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
     first = to_silver(
@@ -191,7 +181,7 @@ def test_같은_가격일은_최신_수집본으로_월파일을_덮어쓴다(tm
     write_bronze(
         bronze_dir,
         {**RAW_ROW, "price_raw": "$3.300"},
-        COLLECTED_AT + timedelta(days=1),
+        COLLECTED_AT + timedelta(hours=6),
     )
     second = to_silver(
         {
@@ -206,8 +196,30 @@ def test_같은_가격일은_최신_수집본으로_월파일을_덮어쓴다(tm
     assert first["locations"] == second["locations"]
     assert len(list(silver_path.parent.glob("*.parquet"))) == 1
     assert len(rows) == 1
-    assert rows[0]["price_usd_per_gallon"] == 3.3
-    assert rows[0]["collected_at"] == COLLECTED_AT + timedelta(days=1)
+    assert rows == [{"date": date(2026, 8, 9), "gas_price": 3.3}]
+
+
+def test_같은_가격_기준일도_수집일이_다르면_일별_행으로_남긴다(tmp_path):
+    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
+    write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
+    write_bronze(
+        bronze_dir,
+        {**RAW_ROW, "price_raw": "$3.300"},
+        COLLECTED_AT + timedelta(days=1),
+    )
+
+    result = to_silver(
+        {
+            "collected_month": "2026-08",
+            "bronze_dir": str(bronze_dir),
+            "silver_dir": str(silver_dir),
+        }
+    )
+
+    assert read_silver(Path(result["locations"][0])) == [
+        {"date": date(2026, 8, 9), "gas_price": 3.21},
+        {"date": date(2026, 8, 10), "gas_price": 3.3},
+    ]
 
 
 def test_collected_month_형식이_잘못되면_실패한다(tmp_path):

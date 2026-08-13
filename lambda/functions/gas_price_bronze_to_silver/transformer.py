@@ -10,7 +10,7 @@ PRICE_RE = re.compile(r"^\$\s*(\d+(?:\.\d+)?)$")
 
 
 class GasPriceSilverTransformer(Transformer):
-    """핵심 필드를 검증하고 가격일별 최신 수집본만 남깁니다."""
+    """핵심 필드를 검증하고 UTC 수집일별 최신 가격만 남깁니다."""
 
     def transform(self, data: list[dict]) -> list[dict]:
         if not data:
@@ -47,26 +47,25 @@ class GasPriceSilverTransformer(Transformer):
                 if not source_url:
                     raise ValueError("source_url이 비어 있습니다")
 
+                collected_at_utc = collected_at.astimezone(timezone.utc)
+                collected_date = collected_at_utc.date()
+                if price_date > collected_date:
+                    raise ValueError("price_date가 수집일보다 미래입니다")
+
                 cleaned = {
-                    "state": state,
-                    "fuel_type": fuel_type,
-                    "price_usd_per_gallon": price,
-                    "price_date": price_date,
-                    "source_url": source_url,
-                    "collected_at": collected_at.astimezone(timezone.utc),
-                    "bronze_path": bronze_path,
+                    "date": collected_date,
+                    "gas_price": price,
+                    "_collected_at": collected_at_utc,
                 }
-                previous = latest_by_date.get(price_date)
-                if previous is None or cleaned["collected_at"] > previous["collected_at"]:
-                    latest_by_date[price_date] = cleaned
-                elif cleaned["collected_at"] == previous["collected_at"] and any(
-                    cleaned[key] != previous[key]
-                    for key in (
-                        "state",
-                        "fuel_type",
-                        "price_usd_per_gallon",
-                        "source_url",
-                    )
+                previous = latest_by_date.get(collected_date)
+                if (
+                    previous is None
+                    or cleaned["_collected_at"] > previous["_collected_at"]
+                ):
+                    latest_by_date[collected_date] = cleaned
+                elif (
+                    cleaned["_collected_at"] == previous["_collected_at"]
+                    and cleaned["gas_price"] != previous["gas_price"]
                 ):
                     raise ValueError(
                         "동일한 collected_at에 서로 다른 값이 있습니다"
@@ -77,4 +76,10 @@ class GasPriceSilverTransformer(Transformer):
         if errors:
             raise ValueError("Gas Price Silver 변환 실패:\n- " + "\n- ".join(errors))
 
-        return [latest_by_date[key] for key in sorted(latest_by_date)]
+        return [
+            {
+                "date": latest_by_date[key]["date"],
+                "gas_price": latest_by_date[key]["gas_price"],
+            }
+            for key in sorted(latest_by_date)
+        ]
