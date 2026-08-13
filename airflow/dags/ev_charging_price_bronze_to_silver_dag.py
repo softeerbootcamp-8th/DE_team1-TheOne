@@ -220,13 +220,16 @@ def run_gx_silver_validation(
         column = kwargs.get("column") or "/".join(
             filter(None, (kwargs.get("column_A"), kwargs.get("column_B")))
         )
+        observed_value = result.get("observed_value")
+        if observed_value is None:
+            observed_value = result.get("partial_unexpected_list")
         logger.error(
             "gx_validation failed layer=silver expectation=%s column=%s "
             "unexpected_count=%s observed_value=%s",
             failure.expectation_config.type,
             column or "table",
             result.get("unexpected_count"),
-            result.get("observed_value"),
+            observed_value,
         )
 
     # 실패를 예외로 전파해야 Airflow 재시도와 Slack 콜백이 동작합니다.
