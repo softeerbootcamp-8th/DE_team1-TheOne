@@ -18,8 +18,8 @@ import pytest
 
 from scripts.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
+    build_driver_ids,
     build_vehicle_pool,
-    driver_ids_from_mapping,
     evolve_company_snapshot,
     read_snapshot,
     write_snapshot,
@@ -30,22 +30,24 @@ def _driver_ids() -> list[str]:
     return [f"DRIVER_{index:06d}" for index in range(2_000)]
 
 
+def _vehicle_master(vendor: str = "fasttrack") -> pd.DataFrame:
+    """차량 마스터는 (차종 × 플랫폼 × 상품) 한 행씩입니다. 등급이 없는 차종도 행이 있습니다."""
+    prices = {"BOTH": 700.0, "STANDARD": 500.0, "UBER_ONLY": 600.0, "LYFT_ONLY": 650.0}
+    rows = [
+        {"make_key": "A", "model_key": "BOTH", "platform": "uber", "product": "Comfort"},
+        {"make_key": "A", "model_key": "BOTH", "platform": "lyft", "product": "Extra Comfort"},
+        {"make_key": "B", "model_key": "STANDARD", "platform": "uber", "product": "UberX"},
+        {"make_key": "C", "model_key": "UBER_ONLY", "platform": "uber", "product": "Comfort"},
+        {"make_key": "D", "model_key": "LYFT_ONLY", "platform": "lyft", "product": "Extra Comfort"},
+    ]
+    return pd.DataFrame([
+        {**row, "vendor": vendor, "min_year": 2020, "weekly_price_usd": prices[row["model_key"]]}
+        for row in rows
+    ])
+
+
 def _vehicle_pool() -> pd.DataFrame:
-    catalog = pd.DataFrame([
-        {"make_key": "A", "model_key": "BOTH", "weekly_price_usd": 700.0},
-        {"make_key": "B", "model_key": "STANDARD", "weekly_price_usd": 500.0},
-        {"make_key": "C", "model_key": "UBER_ONLY", "weekly_price_usd": 600.0},
-        {"make_key": "D", "model_key": "LYFT_ONLY", "weekly_price_usd": 650.0},
-    ])
-    uber = pd.DataFrame([
-        {"make_key": "A", "model_key": "BOTH", "product": "Comfort", "min_year": 2020},
-        {"make_key": "C", "model_key": "UBER_ONLY", "product": "Comfort", "min_year": 2020},
-    ])
-    lyft = pd.DataFrame([
-        {"make_key": "A", "model_key": "BOTH", "product": "Extra Comfort", "min_year": 2020},
-        {"make_key": "D", "model_key": "LYFT_ONLY", "product": "Extra Comfort", "min_year": 2020},
-    ])
-    return build_vehicle_pool(catalog, uber, lyft)
+    return build_vehicle_pool(_vehicle_master())
 
 
 def test_기사마다_고객_고유택시_활성계약을_하나씩_생성한다():
@@ -90,9 +92,26 @@ def test_리스시작일이_지정한_기간_안에_있다():
     assert started.max().date() <= date(2026, 8, 12)
 
 
+def test_생성한_기사_ID는_2000개_고유이며_재현된다():
+    driver_ids = build_driver_ids()
+
+    assert len(driver_ids) == 2_000
+    assert len(set(driver_ids)) == 2_000
+    assert driver_ids == sorted(driver_ids)
+    assert driver_ids == build_driver_ids()
+
+
+def test_차량_마스터_컬럼_누락과_복수_업체는_거부한다():
+    with pytest.raises(ValueError, match="필수 컬럼 누락"):
+        build_vehicle_pool(_vehicle_master().drop(columns=["min_year"]))
+    mixed = pd.concat([_vehicle_master(), _vehicle_master("othervendor")], ignore_index=True)
+    with pytest.raises(ValueError, match="업체가 둘 이상"):
+        build_vehicle_pool(mixed)
+
+
 def test_기사수와_차량후보가_부족하면_실패한다():
-    with pytest.raises(ValueError, match="2,000명"):
-        driver_ids_from_mapping(pd.DataFrame({"synthetic_driver_id": _driver_ids()[:-1]}))
+    with pytest.raises(ValueError, match="1명 이상"):
+        build_driver_ids(0)
     with pytest.raises(ValueError, match="차량 후보가 없는 그룹"):
         build_company_snapshot(
             _driver_ids(),

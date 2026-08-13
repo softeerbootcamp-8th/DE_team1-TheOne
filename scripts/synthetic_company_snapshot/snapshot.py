@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 DRIVER_COUNT = 2_000
+DRIVER_ID_PREFIX = "SD"
 GROUP_COUNTS = {"BOTH": 400, "STANDARD": 1_200, "SINGLE": 400}
 GROUP_WEIGHTS = {group: count / DRIVER_COUNT for group, count in GROUP_COUNTS.items()}
 MIN_MONTHLY_CHANGE_RATE = 0.005
@@ -25,46 +26,43 @@ class SnapshotTables:
     lease_contract: pd.DataFrame
 
 
-def driver_ids_from_mapping(mapping: pd.DataFrame) -> list[str]:
-    if "synthetic_driver_id" not in mapping.columns:
-        raise ValueError("mapping에 synthetic_driver_id 컬럼이 없습니다")
-    driver_ids = sorted(mapping["synthetic_driver_id"].dropna().astype(str).unique())
-    if len(driver_ids) != DRIVER_COUNT:
-        raise ValueError(f"가상 기사는 {DRIVER_COUNT:,}명이어야 합니다: {len(driver_ids):,}명")
-    return driver_ids
+def build_driver_ids(driver_count: int = DRIVER_COUNT) -> list[str]:
+    """가상 기사 ID 목록. 자리수 고정이라 정렬 순서와 생성 순서가 같습니다."""
+    if driver_count < 1:
+        raise ValueError(f"가상 기사는 1명 이상이어야 합니다: {driver_count:,}명")
+    width = len(str(driver_count - 1))
+    return [f"{DRIVER_ID_PREFIX}{index:0{width}d}" for index in range(driver_count)]
 
 
 def build_vehicle_pool(
-    catalog: pd.DataFrame,
-    uber_eligibility: pd.DataFrame,
-    lyft_eligibility: pd.DataFrame,
+    vehicle_master: pd.DataFrame,
     model_year: int = 2023,
 ) -> pd.DataFrame:
+    """리스 업체 차량 마스터(플랫폼·상품 한 행씩)를 차종 한 행으로 접습니다."""
     key = ["make_key", "model_key"]
-    catalog_columns = [*key, "weekly_price_usd"]
-    missing_catalog = set(catalog_columns) - set(catalog.columns)
-    eligibility_columns = {*key, "product", "min_year"}
-    missing_eligibility = eligibility_columns - set(uber_eligibility.columns)
-    missing_eligibility |= eligibility_columns - set(lyft_eligibility.columns)
-    if missing_catalog:
-        raise ValueError(f"vehicle catalog 필수 컬럼 누락: {sorted(missing_catalog)}")
-    if missing_eligibility:
-        raise ValueError(f"vehicle eligibility 필수 컬럼 누락: {sorted(missing_eligibility)}")
+    required = {*key, "vendor", "platform", "product", "min_year", "weekly_price_usd"}
+    missing = required - set(vehicle_master.columns)
+    if missing:
+        raise ValueError(f"vehicle master 필수 컬럼 누락: {sorted(missing)}")
+    # 업체가 여럿이면 같은 차종이 업체별로 다른 주간요금을 갖는데, 아래 dedup 이
+    # 그중 하나를 조용히 고르게 됩니다. 업체가 늘어나면 여기서 먼저 멈추게 둡니다.
+    # ponytail: 단일 업체 가정. 업체가 늘면 vendor 를 key 에 넣고 taxi 테이블까지 확장
+    vendors = sorted(vehicle_master["vendor"].dropna().unique())
+    if len(vendors) > 1:
+        raise ValueError(f"차량 마스터에 업체가 둘 이상입니다: {vendors}")
 
-    uber_comfort = set(
-        map(tuple, uber_eligibility.loc[
-            (uber_eligibility["product"] == "Comfort")
-            & (uber_eligibility["min_year"] <= model_year), key
-        ].values)
-    )
-    lyft_extra_comfort = set(
-        map(tuple, lyft_eligibility.loc[
-            (lyft_eligibility["product"] == "Extra Comfort")
-            & (lyft_eligibility["min_year"] <= model_year), key
-        ].values)
-    )
+    def _keys_for(platform: str, product: str) -> set[tuple]:
+        matched = vehicle_master.loc[
+            (vehicle_master["platform"] == platform)
+            & (vehicle_master["product"] == product)
+            & (vehicle_master["min_year"] <= model_year), key
+        ]
+        return set(map(tuple, matched.values))
 
-    pool = catalog[catalog_columns].drop_duplicates(key).copy()
+    uber_comfort = _keys_for("uber", "Comfort")
+    lyft_extra_comfort = _keys_for("lyft", "Extra Comfort")
+
+    pool = vehicle_master[[*key, "weekly_price_usd"]].drop_duplicates(key).copy()
     identities = list(map(tuple, pool[key].values))
     pool["uber_comfort_eligible"] = [identity in uber_comfort for identity in identities]
     pool["lyft_extra_comfort_eligible"] = [identity in lyft_extra_comfort for identity in identities]

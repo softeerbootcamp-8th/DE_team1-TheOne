@@ -72,6 +72,19 @@ def test_선호점수와_작업한도가_허용범위다():
     assert result["max_deadhead_minutes"].between(5, 15).all()
 
 
+def test_트립수_하한_상한과_준비시간이_가이드_범위_안이다():
+    result = _build([f"DRIVER_{index:06d}" for index in range(100)])
+
+    assert result["min_daily_trips"].between(4, 8).all()
+    assert result["max_daily_trips"].between(15, 35).all()
+    assert result["buffer_seconds"].between(60, 180).all()
+    assert (result["min_daily_trips"] <= result["target_daily_trips"]).all()
+    assert (result["target_daily_trips"] <= result["max_daily_trips"]).all()
+    # 기사마다 다른 값이어야 한다 — 전부 같으면 랜덤화가 죽은 것이다.
+    assert result["buffer_seconds"].nunique() > 1
+    assert result["max_daily_trips"].nunique() > 1
+
+
 def test_같은_기사와_seed는_입력순서와_무관하게_동일하다():
     first = _build(["DRIVER_000001", "DRIVER_000002"])
     second = _build(["DRIVER_000002", "DRIVER_000001"])
