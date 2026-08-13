@@ -47,9 +47,56 @@ def test_DAG_구조와_월간_운영설정이_올바르다():
     assert all(task.on_failure_callback for task in DAG.tasks)
 
 
-def test_직전달과_수동연월을_계산한다():
-    assert module.resolve_target_year_month(datetime(2024, 1, 12, tzinfo=timezone.utc), {}) == "2023-12"
+def test_수동으로_넘긴_연월이_최우선이다():
     assert module.resolve_target_year_month(datetime(2024, 1, 12), {"year": "2030", "month": "3"}) == "2030-03"
+
+
+def make_partitions(trips_path, year_months):
+    trips_path.mkdir(parents=True, exist_ok=True)
+    for year_month in year_months:
+        (trips_path / f"year_month={year_month}").mkdir()
+    return trips_path
+
+
+def test_달력이_아니라_있는_파티션_중_최신을_고른다(tmp_path):
+    """TLC 가 두 달쯤 늦게 공개해 직전 달 파티션은 존재한 적이 없습니다.
+
+    달력으로 계산하면 매달 같은 자리에서 FileNotFoundError 로 죽습니다.
+    """
+    trips = make_partitions(tmp_path / "trips", ["2026-04", "2026-05", "2026-06"])
+
+    resolved = module.resolve_target_year_month(
+        datetime(2026, 8, 12, tzinfo=timezone.utc), {}, str(trips)
+    )
+
+    assert resolved == "2026-06"  # 직전 달인 2026-07 이 아님
+
+
+def test_기준일_직전달을_넘는_파티션은_고르지_않는다(tmp_path):
+    """과거로 백필할 때 그때 없던 달이 섞이면 결과를 재현할 수 없습니다."""
+    trips = make_partitions(tmp_path / "trips", ["2026-04", "2026-05", "2026-06"])
+
+    resolved = module.resolve_target_year_month(
+        datetime(2026, 6, 12, tzinfo=timezone.utc), {}, str(trips)
+    )
+
+    assert resolved == "2026-05"
+
+
+def test_쓸_수_있는_파티션이_없으면_무엇이_있는지_알려준다(tmp_path):
+    trips = make_partitions(tmp_path / "trips", ["2026-09"])
+
+    with pytest.raises(FileNotFoundError, match=r"2026-09"):
+        module.resolve_target_year_month(
+            datetime(2026, 8, 12, tzinfo=timezone.utc), {}, str(trips)
+        )
+
+
+def test_경로를_안_주면_예전처럼_직전달을_쓴다():
+    """`trips_path` 없이 부르는 호출부가 있어도 동작이 바뀌지 않게 둡니다."""
+    assert module.resolve_target_year_month(
+        datetime(2024, 1, 12, tzinfo=timezone.utc), {}
+    ) == "2023-12"
 
 
 def test_Spark_명령에_모든_경로와_실행계보가_들어간다():

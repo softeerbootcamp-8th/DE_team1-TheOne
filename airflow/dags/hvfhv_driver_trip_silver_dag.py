@@ -1,11 +1,14 @@
 """월별 HVFHV 기사 배정 Silver 생성과 결과 검증 DAG."""
 
+import logging
 import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+logger = logging.getLogger(__name__)
 
 try:
     from airflow.sdk import Param, dag, task
@@ -42,12 +45,45 @@ REQUIRED_COLUMNS = {
 }
 
 
-def resolve_target_year_month(logical_date: datetime, params: dict) -> str:
+def available_year_months(trips_path: str | Path) -> list[str]:
+    """`trips_path` 에 실제로 있는 `year_month=` 파티션 목록 (오름차순)."""
+    return sorted(
+        partition.name.removeprefix("year_month=")
+        for partition in Path(trips_path).glob("year_month=*")
+        if partition.is_dir()
+    )
+
+
+def resolve_target_year_month(
+    logical_date: datetime, params: dict, trips_path: str | Path | None = None
+) -> str:
+    """대상 연월을 정합니다. 파라미터가 있으면 그 값, 없으면 **데이터에서** 고릅니다.
+
+    달력으로 직전 달을 계산하면 안 됩니다. TLC 는 두 달쯤 늦게 공개해서
+    (2026-08 시점에 `fhvhv_tripdata_2026-07.parquet` 은 403, 2026-06 부터 200)
+    직전 달 파티션은 존재한 적이 없고 매달 같은 자리에서 실패합니다. 지연 폭도
+    일정하지 않아 "2개월 전" 같은 상수로 두면 그 상수가 다시 틀립니다.
+
+    그래서 있는 것 중 최신을 고르되, **기준일의 직전 달을 넘지 않습니다.** 과거
+    날짜로 백필할 때 그때 없던 달이 섞이면 결과를 재현할 수 없기 때문입니다.
+    """
     if params.get("year") and params.get("month"):
         return f"{str(params['year']).strip()}-{str(params['month']).strip().zfill(2)}"
     if logical_date.tzinfo is None:
         logical_date = logical_date.replace(tzinfo=timezone.utc)
-    return (logical_date.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+
+    cap = (logical_date.replace(day=1) - timedelta(days=1)).strftime("%Y-%m")
+    if trips_path is None:
+        return cap
+
+    available = available_year_months(trips_path)
+    usable = [year_month for year_month in available if year_month <= cap]
+    if not usable:
+        raise FileNotFoundError(
+            f"{cap} 이하의 HVFHV Silver 파티션이 없습니다: trips_path={trips_path} "
+            f"available={available}"
+        )
+    return usable[-1]
 
 
 def validate_input_paths(year_month: str, snapshot_date: str, paths: dict) -> dict:
@@ -118,7 +154,10 @@ def driver_trip_pipeline():
     def validate_inputs(**context):
         params = context["params"]
         logical_date = context.get("logical_date") or datetime.now(timezone.utc)
-        year_month = resolve_target_year_month(logical_date, params)
+        year_month = resolve_target_year_month(
+            logical_date, params, params.get("trips_path")
+        )
+        logger.info("기사 배정 대상 연월: %s", year_month)
         snapshot_date = params.get("snapshot_date") or f"{year_month}-01"
         return validate_input_paths(year_month, snapshot_date, params)
 
