@@ -181,6 +181,11 @@ def hvfhv_raw_to_silver_pipeline():
 
     # Spark 클렌징 실행 태스크 (spark/jobs/bronze_to_silver/hvfhv/job.py)
     # BashOperator를 사용하여 spark python 스크립트 실행
+    # job.py는 year/month 대신 year_month range만 받아서, 한 달만 처리할 땐 start=end로 넘긴다.
+    TARGET_YEAR_MONTH = (
+        "{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['year'] }}"
+        "-{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['month'] }}"
+    )
     bronze_to_silver_task = BashOperator(
         task_id="bronze_to_silver",
         bash_command=(
@@ -189,8 +194,8 @@ def hvfhv_raw_to_silver_pipeline():
             f"--output_path {DEFAULT_SILVER_DIR} "
             f"--zone_lookup_path {DEFAULT_ZONE_LOOKUP_PATH} "
             f"--error_threshold 0.2 "
-            f"--year \"{{{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['year'] }}}}\" "
-            f"--month \"{{{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['month'] }}}}\""
+            f"--start_year_month \"{TARGET_YEAR_MONTH}\" "
+            f"--end_year_month \"{TARGET_YEAR_MONTH}\""
         ),
         env={
             **os.environ,
