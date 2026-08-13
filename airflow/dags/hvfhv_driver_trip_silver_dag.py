@@ -179,7 +179,16 @@ def driver_trip_pipeline():
             + " --snapshot_date {{ task_instance.xcom_pull(task_ids='validate_inputs')['snapshot_date'] }}"
             + " --seed {{ params.seed }}"
         ),
-        env={**os.environ, "PYTHONPATH": f"{ROOT}:{ROOT}/spark:{os.getenv('PYTHONPATH', '')}"},
+        # BashOperator 가 띄우는 별도 프로세스는 DAG 파싱 때의 sys.path 를 물려받지
+        # 않습니다. spark/common/io.py 가 pipeline_core 를 import 하므로 그 경로까지
+        # 넣어야 합니다 (#351, 앞서 #328 에서 같은 실수).
+        env={
+            **os.environ,
+            "PYTHONPATH": (
+                f"{ROOT}:{ROOT}/spark:{ROOT}/libs/pipeline_core"
+                f":{os.getenv('PYTHONPATH', '')}"
+            ),
+        },
     )
 
     @task(task_id="validate_silver")
