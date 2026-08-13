@@ -47,6 +47,8 @@ class SourceTables:
     lyft: list[dict] = field(default_factory=list)
     # 어느 스냅샷을 읽었는지. 핸들러 응답에 실어 Airflow 로그에서 확인합니다.
     source_collected_dates: dict[str, str] = field(default_factory=dict)
+    # 기준일. 제원 후보를 최근 연식으로 좁힐 때 씁니다 (Transformer 참고).
+    as_of: date | None = None
 
 
 class VehicleMasterSilverExtractor(Extractor):
@@ -67,7 +69,7 @@ class VehicleMasterSilverExtractor(Extractor):
         self.source_collected_dates: dict[str, str] = {}
 
     def extract(self) -> SourceTables:
-        tables = SourceTables()
+        tables = SourceTables(as_of=self.as_of)
         for attr, source_layout, sub_key in SOURCES:
             collected_date, rows = self._read_dataset(source_layout, sub_key)
             setattr(tables, attr, rows)

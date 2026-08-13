@@ -23,13 +23,18 @@ SCHEMA = pa.schema(
         ("product", pa.string()),  # UberX / Comfort / Extra Comfort ...
         ("min_year", pa.int16()),  # 이 상품에 필요한 최소 차량 연식
         ("weekly_price_usd", pa.float64()),  # 리스 업체 주간 렌트료
-        ("spec_year", pa.int16()),  # 대표 제원의 연식
-        ("combined_mpg", pa.float64()),  # 전기차는 MPGe
-        ("combined_kwh_per_100mi", pa.float64()),
-        ("range_miles", pa.float64()),
-        ("atv_type", pa.string()),  # 제원 원본 표기 (EV / Plug-in Hybrid / ...)
-        ("fuel_type", pa.string()),  # EV / PHEV / HYBRID / GAS
-        ("spec_match_level", pa.string()),  # MODEL / BASE_MODEL / NONE
+        ("spec_match_level", pa.string()),  # MODEL / DRIVETRAIN / NONE
+        # 제원은 대표 1건이 아니라 후보 트림 전체의 범위입니다. 대장에 트림 정보가
+        # 없어 어느 값이 맞는지 모르기 때문입니다 — 고르는 것은 Gold 가 합니다.
+        ("spec_trim_count", pa.int32()),
+        ("spec_year_min", pa.int16()),
+        ("spec_year_max", pa.int16()),
+        ("combined_mpg_min", pa.float64()),  # 전기차는 MPGe
+        ("combined_mpg_max", pa.float64()),
+        ("combined_kwh_per_100mi_min", pa.float64()),
+        ("combined_kwh_per_100mi_max", pa.float64()),
+        ("range_miles_min", pa.float64()),
+        ("fuel_type", pa.string()),  # EV / PHEV / HYBRID / GAS / MIXED
         ("catalog_bronze_path", pa.string()),  # 계보
         ("specs_bronze_path", pa.string()),
         ("eligibility_bronze_path", pa.string()),
