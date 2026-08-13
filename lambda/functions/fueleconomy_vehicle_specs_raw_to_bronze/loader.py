@@ -17,6 +17,7 @@ import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
 from ..common import vehicle_specs_layout as layout
+from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,12 @@ class VehicleSpecsBronzeLoader(Loader):
         path.parent.mkdir(parents=True, exist_ok=True)
 
         table = pa.Table.from_pylist(data, schema=build_schema(data[0]))
-        pq.write_table(table, path, compression="snappy")
+        atomic_write(
+            path,
+            lambda temporary: pq.write_table(
+                table, temporary, compression="snappy"
+            ),
+        )
 
         logger.info(
             "bronze_load done path=%s rows=%d columns=%d bytes=%d",

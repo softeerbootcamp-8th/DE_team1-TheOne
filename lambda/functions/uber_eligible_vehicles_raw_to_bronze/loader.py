@@ -12,6 +12,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from ..common.atomic_write import atomic_write
+
 logger = logging.getLogger(__name__)
 
 # 데이터셋 고유 명칭
@@ -53,7 +55,12 @@ class UberEligibleVehiclesBronzeLoader(Loader):
         path = partition / f"{self._collected_at:%Y%m%dT%H%M%SZ}.parquet"
 
         table = pa.Table.from_pylist(data, schema=SCHEMA)
-        pq.write_table(table, path, compression="snappy")
+        atomic_write(
+            path,
+            lambda temporary: pq.write_table(
+                table, temporary, compression="snappy"
+            ),
+        )
 
         logger.info(
             "bronze_load done path=%s rows=%d bytes=%d",

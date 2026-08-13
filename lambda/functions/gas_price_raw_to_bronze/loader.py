@@ -6,11 +6,11 @@ Extractor가 수집한 가격과 기준일 문자열을 변환하지 않고 일�
 import json
 import logging
 from datetime import datetime
-from uuid import uuid4
 
 from pipeline_core.loader import Loader, WriteResult
 
 from ..common import gas_price_layout as layout
+from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -31,15 +31,13 @@ class GasPriceBronzeLoader(Loader):
             "collected_at": self._collected_at.isoformat(),
         }
 
-        temporary_path = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
-        try:
-            temporary_path.write_text(
+        atomic_write(
+            path,
+            lambda temporary: temporary.write_text(
                 json.dumps(record, ensure_ascii=False) + "\n",
                 encoding="utf-8",
-            )
-            temporary_path.replace(path)
-        finally:
-            temporary_path.unlink(missing_ok=True)
+            ),
+        )
 
         logger.info("적재 완료: %s (%d bytes)", path, path.stat().st_size)
         return WriteResult(location=str(path), row_count=1)
