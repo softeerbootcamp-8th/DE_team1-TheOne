@@ -2,8 +2,8 @@ import logging
 from pathlib import Path
 from typing import Optional
 
-from pyspark.sql import DataFrame, SparkSession, Column
-from pyspark.sql.functions import col, count, lit, when, date_format
+from pyspark.sql import Column, DataFrame, Window
+from pyspark.sql.functions import col, count, date_format, lit, percentile_approx, when
 from pyspark.sql.types import (
     StructType, StructField, StringType, IntegerType, DoubleType, LongType, TimestampType
 )
@@ -28,6 +28,7 @@ FINAL_SCHEMA = StructType([
     StructField("tips", DoubleType(), True),
     StructField("driver_pay", DoubleType(), True),
     StructField("platform_name", StringType(), False),
+    StructField("estimated_service_tier", StringType(), False),
     StructField("taxi_id", StringType(), True),
     StructField("driver_id", StringType(), True),
     StructField("taxi_model_id", StringType(), True),
@@ -47,8 +48,12 @@ REQUIRED_COLUMNS = [
     "DOLocationID",
     "trip_miles",
     "trip_time",
+    "base_passenger_fare",
     "driver_pay",
 ]
+
+PREMIUM_FARE_RATIO = 1.15
+MIN_OD_OBSERVATIONS = 20
 
 
 class HVFHVCleanTransformer(Transformer):
@@ -84,8 +89,11 @@ class HVFHVCleanTransformer(Transformer):
             col("pickup_datetime").isNotNull() &
             col("dropoff_datetime").isNotNull() &
             col("PULocationID").isNotNull() &
+            col("DOLocationID").isNotNull() &
             col("trip_miles").isNotNull() & (col("trip_miles") > 0) & (col("trip_miles") <= 1000) &
             col("trip_time").isNotNull() & (col("trip_time") > 0) & (col("trip_time") <= 86400) &
+            col("base_passenger_fare").isNotNull() &
+            (col("base_passenger_fare") >= 0) & (col("base_passenger_fare") <= 5000) &
             col("driver_pay").isNotNull() & (col("driver_pay") >= 0) & (col("driver_pay") <= 5000)
         )
 
@@ -133,6 +141,28 @@ class HVFHVCleanTransformer(Transformer):
          .withColumn("driver_id", lit(None).cast("string")) \
          .withColumn("taxi_model_id", lit(None).cast("string")) \
          .withColumn("year_month", date_format(col("pickup_datetime"), "yyyy-MM"))
+
+        # TLC 원천에는 실제 상품 등급이 없으므로 플랫폼·OD별 기본 운임으로만 추정한다.
+        # 수요 할증 등 다른 원인도 포함될 수 있어 관측 등급이 아닌 estimated 값이다.
+        od_window = Window.partitionBy("platform_name", "PULocationID", "DOLocationID")
+        df_transformed = (
+            df_transformed
+            .withColumn("_od_observation_count", count(lit(1)).over(od_window))
+            .withColumn(
+                "_od_fare_median",
+                percentile_approx("base_passenger_fare", 0.5).over(od_window),
+            )
+        )
+        premium_fare = (
+            (col("_od_observation_count") >= MIN_OD_OBSERVATIONS)
+            & (col("base_passenger_fare") >= col("_od_fare_median") * PREMIUM_FARE_RATIO)
+        )
+        df_transformed = df_transformed.withColumn(
+            "estimated_service_tier",
+            when(premium_fare & (col("platform_name") == "Uber"), "Comfort")
+            .when(premium_fare & (col("platform_name") == "Lyft"), "Extra Comfort")
+            .otherwise("Standard"),
+        ).drop("_od_observation_count", "_od_fare_median")
 
         # 2.2 Taxi Zone Join (Pickup & Dropoff)
         if df_zone is not None:
