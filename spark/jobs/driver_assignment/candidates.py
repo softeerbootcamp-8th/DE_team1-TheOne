@@ -5,6 +5,7 @@ from pyspark.sql.functions import (
     abs as spark_abs,
     array,
     array_contains,
+    array_distinct,
     col,
     concat_ws,
     dayofweek,
@@ -20,6 +21,7 @@ from pyspark.sql.functions import (
     sha2,
     size,
     to_date,
+    transform,
     when,
     xxhash64,
 )
@@ -96,15 +98,29 @@ def build_trip_candidates(
 
     slot_count = min(pool_size, driver_count)
     trip_base = trips.drop("driver_id", "taxi_id", "taxi_model_id")
-    candidates = (
-        trip_base.withColumn("_slot", explode(sequence(lit(0), lit(slot_count - 1))))
-        .withColumn(
-            "_driver_index",
-            pmod(xxhash64("trip_key", lit(seed), "_slot"), lit(driver_count)) + lit(1),
-        )
-        .join(drivers, "_driver_index", "inner")
-        .dropDuplicates(["trip_key", "driver_id"])
-    )
+    # 슬롯을 먼저 explode 하면 안 됩니다. 슬롯 64개를 기사 2,000명에 해시로 뿌리는
+    # 구조라 한 trip 안에서 같은 기사가 평균 1명 겹치는데, 예전 코드는 20.9M x 64 =
+    # 13.4억 행을 만든 뒤 dropDuplicates 로 그 1.6% 를 지웠습니다. 그 셔플 하나가
+    # local[1] 1GB 힙을 OutOfMemoryError 로 터뜨립니다.
+    #
+    # 배열 안에서 중복을 먼저 없애면 결과는 같고 셔플은 0회입니다. 해시 입력이
+    # (trip_key, seed, slot) 로 동일하므로 같은 seed 는 같은 후보 집합을 냅니다.
+    candidates = trip_base.withColumn(
+        "_driver_index",
+        explode(
+            array_distinct(
+                transform(
+                    sequence(lit(0), lit(slot_count - 1)),
+                    lambda slot: pmod(xxhash64("trip_key", lit(seed), slot), lit(driver_count)) + lit(1),
+                )
+            )
+        ),
+    ).join(drivers, "_driver_index", "inner")
+    # dropDuplicates(["trip_key", "driver_id"]) 를 두지 않습니다. 한 기사가 계약을
+    # 여러 건 가진 경우에만 남는 중복인데, 아래 active_contract 필터가 서비스일에
+    # 유효한 계약 하나만 남깁니다(생성기가 동시 활성 계약을 금지 — snapshot.py:219).
+    # 임의의 계약을 고르던 예전 동작보다 오히려 정확합니다. 혹시 남더라도
+    # allocator._validate 가 (trip_key, driver_id) 유일성을 검사해 잡습니다.
 
     time_block_index = floor(hour("pickup_datetime") / lit(3)).cast("int")
     candidates = (
@@ -153,6 +169,6 @@ def build_trip_candidates(
         )
         .withColumn("tie_break", sha2(concat_ws(":", lit(seed), "trip_key", "driver_id"), 256))
         .withColumnRenamed("_candidate_taxi_id", "taxi_id")
-        .drop("_slot", "_driver_index", "_service_date", "_weekday", "_time_block_index", "_time_block")
+        .drop("_driver_index", "_service_date", "_weekday", "_time_block_index", "_time_block")
     )
     return result

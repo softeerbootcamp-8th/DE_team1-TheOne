@@ -6,6 +6,7 @@
 4. 같은 seed와 입력은 동일 후보·tie-break 생성
 5. 운행별 후보 수는 pool_size 이하로 제한
 6. null·중복 ID와 잘못된 시간 가중치 계약은 명시적 실패
+7. 슬롯이 겹치는 크기에서도 한 운행에 같은 기사가 두 번 후보로 들어가지 않음 (이슈 #362)
 """
 
 from datetime import date, datetime
@@ -124,6 +125,26 @@ def test_운행별_후보수는_pool_size를_넘지_않는다(spark):
     frames = _with_drivers(frames, 7)
 
     assert build_trip_candidates(*frames[:-1], pool_size=3).count() <= 3
+
+
+def test_한_운행에_같은_기사가_두_번_후보로_들어가지_않는다(spark):
+    # 슬롯 수는 min(pool_size, 기사 수) 라서 기사가 적으면 슬롯도 같이 잘리고, 그러면
+    # 해시가 겹칠 일이 없어 중복 제거가 아예 실행되지 않습니다. pool_size 를 키우고
+    # 기사를 7명 두면 슬롯 7개가 7명에 뿌려져 겹칩니다 (전부 다를 확률 7!/7^7 = 0.6%,
+    # seed 고정이라 실제로는 결정적 — 이 픽스처에서 7개 슬롯이 4명으로 줄어듭니다).
+    frames = _with_drivers(list(_frames(spark, pool_size=64)), 7)
+
+    pairs = [
+        (row.trip_key, row.driver_id)
+        for row in build_trip_candidates(*frames[:-1], pool_size=frames[-1])
+        .select("trip_key", "driver_id")
+        .collect()
+    ]
+
+    assert len(pairs) == len(set(pairs))
+    # 겹침이 실제로 일어났는지 확인합니다. 이 assert 가 없으면 픽스처가 바뀌어 충돌이
+    # 사라져도 위 assert 가 조용히 통과해 테스트가 아무것도 막지 못합니다.
+    assert len(pairs) < 7
 
 
 @pytest.mark.parametrize("violation", ["null_trip", "duplicate_driver", "weights"])
