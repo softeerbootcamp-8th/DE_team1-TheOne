@@ -267,23 +267,6 @@ wheels = [
 ]
 
 [[package]]
-name = "apache-airflow-providers-apache-spark"
-version = "6.2.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "apache-airflow" },
-    { name = "apache-airflow-providers-common-compat" },
-    { name = "grpcio-status" },
-    { name = "pyspark-client" },
-    { name = "requests" },
-    { name = "tenacity" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/65/5f/026a5dfd8cea8866d2404299ca42d479196d19dc975f7f8bca7c96d74d11/apache_airflow_providers_apache_spark-6.2.0.tar.gz", hash = "sha256:ce421d5e965622f7db374231860bfc9fd808c83d7f77f787dbb5aad953ab8826", size = 158681, upload-time = "2026-07-03T15:46:28.308Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/98/bc/d4e438a03f26f0fd85e371d8cbf0116e286bb62f33c04870e5157c7cf258/apache_airflow_providers_apache_spark-6.2.0-py3-none-any.whl", hash = "sha256:f16b2ce9c95dc6c3a983fdc2d17fb60d653cee135e58b7ea2d747816e0040fb0", size = 61344, upload-time = "2026-07-03T15:46:21.324Z" },
-]
-
-[[package]]
 name = "apache-airflow-providers-common-compat"
 version = "1.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -940,20 +923,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f7/b2/524847365122ee509ca17bcc4e092198b700e94af7bfd5bb5e6dd9f3ee66/grpcio-1.81.1-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:1b22c80559854b789a01fd89e8929b3798a156c0829b5282a8939f33ad4115ad", size = 7873989, upload-time = "2026-06-11T12:45:13.102Z" },
     { url = "https://files.pythonhosted.org/packages/18/fa/07c037c50b006909d1d13a5848774f8aa7b242f70dc03a035c64eea0e6db/grpcio-1.81.1-cp311-cp311-win32.whl", hash = "sha256:428bec0161b48d8cf583c068591bc0016d0d9cfff52462b72b3884861ea768c5", size = 4202223, upload-time = "2026-06-11T12:45:16.166Z" },
     { url = "https://files.pythonhosted.org/packages/41/ed/6bff15376920942fac6b95b9802752b837437172c9e8fc2d3170546b89cc/grpcio-1.81.1-cp311-cp311-win_amd64.whl", hash = "sha256:30e825f6848d9f18bba350ed6c75c1b02a0b5184474a31db9a32b1fa66fd8c79", size = 4941303, upload-time = "2026-06-11T12:45:18.724Z" },
-]
-
-[[package]]
-name = "grpcio-status"
-version = "1.81.1"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "googleapis-common-protos" },
-    { name = "grpcio" },
-    { name = "protobuf" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/32/26/0aa9168c87882381fd810d140c279a2490ed6aee655f0515d6f56c5ca404/grpcio_status-1.81.1.tar.gz", hash = "sha256:9389a03e746017b10f0630c064289201458f3ce01f5d7ef4b0bebc1ef6cf82ad", size = 13923, upload-time = "2026-06-11T12:58:48.636Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/e5/5e/5abfec5f7e89d3b7993d57cfb025ca5f968a2c18656d7fcda2b6919440b9/grpcio_status-1.81.1-py3-none-any.whl", hash = "sha256:08072fa9995f4a95c647fc6f4f85e2411573d00087bcabdf30f260114338f232", size = 14638, upload-time = "2026-06-11T12:58:31.982Z" },
 ]
 
 [[package]]
@@ -1694,6 +1663,15 @@ wheels = [
 ]
 
 [[package]]
+name = "py4j"
+version = "0.10.9.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/1e/f2/b34255180c72c36ff7097f7c2cdca02abcbd89f5eebf7c7c41262a9a0637/py4j-0.10.9.7.tar.gz", hash = "sha256:0b6e5315bb3ada5cf62ac651d107bb2ebc02def3dee9d9548e3baac644ea8dbb", size = 1508234, upload-time = "2022-08-12T22:49:09.792Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/10/30/a58b32568f1623aaad7db22aa9eafc4c6c194b429ff35bdc55ca2726da47/py4j-0.10.9.7-py2.py3-none-any.whl", hash = "sha256:85defdfd2b2376eb3abf5ca6474b51ab7e0de341c75a02f46dc9b5976f5a5c1b", size = 200481, upload-time = "2022-08-12T22:49:07.05Z" },
+]
+
+[[package]]
 name = "pyarrow"
 version = "20.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1852,18 +1830,13 @@ wheels = [
 ]
 
 [[package]]
-name = "pyspark-client"
-version = "4.0.3"
+name = "pyspark"
+version = "3.5.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "googleapis-common-protos" },
-    { name = "grpcio" },
-    { name = "grpcio-status" },
-    { name = "numpy" },
-    { name = "pandas" },
-    { name = "pyarrow" },
+    { name = "py4j" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/23/0a/c856ee88c230fb01804397b222213bddac6306d3f6308b06d3c11563c906/pyspark_client-4.0.3.tar.gz", hash = "sha256:05ed8f5ca612efa5b2e3dc6931276869aa035918ee6e6965fc8b8903774ff3bb", size = 1499354, upload-time = "2026-06-11T07:07:02.322Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/2e/62/36e50d38e5fe158e97cddec983b44f9417b1e205b02320e3c463b5f802fa/pyspark-3.5.6.tar.gz", hash = "sha256:f8b1c4360e41ab398c64904fae08740503bcb6bd389457d659fa6d9f2952cc48", size = 317359167, upload-time = "2025-05-27T08:24:20.82Z" }
 
 [[package]]
 name = "pytesseract"
@@ -2358,7 +2331,6 @@ source = { virtual = "." }
 dependencies = [
     { name = "apache-airflow" },
     { name = "apache-airflow-providers-amazon" },
-    { name = "apache-airflow-providers-apache-spark" },
     { name = "apache-airflow-providers-http" },
     { name = "apache-airflow-providers-postgres" },
     { name = "apache-airflow-providers-standard" },
@@ -2368,6 +2340,7 @@ dependencies = [
     { name = "lxml" },
     { name = "pillow" },
     { name = "pyarrow" },
+    { name = "pyspark" },
     { name = "pytesseract" },
     { name = "requests" },
 ]
@@ -2381,7 +2354,6 @@ dev = [
 requires-dist = [
     { name = "apache-airflow", specifier = "==3.3.0" },
     { name = "apache-airflow-providers-amazon", specifier = "==9.31.0" },
-    { name = "apache-airflow-providers-apache-spark", specifier = "==6.2.0" },
     { name = "apache-airflow-providers-http", specifier = "==6.0.4" },
     { name = "apache-airflow-providers-postgres", specifier = "==6.8.0" },
     { name = "apache-airflow-providers-standard", specifier = "==1.15.0" },
@@ -2391,6 +2363,7 @@ requires-dist = [
     { name = "lxml", specifier = "==6.1.1" },
     { name = "pillow", specifier = "==11.3.0" },
     { name = "pyarrow", specifier = "==20.0.0" },
+    { name = "pyspark", specifier = "==3.5.6" },
     { name = "pytesseract", specifier = "==0.3.13" },
     { name = "requests", specifier = "==2.34.2" },
 ]
