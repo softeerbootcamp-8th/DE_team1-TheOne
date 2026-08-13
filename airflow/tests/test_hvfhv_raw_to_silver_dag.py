@@ -90,3 +90,89 @@ def test_bronze_to_silver_bash_command에_error_threshold와_xcom_pull이_들어
     assert "--error_threshold 0.2" in bash_command
     assert "xcom_pull(task_ids='raw_to_bronze')['year']" in bash_command
     assert "xcom_pull(task_ids='raw_to_bronze')['month']" in bash_command
+
+
+# --- 수집 가능한 연월 선택 (#345) -----------------------------------------
+#
+# TLC 는 두 달쯤 늦게 공개해서 직전 달 원본은 존재한 적이 없습니다. 달력으로
+# 정하면 스케줄 실행이 매번 죽습니다. 네트워크를 타지 않도록 존재 확인 함수만
+# 가짜로 바꾸고, 선택 로직 자체는 진짜를 돌립니다.
+
+resolve_collectable_year_month = dag_module.resolve_collectable_year_month
+AUG_2026 = datetime(2026, 8, 12, tzinfo=timezone.utc)
+
+
+def availability(*published: str):
+    """`published` 에 있는 연월만 TLC 에 올라와 있다고 답하는 가짜."""
+
+    def _is_available(year_str: str, month_str: str) -> bool:
+        return f"{year_str}-{month_str}" in published
+
+    return _is_available
+
+
+def collected(base_dir, *year_months: str):
+    for year_month in year_months:
+        partition = base_dir / "hvfhv" / f"year_month={year_month}"
+        partition.mkdir(parents=True)
+        (partition / "20260813T000000Z.parquet").touch()
+    return str(base_dir)
+
+
+def test_직전_달이_아직_공개되지_않았으면_공개된_최신_달을_고른다(tmp_path):
+    base_dir = collected(tmp_path)  # 받은 것 없음
+
+    target = resolve_collectable_year_month(
+        AUG_2026, {}, base_dir, availability("2026-06", "2026-05")
+    )
+
+    assert target == ("2026", "06")  # 직전 달인 2026-07 이 아님
+
+
+def test_이미_받은_달은_다시_받지_않는다(tmp_path):
+    """새 달이 나올 때까지 매달 수백 MB 를 다시 받으면 파티션에 파일만 쌓입니다."""
+    base_dir = collected(tmp_path, "2026-06")
+
+    target = resolve_collectable_year_month(
+        AUG_2026, {}, base_dir, availability("2026-06", "2026-05")
+    )
+
+    assert target == ("2026", "05")
+
+
+def test_새로_받을_달이_없으면_None_이다(tmp_path):
+    """아직 공개되지 않은 것은 오류가 아닙니다 — 태스크는 skip 됩니다."""
+    base_dir = collected(tmp_path, "2026-06", "2026-05")
+
+    target = resolve_collectable_year_month(
+        AUG_2026, {}, base_dir, availability("2026-06", "2026-05")
+    )
+
+    assert target is None
+
+
+def test_조회는_정해진_개월_수에서_멈춘다(tmp_path):
+    """원본이 통째로 사라져도 HEAD 를 무한히 던지지 않아야 합니다."""
+    asked: list[str] = []
+
+    def _record(year_str: str, month_str: str) -> bool:
+        asked.append(f"{year_str}-{month_str}")
+        return False
+
+    assert resolve_collectable_year_month(AUG_2026, {}, str(tmp_path), _record) is None
+    assert len(asked) == dag_module.MAX_MONTH_LOOKBACK
+    assert asked[0] == "2026-07"  # 직전 달부터 거슬러 올라갑니다
+
+
+def test_수동_연월은_공개_여부와_무관하게_그대로_쓴다(tmp_path):
+    """백필은 이미 받은 달을 다시 받는 것이 목적이라 두 조건을 다 건너뜁니다."""
+    base_dir = collected(tmp_path, "2024-03")
+
+    def _never(year_str: str, month_str: str) -> bool:
+        raise AssertionError("수동 지정이면 공개 여부를 묻지 않아야 합니다")
+
+    target = resolve_collectable_year_month(
+        AUG_2026, {"year": "2024", "month": "3"}, base_dir, _never
+    )
+
+    assert target == ("2024", "03")
