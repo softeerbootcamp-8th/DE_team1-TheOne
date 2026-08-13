@@ -37,6 +37,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from airflow.sdk import Param, dag, task
+from common import assets
 from common.validation import (
     parse_handler_result,
     parse_iso_date,
@@ -491,6 +492,9 @@ def lyft_eligible_vehicles_raw_to_silver_pipeline():
 
     @task(
         task_id="validate_silver",
+        # 검증을 통과했을 때만 Asset 이벤트를 냅니다 — 이걸 적재 태스크에
+        # 달면 깨진 Silver 로 vehicle_master 조립이 돌아갑니다.
+        outlets=[assets.LYFT_ELIGIBLE_VEHICLES_SILVER],
         retries=1,
         retry_delay=timedelta(minutes=10),
         on_failure_callback=slack_failure_callback,
