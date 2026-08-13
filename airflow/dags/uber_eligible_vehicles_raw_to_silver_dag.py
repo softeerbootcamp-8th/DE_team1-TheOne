@@ -34,11 +34,16 @@ import importlib
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
-import pyarrow.parquet as pq
 from airflow.sdk import Param, dag, task
+from common.validation import (
+    parse_handler_result,
+    parse_iso_date,
+    read_parquet,
+    require_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -77,54 +82,246 @@ def lambda_handler_for(function_name: str):
     return module.lambda_handler
 
 
-def _unpack(result: dict) -> tuple[int, list[str], str]:
-    """핸들러 응답에서 검증에 쓰는 세 값을 꺼내며 모양을 확인합니다."""
-    if not isinstance(result, dict):
-        raise TypeError(f"핸들러 결과가 dict 가 아닙니다: {type(result).__name__}")
+def _run_gx_validation(dataframe, expectations, *, layer: str) -> None:
+    """Uber 품질 규칙을 실행하고 실패 내용을 Airflow 로그로 남깁니다."""
+    logging.getLogger("great_expectations").setLevel(logging.WARNING)
 
-    row_count = result.get("row_count")
-    # bool 은 int 의 하위 타입이라 따로 막습니다 (True 가 1 로 통과합니다).
-    if isinstance(row_count, bool) or not isinstance(row_count, int):
-        raise ValueError(f"row_count 가 정수가 아닙니다: {row_count!r}")
-    if row_count <= 0:
-        raise ValueError(f"row_count 는 1 이상이어야 합니다: {row_count}")
+    # DAG import 단계에서는 GX를 불러오지 않고 Validation Task 실행 시점에만 사용합니다.
+    import great_expectations as gx
 
-    locations = result.get("locations")
-    if not isinstance(locations, list) or not locations:
-        raise ValueError(f"locations 가 비어 있습니다: {locations!r}")
-    if not all(isinstance(p, str) and p for p in locations):
-        raise ValueError(f"locations 에 빈 경로가 있습니다: {locations!r}")
+    context = gx.get_context(mode="ephemeral")
+    context.variables.progress_bars = {"globally": False}
+    batch = (
+        context.data_sources.add_pandas(name=f"uber_{layer}_source")
+        .add_dataframe_asset(name=f"uber_{layer}_asset")
+        .add_batch_definition_whole_dataframe(f"uber_{layer}_batch")
+        .get_batch(batch_parameters={"dataframe": dataframe})
+    )
+    validation = batch.validate(
+        gx.ExpectationSuite(
+            name=f"uber_eligible_vehicles_{layer}_suite",
+            expectations=expectations,
+        ),
+        result_format="SUMMARY",
+    )
+    failures = [result for result in validation.results if not result.success]
 
-    collected_date = result.get("collected_date")
-    if not isinstance(collected_date, str):
-        raise ValueError(f"collected_date 가 문자열이 아닙니다: {collected_date!r}")
-    try:
-        parsed = datetime.strptime(collected_date, "%Y-%m-%d").date()
-    except ValueError as exc:
-        raise ValueError(
-            f"collected_date 가 YYYY-MM-DD 가 아닙니다: {collected_date}"
-        ) from exc
-    if parsed.isoformat() != collected_date:
-        raise ValueError(f"collected_date 가 YYYY-MM-DD 가 아닙니다: {collected_date}")
+    def failure_column(failure) -> str:
+        kwargs = failure.expectation_config.kwargs
+        return (
+            kwargs.get("column")
+            or "/".join(kwargs.get("column_list") or [])
+            or "/".join(
+                filter(None, (kwargs.get("column_A"), kwargs.get("column_B")))
+            )
+            or "table"
+        )
 
-    return row_count, locations, collected_date
+    for failure in failures:
+        result = dict(failure.result)
+        observed_value = result.get("observed_value")
+        if observed_value is None:
+            observed_value = result.get("partial_unexpected_list")
+        logger.error(
+            "gx_validation failed layer=%s expectation=%s column=%s "
+            "unexpected_count=%s observed_value=%s",
+            layer,
+            failure.expectation_config.type,
+            failure_column(failure),
+            result.get("unexpected_count"),
+            observed_value,
+        )
+
+    if failures:
+        rules = ", ".join(
+            f"{failure.expectation_config.type}[{failure_column(failure)}]"
+            for failure in failures
+        )
+        raise ValueError(f"Uber {layer.title()} GX 검증 실패: {rules}")
+
+    logger.info(
+        "gx_validation passed layer=%s expectations=%s",
+        layer,
+        validation.statistics["evaluated_expectations"],
+    )
 
 
-def _require_nonempty_file(path: Path) -> None:
-    """파일이 있고 0바이트가 아닌지 봅니다. 도시 하나가 통째로 빠지는 걸 여기서 잡습니다."""
-    if not path.is_file():
-        raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
-    if path.stat().st_size == 0:
-        raise ValueError(f"적재 파일이 0바이트입니다: {path}")
+def run_gx_bronze_validation(
+    table,
+    expected_columns: list[str],
+    expected_rows: int,
+    requested_city: str,
+    target_date: date,
+    min_model_year: int,
+    max_model_year: int,
+) -> None:
+    """Uber Bronze의 행 수·필수 차량값·도시·수집일을 검증합니다."""
+    import great_expectations as gx
+    import numpy as np
+    import pandas as pd
+
+    dataframe = table.to_pandas()
+    products = (
+        dataframe["products"]
+        if "products" in dataframe.columns
+        else pd.Series([None] * len(dataframe), index=dataframe.index)
+    )
+
+    def is_product_list(value) -> bool:
+        return isinstance(value, (list, tuple, np.ndarray))
+
+    dataframe["products_count"] = products.map(
+        lambda value: len(value) if is_product_list(value) else None
+    )
+    dataframe["products_nonblank"] = products.map(
+        lambda value: bool(
+            is_product_list(value)
+            and len(value) > 0
+            and all(isinstance(item, str) and item.strip() for item in value)
+        )
+    )
+
+    collected_at = (
+        dataframe["collected_at"]
+        if "collected_at" in dataframe.columns
+        else pd.Series([None] * len(dataframe), index=dataframe.index)
+    )
+    dataframe["collected_at_has_timezone"] = collected_at.map(
+        lambda value: bool(
+            pd.notna(value)
+            and getattr(value, "tzinfo", None) is not None
+            and value.utcoffset() is not None
+        )
+    )
+    dataframe["collected_date_utc"] = pd.to_datetime(
+        collected_at, errors="coerce", utc=True
+    ).dt.date
+
+    derived_columns = [
+        "products_count",
+        "products_nonblank",
+        "collected_at_has_timezone",
+        "collected_date_utc",
+    ]
+    expectations = [
+        gx.expectations.ExpectTableRowCountToEqual(value=expected_rows),
+        gx.expectations.ExpectTableColumnsToMatchOrderedList(
+            column_list=[*expected_columns, *derived_columns]
+        ),
+        gx.expectations.ExpectColumnValuesToBeBetween(
+            column="products_count", min_value=1
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="products_nonblank", value_set=[True]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_at_has_timezone", value_set=[True]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="collected_date_utc", value_set=[target_date]
+        ),
+    ]
+    for column in expected_columns:
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToNotBeNull(column=column)
+            )
+    for column in ("city_slug", "make", "model", "raw_eligibility"):
+        if column in dataframe.columns:
+            expectations.extend(
+                [
+                    gx.expectations.ExpectColumnValuesToBeOfType(
+                        column=column, type_="str"
+                    ),
+                    gx.expectations.ExpectColumnValuesToMatchRegex(
+                        column=column, regex=r"\S"
+                    ),
+                ]
+            )
+    if "city_slug" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="city_slug", value_set=[requested_city]
+            )
+        )
+    if "min_year" in dataframe.columns:
+        expectations.extend(
+            [
+                gx.expectations.ExpectColumnValuesToBeOfType(
+                    column="min_year", type_="int16"
+                ),
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="min_year",
+                    min_value=min_model_year,
+                    max_value=max_model_year,
+                ),
+            ]
+        )
+    if "collected_at" in dataframe.columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeOfType(
+                column="collected_at", type_="Timestamp"
+            )
+        )
+
+    _run_gx_validation(dataframe, expectations, layer="bronze")
 
 
-def _read_parquet(path: Path):
-    if not path.name.endswith(".parquet"):
-        raise ValueError(f"Parquet 파일이 아닙니다: {path}")
-    try:
-        return pq.ParquetFile(path).read()
-    except Exception as exc:
-        raise RuntimeError(f"Parquet 을 읽지 못했습니다: {path}") from exc
+def run_gx_silver_validation(
+    table,
+    expected_columns: list[str],
+    min_model_year: int,
+    max_model_year: int,
+) -> None:
+    """도시별 Uber Silver의 차량 자격 데이터 품질을 검증합니다."""
+    import great_expectations as gx
+
+    dataframe = table.to_pandas()
+    expectations = [
+        gx.expectations.ExpectTableRowCountToBeBetween(min_value=1),
+        gx.expectations.ExpectTableColumnsToMatchOrderedList(
+            column_list=expected_columns
+        ),
+    ]
+    for column in expected_columns:
+        if column in dataframe.columns:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToNotBeNull(column=column)
+            )
+    for column in ("make_key", "model_key", "product", "bronze_path"):
+        if column in dataframe.columns:
+            expectations.extend(
+                [
+                    gx.expectations.ExpectColumnValuesToBeOfType(
+                        column=column, type_="str"
+                    ),
+                    gx.expectations.ExpectColumnValuesToMatchRegex(
+                        column=column, regex=r"\S"
+                    ),
+                ]
+            )
+    if "min_year" in dataframe.columns:
+        expectations.extend(
+            [
+                gx.expectations.ExpectColumnValuesToBeOfType(
+                    column="min_year", type_="int16"
+                ),
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="min_year",
+                    min_value=min_model_year,
+                    max_value=max_model_year,
+                ),
+            ]
+        )
+    identity_columns = ["make_key", "model_key", "product"]
+    if all(column in dataframe.columns for column in identity_columns):
+        expectations.append(
+            gx.expectations.ExpectCompoundColumnsToBeUnique(
+                column_list=identity_columns
+            )
+        )
+
+    _run_gx_validation(dataframe, expectations, layer="silver")
 
 
 default_args = {
@@ -227,10 +424,15 @@ def uber_eligible_vehicles_raw_to_silver_pipeline():
         layout = importlib.import_module(
             "lambda.functions.common.uber_eligible_vehicles_layout"
         )
+        loader = importlib.import_module(
+            "lambda.functions.uber_eligible_vehicles_raw_to_bronze.loader"
+        )
+        transformer = importlib.import_module(
+            "lambda.functions.uber_eligible_vehicles_bronze_to_silver.transformer"
+        )
 
-        row_count, locations, collected_date = _unpack(result)
-        if len(locations) != 1:
-            raise ValueError(f"Bronze locations 는 하나여야 합니다: {locations}")
+        parsed = parse_handler_result(result, expected_locations=1)
+        collected_date = parse_iso_date(result.get("collected_date"))
 
         # 요청한 도시와 다른 곳을 긁으면 조인 대상이 통째로 달라집니다.
         if result.get("city_slug") != requested_city:
@@ -239,8 +441,8 @@ def uber_eligible_vehicles_raw_to_silver_pipeline():
                 f"{requested_city} != {result.get('city_slug')!r}"
             )
 
-        path = Path(locations[0])
-        _require_nonempty_file(path)
+        path = parsed.locations[0]
+        require_file(path)
 
         # 파일명이 수집 시각입니다. 여기서 되짚어 layout 이 정한 자리와 맞춰봅니다.
         try:
@@ -255,18 +457,22 @@ def uber_eligible_vehicles_raw_to_silver_pipeline():
         expected = layout.bronze_file(bronze_dir, requested_city, collected_at)
         if path.resolve() != expected.resolve():
             raise ValueError(f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}")
-        if f"{collected_at:%Y-%m-%d}" != collected_date:
+        if collected_at.date() != collected_date:
             raise ValueError(
                 f"파일명의 수집일과 collected_date 가 다릅니다: "
                 f"{path.name} != {collected_date}"
             )
 
-        table = _read_parquet(path)
-        if table.num_rows != row_count:
-            raise ValueError(
-                f"Bronze 행 수가 row_count 와 다릅니다: {table.num_rows} != {row_count}"
-            )
-        logger.info("Bronze 검증 통과: city=%s rows=%d", requested_city, row_count)
+        table = read_parquet(path)
+        run_gx_bronze_validation(
+            table,
+            loader.SCHEMA.names,
+            parsed.row_count,
+            requested_city,
+            collected_date,
+            transformer.MIN_MODEL_YEAR,
+            transformer.MAX_MODEL_YEAR,
+        )
 
     @task(
         task_id="validate_silver",
@@ -284,15 +490,17 @@ def uber_eligible_vehicles_raw_to_silver_pipeline():
         loader = importlib.import_module(
             "lambda.functions.uber_eligible_vehicles_bronze_to_silver.loader"
         )
+        transformer = importlib.import_module(
+            "lambda.functions.uber_eligible_vehicles_bronze_to_silver.transformer"
+        )
 
-        row_count, locations, collected_date = _unpack(result)
-        target_date = datetime.strptime(collected_date, "%Y-%m-%d").date()
+        parsed = parse_handler_result(result)
+        target_date = parse_iso_date(result.get("collected_date"))
 
         total_rows = 0
         seen_cities: set[str] = set()
-        for location in locations:
-            path = Path(location)
-            _require_nonempty_file(path)
+        for path in parsed.locations:
+            require_file(path)
 
             city = layout.city_from_partition(path.parent)
             if city in seen_cities:
@@ -305,17 +513,22 @@ def uber_eligible_vehicles_raw_to_silver_pipeline():
                     f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}"
                 )
 
-            table = _read_parquet(path)
+            table = read_parquet(path)
+            run_gx_silver_validation(
+                table,
+                loader.SCHEMA.names,
+                transformer.MIN_MODEL_YEAR,
+                transformer.MAX_MODEL_YEAR,
+            )
+            # GX는 논리 타입을 검사하고, Arrow의 정확한 물리 스키마는 여기서 확인합니다.
             if table.schema != loader.SCHEMA:
                 raise ValueError(f"Silver 스키마가 loader.SCHEMA 와 다릅니다: {path}")
-            # 도시 하나가 통째로 비면 여기서 걸립니다. 합계만 보면 못 잡습니다.
-            if table.num_rows == 0:
-                raise ValueError(f"도시 파일에 행이 없습니다: {city}")
             total_rows += table.num_rows
 
-        if total_rows != row_count:
+        if total_rows != parsed.row_count:
             raise ValueError(
-                f"Silver 행 수 합계가 row_count 와 다릅니다: {total_rows} != {row_count}"
+                f"Silver 행 수 합계가 row_count 와 다릅니다: "
+                f"{total_rows} != {parsed.row_count}"
             )
         logger.info("Silver 검증 통과: cities=%d rows=%d", len(seen_cities), total_rows)
 
