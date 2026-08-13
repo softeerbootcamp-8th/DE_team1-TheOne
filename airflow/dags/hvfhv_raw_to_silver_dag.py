@@ -59,9 +59,16 @@ logger = logging.getLogger(__name__)
 
 # 슬랙 에러 콜백 임포트 (안전한 Fallback 처리)
 try:
-    from common.slack_failure_callback import slack_failure_callback
+    from common.slack_failure_callback import (
+        slack_failure_callback,
+        slack_retry_alert_callback,
+    )
 except Exception as e:
     logger.warning("slack_failure_callback 임포트 실패 (기본 로깅으로 대체): %s", e)
+
+    def slack_retry_alert_callback(context):
+        task_id = context.get("task_instance").task_id if context.get("task_instance") else "unknown"
+        logger.warning("Task [%s] will retry without slack callback.", task_id)
 
     def slack_failure_callback(context):
         task_id = context.get("task_instance").task_id if context.get("task_instance") else "unknown"
@@ -279,6 +286,7 @@ default_args = {
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=30),
+    "on_retry_callback": slack_retry_alert_callback,
     "on_failure_callback": slack_failure_callback,
 }
 

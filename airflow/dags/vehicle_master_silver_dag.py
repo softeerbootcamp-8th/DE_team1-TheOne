@@ -49,9 +49,19 @@ from common.validation import parse_handler_result, parse_iso_date, read_parquet
 logger = logging.getLogger(__name__)
 
 try:
-    from common.slack_failure_callback import slack_failure_callback
+    from common.slack_failure_callback import (
+        slack_failure_callback,
+        slack_retry_alert_callback,
+    )
 except Exception as exc:  # pragma: no cover - 콜백이 없어도 DAG 는 떠야 합니다
     logger.warning("Slack 실패 콜백을 불러오지 못했습니다: %s", exc)
+
+    def slack_retry_alert_callback(context):
+        task_instance = context.get("task_instance")
+        logger.warning(
+            "Task 재시도 예정: %s",
+            task_instance.task_id if task_instance else "unknown",
+        )
 
     def slack_failure_callback(context):
         task_instance = context.get("task_instance")
@@ -94,6 +104,7 @@ default_args = {
     "retries": 1,
     "retry_delay": timedelta(minutes=15),
     "execution_timeout": timedelta(minutes=15),
+    "on_retry_callback": slack_retry_alert_callback,
     "on_failure_callback": slack_failure_callback,
 }
 
