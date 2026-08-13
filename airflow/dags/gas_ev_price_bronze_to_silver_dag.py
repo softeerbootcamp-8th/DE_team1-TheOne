@@ -15,7 +15,12 @@ from uuid import uuid4
 import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.sdk import Param, dag, task
-from common.validation import parse_handler_result, parse_year_month, read_parquet
+from common.validation import (
+    parse_handler_result,
+    parse_year_month,
+    read_parquet,
+    run_gx_validation,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,13 +85,6 @@ def integrated_silver_file(base_dir: str, collected_month: str) -> Path:
     )
 
 
-def _failure_column(failure) -> str:
-    kwargs = failure.expectation_config.kwargs
-    return kwargs.get("column") or "/".join(
-        filter(None, (kwargs.get("column_A"), kwargs.get("column_B")))
-    ) or "table"
-
-
 def run_gx_price_validation(
     table: pa.Table,
     expected_columns: list[str],
@@ -96,8 +94,6 @@ def run_gx_price_validation(
     layer: str,
 ) -> None:
     """월별 가격 테이블의 행·컬럼·날짜·가격 품질을 GX로 검증합니다."""
-    logging.getLogger("great_expectations").setLevel(logging.WARNING)
-
     import great_expectations as gx
     import pandas as pd
 
@@ -115,15 +111,6 @@ def run_gx_price_validation(
             lambda value: bool(pd.notna(value) and math.isfinite(value))
         )
         derived_columns.append(derived)
-
-    context = gx.get_context(mode="ephemeral")
-    context.variables.progress_bars = {"globally": False}
-    batch = (
-        context.data_sources.add_pandas(name=f"{layer}_source")
-        .add_dataframe_asset(name=f"{layer}_asset")
-        .add_batch_definition_whole_dataframe(f"{layer}_batch")
-        .get_batch(batch_parameters={"dataframe": dataframe})
-    )
 
     target = datetime.strptime(collected_month, "%Y-%m")
     next_month = (target.replace(day=28) + timedelta(days=4)).replace(day=1)
@@ -174,36 +161,11 @@ def run_gx_price_validation(
             )
         )
 
-    validation = batch.validate(
-        gx.ExpectationSuite(name=f"{layer}_suite", expectations=expectations),
-        result_format="SUMMARY",
-    )
-    failures = [result for result in validation.results if not result.success]
-    for failure in failures:
-        result = dict(failure.result)
-        observed_value = result.get("observed_value")
-        if observed_value is None:
-            observed_value = result.get("partial_unexpected_list")
-        logger.error(
-            "gx_validation failed layer=%s expectation=%s column=%s "
-            "unexpected_count=%s observed_value=%s",
-            layer,
-            failure.expectation_config.type,
-            _failure_column(failure),
-            result.get("unexpected_count"),
-            observed_value,
-        )
-    if failures:
-        rules = ", ".join(
-            f"{failure.expectation_config.type}[{_failure_column(failure)}]"
-            for failure in failures
-        )
-        raise ValueError(f"{layer} GX 검증 실패: {rules}")
-
-    logger.info(
-        "gx_validation passed layer=%s expectations=%s",
-        layer,
-        validation.statistics["evaluated_expectations"],
+    run_gx_validation(
+        dataframe,
+        expectations,
+        suite_name=f"{layer}_suite",
+        layer=layer,
     )
 
 
@@ -325,8 +287,6 @@ def gas_ev_price_bronze_to_silver_pipeline():
             {"gas_price": None},
             "gas_silver",
         )
-        if table.schema != loader.SCHEMA:
-            raise ValueError("Gas Silver 스키마가 올바르지 않습니다.")
 
     @task(
         task_id="validate_ev_silver",
@@ -355,8 +315,6 @@ def gas_ev_price_bronze_to_silver_pipeline():
             {"ev_price": 5.0},
             "ev_silver",
         )
-        if table.schema != loader.SCHEMA:
-            raise ValueError("EV Silver 스키마가 올바르지 않습니다.")
 
     @task(task_id="integrate_silver")
     def integrate_silver_task(gas_result: dict, ev_result: dict) -> dict:
@@ -399,8 +357,6 @@ def gas_ev_price_bronze_to_silver_pipeline():
             {"gas_price": None, "ev_price": 5.0},
             "integrated_silver",
         )
-        if table.schema != INTEGRATED_SCHEMA:
-            raise ValueError("통합 Silver 스키마가 올바르지 않습니다.")
 
     gas_result = gas_bronze_to_silver_task()
     gas_validated = validate_gas_silver_task(gas_result)
