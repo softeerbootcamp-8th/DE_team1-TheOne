@@ -192,13 +192,16 @@ def run_gx_silver_validation(
 
     for failure in failures:
         result = dict(failure.result)
+        observed_value = result.get("observed_value")
+        if observed_value is None:
+            observed_value = result.get("partial_unexpected_list")
         logger.error(
             "gx_validation failed layer=silver expectation=%s column=%s "
             "unexpected_count=%s observed_value=%s",
             failure.expectation_config.type,
             failure_column(failure),
             result.get("unexpected_count"),
-            result.get("observed_value"),
+            observed_value,
         )
     if failures:
         rules = ", ".join(

@@ -163,13 +163,16 @@ def run_gx_bronze_validation(record: dict, target_date: date) -> None:
     for failure in failures:
         result = dict(failure.result)
         kwargs = failure.expectation_config.kwargs
+        observed_value = result.get("observed_value")
+        if observed_value is None:
+            observed_value = result.get("partial_unexpected_list")
         logger.error(
             "gx_validation failed layer=bronze expectation=%s column=%s "
             "unexpected_count=%s observed_value=%s",
             failure.expectation_config.type,
             kwargs.get("column") or "table",
             result.get("unexpected_count"),
-            result.get("observed_value"),
+            observed_value,
         )
     if failures:
         rules = ", ".join(
