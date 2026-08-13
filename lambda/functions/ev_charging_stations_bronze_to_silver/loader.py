@@ -11,27 +11,10 @@ from ..common import ev_charging_layout as layout
 
 logger = logging.getLogger(__name__)
 
-COUNT_FIELDS = (
-    "nyc_station_count",
-    "normalized_price_count",
-    "free_station_count",
-    "missing_price_count",
-    "unsupported_price_count",
-)
-
 SCHEMA = pa.schema(
     [
-        ("city", pa.string()),
-        ("state", pa.string()),
-        ("fuel_type_code", pa.string()),
-        ("average_price_usd_per_kwh", pa.float64()),
-        ("price_date", pa.date32()),
-        ("currency", pa.string()),
-        ("price_unit", pa.string()),
-        *((field, pa.int64()) for field in COUNT_FIELDS),
-        ("source_url", pa.string()),
-        ("collected_at", pa.timestamp("us", tz="UTC")),
-        ("bronze_path", pa.string()),
+        ("date", pa.date32()),
+        ("ev_price", pa.float64()),
     ]
 )
 

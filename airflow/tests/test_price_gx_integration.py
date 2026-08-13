@@ -44,8 +44,8 @@ CASES = {
         "bronze_to_silver",
         "validate_silver",
         "silver",
-        "expect_column_pair_values_to_be_equal",
-        "classified_station_count/nyc_station_count",
+        "expect_column_values_to_be_unique",
+        "date",
     ),
     "gas_bronze": (
         gas_bronze_module,
@@ -70,21 +70,8 @@ CASES = {
 
 def _ev_silver_row(**overrides) -> dict:
     row = {
-        "city": "New York City",
-        "state": "NY",
-        "fuel_type_code": "ELEC",
-        "average_price_usd_per_kwh": 0.31,
-        "price_date": date(2026, 7, 1),
-        "currency": "USD",
-        "price_unit": "kWh",
-        "nyc_station_count": 10,
-        "normalized_price_count": 8,
-        "free_station_count": 1,
-        "missing_price_count": 1,
-        "unsupported_price_count": 0,
-        "source_url": "https://developer.nlr.gov/",
-        "collected_at": datetime(2026, 7, 1, 10, tzinfo=timezone.utc),
-        "bronze_path": "data/bronze/ev_charging_stations/collected_date=2026-07-01",
+        "date": date(2026, 7, 1),
+        "ev_price": 0.31,
     }
     row.update(overrides)
     return row
@@ -155,10 +142,10 @@ def _build_result(case_name: str, root, invalid: bool, monkeypatch) -> dict:
         monkeypatch.setattr(ev_silver_module, "SILVER_DIR", str(root))
         path = ev_layout.silver_file(str(root), "2026-07")
         path.parent.mkdir(parents=True, exist_ok=True)
-        row = _ev_silver_row(normalized_price_count=1) if invalid else _ev_silver_row()
-        pq.write_table(pa.Table.from_pylist([row], schema=ev_loader.SCHEMA), path)
+        rows = [_ev_silver_row(), _ev_silver_row()] if invalid else [_ev_silver_row()]
+        pq.write_table(pa.Table.from_pylist(rows, schema=ev_loader.SCHEMA), path)
         return {
-            "row_count": 1,
+            "row_count": len(rows),
             "locations": [str(path)],
             "collected_month": "2026-07",
         }

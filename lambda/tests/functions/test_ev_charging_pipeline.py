@@ -13,7 +13,6 @@ from functions.ev_charging_stations_bronze_to_silver.handler import (
 )
 from functions.ev_charging_stations_bronze_to_silver.loader import SCHEMA
 from functions.ev_charging_stations_raw_to_bronze import extractor as raw_extractor
-from functions.ev_charging_stations_raw_to_bronze.extractor import API_URL
 from functions.ev_charging_stations_raw_to_bronze.loader import (
     EvChargingBronzeLoader,
 )
@@ -104,9 +103,9 @@ def test_raw_to_bronze가_전체_JSON_원문을_그대로_저장한다(tmp_path)
 
 def test_bronze_원문_여러날짜를_월별_silver_parquet으로_변환한다(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-    first_path = write_bronze(bronze_dir, DAY_ONE_STATIONS, COLLECTED_AT)
+    write_bronze(bronze_dir, DAY_ONE_STATIONS, COLLECTED_AT)
     second_at = COLLECTED_AT + timedelta(days=1)
-    second_path = write_bronze(
+    write_bronze(
         bronze_dir,
         [
             station(1, "10001", "$0.60/kWh"),
@@ -132,20 +131,10 @@ def test_bronze_원문_여러날짜를_월별_silver_parquet으로_변환한다(
         "collected_month": "2026-08",
     }
     assert table.schema == SCHEMA
-    assert [row["price_date"] for row in rows] == [
-        date(2026, 8, 9),
-        date(2026, 8, 10),
+    assert rows == [
+        {"date": date(2026, 8, 9), "ev_price": pytest.approx(0.4)},
+        {"date": date(2026, 8, 10), "ev_price": pytest.approx(0.7)},
     ]
-    assert [row["average_price_usd_per_kwh"] for row in rows] == pytest.approx(
-        [0.4, 0.7]
-    )
-    assert [row["collected_at"] for row in rows] == [COLLECTED_AT, second_at]
-    assert rows[0]["nyc_station_count"] == 3
-    assert rows[0]["normalized_price_count"] == 2
-    assert rows[0]["free_station_count"] == 1
-    assert rows[0]["source_url"] == API_URL
-    assert rows[0]["bronze_path"] == str(first_path)
-    assert rows[1]["bronze_path"] == str(second_path)
 
 
 def test_같은_날짜는_최신_스냅샷으로_월파일을_교체한다(tmp_path):
@@ -154,7 +143,7 @@ def test_같은_날짜는_최신_스냅샷으로_월파일을_교체한다(tmp_p
     first = run_silver(bronze_dir, silver_dir)
 
     latest_at = COLLECTED_AT + timedelta(hours=6)
-    latest_path = write_bronze(
+    write_bronze(
         bronze_dir,
         [
             station(1, "10001", "$0.80/kWh"),
@@ -169,10 +158,21 @@ def test_같은_날짜는_최신_스냅샷으로_월파일을_교체한다(tmp_p
     assert first["row_count"] == second["row_count"] == 1
     assert first["locations"] == second["locations"]
     assert len(list(silver_path.parent.glob("*.parquet"))) == 1
-    assert len(rows) == 1
-    assert rows[0]["average_price_usd_per_kwh"] == pytest.approx(0.9)
-    assert rows[0]["collected_at"] == latest_at
-    assert rows[0]["bronze_path"] == str(latest_path)
+    assert rows == [
+        {"date": date(2026, 8, 9), "ev_price": pytest.approx(0.9)}
+    ]
+
+
+def test_0달러_kwh_요금은_실패한다(tmp_path):
+    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
+    write_bronze(
+        bronze_dir,
+        [station(1, "10001", "$0.00/kWh")],
+        COLLECTED_AT,
+    )
+
+    with pytest.raises(ValueError, match="허용 범위"):
+        run_silver(bronze_dir, silver_dir)
 
 
 def test_collected_month_형식이_잘못되면_실패한다(tmp_path):

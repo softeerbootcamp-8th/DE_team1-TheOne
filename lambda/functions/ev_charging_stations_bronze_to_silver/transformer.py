@@ -70,7 +70,7 @@ def _price_per_kwh(value: object) -> tuple[float | None, str]:
 
     prices = [float(f"{sign}{number}") for sign, number in matches]
     if any(
-        not math.isfinite(price) or not 0 <= price <= MAX_USD_PER_KWH
+        not math.isfinite(price) or not 0 < price <= MAX_USD_PER_KWH
         for price in prices
     ):
         raise ValueError("kWh 단위 요금이 허용 범위를 벗어났습니다")
@@ -84,7 +84,7 @@ class EvChargingSilverTransformer(Transformer):
         rows = [self._transform_snapshot(snapshot) for snapshot in data]
         if not rows:
             raise ValueError("변환할 EV Charging Bronze 데이터가 없습니다.")
-        return sorted(rows, key=lambda row: row["price_date"])
+        return sorted(rows, key=lambda row: row["date"])
 
     @staticmethod
     def _transform_snapshot(snapshot: dict) -> dict:
@@ -104,9 +104,6 @@ class EvChargingSilverTransformer(Transformer):
         station_ids: set[int] = set()
         prices: list[float] = []
         nyc_station_count = 0
-        free_station_count = 0
-        missing_price_count = 0
-        unsupported_price_count = 0
 
         for row in stations:
             station_label = row.get("id", "<unknown>")
@@ -130,13 +127,7 @@ class EvChargingSilverTransformer(Transformer):
                 station_ids.add(station_id)
                 nyc_station_count += 1
 
-                if status == "missing":
-                    missing_price_count += 1
-                elif status == "free":
-                    free_station_count += 1
-                elif status == "unsupported":
-                    unsupported_price_count += 1
-                else:
+                if status == "normalized":
                     if price is None:
                         raise ValueError("표준화된 요금이 비어 있습니다")
                     prices.append(price)
@@ -150,19 +141,6 @@ class EvChargingSilverTransformer(Transformer):
         if not prices:
             raise ValueError("표준화 가능한 kWh 단위 요금이 없습니다.")
         return {
-            "city": "New York City",
-            "state": "NY",
-            "fuel_type_code": "ELEC",
-            "average_price_usd_per_kwh": round(fmean(prices), 6),
-            "price_date": collected_at.date(),
-            "currency": "USD",
-            "price_unit": "kWh",
-            "nyc_station_count": nyc_station_count,
-            "normalized_price_count": len(prices),
-            "free_station_count": free_station_count,
-            "missing_price_count": missing_price_count,
-            "unsupported_price_count": unsupported_price_count,
-            "source_url": source_url,
-            "collected_at": collected_at,
-            "bronze_path": bronze_path,
+            "date": collected_at.date(),
+            "ev_price": round(fmean(prices), 6),
         }
