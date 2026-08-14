@@ -1,7 +1,7 @@
 """HVFHV 기사 배정 Silver → Gold 3종 집계 로직.
 
-기사 1명 x 1개월 단위로 운행 패턴·연료비·순수익을 집계(``DriverMonthlyAggregation``),
-서비스 등급 자격 내 후보 차량 중 순수익 증가가 최대인 1대를 추천(``MonthlyVehicleRecommendation``),
+기사 1명 x 1개월 단위로 운행 패턴·연료비·순수익(렌탈료 차감 후)을 집계(``DriverMonthlyAggregation``),
+서비스 등급 자격 내 후보 차량 중 그 순수익이 최대인 1대를 추천(``MonthlyVehicleRecommendation``),
 추천 결과를 임계값으로 요약(``MonthlyReport``)한다. 정확한 필드는 ``schema/gold/*.py`` 참조.
 
 ``vehicle_master`` 는 실제 보유 차량(taxi_id)이 아니라 (vendor, make_key, model_key)
@@ -75,6 +75,49 @@ def _eligible_vehicles(vehicle_master: DataFrame, tier: str) -> DataFrame:
         .distinct()
     )
     return base.join(qualifying_keys, ["make_key", "model_key"], "inner")
+
+
+def _vehicle_groups(vehicle_master: DataFrame) -> DataFrame:
+    """차종별 서비스 등급 폭(vehicle_group). Comfort/Extra Comfort 자격을 모두/하나/전혀
+    못 갖췄는지에 따라 BOTH/SINGLE/STANDARD — driver_assignment 생성 시 쓴 것과 동일한
+    등급 규칙(scripts/synthetic_company_snapshot/snapshot.py::build_vehicle_pool)."""
+    all_keys = vehicle_master.select("make_key", "model_key").distinct()
+    uber_comfort = _eligible_vehicles(vehicle_master, "Comfort").select("make_key", "model_key")
+    lyft_extra_comfort = _eligible_vehicles(vehicle_master, "Extra Comfort").select("make_key", "model_key")
+    eligibility_count = F.coalesce(F.col("_uber"), F.lit(0)) + F.coalesce(F.col("_lyft"), F.lit(0))
+    return (
+        all_keys
+        .join(uber_comfort.withColumn("_uber", F.lit(1)), ["make_key", "model_key"], "left")
+        .join(lyft_extra_comfort.withColumn("_lyft", F.lit(1)), ["make_key", "model_key"], "left")
+        .withColumn(
+            "vehicle_group",
+            F.when(eligibility_count == 2, F.lit("BOTH"))
+             .when(eligibility_count == 1, F.lit("SINGLE"))
+             .otherwise(F.lit("STANDARD")),
+        )
+        .select("make_key", "model_key", "vehicle_group")
+    )
+
+
+def _grade_rank(column: str):
+    """vehicle_group 문자열을 등급 폭 비교용 정수로: STANDARD < SINGLE < BOTH."""
+    return (
+        F.when(F.col(column) == "BOTH", F.lit(2))
+        .when(F.col(column) == "SINGLE", F.lit(1))
+        .otherwise(F.lit(0))
+    )
+
+
+def _current_vehicle_facts(enriched: DataFrame, vehicle_master: DataFrame) -> DataFrame:
+    """기사별 현재 차량의 make/model·연비·렌트비·등급 — 추천 근거 비교의 기준선."""
+    current_vehicle = _modal(enriched, "taxi_id", "make_key", "model_key").withColumnRenamed(
+        "taxi_id", "current_taxi_id"
+    )
+    return (
+        current_vehicle
+        .join(_representative_vehicle_spec(vehicle_master), ["make_key", "model_key"], "left")
+        .join(_vehicle_groups(vehicle_master), ["make_key", "model_key"], "left")
+    )
 
 
 def enrich_trips_with_fuel_cost(
@@ -179,14 +222,9 @@ def build_driver_monthly_aggregation(
     totals = enriched.groupBy("driver_id").agg(
         F.sum("trip_miles").alias("monthly_mileage"),
         F.sum("_fuel_cost").alias("monthly_fuel_cost"),
-        F.sum("_net_profit").alias("monthly_net_profit"),
+        F.sum("_net_profit").alias("_gross_net_profit"),
     )
-    current_vehicle = _modal(enriched, "taxi_id", "make_key", "model_key").withColumnRenamed(
-        "taxi_id", "current_taxi_id"
-    )
-    current_spec = current_vehicle.join(
-        _representative_vehicle_spec(vehicle_master), ["make_key", "model_key"], "left"
-    )
+    current_spec = _current_vehicle_facts(enriched, vehicle_master)
 
     result = (
         totals.join(_time_block_ratios(enriched), "driver_id")
@@ -194,6 +232,7 @@ def build_driver_monthly_aggregation(
         .join(current_spec, "driver_id")
         .withColumn("year_month", F.lit(year_month))
         .withColumn("monthly_rental_fee", F.col("weekly_price_usd") * (F.lit(days_in_month) / 7.0))
+        .withColumn("monthly_net_profit", F.col("_gross_net_profit") - F.col("monthly_rental_fee"))
     )
     # top*_zone_id/top*_zone_ratio 를 (id, ratio) 순서로 인터리브
     zone_cols = []
@@ -215,14 +254,12 @@ def build_monthly_vehicle_recommendation(
     driver_aggregation: DataFrame,
     year_month: str,
     days_in_month: int,
-    threshold_profit_increase: float,
 ) -> DataFrame:
-    """기사별 자격 내 후보 차량 중 1대 추천. ``schema.gold.MonthlyVehicleRecommendation`` 과 컬럼 순서 일치.
+    """기사별 자격 내 후보 차량 중 예상 순수익(렌탈료 차감 후) 최대인 1대 추천.
 
-    선정 기준: expected_net_profit_increase >= threshold_profit_increase 인 후보 중
-    expected_revenue_increase(객단가 증가액) 최대인 1대. 그런 후보가 하나도 없는
-    기사는(threshold 를 못 넘는 경우) expected_monthly_net_profit 최대인 후보로 대체 —
-    driver_aggregation 과 1:1 이라 후보가 있는데도 행을 비울 수 없음.
+    ``schema.gold.MonthlyVehicleRecommendation`` 과 컬럼 순서 일치. threshold 는 이 선정에
+    쓰지 않는다 — 그 차를 "추천 대상"으로 집계할지는 build_monthly_report 의 몫이고,
+    여기는 항상 driver_aggregation 과 1:1 로 기사별 최선 1대를 낸다.
     """
     service_tier = _modal(enriched, "estimated_service_tier").withColumnRenamed(
         "estimated_service_tier", "service_tier"
@@ -238,7 +275,11 @@ def build_monthly_vehicle_recommendation(
 
     candidates = None
     for tier in SERVICE_TIERS:
-        tagged = _eligible_vehicles(vehicle_master, tier).withColumn("service_tier", F.lit(tier))
+        tagged = (
+            _eligible_vehicles(vehicle_master, tier)
+            .join(_vehicle_groups(vehicle_master), ["make_key", "model_key"], "left")
+            .withColumn("service_tier", F.lit(tier))
+        )
         candidates = tagged if candidates is None else candidates.unionByName(tagged)
 
     driver_candidates = service_tier.join(candidates, "service_tier")
@@ -251,65 +292,74 @@ def build_monthly_vehicle_recommendation(
         driver_candidates.join(daily, "driver_id")
         .withColumn("_daily_fuel_cost", F.col("_daily_miles") * cost_per_mile)
         .groupBy(
-            "driver_id", "service_tier", "make_key", "model_key",
+            "driver_id", "service_tier", "make_key", "model_key", "vehicle_group",
             "combined_mpg", "weekly_price_usd", "recommended_model_year",
         )
         .agg(F.sum("_daily_fuel_cost").alias("expected_monthly_fuel_cost"))
         .join(revenue_total, "driver_id")
         .withColumn(
-            "expected_monthly_net_profit",
-            F.col("_revenue_total") - F.col("expected_monthly_fuel_cost"),
-        )
-        .withColumn(
             "recommended_monthly_rental_fee",
             F.col("weekly_price_usd") * (F.lit(days_in_month) / 7.0),
         )
-    )
-
-    with_increase = hypothetical.join(
-        driver_aggregation.select(
-            "driver_id",
-            F.col("monthly_net_profit").alias("_current_net_profit"),
-            F.col("monthly_rental_fee").alias("_current_rental_fee"),
-        ),
-        "driver_id",
-    ).withColumn(
-        "expected_net_profit_increase",
-        F.col("expected_monthly_net_profit") - F.col("_current_net_profit"),
-    ).withColumn(
-        "expected_revenue_increase",
-        F.col("recommended_monthly_rental_fee") - F.col("_current_rental_fee"),
+        .withColumn(
+            "expected_monthly_net_profit",
+            F.col("_revenue_total") - F.col("expected_monthly_fuel_cost")
+            - F.col("recommended_monthly_rental_fee"),
+        )
     )
 
     tie_break = [F.col("make_key").asc(), F.col("model_key").asc()]
-    qualifying_rank = F.row_number().over(
-        Window.partitionBy("driver_id").orderBy(F.col("expected_revenue_increase").desc(), *tie_break)
+    ranked = hypothetical.withColumn(
+        "_rank",
+        F.row_number().over(
+            Window.partitionBy("driver_id").orderBy(F.col("expected_monthly_net_profit").desc(), *tie_break)
+        ),
     )
-    primary = (
-        with_increase.filter(F.col("expected_net_profit_increase") >= F.lit(threshold_profit_increase))
-        .withColumn("_rank", qualifying_rank)
-        .filter(F.col("_rank") == 1)
+    best = ranked.filter(F.col("_rank") == 1).drop("_rank")
+
+    current = _current_vehicle_facts(enriched, vehicle_master).select(
+        "driver_id",
+        F.col("combined_mpg").alias("_current_combined_mpg"),
+        F.col("weekly_price_usd").alias("_current_weekly_price_usd"),
+        F.col("vehicle_group").alias("_current_vehicle_group"),
     )
 
-    fallback_rank = F.row_number().over(
-        Window.partitionBy("driver_id").orderBy(F.col("expected_monthly_net_profit").desc(), *tie_break)
-    )
-    fallback_only = (
-        with_increase.withColumn("_rank", fallback_rank)
-        .filter(F.col("_rank") == 1)
-        .join(primary.select("driver_id"), "driver_id", "left_anti")
-    )
+    reasons = [
+        F.when(F.col("combined_mpg") > F.col("_current_combined_mpg"), F.lit("연비")),
+        F.when(_grade_rank("vehicle_group") > _grade_rank("_current_vehicle_group"), F.lit("차량등급")),
+        F.when(F.col("weekly_price_usd") < F.col("_current_weekly_price_usd"), F.lit("더 저렴한 렌트료")),
+    ]
 
     result = (
-        primary.unionByName(fallback_only)
-        .drop("_rank")
+        best.join(current, "driver_id")
+        .join(
+            driver_aggregation.select(
+                "driver_id",
+                F.col("monthly_net_profit").alias("_current_net_profit"),
+                F.col("monthly_rental_fee").alias("_current_rental_fee"),
+            ),
+            "driver_id",
+        )
+        .withColumn(
+            "expected_net_profit_increase",
+            F.col("expected_monthly_net_profit") - F.col("_current_net_profit"),
+        )
+        .withColumn(
+            "expected_revenue_increase",
+            F.col("recommended_monthly_rental_fee") - F.col("_current_rental_fee"),
+        )
+        .withColumn("_reason", F.concat_ws(", ", *reasons))
+        .withColumn(
+            "recommendation_reason",
+            F.when(F.col("_reason") == "", F.lit("현재 차량 유지")).otherwise(F.col("_reason")),
+        )
         .withColumn("year_month", F.lit(year_month))
         .withColumnRenamed("make_key", "recommended_make_key")
         .withColumnRenamed("model_key", "recommended_model_key")
     )
     columns = [
         "driver_id", "year_month", "service_tier",
-        "recommended_make_key", "recommended_model_key", "recommended_model_year",
+        "recommended_make_key", "recommended_model_key", "recommended_model_year", "recommendation_reason",
         "combined_mpg", "recommended_monthly_rental_fee", "expected_monthly_fuel_cost",
         "expected_monthly_net_profit", "expected_net_profit_increase", "expected_revenue_increase",
     ]

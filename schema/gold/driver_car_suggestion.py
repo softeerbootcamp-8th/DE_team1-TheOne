@@ -32,6 +32,12 @@ class MonthlyVehicleRecommendation:
     실제 보유 차량이 아니라 (make_key, model_key, 연식) 3개로 추천 차량을 식별함.
     스펙 트림 범위(spec_year_min~spec_year_max) 중 가장 최신 연식(spec_year_max)."""
 
+    recommendation_reason: str
+    """추천 이유. 현재 차량 대비 개선된 항목을 ", " 로 나열한 문자열 —
+    "연비"(combined_mpg 가 더 높음) / "차량등급"(vehicle_group 이 더 넓음, 예: SINGLE→BOTH) /
+    "더 저렴한 렌트료"(weekly_price_usd 가 더 낮음) 중 해당하는 것. 셋 다 아니면(추천 차량이
+    현재 차량과 동일하거나 세 항목 모두 동률) "현재 차량 유지"."""
+
     combined_mpg: float
     """추천 차량 연비."""
 
@@ -42,7 +48,8 @@ class MonthlyVehicleRecommendation:
     """추천 차량 기준 예상 월간 연료비 (USD). 현재 운행 패턴(주행거리 등)은 동일하다고 가정."""
 
     expected_monthly_net_profit: float
-    """추천 차량 기준 예상 월간 순수익 (USD). driver_aggregation.monthly_net_profit 과 동일하게 렌탈료 미차감."""
+    """추천 차량 기준 예상 월간 순수익 (USD) = 예상 매출(driver_pay+Tip) - expected_monthly_fuel_cost
+    - recommended_monthly_rental_fee. driver_aggregation.monthly_net_profit 과 동일하게 렌탈료 차감."""
 
     expected_net_profit_increase: float
     """예상 순수익 증가액 (USD) = expected_monthly_net_profit - 현재 monthly_net_profit."""

@@ -9,7 +9,7 @@
       --trips_path ../data/silver/hvfhv_driver_trip/year_month=2026-01 \\
       --vehicle_master_path ../data/silver/vehicle_master/collected_date=2026-01-15/city=new-york/vehicle_master.parquet \\
       --gas_ev_price_path ../data/silver/gas_ev_price/collected_month=2026-01/gas_ev_price.parquet \\
-      --year 2026 --month 1 --threshold_profit_increase 50 --output_dir ../data/gold
+      --year 2026 --month 1 --threshold_profit_increase 30 --output_dir ../data/gold
 """
 
 import argparse
@@ -71,7 +71,6 @@ def main(args_list: list[str] | None = None):
         ).persist()
         recommendation = build_monthly_vehicle_recommendation(
             enriched, vehicle_master, driver_aggregation, year_month, days_in_month,
-            args.threshold_profit_increase,
         ).persist()
         report = build_monthly_report(recommendation, year_month, args.threshold_profit_increase)
 

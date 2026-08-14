@@ -51,7 +51,4 @@ class DriverMonthlyAggregation:
     """월간 렌탈료 (USD). weekly_price_usd 기반 환산."""
 
     monthly_net_profit: float
-    """월간 순수익 (USD) = 하루 순수익(플랫폼 정산액 + Tip - 운행거리*연료단가) 의 30일 합.
-
-    렌탈료(monthly_rental_fee)는 차감하지 않은 값 — 렌탈료는 별도 컬럼으로 추적.
-    """
+    """월간 순수익 (USD) = 하루 순수익(플랫폼 정산액 + Tip - 운행거리*연료단가) 의 합 - monthly_rental_fee."""
