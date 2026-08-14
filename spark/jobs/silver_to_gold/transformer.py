@@ -1,7 +1,7 @@
 """HVFHV 기사 배정 Silver → Gold 3종 집계 로직.
 
 기사 1명 x 1개월 단위로 운행 패턴·연료비·순수익(렌탈료 차감 후)을 집계(``DriverMonthlyAggregation``),
-서비스 등급 자격 내 후보 차량 중 그 순수익이 최대인 1대를 추천(``MonthlyVehicleRecommendation``),
+전 차종 후보 중 그 순수익이 최대인 1대를 추천(``MonthlyVehicleRecommendation``),
 추천 결과를 임계값으로 요약(``MonthlyReport``)한다. 정확한 필드는 ``schema/gold/*.py`` 참조.
 
 ``vehicle_master`` 는 실제 보유 차량(taxi_id)이 아니라 (vendor, make_key, model_key)
@@ -12,6 +12,10 @@
   관례상 이미 MPGe 로 채워져 있어 유종과 무관하게 동일 공식이 적용됨).
 * 추천 차량 연식 = spec_year_max — 스펙 트림 범위 중 가장 최신 연식. 실제 보유
   차량이 아니라 (make_key, model_key, 연식) 3개로 추천 차량을 식별한다.
+
+Standard 등급 기사에게 Comfort/Extra Comfort 자격 차량을 추천할 때는, 그 zone에서 실제
+관측된 Comfort/Extra Comfort 요금이 Standard 대비 몇 배인지(``_zone_tier_multipliers``)를
+그 기사의 실제 운행에 곱해 "등급을 올렸다면의 매출"을 가정한다(``_driver_revenue_scenarios``).
 """
 
 from __future__ import annotations
@@ -78,24 +82,25 @@ def _eligible_vehicles(vehicle_master: DataFrame, tier: str) -> DataFrame:
 
 
 def _vehicle_groups(vehicle_master: DataFrame) -> DataFrame:
-    """차종별 서비스 등급 폭(vehicle_group). Comfort/Extra Comfort 자격을 모두/하나/전혀
-    못 갖췄는지에 따라 BOTH/SINGLE/STANDARD — driver_assignment 생성 시 쓴 것과 동일한
-    등급 규칙(scripts/synthetic_company_snapshot/snapshot.py::build_vehicle_pool)."""
+    """차종별 서비스 등급 자격. Comfort/Extra Comfort 자격 boolean 두 개와, 그걸 모두/하나/전혀
+    못 갖췄는지에 따른 vehicle_group(BOTH/SINGLE/STANDARD) — driver_assignment 생성 시 쓴 것과
+    동일한 규칙(scripts/synthetic_company_snapshot/snapshot.py::build_vehicle_pool)."""
     all_keys = vehicle_master.select("make_key", "model_key").distinct()
     uber_comfort = _eligible_vehicles(vehicle_master, "Comfort").select("make_key", "model_key")
     lyft_extra_comfort = _eligible_vehicles(vehicle_master, "Extra Comfort").select("make_key", "model_key")
-    eligibility_count = F.coalesce(F.col("_uber"), F.lit(0)) + F.coalesce(F.col("_lyft"), F.lit(0))
     return (
         all_keys
         .join(uber_comfort.withColumn("_uber", F.lit(1)), ["make_key", "model_key"], "left")
         .join(lyft_extra_comfort.withColumn("_lyft", F.lit(1)), ["make_key", "model_key"], "left")
+        .withColumn("uber_comfort_eligible", F.col("_uber") == 1)
+        .withColumn("lyft_extra_comfort_eligible", F.col("_lyft") == 1)
         .withColumn(
             "vehicle_group",
-            F.when(eligibility_count == 2, F.lit("BOTH"))
-             .when(eligibility_count == 1, F.lit("SINGLE"))
+            F.when(F.col("uber_comfort_eligible") & F.col("lyft_extra_comfort_eligible"), F.lit("BOTH"))
+             .when(F.col("uber_comfort_eligible") | F.col("lyft_extra_comfort_eligible"), F.lit("SINGLE"))
              .otherwise(F.lit("STANDARD")),
         )
-        .select("make_key", "model_key", "vehicle_group")
+        .select("make_key", "model_key", "vehicle_group", "uber_comfort_eligible", "lyft_extra_comfort_eligible")
     )
 
 
@@ -248,6 +253,62 @@ def build_driver_monthly_aggregation(
     return result.select(*columns)
 
 
+def _zone_tier_multipliers(enriched: DataFrame) -> DataFrame:
+    """(승차 zone, 하차 zone) 조합별 Comfort/Extra Comfort 거리당 요금이 Standard 대비 몇 배인지.
+
+    요금은 승차 zone 하나만으로 안 갈리고 실제 이동 경로(출발~도착)에 따라 갈리는 경우가
+    많아 PULocationID 단독이 아니라 (PULocationID, DOLocationID) 쌍으로 파티션한다.
+    관측치가 없는 등급은 null(호출부에서 1.0 = 가정 안 함으로 처리)."""
+    rates = (
+        enriched.withColumn("_rate_per_mile", F.col("driver_pay") / F.col("trip_miles"))
+        .groupBy("PULocationID", "DOLocationID", "estimated_service_tier")
+        .agg(F.avg("_rate_per_mile").alias("_avg_rate"))
+    )
+    pivoted = rates.groupBy("PULocationID", "DOLocationID").pivot(
+        "estimated_service_tier", list(SERVICE_TIERS)
+    ).agg(F.first("_avg_rate"))
+    return pivoted.select(
+        "PULocationID", "DOLocationID",
+        (F.col("Comfort") / F.col("Standard")).alias("comfort_multiplier"),
+        (F.col("Extra Comfort") / F.col("Standard")).alias("extra_comfort_multiplier"),
+    )
+
+
+def _driver_revenue_scenarios(enriched: DataFrame) -> DataFrame:
+    """기사별 실제 매출과, Comfort/Extra Comfort 자격 차량으로 바꿨다면의 가정 매출 3종
+    (Comfort만/Extra Comfort만/둘 다 가능한 차량 기준).
+
+    Standard 등급으로 뛴 운행만, 그 운행의 플랫폼(Uber→Comfort, Lyft→Extra Comfort)에 맞는
+    등급 요금 배수(_zone_tier_multipliers)를 곱해 가정한다 — 이미 프리미엄 요금으로 뛴
+    운행에 또 곱하면 중복 가산이라 실제 요금을 그대로 둔다.
+    """
+    multipliers = _zone_tier_multipliers(enriched)
+    with_multiplier = (
+        enriched.join(multipliers, ["PULocationID", "DOLocationID"], "left")
+        .withColumn("_comfort_multiplier", F.coalesce(F.col("comfort_multiplier"), F.lit(1.0)))
+        .withColumn("_extra_comfort_multiplier", F.coalesce(F.col("extra_comfort_multiplier"), F.lit(1.0)))
+    )
+    is_upgradable_uber_trip = (F.col("estimated_service_tier") == "Standard") & (F.col("platform_name") == "Uber")
+    is_upgradable_lyft_trip = (F.col("estimated_service_tier") == "Standard") & (F.col("platform_name") == "Lyft")
+    pay_if_comfort = F.when(
+        is_upgradable_uber_trip, F.col("driver_pay") * F.col("_comfort_multiplier")
+    ).otherwise(F.col("driver_pay"))
+    pay_if_extra_comfort = F.when(
+        is_upgradable_lyft_trip, F.col("driver_pay") * F.col("_extra_comfort_multiplier")
+    ).otherwise(F.col("driver_pay"))
+    pay_if_both = (
+        F.when(is_upgradable_uber_trip, F.col("driver_pay") * F.col("_comfort_multiplier"))
+        .when(is_upgradable_lyft_trip, F.col("driver_pay") * F.col("_extra_comfort_multiplier"))
+        .otherwise(F.col("driver_pay"))
+    )
+    return with_multiplier.groupBy("driver_id").agg(
+        F.sum(F.col("driver_pay") + F.col("tips")).alias("_revenue_actual"),
+        F.sum(pay_if_comfort + F.col("tips")).alias("_revenue_if_comfort"),
+        F.sum(pay_if_extra_comfort + F.col("tips")).alias("_revenue_if_extra_comfort"),
+        F.sum(pay_if_both + F.col("tips")).alias("_revenue_if_both"),
+    )
+
+
 def build_monthly_vehicle_recommendation(
     enriched: DataFrame,
     vehicle_master: DataFrame,
@@ -260,6 +321,13 @@ def build_monthly_vehicle_recommendation(
     ``schema.gold.MonthlyVehicleRecommendation`` 과 컬럼 순서 일치. threshold 는 이 선정에
     쓰지 않는다 — 그 차를 "추천 대상"으로 집계할지는 build_monthly_report 의 몫이고,
     여기는 항상 driver_aggregation 과 1:1 로 기사별 최선 1대를 낸다.
+
+    후보 차량 자격: 등급 구분 없이 전 차종이 누구에게나 후보다 — 아무 기사나 Comfort/Extra
+    Comfort 자격 차량으로 바꿀 수 있다고 가정한다(이번 달 그 등급을 실제로 서비스했는지는
+    안 본다).
+
+    Comfort/Extra Comfort 자격 차량 후보는, 그 등급 요금을 새로 받을 수 있다는 가정의
+    매출(_driver_revenue_scenarios)을 쓴다 — Standard 자격 차량 후보는 실제 매출 그대로.
     """
     service_tier = _modal(enriched, "estimated_service_tier").withColumnRenamed(
         "estimated_service_tier", "service_tier"
@@ -269,41 +337,45 @@ def build_monthly_vehicle_recommendation(
         F.first("gas_price").alias("gas_price"),
         F.first("ev_price").alias("ev_price"),
     )
-    revenue_total = enriched.groupBy("driver_id").agg(
-        F.sum(F.col("driver_pay") + F.col("tips")).alias("_revenue_total")
+    revenue = _driver_revenue_scenarios(enriched)
+    drivers = enriched.select("driver_id").distinct()
+
+    all_cars = _representative_vehicle_spec(vehicle_master).join(
+        _vehicle_groups(vehicle_master), ["make_key", "model_key"], "left"
     )
-
-    candidates = None
-    for tier in SERVICE_TIERS:
-        tagged = (
-            _eligible_vehicles(vehicle_master, tier)
-            .join(_vehicle_groups(vehicle_master), ["make_key", "model_key"], "left")
-            .withColumn("service_tier", F.lit(tier))
-        )
-        candidates = tagged if candidates is None else candidates.unionByName(tagged)
-
-    driver_candidates = service_tier.join(candidates, "service_tier")
+    driver_candidates = drivers.crossJoin(all_cars)
     cost_per_mile = F.when(
         F.col("fuel_type") == "EV",
         F.col("ev_price") * F.col("combined_kwh_per_100mi") / 100,
     ).otherwise(F.col("gas_price") / F.col("combined_mpg"))
+    revenue_for_candidate = (
+        F.when(
+            F.col("uber_comfort_eligible") & F.col("lyft_extra_comfort_eligible"),
+            F.col("_revenue_if_both"),
+        )
+        .when(F.col("uber_comfort_eligible"), F.col("_revenue_if_comfort"))
+        .when(F.col("lyft_extra_comfort_eligible"), F.col("_revenue_if_extra_comfort"))
+        .otherwise(F.col("_revenue_actual"))
+    )
 
     hypothetical = (
         driver_candidates.join(daily, "driver_id")
         .withColumn("_daily_fuel_cost", F.col("_daily_miles") * cost_per_mile)
         .groupBy(
-            "driver_id", "service_tier", "make_key", "model_key", "vehicle_group",
+            "driver_id", "make_key", "model_key", "vehicle_group",
+            "uber_comfort_eligible", "lyft_extra_comfort_eligible",
             "combined_mpg", "weekly_price_usd", "recommended_model_year",
         )
         .agg(F.sum("_daily_fuel_cost").alias("expected_monthly_fuel_cost"))
-        .join(revenue_total, "driver_id")
+        .join(revenue, "driver_id")
+        .withColumn("_revenue_for_candidate", revenue_for_candidate)
         .withColumn(
             "recommended_monthly_rental_fee",
             F.col("weekly_price_usd") * (F.lit(days_in_month) / 7.0),
         )
         .withColumn(
             "expected_monthly_net_profit",
-            F.col("_revenue_total") - F.col("expected_monthly_fuel_cost")
+            F.col("_revenue_for_candidate") - F.col("expected_monthly_fuel_cost")
             - F.col("recommended_monthly_rental_fee"),
         )
     )
@@ -332,6 +404,7 @@ def build_monthly_vehicle_recommendation(
 
     result = (
         best.join(current, "driver_id")
+        .join(service_tier, "driver_id")
         .join(
             driver_aggregation.select(
                 "driver_id",
