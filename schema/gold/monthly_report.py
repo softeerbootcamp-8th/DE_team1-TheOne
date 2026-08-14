@@ -15,7 +15,8 @@ class MonthlyReport:
     """기준선 (USD). 순수익 증가액이 이 값 이상이어야 차량 교체를 추천 — 파이프라인 실행 시 파라미터로 입력받아 그대로 기록."""
 
     recommended_driver_count: int
-    """expected_net_profit_increase >= threshold_profit_increase 로 추천된 기사 수."""
+    """expected_net_profit_increase >= threshold_profit_increase 이고 expected_revenue_increase
+    가 0 이상인 기사 수. 매출 증가액이 음수인 추천(회사 렌탈료 매출이 줄어드는 교체)은 뺀다."""
 
     avg_net_profit_increase_per_driver: float
     """추천된 기사들의 expected_net_profit_increase 평균 (USD)."""
