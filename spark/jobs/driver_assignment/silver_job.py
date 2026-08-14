@@ -82,8 +82,23 @@ def main(args_list: list[str] | None = None):
     parser.add_argument("--snapshot_date", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--pool_size", type=int, default=64)
+    # 없으면 Spark 기본값 1g 로 돕니다. 이 job 은 bronze_to_silver 보다 무거운데
+    # (트립 x 후보 슬롯) 인자만 빠져 있어서 로컬에서 항상 힙이 터졌습니다.
+    # bronze_to_silver/hvfhv/job.py 와 같은 기본값으로 맞춥니다.
+    parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
     args = parser.parse_args(args_list)
-    spark = get_or_create_spark_session("hvfhv_driver_trip_silver")
+    spark = get_or_create_spark_session("hvfhv_driver_trip_silver", driver_memory=args.spark_memory)
+    # 후보 생성이 트립 한 행을 슬롯 수만큼 explode 합니다. 읽기 파티션을 기본값
+    # (128MB)으로 두면 파티션 하나가 그 배수로 부풀어, 측정상 1.7GB 짜리 persist
+    # 블록이 생깁니다. MEMORY_AND_DISK 는 디스크로 흘린 블록을 다시 읽을 때 통째로
+    # 메모리에 올리려 하므로(BlockManager.maybeCacheDiskBytesInMemory) 거기서
+    # OutOfMemoryError 가 납니다.
+    #
+    # 미리 슬롯 배수만큼 잘게 읽으면 explode 후 파티션이 다시 128MB 언저리가 됩니다.
+    # 셔플이 아니라 파일 스캔 분할이라 추가 비용이 없습니다.
+    spark.conf.set(
+        "spark.sql.files.maxPartitionBytes", str(128 * 1024 * 1024 // max(1, args.pool_size))
+    )
     read = spark.read.parquet
     trips, preferences = read(args.trips_path), read(args.preferences_path)
     customers, leases, taxis = read(args.customers_path), read(args.leases_path), read(args.taxis_path)
