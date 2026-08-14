@@ -369,9 +369,14 @@ def build_monthly_vehicle_recommendation(
 def build_monthly_report(
     recommendation: DataFrame, year_month: str, threshold_profit_increase: float
 ) -> DataFrame:
-    """추천 결과를 임계값으로 요약한 1행. ``schema.gold.MonthlyReport`` 와 컬럼 순서 일치."""
+    """추천 결과를 임계값으로 요약한 1행. ``schema.gold.MonthlyReport`` 와 컬럼 순서 일치.
+
+    expected_revenue_increase(매출 증가액)가 음수인 추천은 집계에서 뺀다 — 회사 입장에서
+    렌탈료 매출이 오히려 줄어드는 추천을 "성과"로 세면 안 되기 때문.
+    """
     recommended = recommendation.filter(
-        F.col("expected_net_profit_increase") >= F.lit(threshold_profit_increase)
+        (F.col("expected_net_profit_increase") >= F.lit(threshold_profit_increase))
+        & (F.col("expected_revenue_increase") >= 0)
     )
     summary = recommended.agg(
         F.count("*").alias("recommended_driver_count"),
