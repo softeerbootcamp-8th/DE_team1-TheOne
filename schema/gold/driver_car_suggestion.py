@@ -21,8 +21,16 @@ class MonthlyVehicleRecommendation:
     hvfhv silver 의 estimated_service_tier 와 동일 도메인.
     """
 
-    recommended_taxi_id: str
-    """추천 차량. vehicle_master.taxi_id 참조."""
+    recommended_make_key: str
+    """추천 차량 제조사. vehicle_master.make_key 참조."""
+
+    recommended_model_key: str
+    """추천 차량 모델. vehicle_master.model_key 참조."""
+
+    recommended_model_year: int
+    """추천 차량 연식. vehicle_master 는 taxi_id 가 없는 차종(스펙) 테이블이라
+    실제 보유 차량이 아니라 (make_key, model_key, 연식) 3개로 추천 차량을 식별함.
+    스펙 트림 범위(spec_year_min~spec_year_max) 중 가장 최신 연식(spec_year_max)."""
 
     combined_mpg: float
     """추천 차량 연비."""

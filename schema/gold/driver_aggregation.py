@@ -36,7 +36,7 @@ class DriverMonthlyAggregation:
     top3_zone_ratio: Optional[float]
 
     current_taxi_id: str
-    """현재 차량. vehicle_master.taxi_id 참조."""
+    """현재 차량 taxi_id. hvfhv_driver_trip.taxi_id 참조 (vehicle_master 에는 taxi_id 가 없음)."""
 
     combined_mpg: float
     """차량 연비. EV 는 vehicle_master 관례대로 MPGe 로 정규화된 값."""
