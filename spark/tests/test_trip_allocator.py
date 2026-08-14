@@ -145,3 +145,16 @@ def test_이동시간을_캐시해_원본을_반복_스캔하지_않는다(spark
 
     # 검증 2회 + collect 1회 = 3회 읽습니다. 캐시가 없으면 매번 Parquet 스캔입니다.
     assert travel_times.is_cached
+
+
+def test_배정에_필요한_컬럼만_파이썬으로_넘긴다(spark):
+    """쓰지 않는 컬럼을 실어 보내면 실패하지 않고 **더 큰 데이터에서만** 터집니다."""
+    from jobs.driver_assignment.allocator import CANDIDATE_COLUMNS, allocation_input
+
+    row = _candidate("t1", "d1", datetime(2024, 3, 4, 9), datetime(2024, 3, 4, 9, 30))
+    # 실제 후보에 딸려오는 무거운 컬럼들 — 배정 로직은 쓰지 않습니다.
+    row.update({"time_block_weights": [0.1] * 8, "pickup_zone": "x" * 64})
+
+    columns = set(allocation_input(spark.createDataFrame([row])).columns)
+
+    assert columns == CANDIDATE_COLUMNS | {"_service_date", "_bucket"}

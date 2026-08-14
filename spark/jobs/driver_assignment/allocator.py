@@ -4,7 +4,7 @@ from datetime import timedelta
 
 import pandas as pd
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, to_date
+from pyspark.sql.functions import col, lit, to_date
 from pyspark.sql.types import (
     DateType,
     DoubleType,
@@ -66,6 +66,25 @@ def _validate(candidates: DataFrame, travel_times: DataFrame) -> None:
         col("count") > 1
     ).limit(1).count():
         raise ValueError("구역 이동시간 키는 중복될 수 없습니다")
+
+
+def allocation_input(candidates: DataFrame) -> DataFrame:
+    """파이썬으로 넘길 컬럼만 남깁니다.
+
+    `applyInPandas` 는 날짜 그룹 하나를 **통째로 Arrow 배치로 만들어** 보냅니다.
+    그 버퍼는 JVM 힙이 아니라 직접(off-heap) 메모리라 `--spark_memory` 로 늘릴 수
+    없고, 넘치면 Arrow 의 UnpooledDirectByteBuf 할당에서 죽습니다.
+
+    후보에는 51개 컬럼이 실려 있는데 `_allocate_day` 가 보는 건 12개뿐입니다.
+    나머지는 존 이름·요금 8종·선호 배열(`time_block_weights` 는 행마다 8개)처럼
+    배정과 무관하면서 Arrow 에서 자리를 많이 먹는 것들입니다.
+    """
+    frame = candidates.withColumn("_service_date", to_date("pickup_datetime"))
+    # 후보 생성이 버킷을 붙여 줍니다. 이 함수만 따로 쓰는 경우(테스트 등)에는
+    # 전체를 버킷 하나로 봅니다.
+    if "_bucket" not in frame.columns:
+        frame = frame.withColumn("_bucket", lit(0))
+    return frame.select("_bucket", "_service_date", *sorted(CANDIDATE_COLUMNS))
 
 
 def _allocate_day(frame: pd.DataFrame, travel: dict[tuple[int, int], float]) -> pd.DataFrame:
@@ -130,8 +149,14 @@ def allocate_trips(candidates: DataFrame, travel_times: DataFrame) -> DataFrame:
     def allocate_group(frame: pd.DataFrame) -> pd.DataFrame:
         return _allocate_day(frame, travel)
 
+    # (버킷 × 날짜) 로 묶습니다. 날짜로만 묶으면 그룹 하나가 하루치 전체(1,100만 행)
+    # 라 Arrow 가 파이썬으로 넘길 배치를 만들다 직접 메모리에서 죽습니다. 버킷을
+    # 함께 넣으면 그룹이 3만 행대로 떨어지고 병렬성은 200배가 됩니다.
+    #
+    # `_allocate_day` 의 상태는 (기사, 하루) 단위인데, 기사는 버킷 하나에만 속하므로
+    # 그룹 안에 그 기사의 그날 후보가 모두 들어옵니다 — 로직을 바꿀 필요가 없습니다.
     return (
-        candidates.withColumn("_service_date", to_date("pickup_datetime"))
-        .groupBy("_service_date")
+        allocation_input(candidates)
+        .groupBy("_bucket", "_service_date")
         .applyInPandas(allocate_group, schema=ASSIGNMENT_SCHEMA)
     )

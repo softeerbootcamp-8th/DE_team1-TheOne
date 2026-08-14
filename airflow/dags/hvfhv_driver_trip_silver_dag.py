@@ -121,6 +121,13 @@ def validate_silver_partition(output_dir: str | Path, year_month: str) -> None:
     table = pa.concat_tables(tables)
     if table.num_rows == 0:
         raise ValueError(f"기사 배정 Silver 행 수가 0입니다: {partition}")
+    # `year_month` 는 파티션 키라 디렉터리 이름에만 있고 parquet 안에는 없습니다.
+    # 파티션 파일을 직접 읽으면 컬럼이 사라져 아래 필수 컬럼 검사가 걸립니다.
+    # 디렉터리에서 값을 되살립니다 (Spark 가 basePath 로 하는 것과 같은 일).
+    if "year_month" not in table.column_names:
+        table = table.append_column(
+            "year_month", pa.array([year_month] * table.num_rows, pa.string())
+        )
     missing = REQUIRED_COLUMNS - set(table.column_names)
     if missing:
         raise ValueError(f"기사 배정 Silver 필수 컬럼 누락: {sorted(missing)}")
