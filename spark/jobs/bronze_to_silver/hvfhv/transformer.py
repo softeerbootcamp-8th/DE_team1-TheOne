@@ -110,6 +110,14 @@ class HVFHVCleanTransformer(Transformer):
         valid_condition = (
             col("pickup_datetime").isNotNull() &
             col("dropoff_datetime").isNotNull() &
+            # 승차보다 하차가 앞선 행이 실제로 들어옵니다. 2026-06 원본에 2천만 건 중
+            # 1건 있었고(pickup 23:17:23 / dropoff 23:15:19), `trip_time` 이 97 로
+            # 양수라 아래 검사들을 전부 통과해 Silver 까지 올라왔습니다.
+            #
+            # 그 한 행이 기사 배정의 계약 검증(`allocator._validate`)에서 전체 job 을
+            # 죽입니다. 시간 순서는 Silver 가 보장해야 하는 성질이라 여기서 거릅니다 —
+            # 하류마다 따로 막으면 Gold 에서 또 같은 자리에 걸립니다.
+            (col("pickup_datetime") < col("dropoff_datetime")) &
             col("PULocationID").isNotNull() &
             col("DOLocationID").isNotNull() &
             col("trip_miles").isNotNull() & (col("trip_miles") > 0) & (col("trip_miles") <= 1000) &
