@@ -31,7 +31,15 @@ PREFERENCE_COLUMNS = [
     "max_deadhead_minutes",
     "buffer_seconds",
 ]
-TOP_TIME_BLOCK_COUNT = 2
+# 선호 시간대는 **연속된 블록 구간**으로 잡습니다. 예전에는 가중치 상위 2개를 그냥
+# 뽑았는데, 그러면 09-12 와 21-24 처럼 떨어진 두 블록이 나오는 기사가 70% 였습니다.
+# 배정은 첫 승차부터 하차까지의 경과를 `target_work_minutes`(중앙 405분) 로 재기
+# 때문에(allocator.py) 뒤쪽 블록의 운행은 도달할 수 없어 통째로 버려집니다.
+#
+# 3개인 이유: 창이 9시간이면 실사용 시간이 `target_work_minutes` 에 걸려 405분이
+# 되는데, 이게 `target_daily_trips` 를 만들 때 쓰는 값과 같아집니다(아래 참고).
+# 4개로 늘려도 그 상한이 먼저 걸려 목표 달성 가능 기사는 36% -> 39% 로만 움직입니다.
+PREFERRED_BLOCK_RUN = 3
 # 범위 근거는 synthetic-driver-mapping-guide.md — buffer 기본 60초(§6 조건 2),
 # 하루 trip 은 4개 미만이면 묶음 폐기·35개 상한(§9). 기사마다 그 안에서 다르게 뽑습니다.
 BUFFER_SECONDS_RANGE = (60, 181)
@@ -50,6 +58,17 @@ def _distance_band(miles: float) -> str:
     if miles <= DISTANCE_MEDIUM_MAX_MI:
         return DISTANCE_LABELS[1]
     return DISTANCE_LABELS[2]
+
+
+def _preferred_block_indexes(time_weights: np.ndarray) -> list[int]:
+    """가중치 합이 가장 큰 연속 `PREFERRED_BLOCK_RUN` 블록의 인덱스.
+
+    하루 경계를 넘지 않습니다. 21-24 와 다음날 00-03 은 시계로는 붙어 있지만
+    배정이 서비스일 단위로 묶여(allocator) 같은 그룹에 오지 않기 때문입니다.
+    """
+    starts = range(len(time_weights) - PREFERRED_BLOCK_RUN + 1)
+    best = max(starts, key=lambda start: time_weights[start:start + PREFERRED_BLOCK_RUN].sum())
+    return list(range(best, best + PREFERRED_BLOCK_RUN))
 
 
 def _validate_driver_ids(driver_ids: list[str]) -> list[str]:
@@ -77,7 +96,7 @@ def build_driver_preferences(
         ).iloc[0]
         rng = np.random.default_rng(driver_seed)
         time_weights = np.asarray(trait["time_pref"], dtype=float)
-        preferred_indexes = np.argsort(time_weights)[-TOP_TIME_BLOCK_COUNT:][::-1]
+        preferred_indexes = _preferred_block_indexes(time_weights)
         distance_miles = float(trait["distance_pref_mi"])
         work_minutes = int(round(float(trait["work_mean_h"]) * 60))
         trip_minutes = max(float(trait["avg_trip_duration_min"]), 1.0)
@@ -102,7 +121,11 @@ def build_driver_preferences(
             "min_daily_trips": min_daily_trips,
             "max_daily_trips": max_daily_trips,
             "target_work_minutes": max(60, min(work_minutes, 12 * 60)),
-            "max_deadhead_minutes": int(rng.integers(5, 16)),
+            # 5~15분(중앙 10분)이던 값입니다. 구역쌍 이동시간(taxi_zone_travel_times,
+            # 50,633쌍)의 중앙값이 33.4분이라 중앙 기사가 하차 후 이어갈 수 있는
+            # 구역쌍이 2.8% 뿐이었습니다. 배정 결과에서 0분 초과 공차의 최대값이
+            # 정확히 15.0분 — 상한이 그대로 천장이 되어 있었습니다.
+            "max_deadhead_minutes": int(rng.integers(10, 26)),
             "buffer_seconds": int(rng.integers(*BUFFER_SECONDS_RANGE)),
         })
     return pd.DataFrame(rows, columns=PREFERENCE_COLUMNS)

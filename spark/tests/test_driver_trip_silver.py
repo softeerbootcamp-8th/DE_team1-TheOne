@@ -87,7 +87,7 @@ def test_배정된_trip만_모든_관계와_결합하고_계보를_기록한다(
     assert (row.make_key, row.model_key, row.model_year) == ("Toyota", "Camry", 2023)
     assert row.active_weekdays == ["MON"] and row.target_work_minutes == 480
     assert (row.year_month, row.snapshot_date, row.assignment_seed) == ("2024-03", date(2024, 3, 1), 42)
-    assert row.assignment_version == "v1"
+    assert row.assignment_version == "v2"
 
 
 @pytest.mark.parametrize("violation", ["empty", "month", "mixed_month", "missing_driver", "expired"])

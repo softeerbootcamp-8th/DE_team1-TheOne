@@ -3,10 +3,11 @@
 1. 기사 ID마다 선호 한 행 생성 및 허용된 요일·시간대 사용
 2. 시간대 가중치 합계 1과 거리 구간 경계 일치
 3. 점수·작업량·공차 한도 범위 보장
-4. 같은 seed 재실행 결과 동일
-5. 기존 선호 보존 및 신규 기사만 동일 스키마로 추가
-6. Parquet 저장 후 리스트·숫자 타입 보존
-7. 빈 값·중복 기사 ID와 잘못된 기존 스키마 거부
+4. 선호 시간블록이 연속이고 가중치 합이 최대인 구간 (#372)
+5. 같은 seed 재실행 결과 동일
+6. 기존 선호 보존 및 신규 기사만 동일 스키마로 추가
+7. Parquet 저장 후 리스트·숫자 타입 보존
+8. 빈 값·중복 기사 ID와 잘못된 기존 스키마 거부
 """
 
 import numpy as np
@@ -46,7 +47,7 @@ def test_기사마다_선호_한행과_허용된_요일_시간대를_생성한�
     for row in result.itertuples():
         assert 3 <= len(row.active_weekdays) <= 7
         assert set(row.active_weekdays) <= set(WEEKDAY_LABELS)
-        assert len(row.preferred_time_blocks) == 2
+        assert len(row.preferred_time_blocks) == 3
         assert set(row.preferred_time_blocks) <= set(TIME_BLOCK_LABELS)
 
 
@@ -69,7 +70,7 @@ def test_선호점수와_작업한도가_허용범위다():
     assert result["manhattan_preference"].between(0, 1).all()
     assert (result["target_daily_trips"] >= 1).all()
     assert result["target_work_minutes"].between(60, 720).all()
-    assert result["max_deadhead_minutes"].between(5, 15).all()
+    assert result["max_deadhead_minutes"].between(10, 25).all()
 
 
 def test_트립수_하한_상한과_준비시간이_가이드_범위_안이다():
@@ -83,6 +84,29 @@ def test_트립수_하한_상한과_준비시간이_가이드_범위_안이다()
     # 기사마다 다른 값이어야 한다 — 전부 같으면 랜덤화가 죽은 것이다.
     assert result["buffer_seconds"].nunique() > 1
     assert result["max_daily_trips"].nunique() > 1
+
+
+def test_선호_시간블록은_연속이고_가중치_합이_최대인_구간이다():
+    """떨어진 블록을 주면 배정이 뒤쪽 블록을 통째로 버립니다 (#372).
+
+    배정은 첫 승차부터 하차까지의 경과를 `target_work_minutes`(중앙 405분) 로
+    재는데, 09-12 와 21-24 처럼 벌어진 블록은 그 사이가 12시간이라 뒤쪽 운행에
+    도달할 수 없습니다. 그런데 실패가 아니라 **배정이 조용히 줄어드는** 형태로
+    나타나서, 가중치 상위 N개로 되돌려도 테스트가 없으면 아무도 모릅니다.
+    """
+    result = _build([f"DRIVER_{index:06d}" for index in range(100)])
+
+    for row in result.itertuples():
+        indexes = [TIME_BLOCK_LABELS.index(block) for block in row.preferred_time_blocks]
+        assert indexes == list(range(min(indexes), min(indexes) + len(indexes)))
+        # 아무 연속 구간이나 고르면 안 됩니다 — 가중치 합이 최대인 구간이어야 합니다.
+        weights = np.asarray(row.time_block_weights, dtype=float)
+        window = len(indexes)
+        best = max(
+            weights[start:start + window].sum()
+            for start in range(len(weights) - window + 1)
+        )
+        assert weights[min(indexes):min(indexes) + window].sum() == pytest.approx(best)
 
 
 def test_같은_기사와_seed는_입력순서와_무관하게_동일하다():

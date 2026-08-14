@@ -13,7 +13,10 @@ from common.session import get_or_create_spark_session
 from jobs.driver_assignment.allocator import allocate_trips
 from jobs.driver_assignment.candidates import build_trip_candidates
 
-ASSIGNMENT_VERSION = "v1"
+# v2: 기사 선호 생성 규칙이 바뀌었습니다 (#372 — 선호 시간블록을 연속 구간으로,
+# 공차 상한 5~15분 -> 10~25분). seed 가 같아도 v1 과 다른 결과가 나오므로, 표식을
+# 올리지 않으면 두 벌의 결과를 파티션만 보고 구분할 수 없습니다.
+ASSIGNMENT_VERSION = "v2"
 
 
 def build_driver_trip_silver(
