@@ -38,6 +38,11 @@ def _frames(spark):
         "driver_pay": 18.0, "platform_name": "Uber",
         "estimated_service_tier": "Standard", "year_month": "2024-03",
     }])
+    # HVFHV Silver 는 이 셋을 NULL 자리표시로 들고 있습니다 — 채우는 것이 이 job
+    # 입니다. 픽스처에도 있어야 배정 결과와의 이름 충돌을 재현할 수 있습니다.
+    # 전량 NULL 이라 타입을 명시해야 createDataFrame 이 추론에 실패하지 않습니다.
+    for placeholder in ("driver_id", "taxi_id", "taxi_model_id"):
+        trips = trips.withColumn(placeholder, lit(None).cast("string"))
     assignments = spark.createDataFrame([{
         "trip_key": "t1", "driver_id": "d1", "taxi_id": "taxi1",
         "trip_sequence": 1, "deadhead_minutes": 0.0, "preference_score": 0.9,
@@ -115,3 +120,53 @@ def test_같은월_재실행은_해당월만_교체하고_다른월은_보존한
     assert {row.year_month: row["count"] for row in restored.groupBy("year_month").count().collect()} == {
         "2024-02": 1, "2024-03": 1,
     }
+
+
+# --- 파티션 컬럼 복원 -----------------------------------------------------
+#
+# DAG 는 `.../hvfhv/year_month=2026-06` 처럼 파티션 디렉터리를 직접 넘깁니다.
+# 그 경로를 그냥 읽으면 `year_month` 가 디렉터리 이름에만 있고 parquet 안에는
+# 없어서 컬럼이 사라지고, 검증과 출력 파티셔닝이 UNRESOLVED_COLUMN 으로 죽습니다.
+
+
+def test_파티션_디렉터리를_직접_넘겨도_year_month_가_살아있다(spark, tmp_path):
+    from jobs.driver_assignment.silver_job import read_trips
+
+    root = tmp_path / "hvfhv"
+    spark.createDataFrame([{"trip_key": "t1", "year_month": "2026-06"}]).write.partitionBy(
+        "year_month"
+    ).parquet(str(root))
+
+    trips = read_trips(spark, str(root / "year_month=2026-06"))
+
+    assert "year_month" in trips.columns
+    assert [row.year_month for row in trips.collect()] == ["2026-06"]
+
+
+def test_데이터셋_루트를_넘기면_그대로_읽는다(spark, tmp_path):
+    from jobs.driver_assignment.silver_job import read_trips
+
+    root = tmp_path / "hvfhv_root"
+    spark.createDataFrame([{"trip_key": "t1", "year_month": "2026-06"}]).write.partitionBy(
+        "year_month"
+    ).parquet(str(root))
+
+    trips = read_trips(spark, str(root))
+
+    assert "year_month" in trips.columns
+
+
+def test_결과에_같은_이름의_컬럼이_두_번_들어가지_않는다(spark):
+    """`select` 는 중복 이름을 허용해 조용히 지나가고 쓰기에서야 죽습니다.
+
+    HVFHV Silver 의 NULL 자리표시(`driver_id` 등)를 빼지 않으면 배정 결과의
+    같은 이름 컬럼과 겹쳐 COLUMN_ALREADY_EXISTS 로 적재가 실패합니다.
+    """
+    frames = _frames(spark)
+
+    columns = build_driver_trip_silver(
+        *frames, year_month="2024-03", snapshot_date=date(2024, 3, 1), seed=42
+    ).columns
+
+    duplicated = sorted({name for name in columns if columns.count(name) > 1})
+    assert not duplicated, f"중복 컬럼: {duplicated}"

@@ -308,3 +308,52 @@ def test_zone_조인에_실패한_행은_null로_남고_사라지지_않는다(s
     assert by_miles[1.0]["dropoff_borough"] == "Manhattan"
     assert by_miles[2.0]["pickup_borough"] is None
     assert by_miles[2.0]["dropoff_borough"] is None
+
+
+# --- 시간 순서 계약 -------------------------------------------------------
+#
+# TLC 원본에 승차보다 하차가 앞선 행이 실제로 들어옵니다. 2026-06 에서 2천만 건 중
+# 1건이었고, `trip_time` 이 양수라 다른 검사를 전부 통과해 Silver 까지 올라왔습니다.
+# 그 한 행이 기사 배정의 계약 검증에서 전체 job 을 죽입니다.
+
+
+def test_하차가_승차보다_앞선_행은_Silver_로_넘기지_않는다(spark):
+    """`trip_time` 이 양수여도 시각이 모순이면 버려야 합니다.
+
+    실제 원본과 같은 모양으로 둡니다 — pickup 23:17:23 / dropoff 23:15:19 / trip_time 97.
+    """
+    rows = [
+        _row(trip_miles=1.0),
+        _row(trip_miles=2.0),
+        _row(
+            trip_miles=3.0,
+            pickup_datetime=datetime(2024, 3, 1, 23, 17, 23),
+            dropoff_datetime=datetime(2024, 3, 1, 23, 15, 19),
+            trip_time=97,
+        ),
+    ]
+
+    result = HVFHVCleanTransformer(error_threshold=0.5).transform(
+        spark.createDataFrame(rows)
+    )
+
+    assert result.count() == 2
+    assert all(
+        row["pickup_datetime"] < row["dropoff_datetime"] for row in result.collect()
+    )
+
+
+def test_승하차_시각이_같은_행도_버린다(spark):
+    """0초짜리 운행은 배정에서 시간 축을 못 만듭니다."""
+    same = datetime(2024, 3, 1, 10, 0, 0)
+    rows = [
+        _row(trip_miles=1.0),
+        _row(trip_miles=2.0),
+        _row(trip_miles=3.0, pickup_datetime=same, dropoff_datetime=same),
+    ]
+
+    result = HVFHVCleanTransformer(error_threshold=0.5).transform(
+        spark.createDataFrame(rows)
+    )
+
+    assert result.count() == 2
