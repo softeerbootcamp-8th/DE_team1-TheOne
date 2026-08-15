@@ -3,6 +3,9 @@
 # =============================================================================
 
 RUNTIMES := airflow spark lambda
+# uv 프로젝트 전체(Docker 이미지 유무와 무관) — lock/check/test 가 순회합니다.
+# build·sync 는 Docker 이미지가 있는 RUNTIMES 만 그대로 순회합니다.
+UV_PROJECTS := $(RUNTIMES) dashboard
 GIT_SHA  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "nogit")
 # 기본값은 비워둡니다 — 로컬에서 `make build` 하면 tlc-airflow:<sha> 로 태그됩니다.
 # ECR 로 푸시할 때만 끝에 슬래시를 붙여 지정하세요:
@@ -31,13 +34,13 @@ help:
 
 .PHONY: lock
 lock:
-	@for r in $(RUNTIMES); do \
+	@for r in $(UV_PROJECTS); do \
 		echo "==> locking $$r"; (cd $$r && uv lock) || exit 1; \
 	done
 
 .PHONY: check
 check:
-	@for r in $(RUNTIMES); do \
+	@for r in $(UV_PROJECTS); do \
 		echo "==> checking $$r"; (cd $$r && uv lock --check) || exit 1; \
 	done
 
@@ -48,7 +51,7 @@ check:
 # tests 폴더가 없는 런타임은 건너뜁니다 — 생기면 자동으로 포함됩니다.
 .PHONY: test
 test:
-	@for p in $(RUNTIMES) libs/pipeline_core; do \
+	@for p in $(UV_PROJECTS) libs/pipeline_core; do \
 		if [ ! -d "$$p/tests" ]; then echo "==> skip $$p (tests 없음)"; continue; fi; \
 		echo "==> testing $$p"; \
 		(cd $$p && env -u VIRTUAL_ENV uv run --frozen pytest -q) || exit 1; \
