@@ -38,6 +38,11 @@ services:
     build:
       context: .
       dockerfile: airflow/Dockerfile
+    # DAG 는 저장소 루트의 data/ 에 Bronze·Silver 를 씁니다. 이미지 기본 uid(50000)로
+    # 돌면 호스트 소유(uid 1000)인 마운트에 쓰지 못해 PermissionError 가 납니다.
+    # gid 는 0 을 유지해야 합니다 — /opt/airflow 가 airflow:root 775 라 gid 0 으로 씁니다.
+    # uid 가 1000 이 아니면: AIRFLOW_UID=$(id -u) docker compose up -d
+    user: "${AIRFLOW_UID:-1000}:0"
     depends_on:
       postgres:
         condition: service_healthy
