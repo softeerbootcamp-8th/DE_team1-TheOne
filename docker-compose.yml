@@ -6,10 +6,13 @@
 #   docker compose down         # 내리기
 #   docker compose down -v      # 내리면서 DB 까지 초기화
 #
-# UI: http://localhost:8080
-# 로그인 정보는 `docker compose logs airflow | grep -i password` 로 확인합니다.
+# UI: http://localhost:8080 — 로그인 없이 바로 들어갑니다 (아래 all_admins 참고).
 #
 # Airflow 이미지 안의 라이브러리 버전은 airflow/uv.lock 과 같은 조합입니다.
+#
+# ⚠️ 이 파일은 로컬 개발 전용입니다. EC2 등 운영 배포에 그대로 재사용하지 마세요.
+#    특히 AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS 는 로그인 자체를 없애는
+#    설정이라 운영에서 켜지면 인증이 뚫립니다. 운영 배포 설정은 별도 파일로 분리하세요.
 # =============================================================================
 
 services:
@@ -46,6 +49,9 @@ services:
       # 기본값 300초(5분). 로컬 개발에서 DAG 고치고 5분 기다리긴 불편하므로 10초로.
       # 운영에서는 기본값을 쓰세요 (잦은 재파싱은 부하입니다).
       AIRFLOW__DAG_PROCESSOR__REFRESH_INTERVAL: "10"
+      # 로그인 화면을 없애서 매번 `docker compose logs | grep password` 하는 걸 방지합니다.
+      # 인증된 모든 요청을 admin 으로 취급 — 로컬 1인 개발 전용. 운영 배포 시 반드시 제거하세요.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
       PYTHONPATH: /opt/airflow/project-root
     ports:
       # 8080 이 다른 프로젝트에 물려 있으면 AIRFLOW_PORT=8090 docker compose up -d

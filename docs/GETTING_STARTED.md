@@ -21,11 +21,9 @@ docker compose up -d
 AIRFLOW_PORT=8090 docker compose up -d
 ```
 
-브라우저에서 <http://localhost:8080> 접속. 로그인 정보는:
-
-```bash
-docker compose logs airflow | grep "Password for user"
-```
+브라우저에서 <http://localhost:8080> 접속. 로그인 화면 없이 바로 들어갑니다
+(`AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS=true` — 로컬 1인 개발 전용 설정,
+운영 배포 시 반드시 제거).
 
 `airflow/dags/` 의 DAG 가 목록에 보이면 정상입니다. 하나도 안 보이면 import 에서 깨진 것이니
 아래로 확인하세요 (정상이면 `No data found`).
