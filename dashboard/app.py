@@ -1,7 +1,7 @@
-"""차량 교체 이득 콜 리스트 대시보드 (주간 / 월간).
+"""기사별 월간 차량 추천 대시보드.
 
-data/gold/ 의 Parquet 만 읽는다. 주간 그레인은 마트를 그대로 그리고, 월간 그레인만
-``rollup_month`` 로 합산한다 — 그 함수 docstring 의 ponytail 주석 참고.
+data/gold/ 의 CSV(`driver_car_suggestion`, `driver_aggregation`, `monthly_report`)만 읽는다.
+세 데이터셋 모두 `year_month` 단일 그레인 — `spark/jobs/silver_to_gold/job.py` 산출물.
 """
 
 from pathlib import Path
@@ -11,251 +11,129 @@ import streamlit as st
 
 GOLD_DIR = Path(__file__).resolve().parents[1] / "data" / "gold"
 
-# 콜 대상 자격 — 기사의 월 이득이 이 값 이상이어야 한다. 주간 뷰에는 안 쓴다(주간 최대
-# 이득이 $408 수준이라 월 기준을 그대로 씌우면 전원 탈락한다).
-MIN_MONTHLY_GAIN_USD = 600.0
+HOUR_BLOCKS = ["00_03", "03_06", "06_09", "09_12", "12_15", "15_18", "18_21", "21_24"]
 
-# 월 합산이 가능한 금액 컬럼 (주간 값의 단순 합).
-SUM_COLS = [
-    "driver_net_gain_usd", "company_arpu_gain_usd",
-    "gain_from_fuel_usd", "gain_from_tier_usd", "cost_from_lease_usd",
-]
-CALL_COLUMNS = [
-    "rank", "driver_id", "current_vehicle_label", "recommended_vehicle_label",
-    "driver_net_gain_usd", "company_arpu_gain_usd", "miles",
-    "top_pickup_borough", "tenure_days", "reason_text",
-]
+SUGGESTION_COLUMNS = {
+    "driver_id": "기사 ID",
+    "service_tier": "서비스 등급",
+    "recommended_make_key": "추천 제조사",
+    "recommended_model_key": "추천 모델",
+    "recommended_model_year": "추천 연식",
+    "recommendation_reason": "추천 사유",
+    "expected_net_profit_increase": "예상 순이익 증가액",
+    "expected_revenue_increase": "예상 매출 증가액",
+}
 
 
-def month_key(week_start: pd.Series) -> pd.Series:
-    """주차가 속한 달. ISO 관례대로 그 주의 목요일 기준 — 2025-12-29 주는 목요일이
-    2026-01-01 이라 2026-01 로 묶인다. week_start 의 달로 묶으면 1월 운행 대부분이
-    2025-12 로 새어 나간다."""
-    return (pd.to_datetime(week_start.astype(str)) + pd.Timedelta(days=3)).dt.to_period("M").astype(str)
+def _read_partitions(root: Path, dataset: str) -> pd.DataFrame:
+    """`year_month=` 파티션 전체를 이어붙인다 — 컬럼에도 `year_month` 가 그대로 들어있다."""
+    paths = sorted(root.glob(f"{dataset}/year_month=*/{dataset}.csv"))
+    if not paths:
+        return pd.DataFrame()
+    return pd.concat((pd.read_csv(p) for p in paths), ignore_index=True)
 
 
 @st.cache_data
 def load(dataset: str) -> pd.DataFrame:
-    """디렉터리째 읽는다 — week_start 는 hive 파티션 키라 파일 하나씩 읽으면 사라진다."""
-    path = GOLD_DIR / dataset
-    if not path.exists():
-        return pd.DataFrame()
-    frame = pd.read_parquet(path)
-    if "week_start" in frame.columns:
-        frame["month"] = month_key(frame["week_start"])
-    return frame
+    return _read_partitions(GOLD_DIR, dataset)
 
 
-def eligible(frame: pd.DataFrame, min_gain: float) -> pd.DataFrame:
-    """콜 대상 자격 — 기사 이득이 기준 이상 + 회사 객단가도 늘고 + 실행 가능.
-
-    기사별 1위 차량만 담긴 프레임을 받는다(주간은 rank_in_driver=1, 월간은 합산 후 1위).
-    """
-    return frame[
-        (frame["driver_net_gain_usd"] >= min_gain)
-        & (frame["company_arpu_gain_usd"] > 0)
-        & frame["is_feasible"]
-    ]
-
-
-def reason_text(row) -> str:
-    """양수인 기여 항목만 큰 순으로. gold_mart_top_customers.reason_text 와 같은 규칙."""
-    parts = [
-        ("등급 상승", row["gain_from_tier_usd"]),
-        ("연료비 절감", row["gain_from_fuel_usd"]),
-        ("렌트료 절감", -row["cost_from_lease_usd"]),
-    ]
-    parts = sorted([p for p in parts if p[1] > 0], key=lambda p: -p[1])
-    return ", ".join(f"{name} +${value:,.1f}" for name, value in parts)
-
-
-def rollup(swap_scope: pd.DataFrame, fleet: pd.DataFrame, min_gain: float):
-    """한 기간(주 또는 월)의 교체 시뮬레이션을 기사 단위로 합산해 콜 리스트와 KPI를 만든다.
-
-    주간·월간이 같은 경로를 탄다. 주간은 기간이 1주라 합산이 항등이고, 월간만 4~5주가
-    실제로 합쳐진다 — 그래서 월간 1위 차량은 주간 1위와 다를 수 있다.
-
-    ponytail: gold_mart_* 의 정의(자격 3조건 → 기사별 1위)를 여기서 되풀이한다. 원래 그
-    정의는 spark 쪽 transformer 한 곳에만 있어야 하지만 그 소스가 지금 저장소에 없다
-    (`spark/jobs/silver_to_gold/vehicle_swap/` 에 __pycache__ 만 남음). 마트가 자격자
-    전원을 담게 다시 구워지면 이 함수는 지우고 마트를 그대로 읽는다. 그때까지는
-    ``verify_against_mart`` 가 매 로드마다 이 함수를 마트와 대조한다.
-    """
-    best = (
-        swap_scope.groupby(
-            ["driver_id", "make_key", "model_key", "current_make_key", "current_model_key"],
-            as_index=False, observed=True,
-        )
-        .agg(
-            **{column: (column, "sum") for column in SUM_COLS},
-            tier_upgraded=("tier_upgraded", "any"),
-            is_feasible=("is_feasible", "all"),
-        )
-    )
-    rank = best.groupby("driver_id")["driver_net_gain_usd"].rank("first", ascending=False)
-    best = best[rank == 1]
-
-    facts = fleet.groupby("driver_id", as_index=False, observed=True).agg(
-        miles=("total_miles", "sum"),
-        tenure_days=("tenure_days", "max"),
-        net_earnings_usd=("net_earnings_usd", "sum"),
-        top_pickup_borough=("top_pickup_borough", lambda s: s.mode().iat[0]),
+def hourly_ratio_frame(agg_row: pd.Series) -> pd.DataFrame:
+    """시간대별 운행 비중을 막대차트 입력 모양으로."""
+    return pd.DataFrame(
+        {"운행 비중": [round(agg_row[f"ratio_{block}"], 2) for block in HOUR_BLOCKS]}, index=HOUR_BLOCKS
     )
 
-    pool = eligible(best, min_gain)
-    call_list = (
-        pool.sort_values("driver_net_gain_usd", ascending=False)
-        .merge(facts, on="driver_id", how="left")
+
+def top_zone_frame(agg_row: pd.Series) -> pd.DataFrame:
+    """상위 3개 zone 을 순위별 표 모양으로."""
+    return pd.DataFrame(
+        {
+            "zone_id": [agg_row["top1_zone_id"], agg_row["top2_zone_id"], agg_row["top3_zone_id"]],
+            "비중": [
+                round(agg_row["top1_zone_ratio"], 2),
+                round(agg_row["top2_zone_ratio"], 2),
+                round(agg_row["top3_zone_ratio"], 2),
+            ],
+        },
+        index=["1위", "2위", "3위"],
+    )
+
+
+def render() -> None:
+    st.set_page_config(page_title="기사 차량 추천", layout="wide")
+    st.title("기사별 월간 차량 추천")
+
+    report = load("monthly_report")
+    suggestion = load("driver_car_suggestion")
+    aggregation = load("driver_aggregation")
+
+    if report.empty or suggestion.empty:
+        st.error("data/gold 가 비어 있습니다. spark/jobs/silver_to_gold/job.py 를 먼저 실행하세요.")
+        st.stop()
+
+    period = st.selectbox("월", sorted(report["year_month"].unique(), reverse=True))
+    report_row = report[report["year_month"] == period].iloc[0]
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("추천 대상 기사", f"{int(report_row['recommended_driver_count'])}명")
+    c2.metric("기사 1인당 평균 순이익 증가", f"${report_row['avg_net_profit_increase_per_driver']:,.2f}")
+    c3.metric("기사 1인당 평균 매출 증가", f"${report_row['avg_revenue_increase_per_driver']:,.2f}")
+    c4.metric("총 매출 증가", f"${report_row['total_revenue_increase']:,.0f}")
+    st.caption(f"순이익 증가 임계값 ${report_row['threshold_profit_increase']:,.0f} 이상인 기사만 집계")
+
+    scope = (
+        suggestion[(suggestion["year_month"] == period) & (suggestion["expected_revenue_increase"] > 0)]
+        .sort_values("expected_revenue_increase", ascending=False)
         .reset_index(drop=True)
     )
-    call_list["rank"] = call_list.index + 1
-    call_list["current_vehicle_label"] = call_list["current_make_key"] + " " + call_list["current_model_key"]
-    call_list["recommended_vehicle_label"] = call_list["make_key"] + " " + call_list["model_key"]
-    call_list["reason_text"] = call_list.apply(reason_text, axis=1) if not call_list.empty else ""
 
-    kpi = {
-        "total_arpu_gain_usd": call_list["company_arpu_gain_usd"].sum(),
-        "target_customer_count": len(call_list),
-        "avg_driver_net_gain_usd": call_list["driver_net_gain_usd"].mean(),
-        "tier_upgrade_count": int(best["tier_upgraded"].sum()),
-        "avg_fleet_net_earnings_usd": facts["net_earnings_usd"].mean(),
-        "active_driver_count": fleet["driver_id"].nunique(),
-    }
-    return kpi, call_list, best
-
-
-@st.cache_data
-def verify_against_mart(swap: pd.DataFrame, fleet: pd.DataFrame, mart: pd.DataFrame) -> list[str]:
-    """``rollup`` 이 Gold 마트와 같은 답을 내는지 주차마다 대조한다.
-
-    마트와 같은 파라미터(기준 $0, 마트가 담은 인원수만큼)로 돌려 저장된 값과 비교한다.
-    어긋나면 재구현이 Gold 정의에서 벗어난 것이므로 화면 숫자를 믿으면 안 된다 —
-    조용히 다른 값을 보여주는 대신 화면에 띄운다.
-    """
-    drift = []
-    for week in sorted(mart["week_start"].astype(str).unique()):
-        stored = mart[mart["week_start"].astype(str) == week].sort_values("rank")
-        _, mine, _ = rollup(
-            swap[swap["week_start"].astype(str) == week],
-            fleet[fleet["week_start"].astype(str) == week],
-            0.0,
-        )
-        mine = mine.head(len(stored))
-        if list(mine["driver_id"]) != list(stored["driver_id"]):
-            drift.append(f"{week} 기사 선정")
-        elif round(mine["company_arpu_gain_usd"].sum(), 6) != round(stored["company_arpu_gain_usd"].sum(), 6):
-            drift.append(f"{week} 객단가 합계")
-    return drift
-
-
-st.set_page_config(page_title="차량 교체 이득", layout="wide")
-st.title("차량 교체 콜 리스트")
-
-kpi_mart = load("gold_mart_kpi_weekly")  # 기간 목록과 빈 데이터 확인용. 콜 리스트는 swap 에서 만든다.
-top_mart = load("gold_mart_top_customers")  # rollup 대조용
-swap = load("gold_fct_vehicle_swap_sim")
-weekly = load("gold_fct_driver_weekly")
-dim = load("gold_dim_vehicle_option")
-
-if kpi_mart.empty:
-    st.error("data/gold 가 비어 있습니다. spark/jobs/silver_to_gold/vehicle_swap/job.py 를 먼저 실행하세요.")
-    st.stop()
-
-drift = verify_against_mart(swap, weekly, top_mart)
-if drift:
-    st.error(
-        "이 화면의 집계가 Gold 마트와 어긋납니다 (" + ", ".join(drift) + "). "
-        "`rollup()` 이 `gold_mart_top_customers` 의 선정 정의에서 벗어났다는 뜻이라 아래 숫자를 믿으면 안 됩니다."
-    )
-
-grain = st.radio("집계 단위", ["주간", "월간"], horizontal=True)
-
-if grain == "월간":
-    period = st.selectbox("월", sorted(kpi_mart["month"].unique(), reverse=True))
-    column, unit, min_gain = "month", "월", MIN_MONTHLY_GAIN_USD
-    scope_weeks = kpi_mart[kpi_mart["month"] == period]["week_start"].astype(str)
-    st.caption(f"{period} — {len(scope_weeks)}개 주차 합산 ({scope_weeks.min()} ~ {scope_weeks.max()})")
-else:
-    period = st.selectbox("주차", sorted(kpi_mart["week_start"].astype(str).unique(), reverse=True))
-    # 주간에는 월 기준 이득을 씌우지 않는다 — 주간 최대 이득이 $408 수준이라 전원 탈락한다.
-    column, unit, min_gain = "week_start", "주", 0.0
-
-swap_scope = swap[swap[column].astype(str) == period]
-baseline_scope = weekly[weekly[column].astype(str) == period]
-kpi, call_list, detail_source = rollup(swap_scope, baseline_scope, min_gain)
-rule = f"기사 {unit} 이득 ≥ ${min_gain:,.0f}"
-
-listed = int(kpi["target_customer_count"])
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("회사 객단가 증가", f"${kpi['total_arpu_gain_usd']:,.0f}")
-c2.metric("대상 기사", f"{listed}명")
-c3.metric("1인당 평균 기사 이득", f"${kpi['avg_driver_net_gain_usd']:,.1f}")
-c4.metric("등급 상승", f"{int(kpi['tier_upgrade_count'])}건")
-c5.metric("운행 기사", f"{int(kpi['active_driver_count'])}명")
-st.caption(
-    f"자격 기준: {rule} + 회사 객단가 증가 > $0 + 실행 가능(is_feasible). "
-    "카드와 콜 리스트 모두 자격자 전원 기준입니다."
-)
-
-st.subheader("콜 리스트")
-st.dataframe(
-    call_list[CALL_COLUMNS].rename(
-        columns={
-            "company_arpu_gain_usd": f"회사 객단가 증가($/{unit})",
-            "driver_net_gain_usd": f"기사 이득($/{unit})",
-            "miles": f"주행거리(mile/{unit})",
-        }
-    ),
-    width="stretch",
-    hide_index=True,
-)
-
-st.subheader("기여도 분해")
-if call_list.empty:
-    st.info("이 기간에는 기사도 회사도 이득인 조합이 없습니다.")
-else:
-    driver = st.selectbox("기사", call_list["driver_id"].tolist())
-    picked = detail_source[detail_source["driver_id"] == driver]
-    if not picked.empty:
-        detail = picked.iloc[0]
-        st.bar_chart(
-            pd.DataFrame(
-                {
-                    f"USD/{unit}": [
-                        detail["gain_from_fuel_usd"],
-                        detail["gain_from_tier_usd"],
-                        -detail["cost_from_lease_usd"],
-                    ]
-                },
-                index=["연비", "등급 상승", "렌트료"],
-            )
-        )
-
-with st.expander("후보 차량 12종"):
-    st.caption("`spec_match_level` 이 MODEL 이 아니면 제원이 폴백된 값입니다.")
-    st.dataframe(
-        dim[[
-            "make_key", "model_key", "weekly_price_usd", "combined_mpg",
-            "energy_cost_per_mile_usd", "is_uber_comfort_eligible",
-            "is_lyft_extra_comfort_eligible", "spec_match_level",
-        ]],
+    st.subheader("차량 추천 리스트")
+    st.caption("매출 증가액 > $0 인 기사만 표시, 매출 증가액 내림차순. 행을 선택하면 기사 상세가 표시됩니다.")
+    display = scope[list(SUGGESTION_COLUMNS)].rename(columns=SUGGESTION_COLUMNS)
+    display = display.round(2)
+    event = st.dataframe(
+        display,
         width="stretch",
         hide_index=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        key=f"suggestion_table_{period}",
     )
 
-baseline_weeks = int(baseline_scope["baseline_week_count"].min())
-if baseline_weeks < 4:
-    st.warning(
-        f"기준선이 {baseline_weeks}주짜리입니다. 4주 중앙값이 아니라 추천이 흔들릴 수 있습니다."
-    )
+    st.subheader("기사 상세")
+    if scope.empty:
+        st.info("이 달에는 매출 증가액이 있는 추천 대상 기사가 없습니다.")
+        return
 
-st.caption(
-    f"이 화면의 집계는 `gold_mart_top_customers` 와 주차 {len(top_mart['week_start'].unique())}개에서 "
-    "대조해 일치를 확인했습니다 (같은 파라미터 — 기준 $0, 상위 20명). "
-    "카드 숫자가 마트와 다른 것은 정의가 아니라 파라미터 차이입니다."
-)
-st.caption(
-    "등급 상승 매출 프리미엄은 `estimated_service_tier`(OD 중앙값의 1.15배 이상)에서 역산한 "
-    "**상한 추정치**입니다. 실제 승급으로 매출이 이만큼 오른다는 근거가 아닙니다. "
-    f"에너지 단가 기준일: {dim['energy_price_date'].iloc[0]}"
-)
+    selected_rows = event.selection.rows if event and event.selection else []
+    if not selected_rows:
+        st.info("리스트에서 행을 클릭하면 기사 상세가 표시됩니다.")
+        return
+
+    picked = scope.iloc[selected_rows[0]]
+    driver = picked["driver_id"]
+    detail = aggregation[(aggregation["driver_id"] == driver) & (aggregation["year_month"] == period)]
+
+    d1, d2, d3 = st.columns(3)
+    d1.metric("추천 차량", f"{picked['recommended_make_key']} {picked['recommended_model_key']}")
+    d2.metric("예상 월 순이익 증가", f"${picked['expected_net_profit_increase']:,.2f}")
+    d3.metric("예상 월 매출 증가", f"${picked['expected_revenue_increase']:,.2f}")
+    st.caption(picked["recommendation_reason"])
+
+    if detail.empty:
+        st.info("`driver_aggregation` 에 이 기사·월의 운행 데이터가 없습니다.")
+        return
+
+    agg_row = detail.iloc[0]
+    st.bar_chart(hourly_ratio_frame(agg_row))
+    st.table(top_zone_frame(agg_row))
+
+    e1, e2, e3 = st.columns(3)
+    e1.metric("현재 월 순이익", f"${agg_row['monthly_net_profit']:,.2f}")
+    e2.metric("현재 월 렌트료", f"${agg_row['monthly_rental_fee']:,.2f}")
+    e3.metric("현재 월 연료비", f"${agg_row['monthly_fuel_cost']:,.2f}")
+
+
+if __name__ == "__main__":
+    render()
