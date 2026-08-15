@@ -12,24 +12,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from schema.bronze.uber_eligible_vehicles import SCHEMA
+
 from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
 
 # 데이터셋 고유 명칭
 DATASET = "uber_eligible_vehicles"
-
-SCHEMA = pa.schema(
-    [
-        ("city_slug", pa.string()),
-        ("make", pa.string()),
-        ("model", pa.string()),
-        ("min_year", pa.int16()),
-        ("products", pa.list_(pa.string())),
-        ("raw_eligibility", pa.string()),  # 모델 원문 (파싱 검증/재처리용)
-        ("collected_at", pa.timestamp("us", tz="UTC")),
-    ]
-)
 
 
 class UberEligibleVehiclesBronzeLoader(Loader):
