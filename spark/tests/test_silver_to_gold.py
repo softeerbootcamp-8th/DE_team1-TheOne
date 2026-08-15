@@ -66,6 +66,10 @@ def _trip(**overrides) -> dict:
         "pickup_datetime": datetime(2024, 3, 1, 9), "trip_miles": 10.0,
         "driver_pay": 20.0, "tips": 2.0, "PULocationID": 10, "DOLocationID": 20,
         "estimated_service_tier": "Standard", "platform_name": "Uber",
+        # lease_started_on 은 YEAR_MONTH(2024-03)보다 앞선 달, lease_ended_on 은 먼 미래로 둬서
+        # 이번 달 내내 유효한 lease(=기존 전월 계약 유지) 케이스를 기본값으로 삼는다. 전부 None인
+        # 컬럼은 Spark가 타입을 못 정해 CANNOT_DETERMINE_TYPE 로 실패하니 None 대신 sentinel을 쓴다.
+        "lease_id": "l1", "lease_started_on": date(2024, 1, 1), "lease_ended_on": date(2099, 1, 1),
     }
     row.update(overrides)
     return row

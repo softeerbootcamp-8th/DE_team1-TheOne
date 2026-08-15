@@ -68,12 +68,15 @@ def main(args_list: list[str] | None = None) -> None:
     driver_aggregation: DataFrame | None = None
     recommendation: DataFrame | None = None
     try:
+        # 3. 기사별 월간 집계
         driver_aggregation = build_driver_monthly_aggregation(
             enriched, vehicle_master, year_month, days_in_month
         ).persist()
+        # 4. 기사별 월간 차량 추천
         recommendation = build_monthly_vehicle_recommendation(
             enriched, vehicle_master, driver_aggregation, year_month, days_in_month,
         ).persist()
+        # 5. 리스 업체 월간 보고서 작성
         report: DataFrame = build_monthly_report(recommendation, year_month, args.threshold_profit_increase)
 
         outputs: dict[str, DataFrame] = {
