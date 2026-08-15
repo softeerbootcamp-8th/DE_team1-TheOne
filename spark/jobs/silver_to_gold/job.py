@@ -1,8 +1,6 @@
-"""HVFHV 기사 배정 Silver → Gold 3종 산출 CLI.
-
-입력 경로는 이미 해당 월/스냅샷으로 해석된 구체 경로를 받는다(파티션 해석은 호출부 책임 —
-``jobs/driver_assignment/silver_job.py`` 와 같은 관례). DAG 연동은 이번 범위가 아니라
-아직 없다.
+"""
+input: hvfhv_driver_trip, vehicle_master, gas_ev_price (Silver)
+output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
 
 사용 예:
     cd spark && PYTHONPATH="$(pwd):$(pwd)/.." uv run --frozen python jobs/silver_to_gold/job.py \\
@@ -18,6 +16,7 @@ import logging
 from pathlib import Path
 
 import pandas as pd
+from pyspark.sql import DataFrame
 
 from common.session import get_or_create_spark_session
 from jobs.silver_to_gold.transformer import (
@@ -39,7 +38,7 @@ def _write_csv(dataframe: pd.DataFrame, output_dir: str, dataset: str, year_mont
     return path
 
 
-def main(args_list: list[str] | None = None):
+def main(args_list: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="HVFHV 기사 배정 Silver → Gold 3종 산출")
     parser.add_argument("--trips_path", required=True, help="hvfhv_driver_trip Silver 파티션 경로")
     parser.add_argument("--vehicle_master_path", required=True, help="vehicle_master Silver 파일 경로")
@@ -57,24 +56,30 @@ def main(args_list: list[str] | None = None):
     days_in_month = calendar.monthrange(args.year, args.month)[1]
 
     spark = get_or_create_spark_session("hvfhv_silver_to_gold")
-    trips = spark.read.parquet(args.trips_path)
+    # 1. Silver 데이터 로드
+    trips: DataFrame = spark.read.parquet(args.trips_path)
     if trips.isEmpty():
         raise ValueError(f"기사 배정 운행 이력이 0건입니다: {args.trips_path}")
-    gas_ev_price = spark.read.parquet(args.gas_ev_price_path)
-    vehicle_master = spark.read.parquet(args.vehicle_master_path)
+    gas_ev_price: DataFrame = spark.read.parquet(args.gas_ev_price_path)
+    vehicle_master: DataFrame = spark.read.parquet(args.vehicle_master_path)
 
-    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master).persist()
-    driver_aggregation = recommendation = None
+    # 2. 운행 이력에 그날의 연료 가격 / 순수익 등을 붙인다.
+    enriched: DataFrame = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master).persist()
+    driver_aggregation: DataFrame | None = None
+    recommendation: DataFrame | None = None
     try:
+        # 3. 기사별 월간 집계
         driver_aggregation = build_driver_monthly_aggregation(
             enriched, vehicle_master, year_month, days_in_month
         ).persist()
+        # 4. 기사별 월간 차량 추천
         recommendation = build_monthly_vehicle_recommendation(
             enriched, vehicle_master, driver_aggregation, year_month, days_in_month,
         ).persist()
-        report = build_monthly_report(recommendation, year_month, args.threshold_profit_increase)
+        # 5. 리스 업체 월간 보고서 작성
+        report: DataFrame = build_monthly_report(recommendation, year_month, args.threshold_profit_increase)
 
-        outputs = {
+        outputs: dict[str, DataFrame] = {
             "driver_aggregation": driver_aggregation,
             "driver_car_suggestion": recommendation,
             "monthly_report": report,

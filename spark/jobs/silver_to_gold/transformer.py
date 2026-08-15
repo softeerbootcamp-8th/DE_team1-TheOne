@@ -20,9 +20,15 @@ Standard 등급 기사에게 Comfort/Extra Comfort 자격 차량을 추천할 �
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+
+from schema.gold.driver_aggregation import DriverMonthlyAggregation
+from schema.gold.driver_car_suggestion import MonthlyVehicleRecommendation
+from schema.gold.monthly_report import MonthlyReport
 
 TIME_BLOCK_LABELS = [
     "ratio_00_03", "ratio_03_06", "ratio_06_09", "ratio_09_12",
@@ -41,10 +47,12 @@ _TIER_ELIGIBILITY = {
 def _representative_vehicle_spec(vehicle_master: DataFrame) -> DataFrame:
     """(make_key, model_key) 별 대표 차량 스펙 한 행.
 
-    weekly_price_usd/fuel_type 은 같은 (vendor, make_key, model_key) 안에서 상수라
-    first() 로 충분하다. vendor 가 둘 이상이면 같은 차종이라도 업체별로 리스비가
-    갈릴 수 있어 first() 가 실행마다 다른 값을 조용히 고를 수 있다 — 그 전에 막는다
-    (scripts/synthetic_company_snapshot/snapshot.py::build_vehicle_pool 과 동일한 가드).
+    Output
+    1. fuel_type: 휘발유/전기/하이브리드
+    2. weekly_price_usd: 렌트비(USD)
+    3. combined_mpg: 연비(MPG)
+    4. combined_kwh_per_100mi: 전기차 kWh/100mi
+    5. recommended_model_year: 추천 차량 연식 — 스펙 트림 범위 중 가장 최신 연식.
     """
     vendors = [row["vendor"] for row in vehicle_master.select("vendor").distinct().collect()]
     if len(vendors) > 1:
@@ -59,6 +67,18 @@ def _representative_vehicle_spec(vehicle_master: DataFrame) -> DataFrame:
         ).alias("combined_kwh_per_100mi"),
         F.max("spec_year_max").alias("recommended_model_year"),
     )
+
+
+def _cost_per_mile():
+    """마일당 연료비. 
+    전기차(EV)는 ``ev_price * combined_kwh_per_100mi / 100``
+    (GAS/HYBRID/PHEV 등)는 ``gas_price / combined_mpg`` 
+    ``fuel_type``/``gas_price``/``ev_price``/``combined_mpg``/``combined_kwh_per_100mi``
+    컬럼이 있는 DataFrame 에 그대로 적용하는 Column 식."""
+    return F.when(
+        F.col("fuel_type") == "EV",
+        F.col("ev_price") * F.col("combined_kwh_per_100mi") / 100,
+    ).otherwise(F.col("gas_price") / F.col("combined_mpg"))
 
 
 def _eligible_vehicles(vehicle_master: DataFrame, tier: str) -> DataFrame:
@@ -113,10 +133,46 @@ def _grade_rank(column: str):
     )
 
 
+def _lease_days_in_month(year_month: str, days_in_month: int):
+    """이번 달과 (lease_started_on, lease_ended_on) 이 겹치는 일수.
+
+    ``lease_started_on``/``lease_ended_on`` 컬럼이 있는 DataFrame 에 그대로 적용하는
+    Column 식. lease_ended_on 은 배타적 상한(그 날부터 무효 — driver_assignment/
+    silver_job.py 와 동일 규칙)이라 실질 마지막 유효일은 하루 전이다. 주 단위로
+    청구되는 렌트료를, 이번 달 실제로 그 lease 가 유효했던 일수만큼만 안분하는 데 쓴다
+    — 현재 차량의 실제 렌트료와 후보 차량의 예상 렌트료 모두 이 기준을 같이 써야
+    "같은 기간"을 비교하게 된다.
+    """
+    month_start = F.to_date(F.lit(f"{year_month}-01"))
+    month_end = F.date_add(month_start, days_in_month - 1)
+    lease_end_inclusive = F.coalesce(F.date_sub(F.col("lease_ended_on"), 1), month_end)
+    return (
+        F.datediff(
+            F.least(lease_end_inclusive, month_end),
+            F.greatest(F.col("lease_started_on"), month_start),
+        )
+        + 1
+    )
+
+
 def _current_vehicle_facts(enriched: DataFrame, vehicle_master: DataFrame) -> DataFrame:
-    """기사별 현재 차량의 make/model·연비·렌트비·등급 — 추천 근거 비교의 기준선."""
-    current_vehicle = _modal(enriched, "taxi_id", "make_key", "model_key").withColumnRenamed(
-        "taxi_id", "current_taxi_id"
+    """기사별 현재 차량의 make/model·연비·렌트비·등급 — 추천 근거 비교의 기준선.
+
+    기사당 이번 달 lease_started_on 이 가장 늦은 (가장 최근) 한 건을 그대로 현재 차량으로 쓴다.
+    lease_started_on/lease_ended_on 은 build_driver_monthly_aggregation 이 월 렌트료를 실제 계약 일수로 안분하는 데 쓴다.
+    """
+    ranked = enriched.withColumn(
+        "_rank",
+        F.row_number().over(
+            Window.partitionBy("driver_id").orderBy(
+                F.col("lease_started_on").desc(), F.col("lease_id").asc()
+            )
+        ),
+    )
+    current_vehicle = ranked.filter(F.col("_rank") == 1).select(
+        "driver_id",
+        F.col("taxi_id").alias("current_taxi_id"),
+        "make_key", "model_key", "lease_started_on", "lease_ended_on",
     )
     return (
         current_vehicle
@@ -130,20 +186,18 @@ def enrich_trips_with_fuel_cost(
 ) -> DataFrame:
     """운행 이력에 현재 차량 스펙·그날 유가/전기요금·연료비·순수익을 붙인다.
 
-    연료/충전 단가: 유종차는 그날 gas_price / combined_mpg, 전기차는 그날
-    ev_price * combined_kwh_per_100mi / 100. HYBRID/PHEV/MIXED 도 combined_mpg 가
-    이미 해당 유종의 종합 연비라 유종차와 같은 공식을 쓴다(EV 만 충전 경로 분기).
+    마일당 연료비 공식은 ``_cost_per_mile`` 참조.
     """
-    current_spec = _representative_vehicle_spec(vehicle_master)
-    prices = gas_ev_price.select(
+    current_spec: DataFrame = _representative_vehicle_spec(vehicle_master)
+    prices: DataFrame = gas_ev_price.select(
         F.col("date").alias("_price_date"), "gas_price", "ev_price"
     )
-    enriched = (
+    enriched: DataFrame = (
         trips.withColumn("_pickup_date", F.to_date("pickup_datetime"))
         .join(current_spec, ["make_key", "model_key"], "left")
         .join(prices, F.col("_pickup_date") == F.col("_price_date"), "left")
     )
-    unmatched = enriched.filter(
+    unmatched: int = enriched.filter(
         F.col("combined_mpg").isNull() | F.col("gas_price").isNull()
     ).limit(1).count()
     if unmatched:
@@ -151,30 +205,11 @@ def enrich_trips_with_fuel_cost(
             "vehicle_master 또는 gas_ev_price 에 매칭되지 않는 운행 이력이 있습니다"
         )
 
-    cost_per_mile = F.when(
-        F.col("fuel_type") == "EV",
-        F.col("ev_price") * F.col("combined_kwh_per_100mi") / 100,
-    ).otherwise(F.col("gas_price") / F.col("combined_mpg"))
-
     return (
-        enriched.withColumn("_cost_per_mile", cost_per_mile)
+        enriched.withColumn("_cost_per_mile", _cost_per_mile())
         .withColumn("_fuel_cost", F.col("trip_miles") * F.col("_cost_per_mile"))
         .withColumn("_net_profit", F.col("driver_pay") + F.col("tips") - F.col("_fuel_cost"))
     )
-
-
-def _modal(enriched: DataFrame, *group_cols: str) -> DataFrame:
-    """기사(driver_id)별 ``group_cols`` 조합의 최빈값 한 행. 동률이면 사전순으로 고정."""
-    counts = enriched.groupBy("driver_id", *group_cols).agg(F.count("*").alias("_n"))
-    ranked = counts.withColumn(
-        "_rank",
-        F.row_number().over(
-            Window.partitionBy("driver_id").orderBy(
-                F.col("_n").desc(), *[F.col(c).asc() for c in group_cols]
-            )
-        ),
-    )
-    return ranked.filter(F.col("_rank") == 1).select("driver_id", *group_cols)
 
 
 def _time_block_ratios(enriched: DataFrame) -> DataFrame:
@@ -223,7 +258,11 @@ def _top_zones(enriched: DataFrame) -> DataFrame:
 def build_driver_monthly_aggregation(
     enriched: DataFrame, vehicle_master: DataFrame, year_month: str, days_in_month: int
 ) -> DataFrame:
-    """기사 1명 x 1개월 운행 패턴·연료비·순수익 집계. ``schema.gold.DriverMonthlyAggregation`` 과 컬럼 순서 일치."""
+    """기사 1명 x 1개월 운행 패턴·연료비·순수익 집계. ``schema.gold.DriverMonthlyAggregation`` 과 컬럼 순서 일치.
+
+    monthly_rental_fee: 리스가 실제 청구한 렌트료. 
+    lease_started_on/lease_ended_on 을 고려해 이번 달 중 실제 계약 일수만큼만 렌트료를 물린다.
+    """
     totals = enriched.groupBy("driver_id").agg(
         F.sum("trip_miles").alias("monthly_mileage"),
         F.sum("_fuel_cost").alias("monthly_fuel_cost"),
@@ -236,20 +275,13 @@ def build_driver_monthly_aggregation(
         .join(_top_zones(enriched), "driver_id")
         .join(current_spec, "driver_id")
         .withColumn("year_month", F.lit(year_month))
-        .withColumn("monthly_rental_fee", F.col("weekly_price_usd") * (F.lit(days_in_month) / 7.0))
+        .withColumn(
+            "monthly_rental_fee",
+            F.col("weekly_price_usd") * (_lease_days_in_month(year_month, days_in_month) / F.lit(7.0)),
+        )
         .withColumn("monthly_net_profit", F.col("_gross_net_profit") - F.col("monthly_rental_fee"))
     )
-    # top*_zone_id/top*_zone_ratio 를 (id, ratio) 순서로 인터리브
-    zone_cols = []
-    for rank in TOP_ZONE_RANKS:
-        zone_cols += [f"top{rank}_zone_id", f"top{rank}_zone_ratio"]
-    columns = [
-        "driver_id", "year_month",
-        *TIME_BLOCK_LABELS,
-        *zone_cols,
-        "current_taxi_id", "combined_mpg", "monthly_mileage", "monthly_fuel_cost",
-        "monthly_rental_fee", "monthly_net_profit",
-    ]
+    columns = [f.name for f in fields(DriverMonthlyAggregation)]
     return result.select(*columns)
 
 
@@ -322,16 +354,12 @@ def build_monthly_vehicle_recommendation(
     쓰지 않는다 — 그 차를 "추천 대상"으로 집계할지는 build_monthly_report 의 몫이고,
     여기는 항상 driver_aggregation 과 1:1 로 기사별 최선 1대를 낸다.
 
-    후보 차량 자격: 등급 구분 없이 전 차종이 누구에게나 후보다 — 아무 기사나 Comfort/Extra
-    Comfort 자격 차량으로 바꿀 수 있다고 가정한다(이번 달 그 등급을 실제로 서비스했는지는
-    안 본다).
-
     Comfort/Extra Comfort 자격 차량 후보는, 그 등급 요금을 새로 받을 수 있다는 가정의
     매출(_driver_revenue_scenarios)을 쓴다 — Standard 자격 차량 후보는 실제 매출 그대로.
     """
-    service_tier = _modal(enriched, "estimated_service_tier").withColumnRenamed(
-        "estimated_service_tier", "service_tier"
-    )
+    current_facts = _current_vehicle_facts(enriched, vehicle_master)
+    lease_dates = current_facts.select("driver_id", "lease_started_on", "lease_ended_on")
+
     daily = enriched.groupBy("driver_id", "_price_date").agg(
         F.sum("trip_miles").alias("_daily_miles"),
         F.first("gas_price").alias("gas_price"),
@@ -344,10 +372,7 @@ def build_monthly_vehicle_recommendation(
         _vehicle_groups(vehicle_master), ["make_key", "model_key"], "left"
     )
     driver_candidates = drivers.crossJoin(all_cars)
-    cost_per_mile = F.when(
-        F.col("fuel_type") == "EV",
-        F.col("ev_price") * F.col("combined_kwh_per_100mi") / 100,
-    ).otherwise(F.col("gas_price") / F.col("combined_mpg"))
+    cost_per_mile = _cost_per_mile()
     revenue_for_candidate = (
         F.when(
             F.col("uber_comfort_eligible") & F.col("lyft_extra_comfort_eligible"),
@@ -360,18 +385,22 @@ def build_monthly_vehicle_recommendation(
 
     hypothetical = (
         driver_candidates.join(daily, "driver_id")
+        .join(lease_dates, "driver_id")
         .withColumn("_daily_fuel_cost", F.col("_daily_miles") * cost_per_mile)
         .groupBy(
             "driver_id", "make_key", "model_key", "vehicle_group",
             "uber_comfort_eligible", "lyft_extra_comfort_eligible",
             "combined_mpg", "weekly_price_usd", "recommended_model_year",
+            "lease_started_on", "lease_ended_on",
         )
         .agg(F.sum("_daily_fuel_cost").alias("expected_monthly_fuel_cost"))
         .join(revenue, "driver_id")
         .withColumn("_revenue_for_candidate", revenue_for_candidate)
         .withColumn(
+            # 후보 차량도 현재 차량과 "같은 기간"(이번 달 실제 lease 유효 일수)만 렌트했다고
+            # 가정해야 아래 expected_net_profit_increase 비교가 같은 기간 기준이 된다.
             "recommended_monthly_rental_fee",
-            F.col("weekly_price_usd") * (F.lit(days_in_month) / 7.0),
+            F.col("weekly_price_usd") * (_lease_days_in_month(year_month, days_in_month) / F.lit(7.0)),
         )
         .withColumn(
             "expected_monthly_net_profit",
@@ -389,11 +418,21 @@ def build_monthly_vehicle_recommendation(
     )
     best = ranked.filter(F.col("_rank") == 1).drop("_rank")
 
-    current = _current_vehicle_facts(enriched, vehicle_master).select(
-        "driver_id",
-        F.col("combined_mpg").alias("_current_combined_mpg"),
-        F.col("weekly_price_usd").alias("_current_weekly_price_usd"),
-        F.col("vehicle_group").alias("_current_vehicle_group"),
+    current = (
+        current_facts
+        .withColumn(
+            "service_tier",
+            F.when(F.col("lyft_extra_comfort_eligible"), F.lit("Extra Comfort"))
+            .when(F.col("uber_comfort_eligible"), F.lit("Comfort"))
+            .otherwise(F.lit("Standard")),
+        )
+        .select(
+            "driver_id",
+            "service_tier",
+            F.col("combined_mpg").alias("_current_combined_mpg"),
+            F.col("weekly_price_usd").alias("_current_weekly_price_usd"),
+            F.col("vehicle_group").alias("_current_vehicle_group"),
+        )
     )
 
     reasons = [
@@ -404,7 +443,6 @@ def build_monthly_vehicle_recommendation(
 
     result = (
         best.join(current, "driver_id")
-        .join(service_tier, "driver_id")
         .join(
             driver_aggregation.select(
                 "driver_id",
@@ -430,12 +468,7 @@ def build_monthly_vehicle_recommendation(
         .withColumnRenamed("make_key", "recommended_make_key")
         .withColumnRenamed("model_key", "recommended_model_key")
     )
-    columns = [
-        "driver_id", "year_month", "service_tier",
-        "recommended_make_key", "recommended_model_key", "recommended_model_year", "recommendation_reason",
-        "combined_mpg", "recommended_monthly_rental_fee", "expected_monthly_fuel_cost",
-        "expected_monthly_net_profit", "expected_net_profit_increase", "expected_revenue_increase",
-    ]
+    columns = [f.name for f in fields(MonthlyVehicleRecommendation)]
     return result.select(*columns)
 
 
@@ -464,9 +497,5 @@ def build_monthly_report(
     return (
         summary.withColumn("year_month", F.lit(year_month))
         .withColumn("threshold_profit_increase", F.lit(threshold_profit_increase))
-        .select(
-            "year_month", "threshold_profit_increase", "recommended_driver_count",
-            "avg_net_profit_increase_per_driver", "avg_revenue_increase_per_driver",
-            "total_revenue_increase",
-        )
+        .select(*[f.name for f in fields(MonthlyReport)])
     )
