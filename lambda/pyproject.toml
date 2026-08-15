@@ -29,4 +29,4 @@ dev = ["pytest==9.1.1", "moto==5.2.2"]  # moto: AWS 모킹
 pipeline-core = { path = "../libs/pipeline_core" }
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", ".."]  # ".." 는 저장소 루트의 schema 패키지(schema.bronze.*) 참조용
