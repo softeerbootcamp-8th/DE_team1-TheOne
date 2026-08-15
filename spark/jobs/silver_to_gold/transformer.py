@@ -69,6 +69,18 @@ def _representative_vehicle_spec(vehicle_master: DataFrame) -> DataFrame:
     )
 
 
+def _cost_per_mile():
+    """마일당 연료비. 
+    전기차(EV)는 ``ev_price * combined_kwh_per_100mi / 100``
+    (GAS/HYBRID/PHEV 등)는 ``gas_price / combined_mpg`` 
+    ``fuel_type``/``gas_price``/``ev_price``/``combined_mpg``/``combined_kwh_per_100mi``
+    컬럼이 있는 DataFrame 에 그대로 적용하는 Column 식."""
+    return F.when(
+        F.col("fuel_type") == "EV",
+        F.col("ev_price") * F.col("combined_kwh_per_100mi") / 100,
+    ).otherwise(F.col("gas_price") / F.col("combined_mpg"))
+
+
 def _eligible_vehicles(vehicle_master: DataFrame, tier: str) -> DataFrame:
     """``tier`` 자격을 만족하는 차종의 대표 스펙."""
     if tier not in SERVICE_TIERS:
@@ -174,9 +186,7 @@ def enrich_trips_with_fuel_cost(
 ) -> DataFrame:
     """운행 이력에 현재 차량 스펙·그날 유가/전기요금·연료비·순수익을 붙인다.
 
-    연료/충전 단가: 
-    유종차는 그날 gas_price / combined_mpg
-    전기차는 그날 ev_price * combined_kwh_per_100mi / 100.
+    마일당 연료비 공식은 ``_cost_per_mile`` 참조.
     """
     current_spec: DataFrame = _representative_vehicle_spec(vehicle_master)
     prices: DataFrame = gas_ev_price.select(
@@ -195,13 +205,8 @@ def enrich_trips_with_fuel_cost(
             "vehicle_master 또는 gas_ev_price 에 매칭되지 않는 운행 이력이 있습니다"
         )
 
-    cost_per_mile = F.when(
-        F.col("fuel_type") == "EV",
-        F.col("ev_price") * F.col("combined_kwh_per_100mi") / 100,
-    ).otherwise(F.col("gas_price") / F.col("combined_mpg"))
-
     return (
-        enriched.withColumn("_cost_per_mile", cost_per_mile)
+        enriched.withColumn("_cost_per_mile", _cost_per_mile())
         .withColumn("_fuel_cost", F.col("trip_miles") * F.col("_cost_per_mile"))
         .withColumn("_net_profit", F.col("driver_pay") + F.col("tips") - F.col("_fuel_cost"))
     )
@@ -367,10 +372,7 @@ def build_monthly_vehicle_recommendation(
         _vehicle_groups(vehicle_master), ["make_key", "model_key"], "left"
     )
     driver_candidates = drivers.crossJoin(all_cars)
-    cost_per_mile = F.when(
-        F.col("fuel_type") == "EV",
-        F.col("ev_price") * F.col("combined_kwh_per_100mi") / 100,
-    ).otherwise(F.col("gas_price") / F.col("combined_mpg"))
+    cost_per_mile = _cost_per_mile()
     revenue_for_candidate = (
         F.when(
             F.col("uber_comfort_eligible") & F.col("lyft_extra_comfort_eligible"),
