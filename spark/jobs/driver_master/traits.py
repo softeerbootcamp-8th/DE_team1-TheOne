@@ -10,10 +10,13 @@
 """
 
 import glob
+import logging
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 # =============================================================================
 # analysis.md 실측 상수
@@ -55,6 +58,24 @@ LAST_NAMES = [
 ]
 
 
+def discover_bootstrap_months(bronze_dir: str) -> list[str]:
+    """`bronze_dir` 의 `year_month=` 파티션을 오름차순으로 모읍니다.
+
+    ISO 연월이라 이름 정렬이 곧 시간 정렬입니다.
+    """
+    months = sorted(
+        partition.name.removeprefix("year_month=")
+        for partition in Path(bronze_dir).glob("year_month=*")
+        if partition.is_dir()
+    )
+    if not months:
+        raise FileNotFoundError(
+            f"HVFHV Bronze 파티션이 없습니다: {bronze_dir}. "
+            "hvfhv_raw_to_silver DAG 를 먼저 돌리거나 --months 로 직접 지정하세요."
+        )
+    return months
+
+
 def load_bootstrap_pools(
     bronze_dir: str = "data/bronze/hvfhv",
     months: list[str] | None = None,
@@ -65,9 +86,15 @@ def load_bootstrap_pools(
 
     `analysis.md`와 동일한 유효성 필터(트립 시간/거리/기사 페이 범위)를 적용합니다.
     월별로 `sample_per_month`건만 무작위 추출해 메모리 부담을 줄입니다.
+
+    `months` 를 비우면 `bronze_dir` 에 실제로 있는 달을 씁니다. 달 목록을 상수로
+    두면 TLC 공개 지연(두 달쯤, 폭도 일정하지 않음) 탓에 그 상수를 만족하는
+    사람이 없어 기본값으로는 아무도 못 돌립니다. 대신 어떤 달을 썼는지에 따라
+    결과가 달라지므로, 고른 달을 로그로 남기고 재현이 필요하면 명시하세요.
     """
     if months is None:
-        months = [f"2024-{m:02d}" for m in range(1, 13)]
+        months = discover_bootstrap_months(bronze_dir)
+        logger.info("부트스트랩 월 자동 선택: %s", ", ".join(months))
 
     rng = np.random.default_rng(seed)
     miles_chunks: list[np.ndarray] = []
