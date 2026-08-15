@@ -11,6 +11,11 @@ import pyarrow.parquet as pq
 
 logger = logging.getLogger(__name__)
 
+# GX 는 import 시점에 문서용 레지스트리를 만들며 등록 못 한 함수를 INFO 로 209줄 남깁니다.
+# 억제는 그 import 보다 먼저 걸려야 효과가 있는데, DAG 들이 GX 를 태스크 본문에서 직접
+# import 하므로 여기(모듈 최상단)가 확실히 앞섭니다 — DAG 는 이 모듈을 최상단에서 씁니다.
+logging.getLogger("great_expectations").setLevel(logging.WARNING)
+
 _CONTAINER_ROOT = Path("/opt/airflow/project-root")
 _PROJECT_ROOT = (
     _CONTAINER_ROOT
@@ -198,9 +203,8 @@ def run_gx_validation(
     Suite 설정은 파일 저장을 거치므로 JSON으로 왕복 가능한 값을 사용합니다.
     특히 ``InSet``의 날짜 값은 DataFrame과 Expectation 모두 ISO 문자열로 맞춥니다.
     """
-    logging.getLogger("great_expectations").setLevel(logging.WARNING)
-
     # DAG import 단계에서는 GX를 불러오지 않고 Validation Task 실행 시점에만 사용합니다.
+    # (로그 억제는 모듈 최상단에서 이미 걸었습니다 — 여기서 걸면 import 보다 늦습니다.)
     import great_expectations as gx
 
     configured_dir = os.getenv("GX_DATA_DOCS_DIR")
