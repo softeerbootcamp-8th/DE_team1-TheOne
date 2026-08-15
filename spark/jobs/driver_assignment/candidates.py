@@ -27,7 +27,13 @@ from pyspark.sql.functions import (
 )
 TIME_BLOCKS = ["00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24"]
 WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
-SCORE_WEIGHTS = {"time": 0.35, "distance": 0.30, "airport": 0.20, "manhattan": 0.15}
+# 합이 1.0 이어야 preference_score 가 0~1 범위를 유지합니다.
+# tier 를 넣으면서 기존 4개를 비례 축소했습니다 (0.35/0.30/0.20/0.15 -> x0.85).
+# tier 0.15 는 실측이 아니라 가정입니다 — 근거는 preference.py 의 tier_preference 주석.
+SCORE_WEIGHTS = {
+    "time": 0.2975, "distance": 0.2550, "airport": 0.1700, "manhattan": 0.1275,
+    "tier": 0.15,
+}
 
 REQUIRED = {
     "trips": {
@@ -38,6 +44,7 @@ REQUIRED = {
     "preferences": {
         "driver_id", "active_weekdays", "preferred_time_blocks", "time_block_weights",
         "preferred_distance_miles", "airport_preference", "manhattan_preference",
+        "tier_preference",
         "target_daily_trips", "target_work_minutes", "max_deadhead_minutes",
     },
     "customers": {"customer_id", "synthetic_driver_id"},
@@ -165,6 +172,10 @@ def build_trip_candidates(
         (col("pickup_service_zone") == "Airports") | (col("dropoff_service_zone") == "Airports")
     )
     is_manhattan = (col("pickup_borough") == "Manhattan") | (col("dropoff_borough") == "Manhattan")
+    # 위 `vehicle_eligible` 필터를 통과한 뒤라 Standard 가 아닌 행은 전부 "자격이 되는
+    # 프리미엄 운행"입니다. 플랫폼별 등급명(Comfort / Extra Comfort)을 다시 나눌 필요가
+    # 없는 이유는 한 플랫폼 안에서 등급이 2개뿐이기 때문입니다.
+    is_premium = col("estimated_service_tier") != "Standard"
     result = (
         candidates.withColumn("time_score", element_at("time_block_weights", col("_time_block_index") + 1))
         .withColumn(
@@ -174,12 +185,14 @@ def build_trip_candidates(
         )
         .withColumn("airport_score", when(is_airport, col("airport_preference")).otherwise(1.0 - col("airport_preference")))
         .withColumn("manhattan_score", when(is_manhattan, col("manhattan_preference")).otherwise(1.0 - col("manhattan_preference")))
+        .withColumn("tier_score", when(is_premium, col("tier_preference")).otherwise(1.0 - col("tier_preference")))
         .withColumn(
             "preference_score",
             col("time_score") * SCORE_WEIGHTS["time"]
             + col("distance_score") * SCORE_WEIGHTS["distance"]
             + col("airport_score") * SCORE_WEIGHTS["airport"]
-            + col("manhattan_score") * SCORE_WEIGHTS["manhattan"],
+            + col("manhattan_score") * SCORE_WEIGHTS["manhattan"]
+            + col("tier_score") * SCORE_WEIGHTS["tier"],
         )
         .withColumn("tie_break", sha2(concat_ws(":", lit(seed), "trip_key", "driver_id"), 256))
         .withColumnRenamed("_candidate_taxi_id", "taxi_id")

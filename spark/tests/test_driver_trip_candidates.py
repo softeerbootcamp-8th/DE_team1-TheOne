@@ -15,7 +15,7 @@ import pytest
 from pyspark.sql.functions import array, concat, lit, slice
 
 from common.session import get_or_create_spark_session
-from jobs.driver_assignment.candidates import build_trip_candidates
+from jobs.driver_assignment.candidates import SCORE_WEIGHTS, build_trip_candidates
 @pytest.fixture(scope="module")
 def spark():
     session = get_or_create_spark_session("test_driver_trip_candidates")
@@ -35,7 +35,8 @@ def _frames(spark, *, tier="Standard", pickup_zone="Queens", bucket_size=1):
         "driver_id": "driver-1", "active_weekdays": ["MON"],
         "preferred_time_blocks": ["09-12"], "time_block_weights": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
         "preferred_distance_miles": 5.0, "airport_preference": 0.9,
-        "manhattan_preference": 0.8, "target_daily_trips": 10,
+        "manhattan_preference": 0.8, "tier_preference": 0.7,
+        "target_daily_trips": 10,
         "target_work_minutes": 480, "max_deadhead_minutes": 10,
     }])
     # 실제 회사 스냅샷은 세 테이블이 모두 `snapshot_date` 를 갖습니다. 빼놓으면
@@ -105,14 +106,34 @@ def test_프리미엄_운행은_해당_자격_차량만_후보다(spark, tier, e
     assert build_trip_candidates(*frames[:-1], bucket_size=frames[-1]).count() == 0
 
 
-def test_시간_거리_지역_선호가_점수에_반영된다(spark):
+def test_시간_거리_지역_등급_선호가_점수에_반영된다(spark):
     result = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1).first()
 
     assert result.time_score == pytest.approx(1.0)
     assert result.distance_score == pytest.approx(1.0)
     assert result.airport_score == pytest.approx(0.1)
     assert result.manhattan_score == pytest.approx(0.2)
-    assert result.preference_score == pytest.approx(0.7)
+    # 픽스처 운행이 Standard 라 등급 점수는 1 - tier_preference(0.7) 입니다.
+    assert result.tier_score == pytest.approx(0.3)
+    assert result.preference_score == pytest.approx(
+        1.0 * SCORE_WEIGHTS["time"] + 1.0 * SCORE_WEIGHTS["distance"]
+        + 0.1 * SCORE_WEIGHTS["airport"] + 0.2 * SCORE_WEIGHTS["manhattan"]
+        + 0.3 * SCORE_WEIGHTS["tier"]
+    )
+
+
+@pytest.mark.parametrize(
+    ("tier", "eligibility"),
+    [("Comfort", "uber_comfort_eligible"), ("Extra Comfort", "lyft_extra_comfort_eligible")],
+)
+def test_자격되는_프리미엄_운행은_Standard_보다_등급점수가_높다(spark, tier, eligibility):
+    """같은 기사·같은 조건이면 프리미엄 쪽 점수가 더 높아야 배정에서 우선됩니다."""
+    standard = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1).first()
+    premium = build_trip_candidates(*_frames(spark, tier=tier)[:-1], bucket_size=1).first()
+
+    assert standard.tier_score == pytest.approx(0.3)   # 1 - 0.7
+    assert premium.tier_score == pytest.approx(0.7)    # tier_preference 그대로
+    assert premium.preference_score > standard.preference_score
 
 
 def test_같은_seed는_입력_순서와_무관하게_같은_후보를_만든다(spark):

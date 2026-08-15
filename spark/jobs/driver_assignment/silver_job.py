@@ -16,7 +16,8 @@ from jobs.driver_assignment.candidates import build_trip_candidates
 # v2: 기사 선호 생성 규칙이 바뀌었습니다 (#372 — 선호 시간블록을 연속 구간으로,
 # 공차 상한 5~15분 -> 10~25분). seed 가 같아도 v1 과 다른 결과가 나오므로, 표식을
 # 올리지 않으면 두 벌의 결과를 파티션만 보고 구분할 수 없습니다.
-ASSIGNMENT_VERSION = "v2"
+# v3: 등급 선호(tier_preference)를 배정 점수에 넣었습니다 (#399). 같은 이유로 올립니다.
+ASSIGNMENT_VERSION = "v3"
 
 
 def build_driver_trip_silver(
@@ -72,7 +73,8 @@ def build_driver_trip_silver(
             col("x.make_key"), col("x.model_key"), col("x.model_year"), col("x.vehicle_group"),
             col("x.uber_comfort_eligible"), col("x.lyft_extra_comfort_eligible"),
             col("p.active_weekdays"), col("p.preferred_time_blocks"), col("p.preferred_distance_miles"),
-            col("p.airport_preference"), col("p.manhattan_preference"), col("p.target_daily_trips"),
+            col("p.airport_preference"), col("p.manhattan_preference"), col("p.tier_preference"),
+            col("p.target_daily_trips"),
             col("p.target_work_minutes"), col("p.max_deadhead_minutes"),
         )
         .withColumn("snapshot_date", lit(snapshot_date).cast("date"))

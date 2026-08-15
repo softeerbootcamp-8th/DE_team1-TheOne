@@ -50,7 +50,7 @@ def _frames(spark):
     preferences = spark.createDataFrame([{
         "driver_id": "d1", "active_weekdays": ["MON"],
         "preferred_time_blocks": ["09-12"], "preferred_distance_miles": 5.0,
-        "airport_preference": 0.2, "manhattan_preference": 0.8,
+        "airport_preference": 0.2, "manhattan_preference": 0.8, "tier_preference": 0.7,
         "target_daily_trips": 10, "target_work_minutes": 480,
         "max_deadhead_minutes": 15,
     }])
@@ -87,7 +87,9 @@ def test_배정된_trip만_모든_관계와_결합하고_계보를_기록한다(
     assert (row.make_key, row.model_key, row.model_year) == ("Toyota", "Camry", 2023)
     assert row.active_weekdays == ["MON"] and row.target_work_minutes == 480
     assert (row.year_month, row.snapshot_date, row.assignment_seed) == ("2024-03", date(2024, 3, 1), 42)
-    assert row.assignment_version == "v2"
+    assert row.assignment_version == "v3"
+    # 등급 선호도 계보로 함께 실어 사후에 어떤 값으로 배정했는지 되짚을 수 있어야 합니다.
+    assert row.tier_preference == pytest.approx(0.7)
 
 
 @pytest.mark.parametrize("violation", ["empty", "month", "mixed_month", "missing_driver", "expired"])

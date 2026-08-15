@@ -68,6 +68,7 @@ def test_선호점수와_작업한도가_허용범위다():
 
     assert result["airport_preference"].between(0, 1).all()
     assert result["manhattan_preference"].between(0, 1).all()
+    assert result["tier_preference"].between(0, 1).all()
     assert (result["target_daily_trips"] >= 1).all()
     assert result["target_work_minutes"].between(60, 720).all()
     assert result["max_deadhead_minutes"].between(10, 25).all()
