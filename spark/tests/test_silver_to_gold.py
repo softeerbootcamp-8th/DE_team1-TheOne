@@ -14,6 +14,10 @@
 11. driver_aggregation/driver_car_suggestion 출력 컬럼 순서가 schema/gold dataclass와 정확히 일치
 12. Comfort 자격 차량을 고르면 그 zone(승하차 zone 쌍)의 Comfort 요금 배수만큼 올린
     가정 매출로 순수익을 계산(가격·연비가 같아도 그 배수만으로 추천이 갈릴 수 있음)
+13. lease가 이번 달 중간에 시작하면 렌트료(현재/후보 차량 모두)를 시작일부터만 계산
+14. lease가 이번 달 중간에 끝나면(lease_ended_on은 배타적 상한) 렌트료를 종료 하루 전까지만 계산
+15. service_tier는 트립 이력 최빈값이 아니라 현재 차량의 vehicle_master 자격
+    (Comfort/Extra Comfort eligible)에서 파생. 둘 다 자격이면 Extra Comfort 우선
 """
 
 from dataclasses import fields
@@ -305,3 +309,94 @@ def test_comfort_자격_차량은_zone_요금_배수만큼_매출을_가정한�
     # net_profit(A) = 10-0.75-100 = -90.75, net_profit(Z) = 20-0.75-100 = -80.75 로 Z 승
     assert row.recommended_make_key == "Z"
     assert row.expected_monthly_net_profit == pytest.approx(-80.75)
+
+
+def test_lease가_이번_달_중간에_시작하면_렌트료를_시작일부터만_계산한다(spark):
+    vehicle_master = _vehicle_master(spark, [{
+        "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
+        "weekly_price_usd": 70.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
+    }])
+    trips = spark.createDataFrame([_trip(lease_started_on=date(2024, 3, 4))])
+    gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
+
+    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master)
+    driver_aggregation = build_driver_monthly_aggregation(enriched, vehicle_master, YEAR_MONTH, DAYS_IN_MONTH)
+    recommendation = build_monthly_vehicle_recommendation(
+        enriched, vehicle_master, driver_aggregation, YEAR_MONTH, DAYS_IN_MONTH
+    ).first()
+
+    # 이번 달(3/1~3/7, DAYS_IN_MONTH=7) 중 lease는 3/4에 시작 -> 3/4~3/7 = 4일치만 렌트료.
+    # monthly_rental_fee = recommended_monthly_rental_fee = 70.0 * (4/7) = 40.0
+    assert driver_aggregation.first().monthly_rental_fee == pytest.approx(40.0)
+    assert recommendation.recommended_monthly_rental_fee == pytest.approx(40.0)
+
+
+def test_lease가_이번_달_중간에_끝나면_렌트료를_종료_전날까지만_계산한다(spark):
+    vehicle_master = _vehicle_master(spark, [{
+        "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
+        "weekly_price_usd": 70.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
+    }])
+    trips = spark.createDataFrame([_trip(lease_ended_on=date(2024, 3, 5))])
+    gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
+
+    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master)
+    driver_aggregation = build_driver_monthly_aggregation(enriched, vehicle_master, YEAR_MONTH, DAYS_IN_MONTH)
+    recommendation = build_monthly_vehicle_recommendation(
+        enriched, vehicle_master, driver_aggregation, YEAR_MONTH, DAYS_IN_MONTH
+    ).first()
+
+    # lease_ended_on=3/5 는 배타적 상한(그 날부터 무효)이라 실제 마지막 유효일은 3/4.
+    # 3/1~3/4 = 4일치만 렌트료. monthly_rental_fee = recommended_monthly_rental_fee = 70.0 * (4/7) = 40.0
+    assert driver_aggregation.first().monthly_rental_fee == pytest.approx(40.0)
+    assert recommendation.recommended_monthly_rental_fee == pytest.approx(40.0)
+
+
+@pytest.mark.parametrize(
+    "vehicle_rows, expected_service_tier",
+    [
+        (
+            [{"make_key": "STD", "model_key": "STD", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+              "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025}],
+            "Standard",
+        ),
+        (
+            [{"make_key": "CMF", "model_key": "CMF", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+              "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
+              "platform": "uber", "product": "Comfort", "min_year": 2000}],
+            "Comfort",
+        ),
+        (
+            [{"make_key": "XCMF", "model_key": "XCMF", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+              "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
+              "platform": "lyft", "product": "Extra Comfort", "min_year": 2000}],
+            "Extra Comfort",
+        ),
+        (
+            [
+                {"make_key": "BOTH", "model_key": "BOTH", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+                 "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
+                 "platform": "uber", "product": "Comfort", "min_year": 2000},
+                {"make_key": "BOTH", "model_key": "BOTH", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+                 "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
+                 "platform": "lyft", "product": "Extra Comfort", "min_year": 2000},
+            ],
+            "Extra Comfort",
+        ),
+    ],
+    ids=["standard", "comfort_only", "extra_comfort_only", "both_eligible_extra_comfort_우선"],
+)
+def test_service_tier는_현재_차량의_vehicle_master_자격에서_파생된다(
+    spark, vehicle_rows, expected_service_tier
+):
+    vehicle_master = _vehicle_master(spark, vehicle_rows)
+    make_key, model_key = vehicle_rows[0]["make_key"], vehicle_rows[0]["model_key"]
+    trips = spark.createDataFrame([_trip(make_key=make_key, model_key=model_key)])
+    gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
+
+    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master)
+    driver_aggregation = build_driver_monthly_aggregation(enriched, vehicle_master, YEAR_MONTH, DAYS_IN_MONTH)
+    recommendation = build_monthly_vehicle_recommendation(
+        enriched, vehicle_master, driver_aggregation, YEAR_MONTH, DAYS_IN_MONTH
+    ).first()
+
+    assert recommendation.service_tier == expected_service_tier
