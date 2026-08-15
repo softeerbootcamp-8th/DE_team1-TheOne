@@ -20,9 +20,15 @@ Standard 등급 기사에게 Comfort/Extra Comfort 자격 차량을 추천할 �
 
 from __future__ import annotations
 
+from dataclasses import fields
+
 from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+
+from schema.gold.driver_aggregation import DriverMonthlyAggregation
+from schema.gold.driver_car_suggestion import MonthlyVehicleRecommendation
+from schema.gold.monthly_report import MonthlyReport
 
 TIME_BLOCK_LABELS = [
     "ratio_00_03", "ratio_03_06", "ratio_06_09", "ratio_09_12",
@@ -270,17 +276,7 @@ def build_driver_monthly_aggregation(
         )
         .withColumn("monthly_net_profit", F.col("_gross_net_profit") - F.col("monthly_rental_fee"))
     )
-    # top*_zone_id/top*_zone_ratio 를 (id, ratio) 순서로 인터리브
-    zone_cols = []
-    for rank in TOP_ZONE_RANKS:
-        zone_cols += [f"top{rank}_zone_id", f"top{rank}_zone_ratio"]
-    columns = [
-        "driver_id", "year_month",
-        *TIME_BLOCK_LABELS,
-        *zone_cols,
-        "current_taxi_id", "combined_mpg", "monthly_mileage", "monthly_fuel_cost",
-        "monthly_rental_fee", "monthly_net_profit",
-    ]
+    columns = [f.name for f in fields(DriverMonthlyAggregation)]
     return result.select(*columns)
 
 
@@ -470,12 +466,7 @@ def build_monthly_vehicle_recommendation(
         .withColumnRenamed("make_key", "recommended_make_key")
         .withColumnRenamed("model_key", "recommended_model_key")
     )
-    columns = [
-        "driver_id", "year_month", "service_tier",
-        "recommended_make_key", "recommended_model_key", "recommended_model_year", "recommendation_reason",
-        "combined_mpg", "recommended_monthly_rental_fee", "expected_monthly_fuel_cost",
-        "expected_monthly_net_profit", "expected_net_profit_increase", "expected_revenue_increase",
-    ]
+    columns = [f.name for f in fields(MonthlyVehicleRecommendation)]
     return result.select(*columns)
 
 
@@ -504,9 +495,5 @@ def build_monthly_report(
     return (
         summary.withColumn("year_month", F.lit(year_month))
         .withColumn("threshold_profit_increase", F.lit(threshold_profit_increase))
-        .select(
-            "year_month", "threshold_profit_increase", "recommended_driver_count",
-            "avg_net_profit_increase_per_driver", "avg_revenue_increase_per_driver",
-            "total_revenue_increase",
-        )
+        .select(*[f.name for f in fields(MonthlyReport)])
     )
