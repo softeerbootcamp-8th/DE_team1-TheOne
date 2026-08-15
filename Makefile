@@ -31,6 +31,7 @@ help:
 	@echo "setup-hooks  - review-engineering 검토 기록 Git 훅 설치"
 	@echo "bootstrap    - DAG 가 없는 로컬 파생 산출물 4개 생성 (있으면 건너뜀)"
 	@echo "               개별: zone-lookup / travel-times / driver-preferences / company-snapshot"
+	@echo "               FORCE=1 을 붙이면 이미 있어도 다시 만듭니다 (스키마가 바뀐 뒤)"
 
 .PHONY: lock
 lock:
@@ -110,9 +111,18 @@ setup-hooks:
 # 스크립트로 옮겨 적으면 DAG 와 로직이 갈려 로컬만 통과하는 상태가 됩니다.
 # 여기는 DAG 가 없어서 손으로 만들어야 했던 것들만 담습니다.
 #
-# 이미 있으면 건너뜁니다. 다시 만들려면 해당 산출물을 지우고 다시 부르세요.
-# 각 스크립트의 입력(Bronze·Silver)은 DAG 가 만들어 둔 것이라, 없으면 스크립트가
-# 어느 DAG 를 돌려야 하는지 알려주며 실패합니다.
+# 이미 있으면 건너뜁니다. 각 스크립트의 입력(Bronze·Silver)은 DAG 가 만들어 둔 것이라,
+# 없으면 스크립트가 어느 DAG 를 돌려야 하는지 알려주며 실패합니다.
+#
+# 건너뛰는 기준은 **파일 존재**이지 내용이 아닙니다. 그래서 산출물 스키마가 바뀐 뒤
+# `make bootstrap` 을 돌리면 낡은 파일이 그대로 남습니다. 그럴 때 FORCE=1 을 붙이세요.
+#
+#   make driver-preferences FORCE=1   # 이 산출물만 다시
+#   make bootstrap FORCE=1            # 4개 전부 다시
+#
+# 부르는 단위가 곧 범위입니다. travel-times 는 Spark 집계라 비싸므로, 하나만 바뀌었을
+# 때 bootstrap 전체에 FORCE 를 걸지 마세요.
+FORCE ?=
 
 ZONE_LOOKUP_URL  := https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv
 ZONE_LOOKUP      := data/bronze/taxi_zone_lookup.csv
@@ -131,7 +141,7 @@ bootstrap: zone-lookup travel-times driver-preferences company-snapshot
 # TLC 가 배포하는 265개 구역 정적 레퍼런스. HVFHV 원본과 같은 CloudFront 입니다.
 .PHONY: zone-lookup
 zone-lookup:
-	@if [ -f "$(ZONE_LOOKUP)" ]; then \
+	@if [ -z "$(FORCE)" ] && [ -f "$(ZONE_LOOKUP)" ]; then \
 		echo "==> skip zone-lookup (이미 있음: $(ZONE_LOOKUP))"; \
 	else \
 		echo "==> downloading $(ZONE_LOOKUP)"; \
@@ -141,7 +151,7 @@ zone-lookup:
 
 .PHONY: travel-times
 travel-times:
-	@if [ -d "$(TRAVEL_TIMES)" ]; then \
+	@if [ -z "$(FORCE)" ] && [ -d "$(TRAVEL_TIMES)" ]; then \
 		echo "==> skip travel-times (이미 있음: $(TRAVEL_TIMES))"; \
 	else \
 		echo "==> building $(TRAVEL_TIMES)"; \
@@ -151,7 +161,7 @@ travel-times:
 
 .PHONY: driver-preferences
 driver-preferences:
-	@if [ -f "$(DRIVER_PREFS)" ]; then \
+	@if [ -z "$(FORCE)" ] && [ -f "$(DRIVER_PREFS)" ]; then \
 		echo "==> skip driver-preferences (이미 있음: $(DRIVER_PREFS))"; \
 	else \
 		echo "==> building $(DRIVER_PREFS)"; \
@@ -160,7 +170,7 @@ driver-preferences:
 
 .PHONY: company-snapshot
 company-snapshot:
-	@if [ -d "$(COMPANY_SNAPSHOT)" ]; then \
+	@if [ -z "$(FORCE)" ] && [ -d "$(COMPANY_SNAPSHOT)" ]; then \
 		echo "==> skip company-snapshot (이미 있음: $(COMPANY_SNAPSHOT))"; \
 	else \
 		echo "==> building $(COMPANY_SNAPSHOT)"; \
