@@ -26,6 +26,8 @@ help:
 	@echo "tesseract    - OCR 바이너리 확인/설치 (sync 가 먼저 호출)"
 	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: <runtime>:<git-sha>)"
 	@echo "setup-hooks  - review-engineering 검토 기록 Git 훅 설치"
+	@echo "bootstrap    - DAG 가 없는 로컬 파생 산출물 4개 생성 (있으면 건너뜀)"
+	@echo "               개별: zone-lookup / travel-times / driver-preferences / company-snapshot"
 
 .PHONY: lock
 lock:
@@ -97,3 +99,67 @@ build:
 setup-hooks:
 	@git config core.hooksPath .githooks
 	@echo "==> Git review hooks enabled (.githooks)"
+
+# =============================================================================
+# bootstrap — 로컬에서 파이프라인을 돌리기 전에 있어야 하는 파생 산출물
+# =============================================================================
+# 외부 수집(HVFHV·카탈로그·자격·제원)은 DAG 가 합니다. 여기서 다시 만들지 않습니다 —
+# 스크립트로 옮겨 적으면 DAG 와 로직이 갈려 로컬만 통과하는 상태가 됩니다.
+# 여기는 DAG 가 없어서 손으로 만들어야 했던 것들만 담습니다.
+#
+# 이미 있으면 건너뜁니다. 다시 만들려면 해당 산출물을 지우고 다시 부르세요.
+# 각 스크립트의 입력(Bronze·Silver)은 DAG 가 만들어 둔 것이라, 없으면 스크립트가
+# 어느 DAG 를 돌려야 하는지 알려주며 실패합니다.
+
+ZONE_LOOKUP_URL  := https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv
+ZONE_LOOKUP      := data/bronze/taxi_zone_lookup.csv
+TRAVEL_TIMES     := data/silver/taxi_zone_travel_times
+DRIVER_PREFS     := data/bronze/driver_preferences.parquet
+COMPANY_SNAPSHOT := data/source/company
+
+# spark/ 에서 돌립니다 — 각 스크립트가 저장소 루트를 `..` 로 참조하고, `scripts` 패키지도
+# 거기 있어서입니다. VIRTUAL_ENV 를 지우는 이유는 `make test` 주석과 같습니다.
+SPARK_RUN = cd spark && env -u VIRTUAL_ENV PYTHONPATH=.. uv run --frozen python
+
+.PHONY: bootstrap
+bootstrap: zone-lookup travel-times driver-preferences company-snapshot
+	@echo "==> bootstrap 완료"
+
+# TLC 가 배포하는 265개 구역 정적 레퍼런스. HVFHV 원본과 같은 CloudFront 입니다.
+.PHONY: zone-lookup
+zone-lookup:
+	@if [ -f "$(ZONE_LOOKUP)" ]; then \
+		echo "==> skip zone-lookup (이미 있음: $(ZONE_LOOKUP))"; \
+	else \
+		echo "==> downloading $(ZONE_LOOKUP)"; \
+		mkdir -p $(dir $(ZONE_LOOKUP)); \
+		curl -fsSL $(ZONE_LOOKUP_URL) -o $(ZONE_LOOKUP) || exit 1; \
+	fi
+
+.PHONY: travel-times
+travel-times:
+	@if [ -d "$(TRAVEL_TIMES)" ]; then \
+		echo "==> skip travel-times (이미 있음: $(TRAVEL_TIMES))"; \
+	else \
+		echo "==> building $(TRAVEL_TIMES)"; \
+		$(SPARK_RUN) -m jobs.travel_times.job \
+			--trips_path ../data/silver/hvfhv --output_path ../$(TRAVEL_TIMES) || exit 1; \
+	fi
+
+.PHONY: driver-preferences
+driver-preferences:
+	@if [ -f "$(DRIVER_PREFS)" ]; then \
+		echo "==> skip driver-preferences (이미 있음: $(DRIVER_PREFS))"; \
+	else \
+		echo "==> building $(DRIVER_PREFS)"; \
+		$(SPARK_RUN) -m jobs.driver_master.preference_job || exit 1; \
+	fi
+
+.PHONY: company-snapshot
+company-snapshot:
+	@if [ -d "$(COMPANY_SNAPSHOT)" ]; then \
+		echo "==> skip company-snapshot (이미 있음: $(COMPANY_SNAPSHOT))"; \
+	else \
+		echo "==> building $(COMPANY_SNAPSHOT)"; \
+		$(SPARK_RUN) ../scripts/synthetic_company_snapshot/generate.py || exit 1; \
+	fi
