@@ -25,8 +25,9 @@ LIST_FIELDS = ["primary_distance_bands", "primary_time_blocks", "active_weekdays
 def main(args_list: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="기사 마스터 테이블 생성")
     parser.add_argument("--n_drivers", type=int, default=10_000)
-    parser.add_argument("--output_path", default="data/bronze/driver_master.csv")
-    parser.add_argument("--bronze_dir", default="data/bronze/hvfhv")
+    # 실행 위치가 spark/ 라서 저장소 루트가 한 단계 위입니다 (preference_job.py 와 같은 규칙).
+    parser.add_argument("--output_path", default="../data/bronze/driver_master.csv")
+    parser.add_argument("--bronze_dir", default="../data/bronze/hvfhv")
     parser.add_argument("--sample_per_month", type=int, default=200_000)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(
