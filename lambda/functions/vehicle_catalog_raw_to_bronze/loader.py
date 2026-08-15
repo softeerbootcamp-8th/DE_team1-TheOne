@@ -11,28 +11,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from schema.bronze.vehicle_catalog import SCHEMA
+
 from ..common import vehicle_catalog_layout as layout
 from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
-
-# vendor 는 파티션 키(vendor=)로만 남깁니다. 파일 안에 같은 이름의 컬럼을 또 두면
-# 읽을 때 파티션 값(dictionary)과 타입이 충돌합니다.
-SCHEMA = pa.schema(
-    [
-        ("make", pa.string()),
-        ("model", pa.string()),
-        ("raw_name", pa.string()),  # 사이트 표기 원문
-        ("price_usd", pa.float64()),  # 이미지 안에만 있어 현재는 항상 null
-        ("price_period", pa.string()),
-        ("image_url", pa.string()),  # 가격이 바뀌면 이 URL 이 바뀜
-        ("booking_url", pa.string()),
-        ("source_url", pa.string()),
-        ("source_html_path", pa.string()),
-        ("source_image_path", pa.string()),
-        ("collected_at", pa.timestamp("us", tz="UTC")),
-    ]
-)
 
 
 class VehicleCatalogBronzeLoader(Loader):

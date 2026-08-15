@@ -7,24 +7,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from schema.bronze.lyft_eligible_vehicles import SCHEMA
+
 from ..common import lyft_eligible_vehicles_layout as layout
 from ..common.atomic_write import atomic_write
 
 logger = logging.getLogger(__name__)
-
-SCHEMA = pa.schema(
-    [
-        ("city_slug", pa.string()),
-        ("make", pa.string()),
-        ("model", pa.string()),
-        ("min_year", pa.int16()),
-        ("products", pa.list_(pa.string())),
-        ("raw_eligibility", pa.string()),
-        ("raw_vehicle", pa.string()),
-        ("source_url", pa.string()),
-        ("collected_at", pa.timestamp("us", tz="UTC")),
-    ]
-)
 
 
 class LyftEligibleVehiclesBronzeLoader(Loader):
