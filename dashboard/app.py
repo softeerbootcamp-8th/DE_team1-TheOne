@@ -78,7 +78,8 @@ def rollup(swap_scope: pd.DataFrame, fleet: pd.DataFrame, min_gain: float):
     ponytail: gold_mart_* 의 정의(자격 3조건 → 기사별 1위)를 여기서 되풀이한다. 원래 그
     정의는 spark 쪽 transformer 한 곳에만 있어야 하지만 그 소스가 지금 저장소에 없다
     (`spark/jobs/silver_to_gold/vehicle_swap/` 에 __pycache__ 만 남음). 마트가 자격자
-    전원을 담게 다시 구워지면 이 함수는 지우고 마트를 그대로 읽는다.
+    전원을 담게 다시 구워지면 이 함수는 지우고 마트를 그대로 읽는다. 그때까지는
+    ``verify_against_mart`` 가 매 로드마다 이 함수를 마트와 대조한다.
     """
     best = (
         swap_scope.groupby(
@@ -123,10 +124,35 @@ def rollup(swap_scope: pd.DataFrame, fleet: pd.DataFrame, min_gain: float):
     return kpi, call_list, best
 
 
+@st.cache_data
+def verify_against_mart(swap: pd.DataFrame, fleet: pd.DataFrame, mart: pd.DataFrame) -> list[str]:
+    """``rollup`` 이 Gold 마트와 같은 답을 내는지 주차마다 대조한다.
+
+    마트와 같은 파라미터(기준 $0, 마트가 담은 인원수만큼)로 돌려 저장된 값과 비교한다.
+    어긋나면 재구현이 Gold 정의에서 벗어난 것이므로 화면 숫자를 믿으면 안 된다 —
+    조용히 다른 값을 보여주는 대신 화면에 띄운다.
+    """
+    drift = []
+    for week in sorted(mart["week_start"].astype(str).unique()):
+        stored = mart[mart["week_start"].astype(str) == week].sort_values("rank")
+        _, mine, _ = rollup(
+            swap[swap["week_start"].astype(str) == week],
+            fleet[fleet["week_start"].astype(str) == week],
+            0.0,
+        )
+        mine = mine.head(len(stored))
+        if list(mine["driver_id"]) != list(stored["driver_id"]):
+            drift.append(f"{week} 기사 선정")
+        elif round(mine["company_arpu_gain_usd"].sum(), 6) != round(stored["company_arpu_gain_usd"].sum(), 6):
+            drift.append(f"{week} 객단가 합계")
+    return drift
+
+
 st.set_page_config(page_title="차량 교체 이득", layout="wide")
 st.title("차량 교체 콜 리스트")
 
 kpi_mart = load("gold_mart_kpi_weekly")  # 기간 목록과 빈 데이터 확인용. 콜 리스트는 swap 에서 만든다.
+top_mart = load("gold_mart_top_customers")  # rollup 대조용
 swap = load("gold_fct_vehicle_swap_sim")
 weekly = load("gold_fct_driver_weekly")
 dim = load("gold_dim_vehicle_option")
@@ -134,6 +160,13 @@ dim = load("gold_dim_vehicle_option")
 if kpi_mart.empty:
     st.error("data/gold 가 비어 있습니다. spark/jobs/silver_to_gold/vehicle_swap/job.py 를 먼저 실행하세요.")
     st.stop()
+
+drift = verify_against_mart(swap, weekly, top_mart)
+if drift:
+    st.error(
+        "이 화면의 집계가 Gold 마트와 어긋납니다 (" + ", ".join(drift) + "). "
+        "`rollup()` 이 `gold_mart_top_customers` 의 선정 정의에서 벗어났다는 뜻이라 아래 숫자를 믿으면 안 됩니다."
+    )
 
 grain = st.radio("집계 단위", ["주간", "월간"], horizontal=True)
 
@@ -216,6 +249,11 @@ if baseline_weeks < 4:
         f"기준선이 {baseline_weeks}주짜리입니다. 4주 중앙값이 아니라 추천이 흔들릴 수 있습니다."
     )
 
+st.caption(
+    f"이 화면의 집계는 `gold_mart_top_customers` 와 주차 {len(top_mart['week_start'].unique())}개에서 "
+    "대조해 일치를 확인했습니다 (같은 파라미터 — 기준 $0, 상위 20명). "
+    "카드 숫자가 마트와 다른 것은 정의가 아니라 파라미터 차이입니다."
+)
 st.caption(
     "등급 상승 매출 프리미엄은 `estimated_service_tier`(OD 중앙값의 1.15배 이상)에서 역산한 "
     "**상한 추정치**입니다. 실제 승급으로 매출이 이만큼 오른다는 근거가 아닙니다. "

@@ -7,7 +7,7 @@
 
 import pandas as pd
 
-from app import MIN_MONTHLY_GAIN_USD, SUM_COLS, month_key, rollup
+from app import MIN_MONTHLY_GAIN_USD, SUM_COLS, month_key, rollup, verify_against_mart
 
 WEEKS = ["2025-12-29", "2026-01-05"]
 
@@ -95,6 +95,37 @@ def test_기여도가_양수인_항목만_큰_순으로_사유에_붙는다():
     swap = pd.DataFrame([swap_row("D1", "SOUL", WEEKS[0], 1000.0, tier=900.0, fuel=100.0)])
     _, call_list, _ = rollup(swap, fleet_frame(["D1"]), MIN_MONTHLY_GAIN_USD)
     assert call_list["reason_text"].iat[0] == "등급 상승 +$900.0, 연료비 절감 +$100.0"
+
+
+def mart_frame(rows):
+    """(rank, driver_id, company_arpu_gain_usd) 목록 → gold_mart_top_customers 모양."""
+    return pd.DataFrame([
+        {"week_start": WEEKS[0], "rank": rank, "driver_id": driver, "company_arpu_gain_usd": arpu}
+        for rank, driver, arpu in rows
+    ])
+
+
+def test_마트와_같은_답을_내면_대조가_조용하다():
+    swap = pd.DataFrame([
+        swap_row("D1", "SOUL", WEEKS[0], 900.0),
+        swap_row("D2", "SOUL", WEEKS[0], 100.0),
+    ])
+    fleet = fleet_frame(["D1", "D2"])
+    fleet = fleet[fleet["week_start"] == WEEKS[0]]
+    mart = mart_frame([(1, "D1", 7.0), (2, "D2", 7.0)])
+    assert verify_against_mart(swap, fleet, mart) == []
+
+
+def test_선정이_마트와_어긋나면_대조가_잡아낸다():
+    """마트는 D2 를 1위로 담았는데 rollup 은 D1 을 1위로 뽑는 상황."""
+    swap = pd.DataFrame([
+        swap_row("D1", "SOUL", WEEKS[0], 900.0),
+        swap_row("D2", "SOUL", WEEKS[0], 100.0),
+    ])
+    fleet = fleet_frame(["D1", "D2"])
+    fleet = fleet[fleet["week_start"] == WEEKS[0]]
+    mart = mart_frame([(1, "D2", 7.0), (2, "D1", 7.0)])
+    assert verify_against_mart(swap, fleet, mart) == [f"{WEEKS[0]} 기사 선정"]
 
 
 if __name__ == "__main__":
