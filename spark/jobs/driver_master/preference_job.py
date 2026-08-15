@@ -26,7 +26,7 @@ def main(args_list: list[str] | None = None) -> Path:
     parser.add_argument("--sample_per_month", type=int, default=200_000)
     parser.add_argument(
         "--months", nargs="+", default=None,
-        help="부트스트랩에 쓸 year_month 목록 (예: 2026-01). 비우면 2024년 12개월",
+        help="부트스트랩에 쓸 year_month 목록 (예: 2026-01). 비우면 Bronze 에 있는 달 전부",
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
