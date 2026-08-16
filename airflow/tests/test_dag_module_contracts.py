@@ -22,6 +22,7 @@ DAG_VARIABLES = {
     "gas_price_raw_to_bronze_dag": "gas_price_raw_to_bronze_dag",
     "hvfhv_driver_trip_silver_dag": "hvfhv_driver_trip_silver_dag",
     "hvfhv_raw_to_silver_dag": "hvfhv_dag",
+    "hvfhv_silver_to_gold_dag": "hvfhv_silver_to_gold_dag",
     "lyft_eligible_vehicles_raw_to_silver_dag": "lyft_eligible_vehicles_dag",
     "uber_eligible_vehicles_raw_to_silver_dag": "uber_eligible_vehicles_dag",
     "vehicle_catalog_raw_to_silver_dag": "vehicle_catalog_dag",
