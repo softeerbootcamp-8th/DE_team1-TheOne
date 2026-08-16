@@ -16,7 +16,7 @@ from .extractor import (
     VehicleCatalogImageExtractor,
     row_from_snapshot,
 )
-from .loader import VehicleCatalogBronzeLoader
+from .loader import build_bronze_loader
 from .snapshot import (
     VehicleCatalogHtmlSnapshotLoader,
     VehicleCatalogImageSnapshotLoader,
@@ -28,6 +28,8 @@ configure_lambda_logging()
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
+    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     collected_at = datetime.now(timezone.utc)
 
     html_result = Pipeline(
@@ -54,7 +56,9 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
             )
         )
 
-    write_result = VehicleCatalogBronzeLoader(base_dir, collected_at).write(rows)
+    write_result = build_bronze_loader(storage, base_dir, collected_at, bucket=bucket).write(
+        rows
+    )
 
     return {
         "row_count": write_result.row_count,
