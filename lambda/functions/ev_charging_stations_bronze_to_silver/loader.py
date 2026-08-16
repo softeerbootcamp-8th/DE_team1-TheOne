@@ -6,17 +6,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from schema.silver.ev_charging_price import SCHEMA
+
 from ..common.atomic_write import atomic_write
 from ..common import ev_charging_layout as layout
 
 logger = logging.getLogger(__name__)
-
-SCHEMA = pa.schema(
-    [
-        ("date", pa.date32()),
-        ("ev_price", pa.float64()),
-    ]
-)
 
 
 class EvChargingSilverLoader(Loader):

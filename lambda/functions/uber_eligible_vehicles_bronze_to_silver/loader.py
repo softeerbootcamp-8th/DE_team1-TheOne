@@ -6,23 +6,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from schema.silver.eligible_vehicles import SCHEMA
+
 from ..common.atomic_write import atomic_write
 from ..common import uber_eligible_vehicles_layout as layout
 
 logger = logging.getLogger(__name__)
-
-# 소비자가 실제로 쓰는 것만 남깁니다. 표기 원문(make/model/raw_eligibility)은
-# Bronze 에 있고 bronze_path 로 되짚을 수 있습니다.
-# city / collected_date 는 파티션 키라 컬럼으로 두지 않습니다.
-SCHEMA = pa.schema(
-    [
-        ("make_key", pa.string()),  # 조인 키 (대문자 정규화)
-        ("model_key", pa.string()),  # 조인 키 (대문자 정규화)
-        ("product", pa.string()),  # UberX / Comfort / XL ...
-        ("min_year", pa.int16()),  # 이 상품에 필요한 최소 차량 연식
-        ("bronze_path", pa.string()),  # 계보
-    ]
-)
 
 
 class UberEligibleVehiclesSilverLoader(Loader):
