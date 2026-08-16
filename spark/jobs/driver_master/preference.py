@@ -24,6 +24,7 @@ PREFERENCE_COLUMNS = [
     "preferred_distance_miles",
     "airport_preference",
     "manhattan_preference",
+    "tier_preference",
     "target_daily_trips",
     "min_daily_trips",
     "max_daily_trips",
@@ -117,6 +118,16 @@ def build_driver_preferences(
             "preferred_distance_miles": distance_miles,
             "airport_preference": float(rng.beta(2.0, 5.0)),
             "manhattan_preference": float(rng.beta(2.5, 2.5)),
+            # 자격이 될 때 프리미엄(Uber Comfort / Lyft Extra Comfort) 콜을 얼마나
+            # 우선하는가. beta(5,2) 는 평균 0.71 로 프리미엄 쪽에 치우칩니다 —
+            # 비싼 프리미엄 차를 렌트한 기사가 그 콜을 우선한다는 가정입니다.
+            #
+            # ★ 실측이 아니라 **가정**입니다. 합성 기사 행동 모델의 손잡이라 데이터에
+            #   정답이 없습니다. 이 값으로 나온 프리미엄 비중을 Gold 의 등급 전환율로
+            #   되먹이면 순환이 되니 쓰지 마세요.
+            #   없앤 것이 아니라 드러낸 것입니다 — 이 컬럼이 없던 동안에도 배정은
+            #   등급을 동등하게 봤고, 그건 0.5 를 박아둔 것과 같았습니다.
+            "tier_preference": float(rng.beta(5.0, 2.0)),
             "target_daily_trips": target_daily_trips,
             "min_daily_trips": min_daily_trips,
             "max_daily_trips": max_daily_trips,
