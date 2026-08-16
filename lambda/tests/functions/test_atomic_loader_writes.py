@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from functions.driver_master_raw_to_bronze.loader import CompanySnapshotBronzeLoader
@@ -51,6 +52,7 @@ from functions.vehicle_master_silver.loader import (
     SCHEMA as MASTER_SILVER_SCHEMA,
     VehicleMasterSilverLoader,
 )
+from schema.bronze.hvfhv import SCHEMA as HVFHV_BRONZE_SCHEMA
 
 COLLECTED_AT = datetime(2026, 8, 13, 3, tzinfo=timezone.utc)
 
@@ -82,7 +84,12 @@ def _company(root):
 
 
 def _hvfhv(root):
-    return HvfhvBronzeLoader(str(root), "2026-08", COLLECTED_AT), b"PAR1_raw"
+    sink = pa.BufferOutputStream()
+    pq.write_table(HVFHV_BRONZE_SCHEMA.empty_table(), sink)
+    return (
+        HvfhvBronzeLoader(str(root), "2026-08", COLLECTED_AT),
+        sink.getvalue().to_pybytes(),
+    )
 
 
 def _specs(root):

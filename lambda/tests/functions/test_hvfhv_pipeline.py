@@ -1,15 +1,29 @@
-"""HVFHV Raw -> Bronze 배선 검증 (네트워크 없이 Loader만 실행)."""
+"""HVFHV Raw -> Bronze 배선 검증 (네트워크 없이 Loader만 실행).
+
+손상된 Parquet은 최종 경로에 쓰지 않고, 읽을 수 있는 schema drift 원본은 보존합니다.
+"""
 
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 
 from functions.hvfhv_raw_to_bronze.handler import lambda_handler
 from functions.hvfhv_raw_to_bronze.loader import HvfhvBronzeLoader
+from schema.bronze.hvfhv import SCHEMA
 
 COLLECTED_AT = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
-CONTENT = b"PAR1_fake_parquet_bytes"
+
+
+def parquet_bytes(table: pa.Table) -> bytes:
+    sink = pa.BufferOutputStream()
+    pq.write_table(table, sink)
+    return sink.getvalue().to_pybytes()
+
+
+CONTENT = parquet_bytes(SCHEMA.empty_table())
 
 
 def test_원본_바이너리를_그대로_쓴다(tmp_path):
@@ -33,6 +47,32 @@ def test_같은_날_다시_받아도_덮어쓰지_않는다(tmp_path):
 
     assert first != second
     assert len(list(Path(first).parent.glob("*.parquet"))) == 2
+
+
+@pytest.mark.parametrize("content", [b"", b"not-parquet"])
+def test_손상된_Parquet은_기존파일을_교체하지_않는다(content, tmp_path):
+    loader = HvfhvBronzeLoader(str(tmp_path), "2026-08", COLLECTED_AT)
+    path = Path(loader.write(CONTENT).location)
+
+    with pytest.raises(ValueError, match="Parquet"):
+        loader.write(content)
+
+    assert path.read_bytes() == CONTENT
+    assert not [
+        candidate
+        for candidate in tmp_path.rglob("*")
+        if candidate.suffix == ".tmp"
+    ]
+
+
+def test_읽을수있는_schema_drift_원본은_그대로_보존한다(tmp_path):
+    content = parquet_bytes(pa.table({"new_column": ["value"]}))
+
+    result = HvfhvBronzeLoader(
+        str(tmp_path), "2026-08", COLLECTED_AT
+    ).write(content)
+
+    assert Path(result.location).read_bytes() == content
 
 
 @pytest.mark.parametrize(
