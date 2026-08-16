@@ -11,6 +11,7 @@ from pipeline_core.loader import Loader, WriteResult
 
 from schema.bronze.hvfhv import LEGACY_SCHEMA, SCHEMA
 
+from ..common.atomic_write import atomic_write
 from ..common.schema_validator import validate_parquet_schema
 from ..common.slack_notifier import SlackNotifier
 
@@ -60,11 +61,10 @@ class HvfhvBronzeLoader(Loader):
         partition.mkdir(parents=True, exist_ok=True)
         path = partition / f"{self._collected_at:%Y%m%dT%H%M%SZ}.parquet"
 
-        # 전달받은 원본 bytes 내용을 파싱 없이 파일로 직접 씁니다.
-        path.write_bytes(data)
+        # 전달받은 원본 bytes 내용을 파싱 없이 파일 단위로 원자적 교체합니다.
+        atomic_write(path, lambda temporary: temporary.write_bytes(data))
 
         logger.info("bronze_load done path=%s bytes=%d", path, len(data))
         # 원본 파일을 그대로 쓰므로 행 수를 세려면 parquet 을 열어야 합니다.
         # Bronze 는 원본 보존이 목적이라 파일 1개를 1로 셉니다.
         return WriteResult(location=str(path), row_count=1)
-

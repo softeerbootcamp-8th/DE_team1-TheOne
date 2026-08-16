@@ -1,4 +1,4 @@
-"""HVFHV를 제외한 Loader의 파일 단위 원자적 교체를 검증합니다."""
+"""Loader의 파일 단위 원자적 교체를 검증합니다."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +18,7 @@ from functions.fueleconomy_vehicle_specs_bronze_to_silver.loader import (
 from functions.fueleconomy_vehicle_specs_raw_to_bronze.loader import (
     VehicleSpecsBronzeLoader,
 )
+from functions.hvfhv_raw_to_bronze.loader import HvfhvBronzeLoader
 from functions.lyft_eligible_vehicles_raw_to_bronze.loader import (
     SCHEMA as LYFT_BRONZE_SCHEMA,
     LyftEligibleVehiclesBronzeLoader,
@@ -80,6 +81,10 @@ def _company(root):
     ), {"customer": pa.table({"customer_id": ["c1"]})}
 
 
+def _hvfhv(root):
+    return HvfhvBronzeLoader(str(root), "2026-08", COLLECTED_AT), b"PAR1_raw"
+
+
 def _specs(root):
     return VehicleSpecsBronzeLoader(str(root), COLLECTED_AT), [
         {"source": "fueleconomy.gov", "id": "1", "collected_at": COLLECTED_AT}
@@ -109,7 +114,9 @@ def _catalog(root):
 
 
 @pytest.mark.parametrize(
-    "factory", [_company, _specs, _lyft, _uber, _catalog], ids=lambda fn: fn.__name__
+    "factory",
+    [_company, _hvfhv, _specs, _lyft, _uber, _catalog],
+    ids=lambda fn: fn.__name__,
 )
 def test_Raw_Bronze_교체실패는_기존파일을_보존하고_tmp를_정리한다(
     factory, tmp_path, monkeypatch
