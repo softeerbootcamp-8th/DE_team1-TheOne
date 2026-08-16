@@ -58,15 +58,15 @@ default_args = {
     },
 )
 def gas_ev_price_bronze_to_silver_pipeline():
-    completeness_checked = check_month_completeness_task()
+    completeness_checked = check_month_completeness_task.override(retries=0)()
     gas_result = gas_bronze_to_silver_task()
-    gas_validated = validate_gas_silver_task(gas_result)
+    gas_validated = validate_gas_silver_task.override(retries=0)(gas_result)
     ev_result = ev_bronze_to_silver_task()
-    ev_validated = validate_ev_silver_task(ev_result)
+    ev_validated = validate_ev_silver_task.override(retries=0)(ev_result)
     completeness_checked >> [gas_result, ev_result]
     integrated_result = integrate_silver_task(gas_result, ev_result)
     [gas_validated, ev_validated] >> integrated_result
-    validate_integrated_silver_task(integrated_result)
+    validate_integrated_silver_task.override(retries=0)(integrated_result)
 
 
 gas_ev_price_bronze_to_silver_dag = gas_ev_price_bronze_to_silver_pipeline()

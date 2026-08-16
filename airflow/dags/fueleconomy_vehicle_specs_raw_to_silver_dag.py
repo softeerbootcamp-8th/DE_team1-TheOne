@@ -61,11 +61,15 @@ default_args = {
     },
 )
 def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
-    raw_result = raw_to_bronze_task()
-    bronze_checked = validate_bronze_task(raw_result)
+    raw_result = raw_to_bronze_task.override(
+        retries=2,
+        retry_delay=timedelta(minutes=5),
+        retry_exponential_backoff=True,
+    )()
+    bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     silver_result = bronze_to_silver_task(raw_result)
     bronze_checked >> silver_result
-    validate_silver_task(silver_result)
+    validate_silver_task.override(retries=0)(silver_result)
 
 
 fueleconomy_vehicle_specs_dag = fueleconomy_vehicle_specs_raw_to_silver_pipeline()

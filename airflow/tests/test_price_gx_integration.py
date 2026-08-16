@@ -7,7 +7,7 @@
 
 import importlib
 import json
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -106,7 +106,6 @@ def _run_raw_dag(case_name, result, monkeypatch, callback):
     upstream = dag.get_task(upstream_id)
     validation = dag.get_task(validation_id)
     monkeypatch.setattr(upstream, "python_callable", lambda **_: result)
-    monkeypatch.setattr(validation, "retry_delay", timedelta(0))
     monkeypatch.setattr(validation, "on_failure_callback", [callback])
     run = dag.test(logical_date=datetime(2026, 8, 12, tzinfo=timezone.utc))
     instances = {instance.task_id: instance for instance in run.get_task_instances()}
@@ -131,7 +130,7 @@ def test_Raw_Bronze_정상_데이터는_적재와_GX가_성공한다(
 
 
 @pytest.mark.parametrize("case_name", RAW_CASES)
-def test_Raw_Bronze_GX_실패는_재시도와_콜백으로_이어진다(
+def test_Raw_Bronze_GX_실패는_재시도없이_콜백으로_이어진다(
     case_name, tmp_path, monkeypatch, caplog
 ):
     module, dag, upstream_id, validation_id, expectation, column = RAW_CASES[
@@ -151,7 +150,7 @@ def test_Raw_Bronze_GX_실패는_재시도와_콜백으로_이어진다(
     assert run.state == "failed"
     assert instances[upstream_id].state == "success"
     assert instances[validation_id].state == "failed"
-    assert instances[validation_id].try_number == 2
+    assert instances[validation_id].try_number == 1
     assert callbacks == [validation_id]
     assert f"expectation={expectation}" in caplog.text
     assert f"column={column}" in caplog.text
@@ -226,13 +225,6 @@ def _prepare_silver_dag(root, monkeypatch, invalid_layer=None, callback=None):
             lambda *_, **__: integrated_result,
         )
 
-    for task_id in (
-        "validate_gas_silver",
-        "validate_ev_silver",
-        "validate_integrated_silver",
-    ):
-        validation = dag.get_task(task_id)
-        monkeypatch.setattr(validation, "retry_delay", timedelta(0))
     if callback and invalid_layer:
         monkeypatch.setattr(
             dag.get_task(f"validate_{invalid_layer}"),
@@ -266,7 +258,7 @@ def test_통합_Silver_DAG의_7개_Task가_모두_성공한다(tmp_path, monkeyp
         ),
     ],
 )
-def test_통합_Silver_GX_실패는_재시도후_DAG를_실패시킨다(
+def test_통합_Silver_GX_실패는_재시도없이_DAG를_실패시킨다(
     invalid_layer, expectation, column, tmp_path, monkeypatch, caplog
 ):
     callbacks = []
@@ -285,7 +277,7 @@ def test_통합_Silver_GX_실패는_재시도후_DAG를_실패시킨다(
 
     assert run.state == "failed"
     assert instances[validation_id].state == "failed"
-    assert instances[validation_id].try_number == 2
+    assert instances[validation_id].try_number == 1
     assert callbacks == [validation_id]
     assert f"gx_validation failed layer={invalid_layer}" in caplog.text
     assert f"expectation={expectation}" in caplog.text

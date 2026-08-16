@@ -2,12 +2,13 @@
 
 1. DAG 파일에는 단 하나의 ``@dag`` 팩토리만 정의
 2. 누락됐던 7개 cron schedule 유지
-3. 모든 task의 retry 횟수와 delay 유지
+3. 모든 task의 수집·변환·검증별 retry 정책 유지
 4. Vehicle Master와 Gas/EV의 핵심 task 의존성 유지
 """
 
 import ast
 import importlib
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -39,62 +40,70 @@ SCHEDULES = {
     "uber_eligible_vehicles_raw_to_silver_dag": "0 5 * * 1",
 }
 
-RETRY_DELAYS_IN_MINUTES = {
+RETRY_CONTRACTS = {
     "ev_charging_price_raw_to_bronze_pipeline": {
-        "raw_to_bronze": 10,
-        "validate_bronze": 10,
+        "collection": {"raw_to_bronze"},
+        "transform": {},
+        "validation": {"validate_bronze"},
     },
     "fueleconomy_vehicle_specs_raw_to_silver_pipeline": {
-        "raw_to_bronze": 15,
-        "validate_bronze": 10,
-        "bronze_to_silver": 15,
-        "validate_silver": 10,
+        "collection": {"raw_to_bronze"},
+        "transform": {"bronze_to_silver": 15},
+        "validation": {"validate_bronze", "validate_silver"},
     },
     "gas_ev_price_bronze_to_silver_pipeline": {
-        "check_month_completeness": 10,
-        "gas_bronze_to_silver": 10,
-        "validate_gas_silver": 10,
-        "ev_bronze_to_silver": 10,
-        "validate_ev_silver": 10,
-        "integrate_silver": 10,
-        "validate_integrated_silver": 10,
+        "collection": set(),
+        "transform": {
+            "gas_bronze_to_silver": 10,
+            "ev_bronze_to_silver": 10,
+            "integrate_silver": 10,
+        },
+        "validation": {
+            "check_month_completeness",
+            "validate_gas_silver",
+            "validate_ev_silver",
+            "validate_integrated_silver",
+        },
     },
     "gas_price_raw_to_bronze_pipeline": {
-        "raw_to_bronze": 10,
-        "validate_bronze": 10,
+        "collection": {"raw_to_bronze"},
+        "transform": {},
+        "validation": {"validate_bronze"},
     },
     "hvfhv_driver_trip_silver_pipeline": {
-        "validate_inputs": 30,
-        "build_driver_trip_silver": 30,
-        "validate_silver": 30,
+        "collection": set(),
+        "transform": {"build_driver_trip_silver": 30},
+        "validation": {"validate_inputs", "validate_silver"},
     },
     "hvfhv_raw_to_silver_pipeline": {
-        "raw_to_bronze": 30,
-        "validate_bronze": 10,
-        "bronze_to_silver": 30,
-        "validate_silver": 10,
+        "collection": {"raw_to_bronze"},
+        "transform": {"bronze_to_silver": 30},
+        "validation": {"validate_bronze", "validate_silver"},
+    },
+    "hvfhv_silver_to_gold_pipeline": {
+        "collection": set(),
+        "transform": {"build_gold": 10},
+        "validation": {"validate_inputs", "validate_gold"},
     },
     "lyft_eligible_vehicles_raw_to_silver_pipeline": {
-        "raw_to_bronze": 15,
-        "validate_bronze": 10,
-        "bronze_to_silver": 15,
-        "validate_silver": 10,
+        "collection": {"raw_to_bronze"},
+        "transform": {"bronze_to_silver": 15},
+        "validation": {"validate_bronze", "validate_silver"},
     },
     "uber_eligible_vehicles_raw_to_silver_pipeline": {
-        "raw_to_bronze": 15,
-        "validate_bronze": 10,
-        "bronze_to_silver": 15,
-        "validate_silver": 10,
+        "collection": {"raw_to_bronze"},
+        "transform": {"bronze_to_silver": 15},
+        "validation": {"validate_bronze", "validate_silver"},
     },
     "vehicle_catalog_raw_to_silver_pipeline": {
-        "raw_to_bronze": 30,
-        "validate_bronze": 10,
-        "bronze_to_silver": 30,
-        "validate_silver": 10,
+        "collection": {"raw_to_bronze"},
+        "transform": {"bronze_to_silver": 30},
+        "validation": {"validate_bronze", "validate_silver"},
     },
     "vehicle_master_silver_pipeline": {
-        "build_vehicle_master": 15,
-        "validate_silver": 10,
+        "collection": set(),
+        "transform": {"build_vehicle_master": 15},
+        "validation": {"validate_silver"},
     },
 }
 
@@ -144,10 +153,10 @@ def test_DAG_동시실행과_catchup_계약은_분리_전과_같다(
 
 
 @pytest.mark.parametrize(
-    ("dag_id", "expected_delays"),
-    RETRY_DELAYS_IN_MINUTES.items(),
+    ("dag_id", "contract"),
+    RETRY_CONTRACTS.items(),
 )
-def test_모든_task의_retry_계약은_분리_전과_같다(dag_id, expected_delays):
+def test_모든_task는_장애유형에_맞는_retry_정책을_쓴다(dag_id, contract):
     dags = {
         dag.dag_id: dag
         for module_name, dag_variable in DAG_VARIABLES.items()
@@ -157,11 +166,26 @@ def test_모든_task의_retry_계약은_분리_전과_같다(dag_id, expected_de
     }
 
     dag = dags[dag_id]
-    assert {task.task_id for task in dag.tasks} == set(expected_delays)
-    for task_id, expected_delay in expected_delays.items():
+    expected_task_ids = (
+        contract["collection"]
+        | set(contract["transform"])
+        | contract["validation"]
+    )
+    assert {task.task_id for task in dag.tasks} == expected_task_ids
+
+    for task_id in contract["collection"]:
+        task = dag.get_task(task_id)
+        assert task.retries == 2
+        assert task.retry_delay == timedelta(minutes=5)
+        assert task.retry_exponential_backoff is True
+
+    for task_id, expected_delay in contract["transform"].items():
         task = dag.get_task(task_id)
         assert task.retries == 1
         assert task.retry_delay.total_seconds() == expected_delay * 60
+
+    for task_id in contract["validation"]:
+        assert dag.get_task(task_id).retries == 0
 
 
 def test_Vehicle_Master_DAG의_공개_계약을_유지한다():

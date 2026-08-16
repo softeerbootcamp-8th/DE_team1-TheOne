@@ -72,8 +72,8 @@ def driver_trip_pipeline():
         },
     )
 
-    result = validate_inputs_task()
-    result >> build >> validate_silver_task()
+    result = validate_inputs_task.override(retries=0)()
+    result >> build >> validate_silver_task.override(retries=0)()
 
 
 hvfhv_driver_trip_silver_dag = driver_trip_pipeline()

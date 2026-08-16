@@ -41,11 +41,9 @@ validate_bronze = DAG.get_task("validate_bronze").python_callable
 validate_silver = DAG.get_task("validate_silver").python_callable
 
 
-def test_Validation_Task에_재시도와_실패_콜백이_연결된다():
+def test_Validation_Task에_Slack_실패_콜백이_연결된다():
     for task_id in ("validate_bronze", "validate_silver"):
         validation_task = DAG.get_task(task_id)
-        assert validation_task.retries == 1
-        assert validation_task.retry_delay == timedelta(minutes=10)
         assert dag_module.slack_failure_callback in validation_task.on_failure_callback
 
 

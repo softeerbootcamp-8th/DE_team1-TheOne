@@ -42,7 +42,12 @@ default_args = {
     tags=["ev_charging", "raw", "bronze", "lambda"],
 )
 def ev_charging_price_raw_to_bronze_pipeline():
-    validate_bronze_task(raw_to_bronze_task())
+    raw_result = raw_to_bronze_task.override(
+        retries=2,
+        retry_delay=timedelta(minutes=5),
+        retry_exponential_backoff=True,
+    )()
+    validate_bronze_task.override(retries=0)(raw_result)
 
 
 ev_charging_price_raw_to_bronze_dag = ev_charging_price_raw_to_bronze_pipeline()

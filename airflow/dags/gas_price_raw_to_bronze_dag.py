@@ -35,7 +35,12 @@ default_args = {
     tags=["gas_price", "raw", "bronze", "lambda"],
 )
 def gas_price_raw_to_bronze_pipeline():
-    validate_bronze_task(raw_to_bronze_task())
+    raw_result = raw_to_bronze_task.override(
+        retries=2,
+        retry_delay=timedelta(minutes=5),
+        retry_exponential_backoff=True,
+    )()
+    validate_bronze_task.override(retries=0)(raw_result)
 
 
 gas_price_raw_to_bronze_dag = gas_price_raw_to_bronze_pipeline()

@@ -82,7 +82,9 @@ def hvfhv_silver_to_gold_pipeline():
         },
     )
 
-    validate_inputs_task() >> build >> validate_gold_task()
+    validate_inputs_task.override(retries=0)() >> build >> validate_gold_task.override(
+        retries=0
+    )()
 
 
 # 다른 DAG 와 같은 규칙 — 팩토리 호출 결과를 모듈 속성으로 노출합니다.

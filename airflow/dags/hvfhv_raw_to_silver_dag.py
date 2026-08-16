@@ -85,11 +85,15 @@ def hvfhv_raw_to_silver_pipeline():
         },
     )
 
-    raw_result = raw_to_bronze_task()
-    bronze_checked = validate_bronze_task(raw_result)
+    raw_result = raw_to_bronze_task.override(
+        retries=2,
+        retry_delay=timedelta(minutes=5),
+        retry_exponential_backoff=True,
+    )()
+    bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     bronze_checked >> bronze_to_silver_task
 
-    silver_checked = validate_silver_task(raw_result)
+    silver_checked = validate_silver_task.override(retries=0)(raw_result)
     bronze_to_silver_task >> silver_checked
 
 
