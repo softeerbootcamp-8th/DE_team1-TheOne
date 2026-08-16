@@ -43,6 +43,14 @@ def bronze_file(base_dir: str, city: str, collected_at: datetime) -> Path:
     return partition / f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
 
 
+def bronze_key(city: str, collected_at: datetime) -> str:
+    """S3 bronze key. bronze_file()과 같은 파티션 규칙, base_dir 대신 bronze/ prefix."""
+    return (
+        f"bronze/{DATASET}/{DATE_PARTITION_KEY}={collected_at:%Y-%m-%d}/"
+        f"{CITY_PARTITION_KEY}={city}/{collected_at:%Y%m%dT%H%M%SZ}.parquet"
+    )
+
+
 def silver_file(base_dir: str, collected_date: date, city: str) -> Path:
     """Silver 는 재실행하면 덮어씁니다. 그래서 파일명이 고정입니다."""
     partition = city_partition(base_dir, collected_date.isoformat(), city)
