@@ -19,6 +19,7 @@ import pytest
 from airflow.exceptions import ParamValidationError
 
 from dags import gas_ev_price_bronze_to_silver_dag as dag_module
+from scripts.gas_ev_price_bronze_to_silver import tasks as task_module
 
 gas_layout = importlib.import_module("lambda.functions.common.gas_price_layout")
 ev_layout = importlib.import_module("lambda.functions.common.ev_charging_layout")
@@ -109,11 +110,11 @@ def test_dag는_7개_task를_완결성_검사후_통합_순서로_연결한다()
     ],
 )
 def test_직전_완료_월을_계산한다(interval_end, expected):
-    assert dag_module.previous_month(interval_end) == expected
+    assert task_module.previous_month(interval_end) == expected
 
 
 def test_수동_collected_month가_실행시점보다_우선한다():
-    assert dag_module.target_month(
+    assert task_module.target_month(
         {
             "params": {"collected_month": "2026-05"},
             "data_interval_end": datetime(2026, 8, 1, tzinfo=timezone.utc),
@@ -143,7 +144,7 @@ def test_월_완결성_param은_0과_1_외의_값을_거부한다(value):
     [("2025-02", 28), ("2024-02", 29), ("2026-04", 30), ("2026-07", 31)],
 )
 def test_실제_월_일수로_Gas_EV_Bronze를_확인한다(tmp_path, month, expected_days):
-    missing = dag_module.find_missing_bronze_dates(str(tmp_path), month)
+    missing = task_module.find_missing_bronze_dates(str(tmp_path), month)
 
     assert len(missing["gas_price"]) == expected_days
     assert len(missing["ev_charging_price"]) == expected_days
@@ -152,7 +153,7 @@ def test_실제_월_일수로_Gas_EV_Bronze를_확인한다(tmp_path, month, exp
 def test_완결된_월은_누락일이_없다(tmp_path):
     write_monthly_bronze(tmp_path, "2026-07")
 
-    assert dag_module.find_missing_bronze_dates(str(tmp_path), "2026-07") == {
+    assert task_module.find_missing_bronze_dates(str(tmp_path), "2026-07") == {
         "gas_price": [],
         "ev_charging_price": [],
     }
@@ -164,7 +165,7 @@ def test_운영_모드는_누락일이_있으면_실패한다(tmp_path, monkeypa
         "2026-07",
         {"gas": {"2026-07-03"}, "ev": {"2026-07-18"}},
     )
-    monkeypatch.setattr(dag_module, "BRONZE_DIR", str(tmp_path))
+    monkeypatch.setattr(task_module, "BRONZE_DIR", str(tmp_path))
 
     with pytest.raises(ValueError, match="gas_price=2026-07-03.*ev_charging_price=2026-07-18"):
         DAG.get_task("check_month_completeness").python_callable(
@@ -178,7 +179,7 @@ def test_테스트_모드는_누락일을_경고하고_계속한다(tmp_path, mo
         "2026-07",
         {"gas": {"2026-07-03"}, "ev": {"2026-07-18"}},
     )
-    monkeypatch.setattr(dag_module, "BRONZE_DIR", str(tmp_path))
+    monkeypatch.setattr(task_module, "BRONZE_DIR", str(tmp_path))
 
     DAG.get_task("check_month_completeness").python_callable(
         params={"collected_month": "2026-07", "require_complete_month": 0}
@@ -203,7 +204,7 @@ def test_Gas와_EV_lambda에_같은_월을_전달한다(monkeypatch):
 
         return handler
 
-    monkeypatch.setattr(dag_module, "lambda_handler_for", fake_handler_for)
+    monkeypatch.setattr(task_module, "lambda_handler_for", fake_handler_for)
     context = {
         "params": {"collected_month": None},
         "data_interval_end": datetime(2026, 8, 1, tzinfo=timezone.utc),
@@ -215,7 +216,7 @@ def test_Gas와_EV_lambda에_같은_월을_전달한다(monkeypatch):
 
 
 def test_같은_날짜_집합을_날짜순으로_통합한다():
-    combined = dag_module.combine_price_tables(
+    combined = task_module.combine_price_tables(
         gas_table(
             {"date": date(2026, 7, 2), "gas_price": 3.2},
             {"date": date(2026, 7, 1), "gas_price": 3.1},
@@ -226,7 +227,7 @@ def test_같은_날짜_집합을_날짜순으로_통합한다():
         ),
     )
 
-    assert combined.schema == dag_module.INTEGRATED_SCHEMA
+    assert combined.schema == task_module.INTEGRATED_SCHEMA
     assert combined.to_pylist() == [
         {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3},
         {"date": date(2026, 7, 2), "gas_price": 3.2, "ev_price": 0.4},
@@ -235,7 +236,7 @@ def test_같은_날짜_집합을_날짜순으로_통합한다():
 
 def test_두_silver의_날짜_집합이_다르면_거부한다():
     with pytest.raises(ValueError, match="날짜 집합"):
-        dag_module.combine_price_tables(
+        task_module.combine_price_tables(
             gas_table({"date": date(2026, 7, 1), "gas_price": 3.1}),
             ev_table({"date": date(2026, 7, 2), "ev_price": 0.3}),
         )
@@ -243,7 +244,7 @@ def test_두_silver의_날짜_집합이_다르면_거부한다():
 
 def test_원천_silver에_중복_날짜가_있으면_거부한다():
     with pytest.raises(ValueError, match="중복 날짜"):
-        dag_module.combine_price_tables(
+        task_module.combine_price_tables(
             gas_table(
                 {"date": date(2026, 7, 1), "gas_price": 3.1},
                 {"date": date(2026, 7, 1), "gas_price": 3.2},
@@ -253,7 +254,7 @@ def test_원천_silver에_중복_날짜가_있으면_거부한다():
 
 
 def test_통합_task는_월별_고정_파일을_교체한다(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "SILVER_DIR", str(tmp_path))
+    monkeypatch.setattr(task_module, "SILVER_DIR", str(tmp_path))
     gas_path, ev_path = write_sources(
         tmp_path,
         [{"date": date(2026, 7, 1), "gas_price": 3.1}],
@@ -266,7 +267,7 @@ def test_통합_task는_월별_고정_파일을_교체한다(tmp_path, monkeypat
         ev_table({"date": date(2026, 7, 1), "ev_price": 0.4}), ev_path
     )
     second = integrate(result(gas_path, 1), result(ev_path, 1))
-    path = dag_module.integrated_silver_file(str(tmp_path), "2026-07")
+    path = task_module.integrated_silver_file(str(tmp_path), "2026-07")
 
     assert first["locations"] == second["locations"] == [str(path)]
     assert list(path.parent.glob("*.parquet")) == [path]

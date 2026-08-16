@@ -11,9 +11,9 @@ from datetime import datetime, timezone
 import pytest
 
 from dags import ev_charging_price_raw_to_bronze_dag as dag_module
+from scripts.ev_charging_price_raw_to_bronze import tasks as task_module
 
-# DAG 모듈이 import 될 때 저장소 루트를 sys.path 에 넣습니다. 그래서 이 import 는
-# 위 import 보다 뒤에 있어야 합니다 (`lambda` 는 예약어라 import 문을 못 씁니다).
+# `lambda` 는 예약어라 일반 import 문 대신 동적으로 불러옵니다.
 layout = importlib.import_module("lambda.functions.common.ev_charging_layout")
 
 DAG = dag_module.ev_charging_price_raw_to_bronze_dag
@@ -47,7 +47,7 @@ def payload_of(stations: list[dict], total_results: int | None = None) -> dict:
 @pytest.fixture
 def bronze_dir(tmp_path, monkeypatch):
     """검증 태스크가 보는 Bronze 루트를 임시 디렉터리로 돌립니다."""
-    monkeypatch.setattr(dag_module, "BRONZE_DIR", str(tmp_path))
+    monkeypatch.setattr(task_module, "BRONZE_DIR", str(tmp_path))
     return str(tmp_path)
 
 

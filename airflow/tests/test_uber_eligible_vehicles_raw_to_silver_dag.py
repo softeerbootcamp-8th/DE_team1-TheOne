@@ -26,6 +26,7 @@ Lyft DAG 와 event 계약이 같습니다(#228 에서 `base_dir` 로 통일). �
 import pytest
 
 from dags import uber_eligible_vehicles_raw_to_silver_dag as dag_module
+from scripts.uber_eligible_vehicles_raw_to_silver import tasks as task_module
 
 DAG = dag_module.uber_eligible_vehicles_dag
 DAG_ID = "uber_eligible_vehicles_raw_to_silver_pipeline"
@@ -51,7 +52,7 @@ def events(monkeypatch):
 
         return handler
 
-    monkeypatch.setattr(dag_module, "lambda_handler_for", fake_lambda_handler_for)
+    monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 

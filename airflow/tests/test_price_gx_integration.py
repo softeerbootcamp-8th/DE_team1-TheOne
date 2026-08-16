@@ -16,6 +16,9 @@ import pytest
 from dags import ev_charging_price_raw_to_bronze_dag as ev_bronze_module
 from dags import gas_ev_price_bronze_to_silver_dag as silver_module
 from dags import gas_price_raw_to_bronze_dag as gas_bronze_module
+from scripts.ev_charging_price_raw_to_bronze import tasks as ev_bronze_tasks
+from scripts.gas_ev_price_bronze_to_silver import tasks as silver_tasks
+from scripts.gas_price_raw_to_bronze import tasks as gas_bronze_tasks
 
 ev_layout = importlib.import_module("lambda.functions.common.ev_charging_layout")
 gas_layout = importlib.import_module("lambda.functions.common.gas_price_layout")
@@ -48,7 +51,7 @@ RAW_CASES = {
 
 def _raw_result(case_name: str, root, invalid: bool, monkeypatch) -> dict:
     if case_name == "ev_bronze":
-        monkeypatch.setattr(ev_bronze_module, "BRONZE_DIR", str(root))
+        monkeypatch.setattr(ev_bronze_tasks, "BRONZE_DIR", str(root))
         collected_at = datetime(2026, 8, 9, 12, tzinfo=timezone.utc)
         path = ev_layout.bronze_file(str(root), collected_at)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -76,7 +79,7 @@ def _raw_result(case_name: str, root, invalid: bool, monkeypatch) -> dict:
             "fuel_type_code": "ELEC",
         }
 
-    monkeypatch.setattr(gas_bronze_module, "BRONZE_DIR", str(root))
+    monkeypatch.setattr(gas_bronze_tasks, "BRONZE_DIR", str(root))
     path = gas_layout.bronze_file(str(root), "2026-08-09")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -182,7 +185,7 @@ def _write_silver_inputs(root, invalid_layer: str | None = None):
 
 
 def _prepare_silver_dag(root, monkeypatch, invalid_layer=None, callback=None):
-    monkeypatch.setattr(silver_module, "SILVER_DIR", str(root))
+    monkeypatch.setattr(silver_tasks, "SILVER_DIR", str(root))
     gas_result, ev_result = _write_silver_inputs(root, invalid_layer)
     dag = silver_module.gas_ev_price_bronze_to_silver_dag
     monkeypatch.setattr(
@@ -197,7 +200,7 @@ def _prepare_silver_dag(root, monkeypatch, invalid_layer=None, callback=None):
     )
 
     if invalid_layer == "integrated_silver":
-        path = silver_module.integrated_silver_file(str(root), "2026-07")
+        path = silver_tasks.integrated_silver_file(str(root), "2026-07")
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(
             pa.Table.from_pylist(
@@ -208,7 +211,7 @@ def _prepare_silver_dag(root, monkeypatch, invalid_layer=None, callback=None):
                         "ev_price": None,
                     }
                 ],
-                schema=silver_module.INTEGRATED_SCHEMA,
+                schema=silver_tasks.INTEGRATED_SCHEMA,
             ),
             path,
         )

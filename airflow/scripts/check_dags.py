@@ -5,8 +5,8 @@ Airflow 는 import 에 실패한 DAG 를 조용히 건너뜁니다. 에러를 �
 그 전에 걸러내려고 둡니다.
 
     로컬:  cd airflow && .venv/bin/python scripts/check_dags.py
-    CI:    이미 빌드한 airflow 이미지 안에서 같은 파일을 실행합니다
-           (.github/workflows/ci.yml 의 docker-build job)
+    CI:    airflow uv 환경에서 같은 파일을 실행합니다
+           (.github/workflows/ci.yml 의 dag-import job)
 
 DAG 를 정의하는 부수효과(스케줄 등록 등)는 없습니다. import 만 해봅니다.
 """
@@ -25,9 +25,10 @@ def main(argv: list[str]) -> int:
         print(f"DAG 폴더가 없습니다: {dags_dir}", file=sys.stderr)
         return 1
 
-    # 실제 Airflow 와 같은 경로 구성. 이걸 빼면 dags/common 을 못 찾는데도
-    # DAG 쪽이 예외를 잡고 경고만 내서 그냥 통과해 버립니다 (검사가 무의미해집니다).
+    # 실제 Airflow 와 같은 경로 구성. airflow/ 가 먼저 있어야 데이터셋별 scripts 를
+    # 저장소 루트의 동명 scripts 패키지로 잘못 불러오지 않습니다.
     sys.path.insert(0, str(dags_dir))
+    sys.path.insert(0, str(dags_dir.parent))
 
     files = sorted(dags_dir.glob("*_dag.py"))
     if not files:
