@@ -21,7 +21,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from dags import hvfhv_silver_to_gold_dag as dag_module
+from scripts.hvfhv_silver_to_gold import tasks as dag_module
 
 
 def _trip_partitions(root: Path, year_months: list[str]) -> Path:
