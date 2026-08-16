@@ -10,13 +10,13 @@ PRICE_RE = re.compile(r"^\$\s*(\d+(?:\.\d+)?)$")
 
 
 class GasPriceSilverTransformer(Transformer):
-    """핵심 필드를 검증하고 UTC 수집일별 최신 가격만 남깁니다."""
+    """핵심 필드를 검증하고 가격 기준일별 최신 수집값만 남깁니다."""
 
     def transform(self, data: list[dict]) -> list[dict]:
         if not data:
             raise ValueError("변환할 Gas Price Bronze 데이터가 없습니다.")
 
-        latest_by_date: dict[date, dict] = {}
+        observations_by_date: dict[date, dict] = {}
         errors: list[str] = []
 
         for row in data:
@@ -53,16 +53,16 @@ class GasPriceSilverTransformer(Transformer):
                     raise ValueError("price_date가 수집일보다 미래입니다")
 
                 cleaned = {
-                    "date": collected_date,
+                    "date": price_date,
                     "gas_price": price,
                     "_collected_at": collected_at_utc,
                 }
-                previous = latest_by_date.get(collected_date)
+                previous = observations_by_date.get(price_date)
                 if (
                     previous is None
                     or cleaned["_collected_at"] > previous["_collected_at"]
                 ):
-                    latest_by_date[collected_date] = cleaned
+                    observations_by_date[price_date] = cleaned
                 elif (
                     cleaned["_collected_at"] == previous["_collected_at"]
                     and cleaned["gas_price"] != previous["gas_price"]
@@ -78,8 +78,8 @@ class GasPriceSilverTransformer(Transformer):
 
         return [
             {
-                "date": latest_by_date[key]["date"],
-                "gas_price": latest_by_date[key]["gas_price"],
+                "date": observations_by_date[key]["date"],
+                "gas_price": observations_by_date[key]["gas_price"],
             }
-            for key in sorted(latest_by_date)
+            for key in sorted(observations_by_date)
         ]
