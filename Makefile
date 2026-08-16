@@ -95,7 +95,7 @@ tesseract:
 build:
 	@for r in $(RUNTIMES); do \
 		echo "==> building $(REGISTRY)tlc-$$r:$(GIT_SHA)"; \
-		docker build --platform $(PLATFORM) -f $$r/Dockerfile \
+		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f $$r/Dockerfile \
 			-t $(REGISTRY)tlc-$$r:$(GIT_SHA) . || exit 1; \
 	done
 

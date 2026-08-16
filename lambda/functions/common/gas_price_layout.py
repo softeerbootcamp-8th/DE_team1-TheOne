@@ -44,6 +44,11 @@ def bronze_file(base_dir: str, collected_date: str) -> Path:
     return bronze_partition(base_dir, collected_date) / BRONZE_FILE_NAME
 
 
+def bronze_key(collected_date: str) -> str:
+    """S3 bronze key. bronze_file()과 같은 파티션 규칙, base_dir 대신 bronze/ prefix."""
+    return f"bronze/{DATASET}/{BRONZE_PARTITION_KEY}={collected_date}/{BRONZE_FILE_NAME}"
+
+
 def silver_file(base_dir: str, collected_month: str) -> Path:
     partition = f"{SILVER_PARTITION_KEY}={collected_month}"
     return dataset_path(base_dir) / partition / SILVER_FILE_NAME
