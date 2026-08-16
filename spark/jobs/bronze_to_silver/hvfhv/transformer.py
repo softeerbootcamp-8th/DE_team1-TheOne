@@ -6,55 +6,12 @@ from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql.functions import (
     col, count, date_format, lit, percentile_approx, row_number, sha2, struct, to_json, when
 )
-from pyspark.sql.types import (
-    StructType, StructField, StringType, IntegerType, DoubleType, LongType, TimestampType
-)
 
 from pipeline_core.transformer import Transformer
 
+from schema.silver.hvfhv import FINAL_SCHEMA, REQUIRED_COLUMNS
+
 logger = logging.getLogger(__name__)
-
-FINAL_SCHEMA = StructType([
-    StructField("trip_key", StringType(), False),
-    StructField("pickup_datetime", TimestampType(), True),
-    StructField("dropoff_datetime", TimestampType(), True),
-    StructField("PULocationID", IntegerType(), True),
-    StructField("DOLocationID", IntegerType(), True),
-    StructField("trip_miles", DoubleType(), True),
-    StructField("trip_time", LongType(), True),
-    StructField("base_passenger_fare", DoubleType(), True),
-    StructField("tolls", DoubleType(), True),
-    StructField("bcf", DoubleType(), True),
-    StructField("sales_tax", DoubleType(), True),
-    StructField("congestion_surcharge", DoubleType(), True),
-    StructField("airport_fee", DoubleType(), True),
-    StructField("tips", DoubleType(), True),
-    StructField("driver_pay", DoubleType(), True),
-    StructField("platform_name", StringType(), False),
-    StructField("estimated_service_tier", StringType(), False),
-    StructField("taxi_id", StringType(), True),
-    StructField("driver_id", StringType(), True),
-    StructField("taxi_model_id", StringType(), True),
-    StructField("year_month", StringType(), True),
-    StructField("pickup_borough", StringType(), True),
-    StructField("pickup_zone", StringType(), True),
-    StructField("pickup_service_zone", StringType(), True),
-    StructField("dropoff_borough", StringType(), True),
-    StructField("dropoff_zone", StringType(), True),
-    StructField("dropoff_service_zone", StringType(), True)
-])
-
-REQUIRED_COLUMNS = [
-    "pickup_datetime",
-    "dropoff_datetime",
-    "PULocationID",
-    "DOLocationID",
-    "trip_miles",
-    "trip_time",
-    "base_passenger_fare",
-    "driver_pay",
-    "hvfhs_license_num",
-]
 
 TRIP_KEY_COLUMNS = [
     "hvfhs_license_num",
