@@ -17,6 +17,8 @@
     가정 매출로 순수익을 계산(가격·연비가 같아도 그 배수만으로 추천이 갈릴 수 있음)
 13. lease가 이번 달 중간에 시작하면 렌트료(현재/후보 차량 모두)를 시작일부터만 계산
 14. lease가 이번 달 중간에 끝나면(lease_ended_on은 배타적 상한) 렌트료를 종료 하루 전까지만 계산
+16. monthly_report 에 계보(배정 버전·마스터 수집일·연료비 월)가 실림 (#418)
+17. 배정 버전이 섞여 있으면 ValueError — 어느 규칙의 결과인지 말할 수 없음 (#418)
 15. service_tier는 트립 이력 최빈값이 아니라 현재 차량의 vehicle_master 자격
     (Comfort/Extra Comfort eligible)에서 파생. 둘 다 자격이면 Extra Comfort 우선
 """
@@ -27,11 +29,13 @@ from datetime import date, datetime
 import pytest
 
 from common.session import get_or_create_spark_session
+from jobs.silver_to_gold.job import partition_value
 from jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_monthly_report,
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
+    resolve_assignment_version,
 )
 from schema.gold.driver_aggregation import DriverMonthlyAggregation
 from schema.gold.driver_car_suggestion import MonthlyVehicleRecommendation
@@ -267,7 +271,10 @@ def test_매출_증가액이_음수면_기준을_넘어도_report_집계에서_�
         {"expected_net_profit_increase": 50.0, "expected_revenue_increase": 10.0},
         {"expected_net_profit_increase": 50.0, "expected_revenue_increase": -5.0},
     ])
-    report = build_monthly_report(recommendation, YEAR_MONTH, threshold_profit_increase=30.0).first()
+    report = build_monthly_report(
+        recommendation, YEAR_MONTH, threshold_profit_increase=30.0,
+        assignment_version="v3", vehicle_master_collected_date="2024-03-15", gas_ev_price_month=YEAR_MONTH,
+    ).first()
 
     assert report.recommended_driver_count == 1
     assert report.avg_net_profit_increase_per_driver == pytest.approx(50.0)
@@ -279,7 +286,10 @@ def test_아무도_기준을_못넘으면_평균합계는_0이다(spark):
     recommendation = spark.createDataFrame([
         {"expected_net_profit_increase": 1.0, "expected_revenue_increase": 1.0},
     ])
-    report = build_monthly_report(recommendation, YEAR_MONTH, threshold_profit_increase=999.0).first()
+    report = build_monthly_report(
+        recommendation, YEAR_MONTH, threshold_profit_increase=999.0,
+        assignment_version="v3", vehicle_master_collected_date="2024-03-15", gas_ev_price_month=YEAR_MONTH,
+    ).first()
 
     assert report.recommended_driver_count == 0
     assert report.avg_net_profit_increase_per_driver == 0.0
@@ -430,3 +440,69 @@ def test_service_tier는_현재_차량의_vehicle_master_자격에서_파생된�
     ).first()
 
     assert recommendation.service_tier == expected_service_tier
+
+
+def test_monthly_report에_계보가_실린다(spark):
+    """Gold 만 보고 어떤 입력으로 나온 숫자인지 알 수 있어야 합니다 (#418)."""
+    vehicle_master = _vehicle_master(spark, [{
+        "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
+        "weekly_price_usd": 20.0, "combined_mpg_min": 30.0, "combined_mpg_max": 30.0,
+        "spec_year_max": 2025,
+    }])
+    trips = spark.createDataFrame([_trip()])
+    gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
+
+    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master)
+    driver_aggregation = build_driver_monthly_aggregation(enriched, vehicle_master, YEAR_MONTH, DAYS_IN_MONTH)
+    recommendation = build_monthly_vehicle_recommendation(
+        enriched, vehicle_master, driver_aggregation, YEAR_MONTH, DAYS_IN_MONTH
+    )
+
+    report = build_monthly_report(
+        recommendation, YEAR_MONTH, threshold_profit_increase=30.0,
+        assignment_version="v3",
+        # 대상 월(2024-03)과 다른 시점 — 물러서 쓴 경우가 결과에 드러나야 합니다.
+        vehicle_master_collected_date="2026-08-15",
+        gas_ev_price_month="2026-08",
+    ).first()
+
+    assert report.assignment_version == "v3"
+    assert report.vehicle_master_collected_date == "2026-08-15"
+    assert report.gas_ev_price_month == "2026-08"
+
+
+def test_배정_버전이_섞이면_ValueError다(spark):
+    """버전이 다르면 배정 규칙 자체가 다릅니다. 섞어서 집계하면 어느 규칙의 결과인지
+    말할 수 없는 숫자가 나옵니다."""
+    trips = spark.createDataFrame([
+        {**_trip(), "assignment_version": "v2"},
+        {**_trip(), "assignment_version": "v3"},
+    ])
+
+    with pytest.raises(ValueError, match="배정 버전이 섞여 있습니다"):
+        resolve_assignment_version(trips)
+
+
+def test_배정_버전_컬럼이_없으면_ValueError다(spark):
+    trips = spark.createDataFrame([_trip()])
+
+    with pytest.raises(ValueError, match="assignment_version 이 없습니다"):
+        resolve_assignment_version(trips)
+
+
+@pytest.mark.parametrize(
+    "path, key, expected",
+    [
+        ("../data/silver/vehicle_master/collected_date=2026-08-15/city=new-york/vehicle_master.parquet",
+         "collected_date", "2026-08-15"),
+        ("../data/silver/gas_ev_price/collected_month=2025-05/gas_ev_price.parquet",
+         "collected_month", "2025-05"),
+    ],
+)
+def test_입력_경로에서_계보_값을_읽는다(path, key, expected):
+    assert partition_value(path, key) == expected
+
+
+def test_규칙과_다른_경로면_조용히_빈값을_쓰지_않고_실패한다():
+    with pytest.raises(ValueError, match="collected_date= 파티션을 찾지 못했습니다"):
+        partition_value("../data/silver/vehicle_master/vehicle_master.parquet", "collected_date")
