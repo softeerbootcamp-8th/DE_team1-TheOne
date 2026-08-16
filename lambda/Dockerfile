@@ -22,6 +22,11 @@ RUN pip install --no-cache-dir "uv==0.12.2" \
 # 로 함수별로 오버라이드합니다 (이미지는 한 번만 빌드/푸시하면 됨).
 COPY lambda/functions/ ${LAMBDA_TASK_ROOT}/functions/
 
+# lyft/uber_eligible_vehicles, vehicle_catalog, hvfhv 는 저장소 루트의 schema.bronze.*
+# 를 import 합니다(로컬은 lambda/pyproject.toml 의 pythonpath="../.." 로 풀림). 이미지에
+# 안 넣으면 그 함수들만 "No module named 'schema'" 로 콜드스타트 시점에 죽습니다.
+COPY schema/ ${LAMBDA_TASK_ROOT}/schema/
+
 # ★ vehicle_catalog_raw_to_bronze 를 이 이미지로 배포한다면 tesseract 바이너리도 함께
 #   설치해야 합니다. pytesseract 는 파이썬 래퍼일 뿐이라 uv.lock 이 못 잡고, 없으면
 #   OCR 호출 시점에 TesseractNotFoundError 로 죽습니다. 지금은 이 함수가 airflow
