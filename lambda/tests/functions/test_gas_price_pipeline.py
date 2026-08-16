@@ -3,7 +3,8 @@
 1. Handler가 HTML 스냅샷을 먼저 저장하고 Bronze JSON에서 원문 경로를 참조
 2. HTML 파싱 실패 후에도 원문 스냅샷은 보존
 3. Bronze 교체 실패 시 기존 파일을 보존하고 고유 임시 파일을 정리
-4. 월별 Silver는 UTC 수집일별 ``date, gas_price``만 저장
+4. Bronze 파티션은 수집일을 유지하고 Silver는 가격 기준일을 저장
+5. 같은 가격 기준일은 가장 늦게 수집한 가격만 남김
 """
 
 import json
@@ -151,7 +152,7 @@ def test_HTML_파싱이_실패해도_원문_스냅샷은_남는다(tmp_path, mon
     assert snapshots[0].read_text(encoding="utf-8") == Response.text
 
 
-def test_bronze_원문을_월별_silver_parquet으로_변환한다(tmp_path):
+def test_silver는_수집일이_아닌_가격_기준일을_저장한다(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
     write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
     second_at = COLLECTED_AT + timedelta(days=1)
@@ -180,11 +181,11 @@ def test_bronze_원문을_월별_silver_parquet으로_변환한다(tmp_path):
     assert table.schema == SCHEMA
     assert table.to_pylist() == [
         {
-            "date": date(2026, 8, 9),
+            "date": date(2026, 8, 8),
             "gas_price": 3.21,
         },
         {
-            "date": date(2026, 8, 10),
+            "date": date(2026, 8, 9),
             "gas_price": 3.25,
         },
     ]
@@ -219,10 +220,10 @@ def test_같은_수집일은_최신_수집본으로_월파일을_덮어쓴다(tm
     assert first["locations"] == second["locations"]
     assert len(list(silver_path.parent.glob("*.parquet"))) == 1
     assert len(rows) == 1
-    assert rows == [{"date": date(2026, 8, 9), "gas_price": 3.3}]
+    assert rows == [{"date": date(2026, 8, 8), "gas_price": 3.3}]
 
 
-def test_같은_가격_기준일도_수집일이_다르면_일별_행으로_남긴다(tmp_path):
+def test_같은_가격_기준일은_가장_늦게_수집한_가격만_남긴다(tmp_path):
     bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
     write_bronze(bronze_dir, RAW_ROW, COLLECTED_AT)
     write_bronze(
@@ -240,8 +241,7 @@ def test_같은_가격_기준일도_수집일이_다르면_일별_행으로_남�
     )
 
     assert read_silver(Path(result["locations"][0])) == [
-        {"date": date(2026, 8, 9), "gas_price": 3.21},
-        {"date": date(2026, 8, 10), "gas_price": 3.3},
+        {"date": date(2026, 8, 8), "gas_price": 3.3},
     ]
 
 
