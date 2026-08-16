@@ -38,6 +38,13 @@ class DriverMonthlyAggregation:
     current_taxi_id: str
     """현재 차량 taxi_id. hvfhv_driver_trip.taxi_id 참조 (vehicle_master 에는 taxi_id 가 없음)."""
 
+    current_make_key: str
+    """현재 차량 제조사. `taxi_id` 만으로는 사람이 무슨 차인지 알 수 없어 함께 싣습니다 —
+    콜 리스트에서 "지금 <현재 차량> 타시는데 <추천 차량> 으로" 를 쓰려면 필요합니다."""
+
+    current_model_key: str
+    """현재 차량 모델. `driver_car_suggestion.recommended_model_key` 와 같은 표기."""
+
     combined_mpg: float
     """차량 연비. EV 는 vehicle_master 관례대로 MPGe 로 정규화된 값."""
 
