@@ -19,6 +19,8 @@ from pathlib import Path
 
 import pytest
 
+from scripts.vehicle_catalog_raw_to_silver import tasks as task_module
+
 DAG_FILE = (
     Path(__file__).resolve().parents[1] / "dags" / "vehicle_catalog_raw_to_silver_dag.py"
 )
@@ -62,7 +64,7 @@ def events(dag_module, monkeypatch):
 
         return handler
 
-    monkeypatch.setattr(dag_module, "lambda_handler_for", fake_lambda_handler_for)
+    monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 

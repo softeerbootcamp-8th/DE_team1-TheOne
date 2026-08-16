@@ -22,6 +22,7 @@
 import pytest
 
 from dags import lyft_eligible_vehicles_raw_to_silver_dag as dag_module
+from scripts.lyft_eligible_vehicles_raw_to_silver import tasks as task_module
 
 DAG = dag_module.lyft_eligible_vehicles_dag
 DAG_ID = "lyft_eligible_vehicles_raw_to_silver_pipeline"
@@ -47,7 +48,7 @@ def events(monkeypatch):
 
         return handler
 
-    monkeypatch.setattr(dag_module, "lambda_handler_for", fake_lambda_handler_for)
+    monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 

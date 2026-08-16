@@ -13,9 +13,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dags import hvfhv_driver_trip_silver_dag as module
+from dags import hvfhv_driver_trip_silver_dag as dag_module
+from scripts.hvfhv_driver_trip_silver import tasks as task_module
 
-DAG = module.hvfhv_driver_trip_silver_dag
+DAG = dag_module.hvfhv_driver_trip_silver_dag
 
 
 def _write(path, rows):
@@ -48,7 +49,9 @@ def test_DAG_구조와_월간_운영설정이_올바르다():
 
 
 def test_수동으로_넘긴_연월이_최우선이다():
-    assert module.resolve_target_year_month(datetime(2024, 1, 12), {"year": "2030", "month": "3"}) == "2030-03"
+    assert task_module.resolve_target_year_month(
+        datetime(2024, 1, 12), {"year": "2030", "month": "3"}
+    ) == "2030-03"
 
 
 def make_partitions(trips_path, year_months):
@@ -65,7 +68,7 @@ def test_달력이_아니라_있는_파티션_중_최신을_고른다(tmp_path):
     """
     trips = make_partitions(tmp_path / "trips", ["2026-04", "2026-05", "2026-06"])
 
-    resolved = module.resolve_target_year_month(
+    resolved = task_module.resolve_target_year_month(
         datetime(2026, 8, 12, tzinfo=timezone.utc), {}, str(trips)
     )
 
@@ -76,7 +79,7 @@ def test_기준일_직전달을_넘는_파티션은_고르지_않는다(tmp_path
     """과거로 백필할 때 그때 없던 달이 섞이면 결과를 재현할 수 없습니다."""
     trips = make_partitions(tmp_path / "trips", ["2026-04", "2026-05", "2026-06"])
 
-    resolved = module.resolve_target_year_month(
+    resolved = task_module.resolve_target_year_month(
         datetime(2026, 6, 12, tzinfo=timezone.utc), {}, str(trips)
     )
 
@@ -87,14 +90,14 @@ def test_쓸_수_있는_파티션이_없으면_무엇이_있는지_알려준다(
     trips = make_partitions(tmp_path / "trips", ["2026-09"])
 
     with pytest.raises(FileNotFoundError, match=r"2026-09"):
-        module.resolve_target_year_month(
+        task_module.resolve_target_year_month(
             datetime(2026, 8, 12, tzinfo=timezone.utc), {}, str(trips)
         )
 
 
 def test_경로를_안_주면_예전처럼_직전달을_쓴다():
     """`trips_path` 없이 부르는 호출부가 있어도 동작이 바뀌지 않게 둡니다."""
-    assert module.resolve_target_year_month(
+    assert task_module.resolve_target_year_month(
         datetime(2024, 1, 12, tzinfo=timezone.utc), {}
     ) == "2023-12"
 
@@ -122,12 +125,12 @@ def test_validate_inputs는_경로가_모두_있어야_계보를_반환한다(tm
     for filename in ("customer.parquet", "lease_contract.parquet", "taxi.parquet"):
         (company / filename).touch()
 
-    result = module.validate_input_paths("2024-03", "2024-03-01", paths)
+    result = task_module.validate_input_paths("2024-03", "2024-03-01", paths)
 
     assert result == {"year_month": "2024-03", "snapshot_date": "2024-03-01"}
     (tmp_path / "trips" / "year_month=2024-03").rmdir()
     with pytest.raises(FileNotFoundError):
-        module.validate_input_paths("2024-03", "2024-03-01", paths)
+        task_module.validate_input_paths("2024-03", "2024-03-01", paths)
 
 
 @pytest.mark.parametrize("violation", ["empty", "missing_column", "duplicate", "null_fk", "contract", "month"])
@@ -149,11 +152,11 @@ def test_validate_silver는_잘못된_출력을_거부한다(tmp_path, violation
     _write(partition / "part.parquet", rows)
 
     with pytest.raises(ValueError):
-        module.validate_silver_partition(tmp_path, "2024-03")
+        task_module.validate_silver_partition(tmp_path, "2024-03")
 
 
 def test_validate_silver는_정상_파티션과_다른월_보존을_확인한다(tmp_path):
     _write(tmp_path / "year_month=2024-02" / "part.parquet", [_row(year_month="2024-02")])
     _write(tmp_path / "year_month=2024-03" / "part.parquet", [_row()])
 
-    module.validate_silver_partition(tmp_path, "2024-03")
+    task_module.validate_silver_partition(tmp_path, "2024-03")
