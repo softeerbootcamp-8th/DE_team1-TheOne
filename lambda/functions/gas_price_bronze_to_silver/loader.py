@@ -7,17 +7,12 @@ import pyarrow.parquet as pq
 
 from pipeline_core.loader import Loader, WriteResult
 
+from schema.silver.gas_price import SCHEMA
+
 from ..common.atomic_write import atomic_write
 from ..common import gas_price_layout as layout
 
 logger = logging.getLogger(__name__)
-
-SCHEMA = pa.schema(
-    [
-        ("date", pa.date32()),
-        ("gas_price", pa.float64()),
-    ]
-)
 
 
 class GasPriceSilverLoader(Loader):
