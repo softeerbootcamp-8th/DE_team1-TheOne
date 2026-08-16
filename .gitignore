@@ -25,6 +25,7 @@ airflow/**/*.pyc
 # Env / secrets
 .env
 .env.*
+!.env.example
 
 # Editor
 .vscode/
