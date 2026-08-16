@@ -57,7 +57,7 @@ services:
       # 로그인 화면을 없애서 매번 `docker compose logs | grep password` 하는 걸 방지합니다.
       # 인증된 모든 요청을 admin 으로 취급 — 로컬 1인 개발 전용. 운영 배포 시 반드시 제거하세요.
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
-      PYTHONPATH: /opt/airflow/project-root
+      PYTHONPATH: /opt/airflow/project-root/airflow:/opt/airflow/project-root
     ports:
       # 8080 이 다른 프로젝트에 물려 있으면 AIRFLOW_PORT=8090 docker compose up -d
       - "${AIRFLOW_PORT:-8080}:8080"

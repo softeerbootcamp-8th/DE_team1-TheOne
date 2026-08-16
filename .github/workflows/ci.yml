@@ -78,7 +78,7 @@ jobs:
           filters: |
             dags:
               - 'airflow/dags/**'
-              - 'airflow/scripts/check_dags.py'
+              - 'airflow/scripts/**'
               - 'airflow/pyproject.toml'
               - 'airflow/uv.lock'
               - '.github/workflows/ci.yml'
