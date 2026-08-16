@@ -280,6 +280,10 @@ def build_driver_monthly_aggregation(
             F.col("weekly_price_usd") * (_lease_days_in_month(year_month, days_in_month) / F.lit(7.0)),
         )
         .withColumn("monthly_net_profit", F.col("_gross_net_profit") - F.col("monthly_rental_fee"))
+        # `_current_vehicle_facts` 가 조인 키로 들고 있는 값을 그대로 싣습니다. taxi_id 만
+        # 있으면 사람이 무슨 차인지 알 수 없어 Silver 로 되짚어야 합니다.
+        .withColumn("current_make_key", F.col("make_key"))
+        .withColumn("current_model_key", F.col("model_key"))
     )
     columns = [f.name for f in fields(DriverMonthlyAggregation)]
     return result.select(*columns)

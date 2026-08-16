@@ -8,6 +8,7 @@
 5. recommendation_reason: 연비/렌트료가 개선되면 함께 표기, 등급이 같으면 "차량등급"은 안 붙음
 6. recommendation_reason: 추천 차량이 현재 차량과 동일하면 "현재 차량 유지"
 6-1. 이미 가진 등급 자격에는 상승 매출을 가정하지 않음 — 차를 안 바꾸면 증가액 0 (#403)
+6-2. 현재 차량도 make/model 로 나옴 — taxi_id 만으로는 무슨 차인지 알 수 없음 (#415)
 7. zone이 3개 미만인 기사는 top2/top3_zone_id가 None
 8. trip이 vehicle_master/gas_ev_price에 매칭 안 되면 ValueError
 9. monthly_report: profit_increase 기준을 넘어도 revenue_increase<0이면 recommended_driver_count에서 제외
@@ -295,6 +296,34 @@ def test_아무도_기준을_못넘으면_평균합계는_0이다(spark):
     assert report.avg_net_profit_increase_per_driver == 0.0
     assert report.avg_revenue_increase_per_driver == 0.0
     assert report.total_revenue_increase == 0.0
+
+
+def test_현재_차량은_추천_차량과_별개로_이름이_나온다(spark):
+    """`taxi_id` 만으로는 사람이 무슨 차인지 알 수 없습니다 (#415).
+
+    콜 리스트에서 "지금 <현재 차량> 타시는데 <추천 차량> 으로" 를 쓰려면 현재 차량도
+    make/model 이어야 합니다. 추천 차량과 값이 갈리는 상황으로 확인합니다.
+    """
+    vehicle_master = _vehicle_master(spark, [
+        {"make_key": "W", "model_key": "WORSE", "fuel_type": "GAS", "weekly_price_usd": 200.0,
+         "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025},
+        {"make_key": "B", "model_key": "BETTER", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+         "combined_mpg_min": 40.0, "combined_mpg_max": 40.0, "spec_year_max": 2025},
+    ])
+    trips = spark.createDataFrame([_trip(make_key="W", model_key="WORSE")])
+    gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
+
+    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master)
+    driver_aggregation = build_driver_monthly_aggregation(
+        enriched, vehicle_master, YEAR_MONTH, DAYS_IN_MONTH
+    )
+    recommendation = build_monthly_vehicle_recommendation(
+        enriched, vehicle_master, driver_aggregation, YEAR_MONTH, DAYS_IN_MONTH
+    ).first()
+    aggregation = driver_aggregation.first()
+
+    assert (aggregation.current_make_key, aggregation.current_model_key) == ("W", "WORSE")
+    assert (recommendation.recommended_make_key, recommendation.recommended_model_key) == ("B", "BETTER")
 
 
 def test_출력_컬럼_순서가_schema_gold_dataclass와_일치한다(spark):
