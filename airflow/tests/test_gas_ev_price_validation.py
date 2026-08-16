@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from dags import gas_ev_price_bronze_to_silver_dag as dag_module
+from scripts.gas_ev_price_bronze_to_silver import tasks as task_module
 
 gas_layout = importlib.import_module("lambda.functions.common.gas_price_layout")
 ev_layout = importlib.import_module("lambda.functions.common.ev_charging_layout")
@@ -29,7 +30,7 @@ validate_integrated = DAG.get_task("validate_integrated_silver").python_callable
 
 @pytest.fixture
 def silver_dir(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "SILVER_DIR", str(tmp_path))
+    monkeypatch.setattr(task_module, "SILVER_DIR", str(tmp_path))
     return str(tmp_path)
 
 
@@ -65,9 +66,9 @@ def ev_path(silver_dir, rows, schema=None):
 
 def integrated_path(silver_dir, rows, schema=None):
     return write_table(
-        dag_module.integrated_silver_file(silver_dir, "2026-07"),
+        task_module.integrated_silver_file(silver_dir, "2026-07"),
         rows,
-        schema or dag_module.INTEGRATED_SCHEMA,
+        schema or task_module.INTEGRATED_SCHEMA,
     )
 
 
@@ -91,7 +92,7 @@ VALIDATION_CASES = [
     pytest.param(
         validate_integrated,
         integrated_path,
-        dag_module.INTEGRATED_SCHEMA,
+        task_module.INTEGRATED_SCHEMA,
         {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3},
         "gas_price",
         id="integrated",

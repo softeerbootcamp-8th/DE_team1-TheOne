@@ -19,6 +19,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from dags import hvfhv_raw_to_silver_dag as dag_module
+from scripts.hvfhv_raw_to_silver import tasks as task_module
 
 bronze_loader = importlib.import_module("lambda.functions.hvfhv_raw_to_bronze.loader")
 transformer = importlib.import_module("jobs.bronze_to_silver.hvfhv.transformer")
@@ -107,7 +108,7 @@ def test_Validation_Task에_재시도와_Slack_콜백이_연결된다():
         validation_task = DAG.get_task(task_id)
         assert validation_task.retries == 1
         assert validation_task.retry_delay == timedelta(minutes=10)
-        assert dag_module.slack_failure_callback in validation_task.on_failure_callback
+        assert task_module.slack_failure_callback in validation_task.on_failure_callback
 
 
 def test_정상_적재는_통과한다(tmp_path):
@@ -172,7 +173,7 @@ def test_실제_TLC_원본_스키마와_SCHEMA_가_같다():
     Bronze Loader 는 원본 바이트를 파싱 없이 그대로 씁니다. 따라서 읽어들인
     스키마는 항상 TLC 의 물리 타입이고, `SCHEMA` 가 그와 다르면 영원히 불일치입니다.
     """
-    assert dag_module._schema_signature(bronze_loader.SCHEMA) == TLC_SCHEMA_SIGNATURE
+    assert task_module._schema_signature(bronze_loader.SCHEMA) == TLC_SCHEMA_SIGNATURE
 
 
 def test_cbd_congestion_fee_가_없는_2024년_원본도_통과한다(tmp_path):
@@ -279,7 +280,7 @@ def write_silver(
 
 
 def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", rows=5)
 
@@ -287,7 +288,7 @@ def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
 
 
 def test_silver_파티션에_파일이_없으면_막는다(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
 
     with pytest.raises(ValueError, match="Parquet 파일이 없습니다"):
@@ -295,7 +296,7 @@ def test_silver_파티션에_파일이_없으면_막는다(tmp_path, monkeypatch
 
 
 def test_silver_스키마_컬럼이_다르면_막는다(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     schema = pa.schema(
         field for field in SILVER_SCHEMA if field.name != SILVER_COLUMNS[-1]
@@ -310,7 +311,7 @@ def test_silver_스키마_컬럼이_다르면_막는다(tmp_path, monkeypatch):
 
 
 def test_silver_행_수가_0이면_막는다(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", rows=0)
 
@@ -324,7 +325,7 @@ def test_silver_행_수가_0이면_막는다(tmp_path, monkeypatch):
 def test_silver_필수값이_NULL이면_GX가_실패한다(
     tmp_path, monkeypatch, caplog, column
 ):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     records = silver_rows(5)
     records[0][column] = None
@@ -344,7 +345,7 @@ def test_silver_필수값이_NULL이면_GX가_실패한다(
 def test_silver_FINAL_SCHEMA_타입이_다르면_GX가_실패한다(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     schema = pa.schema(
         pa.field(field.name, pa.int32())
@@ -364,7 +365,7 @@ def test_silver_FINAL_SCHEMA_타입이_다르면_GX가_실패한다(
 def test_silver_timestamp_unit이_달라도_논리_타입이_같으면_통과한다(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     schema = pa.schema(
         pa.field(field.name, pa.timestamp("ms"))
@@ -380,7 +381,7 @@ def test_silver_timestamp_unit이_달라도_논리_타입이_같으면_통과한
 def test_silver_timestamp_timezone이_기대_스키마와_다르면_실패한다(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     schema = pa.schema(
         pa.field(field.name, pa.timestamp("ms", tz="UTC"))
@@ -398,7 +399,7 @@ def test_silver_timestamp_timezone이_기대_스키마와_다르면_실패한다
 
 
 def test_silver_행_수가_bronze_보다_많으면_막는다(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=3)
     write_silver(tmp_path / "silver", rows=5)
 
@@ -408,7 +409,7 @@ def test_silver_행_수가_bronze_보다_많으면_막는다(tmp_path, monkeypat
 
 def test_직전_달_파티션이_사라지면_165_재발로_막는다(tmp_path, monkeypatch):
     """정적 overwrite(#165)가 재발하면 최신 달만 남고 다른 달은 지워집니다."""
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
     # 직전 달(2026-06)이 아니라 두 달 전(2026-05)만 남아 있는 상황 — #165 재발
@@ -419,7 +420,7 @@ def test_직전_달_파티션이_사라지면_165_재발로_막는다(tmp_path, 
 
 
 def test_직전_달_파티션이_있으면_통과한다(tmp_path, monkeypatch):
-    monkeypatch.setattr(dag_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
     write_silver(tmp_path / "silver", year_month="2026-06", rows=5)

@@ -13,8 +13,8 @@ import json
 import pytest
 
 from dags import gas_price_raw_to_bronze_dag as dag_module
+from scripts.gas_price_raw_to_bronze import tasks as task_module
 
-# DAG 모듈이 저장소 루트를 sys.path에 추가한 뒤 불러옵니다.
 # `lambda`는 예약어라 일반 import 문을 사용할 수 없습니다.
 layout = importlib.import_module("lambda.functions.common.gas_price_layout")
 
@@ -35,7 +35,7 @@ VALID_RECORD = {
 @pytest.fixture
 def bronze_dir(tmp_path, monkeypatch):
     """검증 Task가 보는 Bronze 루트를 임시 디렉터리로 바꿉니다."""
-    monkeypatch.setattr(dag_module, "BRONZE_DIR", str(tmp_path))
+    monkeypatch.setattr(task_module, "BRONZE_DIR", str(tmp_path))
     return str(tmp_path)
 
 

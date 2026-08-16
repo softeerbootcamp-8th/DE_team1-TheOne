@@ -21,6 +21,7 @@ event 쪽은 다른 DAG 와 같은 규칙입니다. `collected_date` 는 Bronze 
 import pytest
 
 from dags import fueleconomy_vehicle_specs_raw_to_silver_dag as dag_module
+from scripts.fueleconomy_vehicle_specs_raw_to_silver import tasks as task_module
 
 DAG = dag_module.fueleconomy_vehicle_specs_dag
 DAG_ID = "fueleconomy_vehicle_specs_raw_to_silver_pipeline"
@@ -46,7 +47,7 @@ def events(monkeypatch):
 
         return handler
 
-    monkeypatch.setattr(dag_module, "lambda_handler_for", fake_lambda_handler_for)
+    monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 

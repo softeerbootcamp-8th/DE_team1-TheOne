@@ -15,10 +15,11 @@ from datetime import datetime, timezone
 import pytest
 
 from dags import hvfhv_raw_to_silver_dag as dag_module
+from scripts.hvfhv_raw_to_silver import tasks as task_module
 
 DAG = dag_module.hvfhv_dag
 DAG_ID = "hvfhv_raw_to_silver_pipeline"
-resolve_target_year_month = dag_module.resolve_target_year_month
+resolve_target_year_month = task_module.resolve_target_year_month
 
 
 # --- DAG 구조 -------------------------------------------------------------
@@ -98,7 +99,7 @@ def test_bronze_to_silver_bash_command에_error_threshold와_xcom_pull이_들어
 # 정하면 스케줄 실행이 매번 죽습니다. 네트워크를 타지 않도록 존재 확인 함수만
 # 가짜로 바꾸고, 선택 로직 자체는 진짜를 돌립니다.
 
-resolve_collectable_year_month = dag_module.resolve_collectable_year_month
+resolve_collectable_year_month = task_module.resolve_collectable_year_month
 AUG_2026 = datetime(2026, 8, 12, tzinfo=timezone.utc)
 
 
@@ -160,7 +161,7 @@ def test_조회는_정해진_개월_수에서_멈춘다(tmp_path):
         return False
 
     assert resolve_collectable_year_month(AUG_2026, {}, str(tmp_path), _record) is None
-    assert len(asked) == dag_module.MAX_MONTH_LOOKBACK
+    assert len(asked) == task_module.MAX_MONTH_LOOKBACK
     assert asked[0] == "2026-07"  # 직전 달부터 거슬러 올라갑니다
 
 
