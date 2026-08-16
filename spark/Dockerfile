@@ -29,5 +29,10 @@ RUN /usr/bin/python3.11 -m pip install --no-cache-dir "uv==0.12.2" \
 
 USER hadoop
 
+# bronze_to_silver/hvfhv 등이 저장소 루트의 schema.silver.*/schema.bronze.* 를
+# import 합니다(로컬은 spark/pyproject.toml 의 pythonpath="../.." 로 풀림). jobs/
+# 와 나란히 두어야 import 경로가 로컬 테스트와 같아집니다.
+COPY schema/ /home/hadoop/schema/
+
 # Spark job 이 생기면 아래 한 줄 추가:
 # COPY jobs/ /home/hadoop/jobs/
