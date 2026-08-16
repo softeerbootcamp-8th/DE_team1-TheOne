@@ -13,7 +13,7 @@ from pipeline_core.loader import Loader, WriteResult
 
 from .env import load_local_env
 
-BUCKET_ENV_VAR = "BRONZE_S3_BUCKET"
+BUCKET_ENV_VAR = "DATA_LAKE_S3_BUCKET"
 
 
 @dataclass(frozen=True)
