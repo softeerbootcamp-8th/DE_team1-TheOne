@@ -356,9 +356,20 @@ def build_monthly_vehicle_recommendation(
 
     Comfort/Extra Comfort 자격 차량 후보는, 그 등급 요금을 새로 받을 수 있다는 가정의
     매출(_driver_revenue_scenarios)을 쓴다 — Standard 자격 차량 후보는 실제 매출 그대로.
+    단 **현재 차량에 없던 자격일 때만** 그 가정을 쓴다. 이미 가진 자격에 또 곱하면
+    차를 안 바꿔도 순수익이 오르는 값이 나온다 (#403).
     """
     current_facts = _current_vehicle_facts(enriched, vehicle_master)
     lease_dates = current_facts.select("driver_id", "lease_started_on", "lease_ended_on")
+    # 등급 상승 매출은 **현재 차량에 없던 자격**을 얻을 때만 가정할 수 있다. 이미 그
+    # 자격을 가진 기사는 그 자격으로 Standard 운행을 한 것이 관측된 사실이라, 거기에
+    # 배수를 곱하면 "안 바꿔도 오른다"는 값이 나온다.
+    # `_vehicle_groups` 는 left join 결과라 자격 없음이 false 가 아니라 null 이다.
+    current_eligibility = current_facts.select(
+        "driver_id",
+        F.coalesce(F.col("uber_comfort_eligible"), F.lit(False)).alias("_current_uber_comfort"),
+        F.coalesce(F.col("lyft_extra_comfort_eligible"), F.lit(False)).alias("_current_lyft_extra_comfort"),
+    )
 
     daily = enriched.groupBy("driver_id", "_price_date").agg(
         F.sum("trip_miles").alias("_daily_miles"),
@@ -373,13 +384,16 @@ def build_monthly_vehicle_recommendation(
     )
     driver_candidates = drivers.crossJoin(all_cars)
     cost_per_mile = _cost_per_mile()
+    # 후보 차량이 **새로** 주는 자격만 센다. 현재 차량이 이미 가진 자격은 실제 매출에
+    # 이미 반영돼 있으므로 다시 곱하면 중복 가산이다.
+    gains_comfort = F.coalesce(F.col("uber_comfort_eligible"), F.lit(False)) & ~F.col("_current_uber_comfort")
+    gains_extra_comfort = (
+        F.coalesce(F.col("lyft_extra_comfort_eligible"), F.lit(False)) & ~F.col("_current_lyft_extra_comfort")
+    )
     revenue_for_candidate = (
-        F.when(
-            F.col("uber_comfort_eligible") & F.col("lyft_extra_comfort_eligible"),
-            F.col("_revenue_if_both"),
-        )
-        .when(F.col("uber_comfort_eligible"), F.col("_revenue_if_comfort"))
-        .when(F.col("lyft_extra_comfort_eligible"), F.col("_revenue_if_extra_comfort"))
+        F.when(gains_comfort & gains_extra_comfort, F.col("_revenue_if_both"))
+        .when(gains_comfort, F.col("_revenue_if_comfort"))
+        .when(gains_extra_comfort, F.col("_revenue_if_extra_comfort"))
         .otherwise(F.col("_revenue_actual"))
     )
 
@@ -395,6 +409,7 @@ def build_monthly_vehicle_recommendation(
         )
         .agg(F.sum("_daily_fuel_cost").alias("expected_monthly_fuel_cost"))
         .join(revenue, "driver_id")
+        .join(current_eligibility, "driver_id")
         .withColumn("_revenue_for_candidate", revenue_for_candidate)
         .withColumn(
             # 후보 차량도 현재 차량과 "같은 기간"(이번 달 실제 lease 유효 일수)만 렌트했다고

@@ -7,6 +7,7 @@
    (등급 구분 없이 전 차종이 누구에게나 후보)
 5. recommendation_reason: 연비/렌트료가 개선되면 함께 표기, 등급이 같으면 "차량등급"은 안 붙음
 6. recommendation_reason: 추천 차량이 현재 차량과 동일하면 "현재 차량 유지"
+6-1. 이미 가진 등급 자격에는 상승 매출을 가정하지 않음 — 차를 안 바꾸면 증가액 0 (#403)
 7. zone이 3개 미만인 기사는 top2/top3_zone_id가 None
 8. trip이 vehicle_master/gas_ev_price에 매칭 안 되면 ValueError
 9. monthly_report: profit_increase 기준을 넘어도 revenue_increase<0이면 recommended_driver_count에서 제외
@@ -196,6 +197,35 @@ def test_recommendation_reason은_개선된_항목만_나열한다(spark, curren
 
     assert recommendation.recommended_make_key == "B"
     assert recommendation.recommendation_reason == expected_reason
+
+
+def test_이미_가진_등급자격에는_상승매출을_가정하지_않는다(spark):
+    """차를 안 바꾸는데 순수익이 오르면 안 됩니다 (#403).
+
+    이미 Comfort 자격 차를 타는 기사는 그 자격으로 Standard 운행을 한 것이 관측된
+    사실입니다. 거기에 등급 배수를 다시 곱하면 "현재 차량 유지" 추천에 이득이 붙고,
+    그대로 `build_monthly_report` 의 성과 집계에까지 들어갑니다.
+    """
+    vehicle_master = _vehicle_master(spark, [
+        {"make_key": "B", "model_key": "COMFORT", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+         "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
+         "platform": "uber", "product": "Comfort", "min_year": 2000},
+    ])
+    # 같은 zone 쌍에서 Standard($20) 와 Comfort($40) 를 둘 다 뛰어 배수 2.0 이 만들어집니다.
+    trips = spark.createDataFrame([
+        _trip(make_key="B", model_key="COMFORT", estimated_service_tier="Standard", driver_pay=20.0),
+        _trip(make_key="B", model_key="COMFORT", estimated_service_tier="Comfort", driver_pay=40.0),
+    ])
+    gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
+
+    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master)
+    driver_aggregation = build_driver_monthly_aggregation(enriched, vehicle_master, YEAR_MONTH, DAYS_IN_MONTH)
+    recommendation = build_monthly_vehicle_recommendation(
+        enriched, vehicle_master, driver_aggregation, YEAR_MONTH, DAYS_IN_MONTH
+    ).first()
+
+    assert recommendation.recommendation_reason == "현재 차량 유지"
+    assert recommendation.expected_net_profit_increase == pytest.approx(0.0)
 
 
 def test_zone이_3개_미만이면_top2_top3는_None이다(spark):
