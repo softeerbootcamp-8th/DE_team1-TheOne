@@ -24,11 +24,24 @@ from jobs.silver_to_gold.transformer import (
     build_monthly_report,
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
+    resolve_assignment_version,
 )
 
 logger = logging.getLogger(__name__)
 
 DATASETS = ("driver_aggregation", "driver_car_suggestion", "monthly_report")
+
+
+def partition_value(path: str, key: str) -> str:
+    """경로에서 `key=값` 파티션의 값을 꺼냅니다.
+
+    입력 경로가 곧 그 데이터의 시점이라, 별도 컬럼 없이 여기서 계보를 읽습니다.
+    규칙과 다른 경로를 넘겼으면 조용히 빈 값을 쓰지 않고 실패시킵니다.
+    """
+    for part in Path(path).parts:
+        if part.startswith(f"{key}="):
+            return part.removeprefix(f"{key}=")
+    raise ValueError(f"경로에서 {key}= 파티션을 찾지 못했습니다: {path}")
 
 
 def _write_csv(dataframe: pd.DataFrame, output_dir: str, dataset: str, year_month: str) -> Path:
@@ -76,8 +89,17 @@ def main(args_list: list[str] | None = None) -> None:
         recommendation = build_monthly_vehicle_recommendation(
             enriched, vehicle_master, driver_aggregation, year_month, days_in_month,
         ).persist()
-        # 5. 리스 업체 월간 보고서 작성
-        report: DataFrame = build_monthly_report(recommendation, year_month, args.threshold_profit_increase)
+        # 5. 리스 업체 월간 보고서 작성 — 계보 세 값을 함께 싣는다.
+        report: DataFrame = build_monthly_report(
+            recommendation,
+            year_month,
+            args.threshold_profit_increase,
+            assignment_version=resolve_assignment_version(trips),
+            vehicle_master_collected_date=partition_value(
+                args.vehicle_master_path, "collected_date"
+            ),
+            gas_ev_price_month=partition_value(args.gas_ev_price_path, "collected_month"),
+        )
 
         outputs: dict[str, DataFrame] = {
             "driver_aggregation": driver_aggregation,

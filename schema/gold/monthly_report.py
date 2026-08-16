@@ -26,3 +26,19 @@ class MonthlyReport:
 
     total_revenue_increase: float
     """추천된 기사들의 expected_revenue_increase 합계 (USD). 회사가 얻는 총 렌탈료 매출 증가분."""
+
+    # --- 계보: 이 숫자가 어떤 입력으로 나왔는지 ---
+    # 위 값들은 입력이 조금만 달라도 바뀝니다. 어느 배정 결과·어느 시점 카탈로그·어느 달
+    # 연료비를 썼는지 남기지 않으면, 두 벌의 Gold 를 놓고 무엇이 달랐는지 되짚을 수 없습니다.
+    # 월 1행이라 컬럼을 늘려도 비용이 없습니다.
+
+    assignment_version: str
+    """배정 로직 버전 (`hvfhv_driver_trip.assignment_version`). seed 가 같아도 버전이
+    다르면 배정이 통째로 달라집니다 — v2 는 선호 생성 규칙, v3 는 등급 선호 반영."""
+
+    vehicle_master_collected_date: str
+    """쓴 `vehicle_master` 의 `collected_date`. 대상 월 이하 파티션이 없으면 이후 수집분으로
+    물러서는데(hvfhv_silver_to_gold_dag), 그 사실이 로그에만 남아 있으면 결과만 보고는 모릅니다."""
+
+    gas_ev_price_month: str
+    """쓴 연료비의 `collected_month` (YYYY-MM). 대상 월과 다르면 다른 시점 단가로 계산된 것입니다."""
