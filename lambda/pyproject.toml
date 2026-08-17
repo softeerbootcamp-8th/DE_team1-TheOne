@@ -20,11 +20,19 @@ dependencies = [
     "boto3==1.43.65",           # S3 적재 (bronze/*)
     "python-dotenv==1.2.1",     # 로컬 개발용 .env 로드 (Lambda 런타임에서는 미사용)
     "pyarrow==20.0.0",          # parquet 쓰기 (uber_eligible_vehicles_raw_to_bronze)
+    # EIA 공개 통계는 스프레드시트로만 배포됩니다. 셀만 읽으면 되므로 pandas 는
+    # 넣지 않습니다 — 이 런타임은 Lambda 이미지 크기를 이유로 pandas 를 안 씁니다.
+    "xlrd==2.0.2",              # EIA 휘발유 (.xls, 구형 BIFF)
+    "openpyxl==3.1.5",          # EIA 전력 (.xlsx)
     "pipeline-core",            # 공통 Extractor/Transformer/Loader/Pipeline
 ]
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "moto==5.2.2"]  # moto: AWS 모킹
+dev = [
+    "pytest==9.1.1",
+    "moto==5.2.2",   # AWS 모킹
+    "xlwt==1.3.0",   # 테스트용 구형 xls 작성 (EIA 휘발유 원본 모양 재현)
+]
 
 [tool.uv.sources]
 pipeline-core = { path = "../libs/pipeline_core" }
