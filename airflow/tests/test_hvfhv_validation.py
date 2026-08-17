@@ -161,30 +161,46 @@ def test_Bronze_경로가_base_dir_layout과_다르면_막는다(tmp_path):
         validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
-# 2026-06 원본 Parquet 의 footer 에서 직접 읽은 실제 시그니처입니다.
+# 가짜 데이터 API 가 실제로 내려주는 Parquet 의 footer 에서 직접 읽은 시그니처입니다.
 # `bronze_schema.SCHEMA` 로 픽스처를 만들면 SCHEMA 가 틀려도 자기 자신과 비교돼
 # 통과합니다. 실제 값과의 대조는 이렇게 문자열을 박아두어야만 됩니다 (#324).
+#
+# 문자열이 `large_string` 이 아니라 `string` 인 것이 핵심입니다. 예전에는 Bronze 가
+# TLC 원본 바이트를 그대로 받아서 `large_string` 이었는데, 원천이 가짜 데이터 API 로
+# 바뀌면서(#450) 그 파일을 Spark 가 다시 씁니다. TLC 값을 그대로 두었더니 로컬 E2E 가
+# 매번 여기서 죽었고, 픽스처를 SCHEMA 로 만드는 다른 테스트들은 전부 통과했습니다.
 SOURCE_SCHEMA_SIGNATURE = (
-    "hvfhs_license_num:large_string|dispatching_base_num:large_string"
-    "|originating_base_num:large_string|request_datetime:timestamp[us]"
+    "hvfhs_license_num:string|dispatching_base_num:string"
+    "|originating_base_num:string|request_datetime:timestamp[us]"
     "|on_scene_datetime:timestamp[us]|pickup_datetime:timestamp[us]"
     "|dropoff_datetime:timestamp[us]|PULocationID:int32|DOLocationID:int32"
     "|trip_miles:double|trip_time:int64|base_passenger_fare:double|tolls:double"
     "|bcf:double|sales_tax:double|congestion_surcharge:double|airport_fee:double"
-    "|tips:double|driver_pay:double|shared_request_flag:large_string"
-    "|shared_match_flag:large_string|access_a_ride_flag:large_string"
-    "|wav_request_flag:large_string|wav_match_flag:large_string"
+    "|tips:double|driver_pay:double|shared_request_flag:string"
+    "|shared_match_flag:string|access_a_ride_flag:string"
+    "|wav_request_flag:string|wav_match_flag:string"
     "|cbd_congestion_fee:double|taxi_id:string"
 )
 
 
-def test_HVFHV_taxi_id_원본스키마는_TLC컬럼과_taxi_id를_갖는다():
+def test_Bronze_스키마는_API가_내려주는_파일과_같다():
     """틀리면 Bronze 검증이 **어떤 달을 넣어도** 통과하지 못합니다.
 
-    Bronze Loader 는 원본 바이트를 파싱 없이 그대로 씁니다. 따라서 읽어들인
-    스키마는 항상 TLC 의 물리 타입이고, `SCHEMA` 가 그와 다르면 영원히 불일치입니다.
+    Bronze Loader 는 받은 바이트를 파싱 없이 그대로 씁니다. 그 바이트의 출처가
+    TLC 원본에서 가짜 데이터 API 로 바뀌었고(#450), API 가 내려주는 파일은
+    `driver_assignment/source_job.py` 가 Spark 로 다시 쓴 것입니다.
     """
     assert task_module._schema_signature(bronze_schema.SCHEMA) == SOURCE_SCHEMA_SIGNATURE
+
+
+def test_Bronze_스키마에_large_string이_남아있지_않다():
+    """Spark 는 UTF8 을 `string` 으로 씁니다. TLC 물리 타입(`large_string`)이 한 컬럼만
+    남아도 `schema_signature` 가 통째로 어긋나 로컬 E2E 가 Bronze 에서 멈춥니다."""
+    large = [
+        field.name for field in bronze_schema.SCHEMA if field.type == pa.large_string()
+    ]
+
+    assert not large, f"large_string 이 남아 있습니다: {large}"
 
 
 def test_cbd컬럼이_없던_과거월도_taxi_id가_있으면_통과한다(tmp_path):

@@ -52,8 +52,29 @@ TLC_LEGACY_SCHEMA = pa.schema(
     [field for field in TLC_SCHEMA if field.name != "cbd_congestion_fee"]
 )
 
+def _rewritten_by_spark(schema: pa.Schema) -> pa.Schema:
+    """Spark 가 다시 쓴 Parquet 의 물리 타입.
+
+    Bronze 가 받는 바이트는 더 이상 TLC 원본이 아닙니다. 가짜 데이터 API 가 내려주는
+    파일은 `driver_assignment/source_job.py::_write_one_parquet` 가 Spark 로 다시
+    쓴 것이고, Spark 는 UTF8 을 `large_string` 이 아니라 `string` 으로 씁니다.
+    TLC 타입을 그대로 두면 `schema_signature` 검증이 **영원히** 통과하지 못합니다.
+    """
+    return pa.schema(
+        [
+            pa.field(
+                field.name,
+                pa.string() if field.type == pa.large_string() else field.type,
+            )
+            for field in schema
+        ]
+    )
+
+
 # 제공 데이터는 각 월의 TLC 원본 컬럼을 보존하고 배정된 taxi_id 하나만 추가합니다.
-SCHEMA = pa.schema([*TLC_SCHEMA, pa.field("taxi_id", pa.string())])
+SCHEMA = pa.schema(
+    [*_rewritten_by_spark(TLC_SCHEMA), pa.field("taxi_id", pa.string())]
+)
 LEGACY_SCHEMA = pa.schema(
-    [*TLC_LEGACY_SCHEMA, pa.field("taxi_id", pa.string())]
+    [*_rewritten_by_spark(TLC_LEGACY_SCHEMA), pa.field("taxi_id", pa.string())]
 )
