@@ -58,7 +58,13 @@ default_args = {
     },
 )
 def eia_fuel_price_bronze_to_silver_pipeline():
-    check_bronze_task() >> bronze_to_silver_task() >> validate_silver_task()
+    # 변환만 재시도합니다. 확인·검증은 파일을 다시 봐도 결과가 같아서 재시도가
+    # 실패를 늦추기만 합니다.
+    (
+        check_bronze_task.override(retries=0)()
+        >> bronze_to_silver_task.override(retries=1, retry_delay=timedelta(minutes=10))()
+        >> validate_silver_task.override(retries=0)()
+    )
 
 
 eia_fuel_price_bronze_to_silver_dag = eia_fuel_price_bronze_to_silver_pipeline()
