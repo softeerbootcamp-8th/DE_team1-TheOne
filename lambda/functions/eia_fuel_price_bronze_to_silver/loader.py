@@ -1,6 +1,6 @@
 """EIA 기반 일별 연료비를 통합 Silver Parquet 으로 적재합니다.
 
-크롤링 경로(`gas_ev_price_bronze_to_silver` DAG)와 **같은 자리·같은 스키마**에 씁니다.
+Gold 가 읽는 자리에 공용 스키마(`schema/silver/gas_ev_price.py`)로 씁니다.
 Gold 는 어느 경로로 만들어졌는지 몰라도 되고, 구분이 필요하면 `price_source` 를 봅니다.
 """
 

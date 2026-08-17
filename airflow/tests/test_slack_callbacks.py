@@ -19,16 +19,16 @@ from common.slack_failure_callback import (
 
 
 DAG_MODULES = {
-    "dags.ev_charging_price_raw_to_bronze_dag": (
-        "ev_charging_price_raw_to_bronze_dag"
+    "dags.eia_electricity_price_raw_to_bronze_dag": (
+        "eia_electricity_price_raw_to_bronze_dag"
     ),
+    "dags.eia_fuel_price_bronze_to_silver_dag": (
+        "eia_fuel_price_bronze_to_silver_dag"
+    ),
+    "dags.eia_gas_price_raw_to_bronze_dag": "eia_gas_price_raw_to_bronze_dag",
     "dags.fueleconomy_vehicle_specs_raw_to_silver_dag": (
         "fueleconomy_vehicle_specs_dag"
     ),
-    "dags.gas_ev_price_bronze_to_silver_dag": (
-        "gas_ev_price_bronze_to_silver_dag"
-    ),
-    "dags.gas_price_raw_to_bronze_dag": "gas_price_raw_to_bronze_dag",
     "dags.hvfhv_driver_trip_silver_dag": "hvfhv_driver_trip_silver_dag",
     "dags.hvfhv_raw_to_silver_dag": "hvfhv_dag",
     "dags.lyft_eligible_vehicles_raw_to_silver_dag": (

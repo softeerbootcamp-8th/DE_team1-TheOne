@@ -1,16 +1,16 @@
 """EIA 원본 두 개를 대상 월의 통합 연료비 Silver 로 변환합니다.
 
-크롤링 쪽 통합(`gas_ev_price_bronze_to_silver`)과 **같은 자리**에 씁니다 —
-`gas_ev_price/collected_month=YYYY-MM/`. 구분은 `price_source` 로 합니다.
+산출물은 `gas_ev_price/collected_month=YYYY-MM/gas_ev_price.parquet` — Gold 가 읽는
+자리입니다. 출처는 `price_source` 로 남깁니다.
 
-스케줄이 없는 이유
-----------------
-EIA 파일에는 이력이 통째로 들어 있어 **어느 달이든** 만들 수 있습니다. 그래서 자동
-주기보다 "필요한 달을 지정해 돌리는" 편이 맞습니다.
+스케줄
+-----
+지정이 없으면 전력 공개 지연(약 3개월)만큼 물러선 달을 채웁니다. 수집 DAG 두 개가
+매월 1일에 돌고 나면 그 결과로 한 달을 만드는 흐름입니다.
 
-자동 스케줄을 두면 문제가 생기기도 합니다 — 지연 오프셋 때문에 시간이 지나면 EIA 가
-크롤링이 **일별 실측으로 만든 달을 따라잡아 덮어씁니다**(주간·월간을 편 값으로).
-크롤링을 유지할지 EIA 로 일원화할지 정해지기 전까지는 자동으로 덮어쓰지 않게 둡니다.
+EIA 파일에는 이력이 통째로 들어 있어 **어느 달이든** 만들 수 있습니다. 과거를
+채울 때는 `year_month` 를 지정해 수동으로 돌리면 됩니다 — 자동 주기가 붙어 있어도
+지정 실행이 막히지 않습니다.
 """
 
 from datetime import datetime, timedelta
@@ -42,7 +42,8 @@ default_args = {
 @dag(
     dag_id="eia_fuel_price_bronze_to_silver_pipeline",
     default_args=default_args,
-    schedule=None,
+    # 수집 두 개(05시·06시)가 끝난 뒤에 돕니다.
+    schedule="0 7 1 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,

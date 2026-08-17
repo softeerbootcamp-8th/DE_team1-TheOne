@@ -1,7 +1,7 @@
 """EIA 원본 두 개를 통합 연료비 Silver 로 변환하는 실행·검증 함수.
 
-크롤링 쪽 통합(`gas_ev_price_bronze_to_silver`)과 같은 자리에 씁니다 —
-`gas_ev_price/collected_month=YYYY-MM/`. 구분은 `price_source` 로 합니다.
+산출물은 `gas_ev_price/collected_month=YYYY-MM/` — Gold 가 읽는 자리입니다.
+출처는 `price_source` 로 남깁니다.
 
 대상 월을 파라미터로 받는 이유
 ---------------------------
