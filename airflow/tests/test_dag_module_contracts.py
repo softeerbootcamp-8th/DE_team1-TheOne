@@ -1,9 +1,10 @@
 """DAG 선언과 실행 모듈 분리 계약.
 
 1. DAG 파일에는 단 하나의 ``@dag`` 팩토리만 정의
-2. 누락됐던 7개 cron schedule 유지
+2. cron schedule 유지 — 여기 등록되지 않은 DAG 는 스케줄이 검사되지 않습니다.
+   실제로 EIA DAG 를 빠뜨렸을 때 셸 글로브가 확장된 cron 이 그대로 통과했습니다.
 3. 모든 task의 수집·변환·검증별 retry 정책 유지
-4. Vehicle Master와 Gas/EV의 핵심 task 의존성 유지
+4. Vehicle Master와 EIA 통합의 핵심 task 의존성 유지
 """
 
 import ast
@@ -17,13 +18,10 @@ import pytest
 DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
 
 DAG_VARIABLES = {
-    "ev_charging_price_raw_to_bronze_dag": "ev_charging_price_raw_to_bronze_dag",
     "eia_gas_price_raw_to_bronze_dag": "eia_gas_price_raw_to_bronze_dag",
     "eia_electricity_price_raw_to_bronze_dag": "eia_electricity_price_raw_to_bronze_dag",
     "eia_fuel_price_bronze_to_silver_dag": "eia_fuel_price_bronze_to_silver_dag",
     "fueleconomy_vehicle_specs_raw_to_silver_dag": "fueleconomy_vehicle_specs_dag",
-    "gas_ev_price_bronze_to_silver_dag": "gas_ev_price_bronze_to_silver_dag",
-    "gas_price_raw_to_bronze_dag": "gas_price_raw_to_bronze_dag",
     "hvfhv_driver_trip_silver_dag": "hvfhv_driver_trip_silver_dag",
     "hvfhv_raw_to_silver_dag": "hvfhv_dag",
     "hvfhv_silver_to_gold_dag": "hvfhv_silver_to_gold_dag",
@@ -34,9 +32,11 @@ DAG_VARIABLES = {
 }
 
 SCHEDULES = {
-    "ev_charging_price_raw_to_bronze_dag": "0 9 * * *",
-    "gas_price_raw_to_bronze_dag": "0 9 * * *",
-    "gas_ev_price_bronze_to_silver_dag": "0 10 1 * *",
+    # EIA 파일에는 이력이 통째로 들어 있어 매일 받을 이유가 없습니다. 월 1회 갱신은
+    # 과거 값 개정분을 확보하기 위한 것입니다.
+    "eia_gas_price_raw_to_bronze_dag": "0 5 1 * *",
+    "eia_electricity_price_raw_to_bronze_dag": "0 6 1 * *",
+    "eia_fuel_price_bronze_to_silver_dag": "0 7 1 * *",
     "hvfhv_raw_to_silver_dag": "0 0 10 * *",
     "vehicle_catalog_raw_to_silver_dag": "0 3 * * 1",
     "lyft_eligible_vehicles_raw_to_silver_dag": "0 4 * * 1",
@@ -44,34 +44,25 @@ SCHEDULES = {
 }
 
 RETRY_CONTRACTS = {
-    "ev_charging_price_raw_to_bronze_pipeline": {
+    "eia_gas_price_raw_to_bronze_pipeline": {
         "collection": {"raw_to_bronze"},
         "transform": {},
         "validation": {"validate_bronze"},
+    },
+    "eia_electricity_price_raw_to_bronze_pipeline": {
+        "collection": {"raw_to_bronze"},
+        "transform": {},
+        "validation": {"validate_bronze"},
+    },
+    "eia_fuel_price_bronze_to_silver_pipeline": {
+        "collection": set(),
+        "transform": {"bronze_to_silver": 10},
+        "validation": {"check_bronze", "validate_silver"},
     },
     "fueleconomy_vehicle_specs_raw_to_silver_pipeline": {
         "collection": {"raw_to_bronze"},
         "transform": {"bronze_to_silver": 15},
         "validation": {"validate_bronze", "validate_silver"},
-    },
-    "gas_ev_price_bronze_to_silver_pipeline": {
-        "collection": set(),
-        "transform": {
-            "gas_bronze_to_silver": 10,
-            "ev_bronze_to_silver": 10,
-            "integrate_silver": 10,
-        },
-        "validation": {
-            "check_month_completeness",
-            "validate_gas_silver",
-            "validate_ev_silver",
-            "validate_integrated_silver",
-        },
-    },
-    "gas_price_raw_to_bronze_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {},
-        "validation": {"validate_bronze"},
     },
     "hvfhv_driver_trip_silver_pipeline": {
         "collection": set(),
@@ -205,13 +196,11 @@ def test_Vehicle_Master_DAG의_공개_계약을_유지한다():
     }
 
 
-def test_Gas_EV_DAG의_개별_Silver_검증_의존성을_유지한다():
-    module = importlib.import_module("dags.gas_ev_price_bronze_to_silver_dag")
-    dag = module.gas_ev_price_bronze_to_silver_dag
+def test_EIA_통합_DAG는_원본확인을_변환보다_먼저_한다():
+    # 원본이 하나만 있으면 변환이 더 안쪽에서 죽어 어느 수집이 문제인지 로그를 파야
+    # 합니다. 확인이 변환 앞에 있어야 그 상황에서 바로 알 수 있습니다.
+    module = importlib.import_module("dags.eia_fuel_price_bronze_to_silver_dag")
+    dag = module.eia_fuel_price_bronze_to_silver_dag
 
-    assert "gas_bronze_to_silver" in dag.get_task(
-        "validate_gas_silver"
-    ).upstream_task_ids
-    assert "ev_bronze_to_silver" in dag.get_task(
-        "validate_ev_silver"
-    ).upstream_task_ids
+    assert dag.get_task("bronze_to_silver").upstream_task_ids == {"check_bronze"}
+    assert dag.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}

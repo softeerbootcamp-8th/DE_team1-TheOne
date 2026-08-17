@@ -1,6 +1,6 @@
 """EIA 원본 두 개를 대상 월의 일별 연료비로 정제합니다.
 
-산출물은 크롤링 경로(`gas_ev_price_bronze_to_silver`)와 **같은 Silver** 입니다.
+산출물은 Gold 가 읽는 `gas_ev_price` Silver 입니다.
 Gold 는 어느 경로로 만들어졌는지 몰라도 되고, 구분이 필요하면 `price_source` 를 봅니다.
 
 정제에서 하는 일
@@ -183,9 +183,9 @@ def build_daily_prices(
 def validate(rows: list[dict], year_month: str) -> None:
     """날짜 완결성과 가격 범위. 둘 다 하류에서 조용히 틀리는 경로라 여기서 막습니다.
 
-    날짜가 하루라도 비면 `gas_ev_price_bronze_to_silver.combine_price_tables` 가
-    "날짜 집합이 다릅니다"로 죽고, 통과하더라도 Gold 의 일자 조인에서 그 날 운행이
-    통째로 매칭 실패합니다.
+    날짜가 하루라도 비면 Gold 의 일자 조인에서 그 날 운행이 통째로 매칭 실패합니다.
+    Gold 는 매칭 실패를 예외로 잡지만, 그 메시지는 차량 문제와 구분되지 않아 원인을
+    찾는 데 시간이 걸립니다. 여기서 막는 편이 훨씬 빠릅니다.
     """
     expected = month_days(year_month)
     if [row["date"] for row in rows] != expected:

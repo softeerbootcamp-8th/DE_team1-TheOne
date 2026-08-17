@@ -86,15 +86,15 @@ pipeline-core = { path = "../libs/pipeline_core" }
 
 ### Lambda 크롤러 추가
 
-다음은 `gas_price` 크롤러 예시입니다.
+다음은 설명용 가상 예시입니다 — 저장소에 같은 이름의 코드는 없습니다.
 
 ```python
-# lambda/functions/gas_price/extractor.py
+# lambda/functions/example_price/extractor.py
 from pipeline_core.extractor import Extractor
 
 
-class GasPriceExtractor(Extractor):
-    name = "gas_price"
+class ExamplePriceExtractor(Extractor):
+    name = "example_price"
 
     def extract(self) -> list[dict]:
         # 외부 API 호출 및 파싱
@@ -103,12 +103,12 @@ class GasPriceExtractor(Extractor):
 ```
 
 ```python
-# lambda/functions/gas_price/handler.py
+# lambda/functions/example_price/handler.py
 import pyarrow as pa
 
 from pipeline_core.pipeline import Pipeline
 from common.loaders import LocalParquetLoader
-from .extractor import GasPriceExtractor
+from .extractor import ExamplePriceExtractor
 
 
 SCHEMA = pa.schema([("date", pa.date32()), ("price", pa.float64())])
@@ -117,11 +117,11 @@ SCHEMA = pa.schema([("date", pa.date32()), ("price", pa.float64())])
 def lambda_handler(event, context):
     loader = LocalParquetLoader(
         base_dir="data/bronze",
-        dataset="gas_price",
+        dataset="example_price",
         schema=SCHEMA,
         partition_by=["date"],
     )
-    result = Pipeline(GasPriceExtractor(), loader).run()
+    result = Pipeline(ExamplePriceExtractor(), loader).run()
     return {
         "row_count": result.write_result.row_count,
         "location": result.write_result.location,
@@ -137,32 +137,32 @@ uv run pytest
 
 ### Spark 작업 추가
 
-다음은 Bronze의 `gas_price` 데이터를 정제해 Silver에 적재하는 예시입니다.
+다음은 Bronze의 `example_price` 데이터를 정제해 Silver에 적재하는 가상 예시입니다.
 
 ```python
-# spark/jobs/bronze_to_silver/gas_price/transformer.py
+# spark/jobs/bronze_to_silver/example_price/transformer.py
 from pipeline_core.transformer import Transformer
 
 
-class GasPriceCleanTransformer(Transformer):
+class ExamplePriceCleanTransformer(Transformer):
     def transform(self, df):
         return df.dropDuplicates(["date"]).filter(df.price.isNotNull())
 ```
 
 ```python
-# spark/jobs/bronze_to_silver/gas_price/job.py
+# spark/jobs/bronze_to_silver/example_price/job.py
 from pipeline_core.pipeline import Pipeline
 from common.io import SparkParquetExtractor, SparkParquetLoader
 from common.session import get_or_create_spark_session
-from .transformer import GasPriceCleanTransformer
+from .transformer import ExamplePriceCleanTransformer
 
 
 def main():
-    spark = get_or_create_spark_session("gas_price_bronze_to_silver")
+    spark = get_or_create_spark_session("example_price_bronze_to_silver")
     Pipeline(
-        SparkParquetExtractor(spark, "data/bronze/gas_price"),
-        SparkParquetLoader("data/silver/gas_price", partition_by=["date"]),
-        transformer=GasPriceCleanTransformer(),
+        SparkParquetExtractor(spark, "data/bronze/example_price"),
+        SparkParquetLoader("data/silver/example_price", partition_by=["date"]),
+        transformer=ExamplePriceCleanTransformer(),
     ).run()
 
 
@@ -192,7 +192,7 @@ from dags.common.defaults import DEFAULT_ARGS
 
 
 with DAG(
-    dag_id="gas_price_collect",
+    dag_id="example_price_collect",
     default_args=DEFAULT_ARGS,  # 재시도 2회, 5분 간격, 실패 시 Slack 알림
     schedule="@daily",
     start_date=datetime(2026, 1, 1),

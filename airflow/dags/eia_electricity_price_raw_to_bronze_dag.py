@@ -31,15 +31,22 @@ default_args = {
 @dag(
     dag_id="eia_electricity_price_raw_to_bronze_pipeline",
     default_args=default_args,
-    schedule="0 6 1 Dockerfile dags pyproject.toml scripts slack_connection.md tests uv.lock *",
+    schedule="0 6 1 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['fuel', 'eia', 'ev'],
+    tags=["fuel", "eia", "ev"],
     params={"bronze_dir": Param(BRONZE_DIR, type="string")},
 )
 def eia_electricity_price_raw_to_bronze_pipeline():
-    validate_bronze_task(raw_to_bronze_task())
+    # 수집은 남의 사이트가 잠깐 죽는 것에 대비해 넉넉히 재시도하고, 검증은 재시도하지
+    # 않습니다 — 같은 파일을 다시 봐도 결과가 같습니다.
+    raw_result = raw_to_bronze_task.override(
+        retries=2,
+        retry_delay=timedelta(minutes=5),
+        retry_exponential_backoff=True,
+    )()
+    validate_bronze_task.override(retries=0)(raw_result)
 
 
 eia_electricity_price_raw_to_bronze_dag = eia_electricity_price_raw_to_bronze_pipeline()

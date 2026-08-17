@@ -1,7 +1,7 @@
 """EIA 연료비 3단 DAG 의 검증 시나리오. 이슈 #445.
 
-수집 두 개(휘발유·전력)와 통합 하나로 나뉜 것은 크롤링 쪽(`gas_price_raw_to_bronze`
-+ `ev_charging_price_raw_to_bronze` + `gas_ev_price_bronze_to_silver`)과 같은 규칙입니다.
+수집 두 개(휘발유·전력)와 통합 하나로 나눈 이유는 두 원본이 남남이라는 것입니다 —
+URL·형식·파서·공개 주기가 전부 달라서 한쪽이 죽어도 다른 쪽은 살아야 합니다.
 
  1. 원본이 규칙과 다른 경로에 있으면 실패 (두 데이터셋 각각)
  2. 원본이 하한보다 작으면 실패 (형식이 바뀌면 파싱이 조용히 이상한 값을 냄)
@@ -31,7 +31,7 @@ import pytest
 from scripts.eia_fuel_price_bronze_to_silver import tasks as silver_tasks
 from scripts.eia_electricity_price_raw_to_bronze import tasks as electricity_tasks
 from scripts.eia_gas_price_raw_to_bronze import tasks as gas_tasks
-from schema.silver.gas_ev_price import CRAWLED, EIA, SCHEMA
+from schema.silver.gas_ev_price import EIA, SCHEMA
 
 
 def _layout():
@@ -193,8 +193,10 @@ def test_스키마가_다르면_실패한다(tmp_path):
         silver_tasks.validate_silver(str(tmp_path), "2025-05")
 
 
-def test_크롤링_산출물을_EIA_검증에_넣으면_실패한다(tmp_path):
-    _write_silver(tmp_path, "2025-05", rows=31, source=CRAWLED)
+def test_다른_출처가_만든_산출물은_EIA_검증에서_실패한다(tmp_path):
+    # 지금 생산자는 EIA 하나지만, 소스가 늘면 같은 자리에 쓰게 됩니다. 그때 남의
+    # 산출물을 EIA 검증으로 통과시키면 어느 성질의 값인지 말할 수 없게 됩니다.
+    _write_silver(tmp_path, "2025-05", rows=31, source="somewhere_else")
 
     with pytest.raises(ValueError, match="price_source 가 다릅니다"):
         silver_tasks.validate_silver(str(tmp_path), "2025-05")
