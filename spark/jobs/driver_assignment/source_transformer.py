@@ -9,7 +9,7 @@ from pyspark.sql.functions import (
 
 from pipeline_core.transformer import Transformer
 
-from jobs.driver_assignment.source_schema import FINAL_SCHEMA, REQUIRED_COLUMNS
+from schema.silver.hvfhv import FINAL_SCHEMA, REQUIRED_COLUMNS
 
 logger = logging.getLogger(__name__)
 

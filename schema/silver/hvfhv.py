@@ -1,5 +1,47 @@
-"""기존 HVFHV Silver DAG를 위한 전환기 스키마 호환 import."""
+"""[NYC TLC HVFHV Trip Record] Silver Spark 스키마."""
 
-from jobs.driver_assignment.source_schema import FINAL_SCHEMA, REQUIRED_COLUMNS
+from pyspark.sql.types import (
+    DoubleType, IntegerType, LongType, StringType, StructField, StructType, TimestampType
+)
 
-__all__ = ["FINAL_SCHEMA", "REQUIRED_COLUMNS"]
+FINAL_SCHEMA = StructType([
+    StructField("trip_key", StringType(), False),
+    StructField("pickup_datetime", TimestampType(), True),
+    StructField("dropoff_datetime", TimestampType(), True),
+    StructField("PULocationID", IntegerType(), True),
+    StructField("DOLocationID", IntegerType(), True),
+    StructField("trip_miles", DoubleType(), True),
+    StructField("trip_time", LongType(), True),
+    StructField("base_passenger_fare", DoubleType(), True),
+    StructField("tolls", DoubleType(), True),
+    StructField("bcf", DoubleType(), True),
+    StructField("sales_tax", DoubleType(), True),
+    StructField("congestion_surcharge", DoubleType(), True),
+    StructField("airport_fee", DoubleType(), True),
+    StructField("tips", DoubleType(), True),
+    StructField("driver_pay", DoubleType(), True),
+    StructField("platform_name", StringType(), False),
+    StructField("estimated_service_tier", StringType(), False),
+    StructField("taxi_id", StringType(), True),
+    StructField("driver_id", StringType(), True),
+    StructField("taxi_model_id", StringType(), True),
+    StructField("year_month", StringType(), True),
+    StructField("pickup_borough", StringType(), True),
+    StructField("pickup_zone", StringType(), True),
+    StructField("pickup_service_zone", StringType(), True),
+    StructField("dropoff_borough", StringType(), True),
+    StructField("dropoff_zone", StringType(), True),
+    StructField("dropoff_service_zone", StringType(), True)
+])
+
+REQUIRED_COLUMNS = [
+    "pickup_datetime",
+    "dropoff_datetime",
+    "PULocationID",
+    "DOLocationID",
+    "trip_miles",
+    "trip_time",
+    "base_passenger_fare",
+    "driver_pay",
+    "hvfhs_license_num",
+]
