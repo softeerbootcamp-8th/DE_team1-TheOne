@@ -1,18 +1,17 @@
-"""EIA 연료비 DAG의 실행·검증 함수.
+"""EIA 원본 두 개를 통합 연료비 Silver 로 변환하는 실행·검증 함수.
 
-크롤링(`gas_ev_price_bronze_to_silver`)이 **오늘 값만** 모으는 것과 달리, EIA 파일
-하나에 이력이 통째로 들어 있어 어느 과거 달이든 만들 수 있습니다. 그래서 이 DAG 는
-`year_month` 를 받아 그 달을 채우는 것이 기본 동작입니다.
+크롤링 쪽 통합(`gas_ev_price_bronze_to_silver`)과 같은 자리에 씁니다 —
+`gas_ev_price/collected_month=YYYY-MM/`. 구분은 `price_source` 로 합니다.
 
-두 경로가 같은 Silver 자리에 씁니다
----------------------------------
-`gas_ev_price/collected_month=YYYY-MM/` — 담당하는 달이 겹치지 않습니다. 크롤링은
-수집을 시작한 2026-08 이후, EIA 는 그 이전. 겹칠 때 무엇을 우선할지는 아직 정하지
-않았고, 지금은 **덮어쓰기**라 나중에 실행한 쪽이 남습니다.
+대상 월을 파라미터로 받는 이유
+---------------------------
+EIA 파일 하나에 이력이 통째로 들어 있어 **어느 달이든** 만들 수 있습니다. 그래서
+"직전 달을 자동으로" 가 아니라 필요한 달을 지정하는 것이 기본 동작입니다.
 """
 
+import importlib
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -26,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 SILVER_DIR = str(PROJECT_ROOT / "data" / "silver")
+HANDLER_NAME = "eia_fuel_price_bronze_to_silver"
 INTEGRATED_DATASET = "gas_ev_price"
 INTEGRATED_FILE_NAME = "gas_ev_price.parquet"
 
@@ -70,6 +70,37 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
+def require_bronze(base_dir: str, year_month: str) -> dict[str, str]:
+    """두 원본이 모두 있는지 변환 **전에** 확인합니다.
+
+    하나만 있으면 변환이 더 안쪽에서 죽어 어느 수집이 문제인지 로그를 파야 합니다.
+    """
+    layout = importlib.import_module("lambda.functions.common.eia_fuel_price_layout")
+    year, month = (int(part) for part in year_month.split("-"))
+    as_of = datetime(year, month, 28, tzinfo=timezone.utc).date()
+
+    found = {}
+    for dataset, file_name, dag_id in (
+        (layout.GAS_DATASET, layout.GAS_FILE_NAME, "eia_gas_price_raw_to_bronze_pipeline"),
+        (
+            layout.ELECTRICITY_DATASET,
+            layout.ELECTRICITY_FILE_NAME,
+            "eia_electricity_price_raw_to_bronze_pipeline",
+        ),
+    ):
+        try:
+            partition = layout.latest_bronze_partition(base_dir, dataset, as_of)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"{exc} — {dag_id} 을 먼저 돌리세요.") from exc
+        path = partition / file_name
+        if not path.is_file():
+            raise FileNotFoundError(f"EIA 원본이 없습니다: {path} — {dag_id} 을 먼저 돌리세요.")
+        found[dataset] = str(path)
+
+    logger.info("EIA 원본 확인: %s", found)
+    return found
+
+
 def validate_silver(base_dir: str, year_month: str) -> None:
     """스키마·행 수·날짜 완결성·출처를 확인합니다.
 
@@ -91,9 +122,7 @@ def validate_silver(base_dir: str, year_month: str) -> None:
         raise ValueError(
             f"{year_month} 는 {expected}일이어야 하는데 {table.num_rows}행입니다"
         )
-
-    dates = sorted(str(value) for value in table["date"].to_pylist())
-    if len(set(dates)) != expected:
+    if len({str(value) for value in table["date"].to_pylist()}) != expected:
         raise ValueError(f"{year_month} 일자에 중복이 있습니다")
 
     sources = set(table["price_source"].to_pylist())
@@ -103,30 +132,20 @@ def validate_silver(base_dir: str, year_month: str) -> None:
     logger.info("EIA 통합 Silver 검증 통과: %s rows=%d", path, table.num_rows)
 
 
-@task(task_id="collect_bronze")
-def collect_bronze_task(**context) -> dict:
-    """EIA 원본 두 개를 각자 데이터셋에 적재합니다.
-
-    한 태스크로 묶은 이유는 둘 다 없으면 변환을 못 하기 때문입니다 — 따로 두면 하나만
-    성공한 상태로 다음이 돌다가 더 안쪽에서 실패합니다.
-    """
-    params = context["params"]
-    base_dir = params["bronze_dir"]
-    locations = {}
-    for name in ("eia_gas_price_raw_to_bronze", "eia_electricity_price_raw_to_bronze"):
-        result = lambda_handler_for(name)(event={"base_dir": base_dir})
-        locations[name] = result["locations"][0]
-        logger.info("%s 적재: %s", name, result["locations"][0])
-    return locations
+@task(task_id="check_bronze")
+def check_bronze_task(**context) -> str:
+    year_month = resolve_year_month(context)
+    logger.info("EIA 연료비 대상 월: %s", year_month)
+    require_bronze(context["params"]["bronze_dir"], year_month)
+    return year_month
 
 
 @task(task_id="bronze_to_silver")
 def bronze_to_silver_task(**context) -> dict:
     params = context["params"]
-    year_month = resolve_year_month(context)
-    logger.info("EIA 연료비 대상 월: %s", year_month)
+    year_month = context["task_instance"].xcom_pull(task_ids="check_bronze")
 
-    result = lambda_handler_for("eia_fuel_price_bronze_to_silver")(
+    result = lambda_handler_for(HANDLER_NAME)(
         event={
             "year_month": year_month,
             "bronze_dir": params["bronze_dir"],

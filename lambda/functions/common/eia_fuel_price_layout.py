@@ -26,6 +26,12 @@ BRONZE_PARTITION_KEY = "collected_date"
 GAS_FILE_NAME = "gasoline_weekly_ny.xls"
 ELECTRICITY_FILE_NAME = "sales_revenue.xlsx"
 
+# 원본이 형식만 바뀌어도 파싱은 예외 없이 이상한 값을 냅니다. 크기로 1차 확인하는데,
+# 수집(lambda)과 검증(airflow)이 같은 하한을 봐야 하므로 여기 한 곳에 둡니다.
+# 실측(2026-08-17 수집분): 휘발유 xls 99,840 bytes / 전력 xlsx 2,247,049 bytes.
+GAS_MIN_BYTES = 10_000
+ELECTRICITY_MIN_BYTES = 100_000
+
 
 def _bronze_file(base_dir: str, dataset: str, file_name: str, collected_date: date) -> Path:
     return (

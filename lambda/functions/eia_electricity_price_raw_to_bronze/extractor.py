@@ -16,13 +16,14 @@ import logging
 import requests
 from pipeline_core.extractor import Extractor
 
+from ..common.eia_fuel_price_layout import ELECTRICITY_MIN_BYTES as MIN_BYTES
+
 logger = logging.getLogger(__name__)
 
 # EIA-861M (Monthly Electric Power Industry Report) — Sales and Revenue
 FILE_URL = "https://www.eia.gov/electricity/data/eia861m/xls/sales_revenue.xlsx"
 # xlsx 는 zip 컨테이너입니다.
 XLSX_MAGIC = b"PK\x03\x04"
-MIN_BYTES = 100_000
 
 
 def fetch(timeout: int = 120) -> bytes:
