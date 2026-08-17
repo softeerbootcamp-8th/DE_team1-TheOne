@@ -1,9 +1,9 @@
-"""기사 배정 운행 Silver 월간 DAG 시나리오. 이슈 #301.
+"""기사 운행 이력 Silver 월간 DAG 시나리오. 이슈 #301, #456.
 
 1. validate_inputs -> build_driver_trip_silver -> validate_silver 순서
 2. 직전 달·수동 연월과 snapshot_date 파라미터 전달
-3. Spark 명령에 모든 입력·출력·seed 포함
-4. 입력 경로 누락, 출력 0행·스키마·키·관계·계약·월 오류 차단
+3. Spark 명령에 두 Clean Silver 입력·출력·계보 포함
+4. 입력 파티션 누락, 출력 0행·스키마·키·관계·계약·월 오류 차단
 5. 월간 운영 설정과 실패 콜백 적용
 """
 
@@ -30,8 +30,6 @@ def _row(**overrides):
         "taxi_id": "x1", "pickup_datetime": datetime(2024, 3, 4, 9),
         "lease_started_on": date(2024, 1, 1), "lease_ended_on": date(2025, 1, 1),
         "year_month": "2024-03", "snapshot_date": date(2024, 3, 1),
-        "assignment_seed": 42, "assignment_version": "v1",
-        "trip_sequence": 1, "deadhead_minutes": 0.0, "preference_score": 0.9,
         "make_key": "Toyota", "model_key": "Camry", "model_year": 2023,
     }
     row.update(overrides)
@@ -46,6 +44,9 @@ def test_DAG_구조와_월간_운영설정이_올바르다():
     assert DAG.catchup is False and DAG.max_active_runs == 1
     assert DAG.schedule == "0 1 12 * *"
     assert all(task.on_failure_callback for task in DAG.tasks)
+    # 리스 Silver 는 `year_month` 파티션으로 읽습니다. snapshot_date 를 파라미터로
+    # 두면 아무 경로도 고르지 않으면서 계보 컬럼만 틀리게 찍히고, 실패 없이 통과합니다.
+    assert "snapshot_date" not in DAG.params
 
 
 def test_수동으로_넘긴_연월이_최우선이다():
@@ -105,31 +106,29 @@ def test_경로를_안_주면_예전처럼_직전달을_쓴다():
 def test_Spark_명령에_모든_경로와_실행계보가_들어간다():
     command = DAG.get_task("build_driver_trip_silver").bash_command
     for option in (
-        "--trips_path", "--preferences_path", "--customers_path", "--leases_path",
-        "--taxis_path", "--travel_times_path", "--output_path", "--year_month",
-        "--snapshot_date", "--seed",
+        "--trips_path", "--leases_path", "--output_path", "--year_month",
+        "--snapshot_date",
     ):
         assert option in command
     assert "xcom_pull(task_ids='validate_inputs')['year_month']" in command
+    # 배정이 사라져 seed 로 갈리는 결과가 없습니다. 인자가 남아 있으면 그 값이
+    # 무언가를 바꾼다고 읽힙니다.
+    assert "--seed" not in command
 
 
-def test_validate_inputs는_경로가_모두_있어야_계보를_반환한다(tmp_path):
+@pytest.mark.parametrize("missing", ["trips", "leases"])
+def test_validate_inputs는_두_파티션이_모두_있어야_계보를_반환한다(tmp_path, missing):
     paths = {}
-    for name in ("trips", "preferences", "company", "travel_times"):
-        path = tmp_path / name
-        path.mkdir()
-        paths[f"{name}_path"] = str(path)
-    (tmp_path / "trips" / "year_month=2024-03").mkdir()
-    company = tmp_path / "company" / "snapshot_date=2024-03-01"
-    company.mkdir()
-    for filename in ("customer.parquet", "lease_contract.parquet", "taxi.parquet"):
-        (company / filename).touch()
+    for name in ("trips", "leases"):
+        partition = tmp_path / name / "year_month=2024-03"
+        partition.mkdir(parents=True)
+        paths[f"{name}_path"] = str(tmp_path / name)
 
     result = task_module.validate_input_paths("2024-03", "2024-03-01", paths)
 
     assert result == {"year_month": "2024-03", "snapshot_date": "2024-03-01"}
-    (tmp_path / "trips" / "year_month=2024-03").rmdir()
-    with pytest.raises(FileNotFoundError):
+    (tmp_path / missing / "year_month=2024-03").rmdir()
+    with pytest.raises(FileNotFoundError, match=f"{missing}_path"):
         task_module.validate_input_paths("2024-03", "2024-03-01", paths)
 
 
@@ -140,7 +139,7 @@ def test_validate_silver는_잘못된_출력을_거부한다(tmp_path, violation
     if violation == "empty":
         rows = []
     elif violation == "missing_column":
-        rows[0].pop("assignment_version")
+        rows[0].pop("model_key")
     elif violation == "duplicate":
         rows.append(dict(rows[0]))
     elif violation == "null_fk":
