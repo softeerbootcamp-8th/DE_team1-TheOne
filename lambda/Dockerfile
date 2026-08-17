@@ -27,7 +27,11 @@ COPY lambda/functions/ ${LAMBDA_TASK_ROOT}/functions/
 # 안 넣으면 그 함수들만 "No module named 'schema'" 로 콜드스타트 시점에 죽습니다.
 COPY schema/ ${LAMBDA_TASK_ROOT}/schema/
 
-# ★ vehicle_catalog_raw_to_bronze 를 이 이미지로 배포한다면 tesseract 바이너리도 함께
-#   설치해야 합니다. pytesseract 는 파이썬 래퍼일 뿐이라 uv.lock 이 못 잡고, 없으면
-#   OCR 호출 시점에 TesseractNotFoundError 로 죽습니다. 지금은 이 함수가 airflow
-#   이미지 안에서 돌아 문제가 없습니다 (airflow/Dockerfile 이 tesseract-ocr 를 깝니다).
+# vehicle_catalog_raw_to_bronze 가 pytesseract 로 OCR 호출을 하는데, 그건 파이썬
+# 래퍼일 뿐이라 uv.lock 이 tesseract 바이너리 자체는 못 잡습니다. 베이스가 Amazon
+# Linux 2 라 기본 yum 저장소엔 tesseract 가 없어 EPEL 을 추가로 켭니다(공식
+# amazon-linux-extras 는 이 최소 이미지엔 없어 EPEL rpm 을 직접 설치).
+RUN yum install -y https://archives.fedoraproject.org/pub/archive/epel/7/x86_64/Packages/e/epel-release-7-14.noarch.rpm \
+ && yum install -y tesseract \
+ && yum clean all \
+ && rm -rf /var/cache/yum
