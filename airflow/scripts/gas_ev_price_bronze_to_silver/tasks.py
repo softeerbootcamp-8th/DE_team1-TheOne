@@ -13,6 +13,7 @@ import pyarrow.parquet as pq
 from airflow.sdk import task
 from common.lambda_runtime import lambda_handler_for
 from common.project_paths import PROJECT_ROOT
+from schema.silver.gas_ev_price import CRAWLED, SCHEMA
 from common.slack_failure_callback import slack_failure_callback
 from common.validation import (
     parse_handler_result,
@@ -27,13 +28,10 @@ BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 SILVER_DIR = str(PROJECT_ROOT / "data" / "silver")
 INTEGRATED_DATASET = "gas_ev_price"
 INTEGRATED_FILE_NAME = "gas_ev_price.parquet"
-INTEGRATED_SCHEMA = pa.schema(
-    [
-        ("date", pa.date32()),
-        ("gas_price", pa.float64()),
-        ("ev_price", pa.float64()),
-    ]
-)
+# 스키마는 `schema/silver/gas_ev_price.py` 가 소유합니다 — 같은 Silver 자리에 EIA
+# 경로(`eia_fuel_price_bronze_to_silver`)도 쓰기 때문에, 양쪽이 갈리면 Gold 가 어느
+# 달을 읽느냐에 따라 컬럼이 달라집니다.
+INTEGRATED_SCHEMA = SCHEMA
 
 
 def previous_month(data_interval_end: datetime) -> str:
@@ -197,6 +195,7 @@ def combine_price_tables(gas_table: pa.Table, ev_table: pa.Table) -> pa.Table:
             "date": target_date,
             "gas_price": gas_by_date[target_date],
             "ev_price": ev_by_date[target_date],
+            "price_source": CRAWLED,
         }
         for target_date in sorted(gas_by_date)
     ]

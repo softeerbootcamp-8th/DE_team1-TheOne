@@ -18,6 +18,7 @@ DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
 
 DAG_VARIABLES = {
     "ev_charging_price_raw_to_bronze_dag": "ev_charging_price_raw_to_bronze_dag",
+    "eia_fuel_price_raw_to_silver_dag": "eia_fuel_price_raw_to_silver_dag",
     "fueleconomy_vehicle_specs_raw_to_silver_dag": "fueleconomy_vehicle_specs_dag",
     "gas_ev_price_bronze_to_silver_dag": "gas_ev_price_bronze_to_silver_dag",
     "gas_price_raw_to_bronze_dag": "gas_price_raw_to_bronze_dag",

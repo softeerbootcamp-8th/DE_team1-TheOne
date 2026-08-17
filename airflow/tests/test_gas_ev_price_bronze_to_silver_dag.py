@@ -33,6 +33,9 @@ ev_loader = importlib.import_module(
 DAG = dag_module.gas_ev_price_bronze_to_silver_dag
 
 
+from schema.silver.gas_ev_price import CRAWLED
+
+
 def gas_table(*rows: dict) -> pa.Table:
     return pa.Table.from_pylist(list(rows), schema=gas_loader.SCHEMA)
 
@@ -229,8 +232,8 @@ def test_같은_날짜_집합을_날짜순으로_통합한다():
 
     assert combined.schema == task_module.INTEGRATED_SCHEMA
     assert combined.to_pylist() == [
-        {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3},
-        {"date": date(2026, 7, 2), "gas_price": 3.2, "ev_price": 0.4},
+        {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3, "price_source": CRAWLED},
+        {"date": date(2026, 7, 2), "gas_price": 3.2, "ev_price": 0.4, "price_source": CRAWLED},
     ]
 
 
@@ -272,5 +275,5 @@ def test_통합_task는_월별_고정_파일을_교체한다(tmp_path, monkeypat
     assert first["locations"] == second["locations"] == [str(path)]
     assert list(path.parent.glob("*.parquet")) == [path]
     assert pq.ParquetFile(path).read().to_pylist() == [
-        {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.4}
+        {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.4, "price_source": CRAWLED}
     ]
