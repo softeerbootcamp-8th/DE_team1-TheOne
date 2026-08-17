@@ -41,4 +41,4 @@ class MonthlyReport:
     물러서는데(hvfhv_silver_to_gold_dag), 그 사실이 로그에만 남아 있으면 결과만 보고는 모릅니다."""
 
     gas_ev_price_month: str
-    """쓴 연료비의 `collected_month` (YYYY-MM). 대상 월과 다르면 다른 시점 단가로 계산된 것입니다."""
+    """쓴 연료비 Silver 의 `year_month`. 대상 월과 다르면 다른 달 단가로 계산된 것입니다."""

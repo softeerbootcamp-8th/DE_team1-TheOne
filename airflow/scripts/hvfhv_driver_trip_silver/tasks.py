@@ -137,6 +137,12 @@ def validate_inputs_task(**context):
     # 리스 Clean Silver 는 `year_month` 파티션 하나가 그 달 1일 스냅샷입니다
     # (`driver_assignment/source_job.py` 가 그렇게 만듭니다). 파라미터로 받으면
     # 아무 경로도 고르지 않으면서 계보 컬럼만 틀리게 찍힙니다 — 실패 없이 통과합니다.
+    #
+    # #478 이 여기에 `resolve_snapshot_date(company_path)` 를 넣었는데, 그건 이 DAG 이
+    # 회사 스냅샷을 직접 읽던 시절의 처방입니다. 지금은 회사 원천을 안 봅니다 —
+    # 그 픽스처는 가짜 데이터 API 쪽(`synthetic_driver_trip_source`)에서만 쓰이고,
+    # 이 DAG 의 입력은 월 파티션이 보장된 두 Clean Silver 뿐입니다. #478 이 고치려던
+    # "없는 snapshot_date= 파티션을 찾아 실패" 자체가 성립하지 않습니다.
     return validate_input_paths(year_month, f"{year_month}-01", params)
 
 

@@ -5,6 +5,9 @@
 3. Spark 명령에 두 Clean Silver 입력·출력·계보 포함
 4. 입력 파티션 누락, 출력 0행·스키마·키·관계·계약·월 오류 차단
 5. 월간 운영 설정과 실패 콜백 적용
+6. snapshot_date 를 안 주면 실제 존재하는 파티션 중 최신을 고름 — 전에는 대상 월의
+   1일(`{year_month}-01`)을 찾아, 대상 월과 무관하게 만들어지는 회사 원천 픽스처와
+   어긋나 매번 실패했음
 """
 
 from datetime import date, datetime, timezone
@@ -159,3 +162,5 @@ def test_validate_silver는_정상_파티션과_다른월_보존을_확인한다
     _write(tmp_path / "year_month=2024-03" / "part.parquet", [_row()])
 
     task_module.validate_silver_partition(tmp_path, "2024-03")
+
+

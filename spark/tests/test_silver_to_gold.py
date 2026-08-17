@@ -608,8 +608,8 @@ def test_report_에_배정_버전_컬럼이_남아있지_않다(spark):
     [
         ("../data/silver/vehicle_master/collected_date=2026-08-15/city=new-york/vehicle_master.parquet",
          "collected_date", "2026-08-15"),
-        ("../data/silver/gas_ev_price/collected_month=2025-05/gas_ev_price.parquet",
-         "collected_month", "2025-05"),
+        ("../data/silver/gas_ev_price/year_month=2025-05/gas_ev_price.parquet",
+         "year_month", "2025-05"),
     ],
 )
 def test_입력_경로에서_계보_값을_읽는다(path, key, expected):
