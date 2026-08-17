@@ -491,29 +491,11 @@ def build_monthly_vehicle_recommendation(
     return result.select(*columns)
 
 
-def resolve_assignment_version(trips: DataFrame) -> str:
-    """배정 Silver 에 실린 `assignment_version`. 두 개 이상 섞여 있으면 실패한다.
-
-    버전이 다르면 배정 자체가 다른 규칙으로 만들어진 것이라, 섞인 채로 집계하면 어느
-    규칙의 결과인지 말할 수 없는 숫자가 나온다.
-    """
-    if "assignment_version" not in trips.columns:
-        raise ValueError("배정 Silver 에 assignment_version 이 없습니다")
-    versions = sorted(
-        row["assignment_version"]
-        for row in trips.select("assignment_version").distinct().collect()
-    )
-    if len(versions) != 1:
-        raise ValueError(f"배정 버전이 섞여 있습니다: {versions}")
-    return versions[0]
-
-
 def build_monthly_report(
     recommendation: DataFrame,
     year_month: str,
     threshold_profit_increase: float,
     *,
-    assignment_version: str,
     vehicle_master_collected_date: str,
     gas_ev_price_month: str,
 ) -> DataFrame:
@@ -522,8 +504,8 @@ def build_monthly_report(
     expected_revenue_increase(매출 증가액)가 음수인 추천은 집계에서 뺀다 — 회사 입장에서
     렌탈료 매출이 오히려 줄어드는 추천을 "성과"로 세면 안 되기 때문.
 
-    계보 세 값은 호출부가 넘긴다 — 배정 버전은 Silver 에, 나머지 둘은 입력 경로에 있어서
-    이 함수가 받는 `recommendation` 만으로는 알 수 없다.
+    계보 두 값은 호출부가 넘긴다 — 입력 경로에 있어서 이 함수가 받는 `recommendation`
+    만으로는 알 수 없다.
     """
     recommended = recommendation.filter(
         (F.col("expected_net_profit_increase") >= F.lit(threshold_profit_increase))
@@ -542,7 +524,6 @@ def build_monthly_report(
     return (
         summary.withColumn("year_month", F.lit(year_month))
         .withColumn("threshold_profit_increase", F.lit(threshold_profit_increase))
-        .withColumn("assignment_version", F.lit(assignment_version))
         .withColumn("vehicle_master_collected_date", F.lit(vehicle_master_collected_date))
         .withColumn("gas_ev_price_month", F.lit(gas_ev_price_month))
         .select(*[f.name for f in fields(MonthlyReport)])
