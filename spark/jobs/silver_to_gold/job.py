@@ -24,7 +24,6 @@ from jobs.silver_to_gold.transformer import (
     build_monthly_report,
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
-    resolve_assignment_version,
 )
 
 logger = logging.getLogger(__name__)
@@ -89,12 +88,11 @@ def main(args_list: list[str] | None = None) -> None:
         recommendation = build_monthly_vehicle_recommendation(
             enriched, vehicle_master, driver_aggregation, year_month, days_in_month,
         ).persist()
-        # 5. 리스 업체 월간 보고서 작성 — 계보 세 값을 함께 싣는다.
+        # 5. 리스 업체 월간 보고서 작성 — 계보 두 값을 함께 싣는다.
         report: DataFrame = build_monthly_report(
             recommendation,
             year_month,
             args.threshold_profit_increase,
-            assignment_version=resolve_assignment_version(trips),
             vehicle_master_collected_date=partition_value(
                 args.vehicle_master_path, "collected_date"
             ),

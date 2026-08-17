@@ -12,10 +12,8 @@ from urllib.parse import urlsplit
 
 
 DATASETS = {"hvfhv_taxi_trips", "driver_vehicle_leases"}
-RELEASE_PATTERN = re.compile(r"^/v1/releases/(\d{4}-\d{2})$")
-DATASET_PATTERN = re.compile(
-    r"^/v1/releases/(\d{4}-\d{2})/datasets/([a-z_]+)$"
-)
+DATA_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})$")
+DATASET_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$")
 
 
 class ReleaseRequestHandler(BaseHTTPRequestHandler):
@@ -32,33 +30,21 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send_json({"status": "ok"}, head_only=head_only)
             return
-        if path == "/v1/releases/latest":
+        if path == "/v1/data/latest":
             releases = sorted(self.release_root.glob("year_month=????-??"))
             if not releases:
-                self.send_error(404, "release not found")
+                self.send_error(404, "data not found")
                 return
             self._send_manifest(releases[-1], head_only=head_only)
             return
-        if match := RELEASE_PATTERN.fullmatch(path):
+        if match := DATA_PATTERN.fullmatch(path):
             self._send_manifest(
                 self.release_root / f"year_month={match.group(1)}",
                 head_only=head_only,
             )
             return
         if match := DATASET_PATTERN.fullmatch(path):
-            dataset = match.group(2)
-            if dataset not in DATASETS:
-                self.send_error(404, "dataset not found")
-                return
-            release = self.release_root / f"year_month={match.group(1)}"
-            manifest = self._manifest(release)
-            if manifest is None:
-                return
-            metadata = manifest.get("datasets", {}).get(dataset, {})
-            self._send_file(
-                release / str(metadata.get("file", "")),
-                head_only=head_only,
-            )
+            self._send_dataset(match.group(1), match.group(2), head_only=head_only)
             return
         self.send_error(404, "endpoint not found")
 
@@ -78,15 +64,33 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
         if manifest is None:
             return
         year_month = manifest.get("year_month")
-        response = dict(manifest)
+        response = {
+            key: value
+            for key, value in manifest.items()
+            if key != "release_id"
+        }
         response["datasets"] = {
             name: {
                 **metadata,
-                "download_url": f"/v1/releases/{year_month}/datasets/{name}",
+                "download_url": f"/v1/data/{year_month}/datasets/{name}",
             }
             for name, metadata in manifest.get("datasets", {}).items()
         }
         self._send_json(response, head_only=head_only)
+
+    def _send_dataset(self, year_month: str, dataset: str, *, head_only: bool) -> None:
+        if dataset not in DATASETS:
+            self.send_error(404, "dataset not found")
+            return
+        release = self.release_root / f"year_month={year_month}"
+        manifest = self._manifest(release)
+        if manifest is None:
+            return
+        metadata = manifest.get("datasets", {}).get(dataset, {})
+        self._send_file(
+            release / str(metadata.get("file", "")),
+            head_only=head_only,
+        )
 
     def _send_json(self, value: dict, *, head_only: bool) -> None:
         body = json.dumps(value, ensure_ascii=False, sort_keys=True).encode()

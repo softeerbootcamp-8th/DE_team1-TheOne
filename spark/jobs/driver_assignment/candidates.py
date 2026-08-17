@@ -113,8 +113,8 @@ def build_trip_candidates(
         # 컬럼이 3개가 됩니다. 그 상태로 배정의 `applyInPandas` 에 넘기면
         # `df["snapshot_date"]` 가 AMBIGUOUS_REFERENCE 로 죽습니다.
         #
-        # 후보에는 필요 없는 값입니다 — 스냅샷 시점은 `silver_job` 이 인자로 받아
-        # 결과에 직접 붙입니다. 이름으로 지우면 세 개가 함께 사라집니다.
+        # 후보에는 필요 없는 값입니다 — 스냅샷 시점은 `source_job` 이 인자로 받아
+        # 릴리스 계보에 직접 붙입니다. 이름으로 지우면 세 개가 함께 사라집니다.
         .drop("snapshot_date")
         .withColumn("_driver_index", row_number().over(Window.orderBy("driver_id", "lease_id")))
         # 2,000행이지만 파티션 없는 윈도우가 붙어 있어, 캐시하지 않으면 아래 조인과

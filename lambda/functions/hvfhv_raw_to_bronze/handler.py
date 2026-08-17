@@ -7,7 +7,7 @@ from pathlib import Path
 from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
-from ..common.synthetic_release import requested_year_month
+from ..common.monthly_dataset import requested_year_month
 from .extractor import HvfhvExtractor
 from .loader import HvfhvBronzeLoader
 
@@ -26,16 +26,15 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         HvfhvExtractor(api_base_url, requested_year_month(event)), loader
     ).run()
     path = Path(result.write_result.location)
-    release = loader.release
+    payload = loader.payload
     return {
-        "release_id": release["release_id"],
-        "year_month": release["year_month"],
-        "year": release["year_month"][:4],
-        "month": release["year_month"][5:],
+        "year_month": payload["year_month"],
+        "year": payload["year_month"][:4],
+        "month": payload["year_month"][5:],
         "row_count": result.write_result.row_count,
         "locations": [str(path)],
         "marker_location": str(loader.marker_path),
-        "sha256": release["metadata"]["sha256"],
+        "sha256": payload["metadata"]["sha256"],
         "file_size_bytes": path.stat().st_size,
         "already_collected": loader.already_collected,
     }

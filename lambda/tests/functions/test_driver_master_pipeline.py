@@ -1,7 +1,7 @@
 """기사 데이터 Raw→Bronze 수집 시나리오.
 
 1. 기사 데이터 한 파일만 원본 그대로 저장
-2. 같은 release 재실행은 중복 파일을 만들지 않음
+2. 같은 월 재실행은 중복 파일을 만들지 않음
 3. 필수 dataset·checksum 위반은 적재 전에 실패
 """
 
@@ -13,12 +13,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from functions.common import synthetic_release
+from functions.common import monthly_dataset
 from functions.driver_master_raw_to_bronze.handler import lambda_handler
 
 
 YEAR_MONTH = "2026-08"
-RELEASE_ID = "2026-08-seed-42"
 API_URL = "http://source.example"
 ROWS = [
     {
@@ -46,18 +45,17 @@ CONTENT = _parquet_bytes()
 
 def _manifest() -> dict:
     return {
-        "release_id": RELEASE_ID,
         "year_month": YEAR_MONTH,
         "datasets": {
             "driver_vehicle_leases": {
                 "row_count": 1,
                 "sha256": hashlib.sha256(CONTENT).hexdigest(),
-                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/driver_vehicle_leases",
+                "download_url": f"/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_leases",
             },
             "hvfhv_taxi_trips": {
                 "row_count": 1,
                 "sha256": "0" * 64,
-                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
+                "download_url": f"/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
             },
         },
     }
@@ -77,8 +75,8 @@ class Response:
 
 def _api(monkeypatch, manifest: dict, requested: list[str] | None = None):
     responses = {
-        f"{API_URL}/v1/releases/{YEAR_MONTH}": Response(payload=manifest),
-        f"{API_URL}/v1/releases/{YEAR_MONTH}/datasets/driver_vehicle_leases": Response(
+        f"{API_URL}/v1/data/{YEAR_MONTH}": Response(payload=manifest),
+        f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_leases": Response(
             content=CONTENT
         ),
     }
@@ -88,7 +86,7 @@ def _api(monkeypatch, manifest: dict, requested: list[str] | None = None):
             requested.append(url)
         return responses[url]
 
-    monkeypatch.setattr(synthetic_release.requests, "get", get)
+    monkeypatch.setattr(monthly_dataset.requests, "get", get)
 
 
 def _event(tmp_path):
@@ -112,7 +110,7 @@ def test_기사데이터만_원본bytes그대로_Bronze에_저장한다(tmp_path
     assert all("hvfhv_taxi_trips" not in url for url in requested)
 
 
-def test_같은release를_다시수집해도_중복파일이_생기지않는다(tmp_path, monkeypatch):
+def test_같은월을_다시수집해도_중복파일이_생기지않는다(tmp_path, monkeypatch):
     _api(monkeypatch, _manifest())
     first = lambda_handler(_event(tmp_path))
     _api(monkeypatch, _manifest())
@@ -134,11 +132,11 @@ def test_manifest에_기사택시dataset이_없으면_다운로드하지않는�
         requested.append(url)
         return Response(payload=manifest)
 
-    monkeypatch.setattr(synthetic_release.requests, "get", get)
+    monkeypatch.setattr(monthly_dataset.requests, "get", get)
     with pytest.raises(ValueError, match="필수 dataset"):
         lambda_handler(_event(tmp_path))
 
-    assert requested == [f"{API_URL}/v1/releases/{YEAR_MONTH}"]
+    assert requested == [f"{API_URL}/v1/data/{YEAR_MONTH}"]
 
 
 def test_checksum이_다르면_완료파일을_공개하지않는다(tmp_path, monkeypatch):

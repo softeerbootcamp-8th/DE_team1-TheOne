@@ -38,7 +38,6 @@ from jobs.silver_to_gold.transformer import (
     build_monthly_report,
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
-    resolve_assignment_version,
 )
 from schema.gold.driver_aggregation import DriverMonthlyAggregation
 from schema.gold.driver_car_suggestion import MonthlyVehicleRecommendation
@@ -365,7 +364,7 @@ def test_매출_증가액이_음수면_기준을_넘어도_report_집계에서_�
     ])
     report = build_monthly_report(
         recommendation, YEAR_MONTH, threshold_profit_increase=30.0,
-        assignment_version="v3", vehicle_master_collected_date="2024-03-15", gas_ev_price_month=YEAR_MONTH,
+        vehicle_master_collected_date="2024-03-15", gas_ev_price_month=YEAR_MONTH,
     ).first()
 
     assert report.recommended_driver_count == 1
@@ -380,7 +379,7 @@ def test_아무도_기준을_못넘으면_평균합계는_0이다(spark):
     ])
     report = build_monthly_report(
         recommendation, YEAR_MONTH, threshold_profit_increase=999.0,
-        assignment_version="v3", vehicle_master_collected_date="2024-03-15", gas_ev_price_month=YEAR_MONTH,
+        vehicle_master_collected_date="2024-03-15", gas_ev_price_month=YEAR_MONTH,
     ).first()
 
     assert report.recommended_driver_count == 0
@@ -580,34 +579,28 @@ def test_monthly_report에_계보가_실린다(spark):
 
     report = build_monthly_report(
         recommendation, YEAR_MONTH, threshold_profit_increase=30.0,
-        assignment_version="v3",
         # 대상 월(2024-03)과 다른 시점 — 물러서 쓴 경우가 결과에 드러나야 합니다.
         vehicle_master_collected_date="2026-08-15",
         gas_ev_price_month="2026-08",
     ).first()
 
-    assert report.assignment_version == "v3"
     assert report.vehicle_master_collected_date == "2026-08-15"
     assert report.gas_ev_price_month == "2026-08"
 
 
-def test_배정_버전이_섞이면_ValueError다(spark):
-    """버전이 다르면 배정 규칙 자체가 다릅니다. 섞어서 집계하면 어느 규칙의 결과인지
-    말할 수 없는 숫자가 나옵니다."""
-    trips = spark.createDataFrame([
-        {**_trip(), "assignment_version": "v2"},
-        {**_trip(), "assignment_version": "v3"},
+def test_report_에_배정_버전_컬럼이_남아있지_않다(spark):
+    """기사-운행 매칭이 가짜 데이터 API 로 옮겨가 배정 규칙이라는 것이 없어졌습니다.
+    Silver 가 안 싣는 값을 Gold 가 계보로 들고 있으면 그 자리가 조용히 비거나 죽습니다."""
+    recommendation = spark.createDataFrame([
+        {"expected_net_profit_increase": 50.0, "expected_revenue_increase": 10.0},
     ])
 
-    with pytest.raises(ValueError, match="배정 버전이 섞여 있습니다"):
-        resolve_assignment_version(trips)
+    report = build_monthly_report(
+        recommendation, YEAR_MONTH, threshold_profit_increase=30.0,
+        vehicle_master_collected_date="2024-03-15", gas_ev_price_month=YEAR_MONTH,
+    )
 
-
-def test_배정_버전_컬럼이_없으면_ValueError다(spark):
-    trips = spark.createDataFrame([_trip()])
-
-    with pytest.raises(ValueError, match="assignment_version 이 없습니다"):
-        resolve_assignment_version(trips)
+    assert "assignment_version" not in report.columns
 
 
 @pytest.mark.parametrize(

@@ -235,12 +235,15 @@ def test_API는_manifest와_두_Parquet을_다운로드한다(tmp_path):
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
     try:
-        with urllib.request.urlopen(f"{base_url}/v1/releases/latest") as response:
-            body = json.load(response)
-        assert body["release_id"] == manifest["release_id"]
+        with urllib.request.urlopen(f"{base_url}/v1/data/latest") as response:
+            public_body = json.load(response)
+        assert "release_id" not in public_body
         for dataset in manifest["datasets"]:
+            assert public_body["datasets"][dataset]["download_url"] == (
+                f"/v1/data/2026-09/datasets/{dataset}"
+            )
             with urllib.request.urlopen(
-                f"{base_url}/v1/releases/2026-09/datasets/{dataset}"
+                f"{base_url}/v1/data/2026-09/datasets/{dataset}"
             ) as response:
                 assert response.read() == (
                     release / manifest["datasets"][dataset]["file"]
