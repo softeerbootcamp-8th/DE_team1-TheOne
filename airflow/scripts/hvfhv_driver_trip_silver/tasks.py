@@ -90,6 +90,31 @@ def resolve_target_year_month(
     return usable[-1]
 
 
+def resolve_snapshot_date(company_path: str) -> str:
+    """실제 존재하는 `snapshot_date=` 파티션 중 최신.
+
+    전에는 지정이 없으면 `{year_month}-01` 을 썼습니다. 그런데 회사 원천은 대상 월과
+    무관하게 생성되는 픽스처라(`scripts/synthetic_company_snapshot`), 2025-05 를
+    처리하면 있지도 않은 `snapshot_date=2025-05-01` 을 찾아 매번 실패했습니다.
+    돌리는 사람이 매번 손으로 넣어줘야 했고 그 사실이 어디에도 적혀 있지 않았습니다.
+
+    존재하는 것 중 최신을 고르면 손으로 안 넣어도 되고, 나중에 스냅샷을 여러 개
+    만들어도 자연스럽게 최신을 씁니다. vehicle_master 를 고르는 방식과 같습니다.
+    """
+    base = Path(company_path)
+    partitions = sorted(
+        item.name.removeprefix("snapshot_date=")
+        for item in base.glob("snapshot_date=*")
+        if item.is_dir()
+    )
+    if not partitions:
+        raise FileNotFoundError(
+            f"회사 원천 스냅샷이 없습니다: {base} — "
+            "`make company-snapshot` 으로 만드세요."
+        )
+    return partitions[-1]
+
+
 def validate_input_paths(year_month: str, snapshot_date: str, paths: dict) -> dict:
     date.fromisoformat(snapshot_date)
     datetime.strptime(year_month, "%Y-%m")
@@ -161,7 +186,10 @@ def validate_inputs_task(**context):
         logical_date, params, params.get("trips_path")
     )
     logger.info("기사 배정 대상 연월: %s", year_month)
-    snapshot_date = params.get("snapshot_date") or f"{year_month}-01"
+    snapshot_date = params.get("snapshot_date") or resolve_snapshot_date(
+        params["company_path"]
+    )
+    logger.info("회사 원천 스냅샷 시점: %s", snapshot_date)
     return validate_input_paths(year_month, snapshot_date, params)
 
 

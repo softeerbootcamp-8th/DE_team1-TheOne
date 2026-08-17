@@ -10,6 +10,8 @@ from pathlib import Path
 import pandas as pd
 
 from scripts.synthetic_company_snapshot.snapshot import (
+    DEFAULT_LEASE_START_MIN,
+    DEFAULT_SNAPSHOT_DATE,
     build_company_snapshot,
     build_driver_ids,
     build_vehicle_pool,
@@ -63,8 +65,9 @@ def main(args_list: list[str] | None = None):
         help=f"비우면 {_VEHICLE_MASTER_DIR} 의 최신 collected_date 파티션을 씁니다",
     )
     parser.add_argument("--output_dir", default="../data/source/company")
-    parser.add_argument("--snapshot_date", default="2026-08-12")
-    parser.add_argument("--lease_start_min", default="2023-01-01")
+    # 기본값과 그 이유는 `snapshot.py` 가 소유합니다 — 두 곳에 적어두면 갈립니다.
+    parser.add_argument("--snapshot_date", default=DEFAULT_SNAPSHOT_DATE.isoformat())
+    parser.add_argument("--lease_start_min", default=DEFAULT_LEASE_START_MIN.isoformat())
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--model_year", type=int, default=2023)
     parser.add_argument("--change_rate", type=float, default=None)

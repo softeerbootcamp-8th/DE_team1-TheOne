@@ -12,6 +12,26 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+# 기본 스냅샷 시점.
+#
+# 실행일(`date.today()`)을 쓰지 않는 이유
+# ------------------------------------
+# 이건 수집한 데이터가 아니라 회사 DB 를 대신해 **생성한 픽스처**입니다. 픽스처는
+# 고정되어야 합니다.
+#
+#  - 내용이 이 날짜에 의존합니다 — 리스 시작일이 `[lease_start_min, snapshot_date]`
+#    범위에서 뽑힙니다. 실행일이 기본이면 팀원마다 다른 데이터가 나와 결과를
+#    비교할 수 없습니다.
+#  - `seed` 를 고정해 둔 의도와 모순됩니다. 시드로 재현성을 확보하면서 날짜를
+#    움직이면 그 의도가 깨집니다.
+#  - 안내 문서와 DAG 실행 예시가 이 경로를 참조합니다.
+#
+# 값은 임의로 고른 상수입니다. 실제 사건이 아니라 **우리가 정한 값**으로 읽히도록
+# 딱 떨어지는 날짜를 씁니다. 바꿀 때는 여기만 고치면 되고, 테스트도 이 상수를
+# 참조하므로 리터럴을 따라다닐 필요가 없습니다.
+DEFAULT_SNAPSHOT_DATE = date(2026, 1, 1)
+DEFAULT_LEASE_START_MIN = date(2023, 1, 1)
+
 # 회사 원천 스냅샷의 저장 스키마.
 #
 # pandas 가 추론하게 두면 안 됩니다. 초기 스냅샷은 모든 계약이 진행 중이라
@@ -136,8 +156,8 @@ def build_company_snapshot(
     vehicle_pool: pd.DataFrame,
     *,
     seed: int = 42,
-    snapshot_date: date = date(2026, 8, 12),
-    lease_start_min: date = date(2023, 1, 1),
+    snapshot_date: date = DEFAULT_SNAPSHOT_DATE,
+    lease_start_min: date = DEFAULT_LEASE_START_MIN,
 ) -> SnapshotTables:
     if len(driver_ids) != DRIVER_COUNT or len(set(driver_ids)) != DRIVER_COUNT:
         raise ValueError(f"중복 없는 가상 기사 {DRIVER_COUNT}명이 필요합니다")

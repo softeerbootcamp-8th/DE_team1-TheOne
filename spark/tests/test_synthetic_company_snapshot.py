@@ -3,7 +3,7 @@
 1. 기사 2,000명 → 고객·고유 택시·활성 계약 각 2,000건
 2. BOTH/STANDARD/SINGLE → 400/1,200/400명과 실제 등급 조건 일치
 3. 같은 입력과 seed → ID·차량·리스 시작일 동일
-4. 리스 시작일 → 2023-01-01~2026-08-12 범위
+4. 리스 시작일 → `DEFAULT_LEASE_START_MIN` ~ `DEFAULT_SNAPSHOT_DATE` 범위
 5. 기사 수 또는 차량 후보 그룹 부족 → 명시적 실패
 6. 저장한 세 스냅샷 → PK/FK와 스키마 보존
 7. 월별 갱신 → 0.5~1% 계약 종료와 동일 수 신규 계약
@@ -17,12 +17,21 @@ import pandas as pd
 import pytest
 
 from scripts.synthetic_company_snapshot.snapshot import (
+    DEFAULT_LEASE_START_MIN,
+    DEFAULT_SNAPSHOT_DATE,
     build_company_snapshot,
     build_driver_ids,
     build_vehicle_pool,
     evolve_company_snapshot,
     read_snapshot,
     write_snapshot,
+)
+
+
+# 갱신 테스트에서 쓰는 "다음 달" — 기본 스냅샷과 같은 일자로 한 달 뒤.
+NEXT_SNAPSHOT_DATE = DEFAULT_SNAPSHOT_DATE.replace(
+    year=DEFAULT_SNAPSHOT_DATE.year + (DEFAULT_SNAPSHOT_DATE.month == 12),
+    month=DEFAULT_SNAPSHOT_DATE.month % 12 + 1,
 )
 
 
@@ -88,8 +97,9 @@ def test_리스시작일이_지정한_기간_안에_있다():
         build_company_snapshot(_driver_ids(), _vehicle_pool()).lease_contract["lease_started_on"]
     )
 
-    assert started.min().date() >= date(2023, 1, 1)
-    assert started.max().date() <= date(2026, 8, 12)
+    # 리터럴을 다시 적지 않습니다 — 기본값을 바꾸면 이 테스트가 조용히 무의미해집니다.
+    assert started.min().date() >= DEFAULT_LEASE_START_MIN
+    assert started.max().date() <= DEFAULT_SNAPSHOT_DATE
 
 
 def test_생성한_기사_ID는_2000개_고유이며_재현된다():
@@ -121,7 +131,7 @@ def test_기사수와_차량후보가_부족하면_실패한다():
 
 def test_저장한_세_스냅샷의_pk_fk와_스키마가_보존된다(tmp_path):
     tables = build_company_snapshot(_driver_ids(), _vehicle_pool())
-    paths = write_snapshot(tables, tmp_path, date(2026, 8, 12))
+    paths = write_snapshot(tables, tmp_path, DEFAULT_SNAPSHOT_DATE)
     written = {path.stem: pd.read_parquet(path) for path in paths}
 
     assert set(written) == {"customer", "taxi", "lease_contract"}
@@ -135,7 +145,7 @@ def test_저장한_세_스냅샷의_pk_fk와_스키마가_보존된다(tmp_path)
 def test_월별로_계약을_1퍼센트_해지하고_같은_수의_신규계약을_생성한다():
     previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
     current = evolve_company_snapshot(
-        previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12), change_rate=0.01,
+        previous, _vehicle_pool(), snapshot_date=NEXT_SNAPSHOT_DATE, change_rate=0.01,
     )
 
     ended = current.lease_contract["lease_ended_on"].notna().sum()
@@ -148,7 +158,7 @@ def test_월별로_계약을_1퍼센트_해지하고_같은_수의_신규계약�
 def test_월별_갱신은_기존관계를_보존하고_신규관계만_추가한다():
     previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
     current = evolve_company_snapshot(
-        previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12), change_rate=0.005,
+        previous, _vehicle_pool(), snapshot_date=NEXT_SNAPSHOT_DATE, change_rate=0.005,
     )
 
     assert set(previous.customer["customer_id"]).issubset(set(current.customer["customer_id"]))
@@ -163,8 +173,8 @@ def test_월별_갱신은_기존관계를_보존하고_신규관계만_추가한
 
 def test_월별_갱신은_같은_입력과_seed에서_동일하다():
     previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
-    first = evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12))
-    second = evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12))
+    first = evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=NEXT_SNAPSHOT_DATE)
+    second = evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=NEXT_SNAPSHOT_DATE)
 
     for name in ("customer", "taxi", "lease_contract"):
         pd.testing.assert_frame_equal(getattr(first, name), getattr(second, name))
@@ -172,19 +182,19 @@ def test_월별_갱신은_같은_입력과_seed에서_동일하다():
 
 def test_저장한_전월_스냅샷을_읽어_다음달로_갱신한다(tmp_path):
     previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
-    partition = tmp_path / "snapshot_date=2026-08-12"
-    write_snapshot(previous, tmp_path, date(2026, 8, 12))
+    partition = tmp_path / f"snapshot_date={DEFAULT_SNAPSHOT_DATE.isoformat()}"
+    write_snapshot(previous, tmp_path, DEFAULT_SNAPSHOT_DATE)
 
     current = evolve_company_snapshot(
-        read_snapshot(partition), _vehicle_pool(), snapshot_date=date(2026, 9, 12),
+        read_snapshot(partition), _vehicle_pool(), snapshot_date=NEXT_SNAPSHOT_DATE,
     )
-    assert set(pd.to_datetime(current.customer["snapshot_date"]).dt.date) == {date(2026, 9, 12)}
+    assert set(pd.to_datetime(current.customer["snapshot_date"]).dt.date) == {NEXT_SNAPSHOT_DATE}
 
 
 @pytest.mark.parametrize("snapshot_date,change_rate,error", [
-    (date(2026, 8, 12), 0.005, "늦어야"),
-    (date(2026, 9, 12), 0.004, "change_rate"),
-    (date(2026, 9, 12), 0.011, "change_rate"),
+    (DEFAULT_SNAPSHOT_DATE, 0.005, "늦어야"),
+    (NEXT_SNAPSHOT_DATE, 0.004, "change_rate"),
+    (NEXT_SNAPSHOT_DATE, 0.011, "change_rate"),
 ])
 def test_월순서와_변경률이_범위를_벗어나면_실패한다(snapshot_date, change_rate, error):
     previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
@@ -199,7 +209,7 @@ def test_전월_활성계약의_fk가_깨지면_실패한다():
     previous.lease_contract.loc[0, "customer_id"] = "missing"
 
     with pytest.raises(ValueError, match="customer_id"):
-        evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12))
+        evolve_company_snapshot(previous, _vehicle_pool(), snapshot_date=NEXT_SNAPSHOT_DATE)
 
 
 # --- 저장 타입 고정 (#353) -------------------------------------------------
@@ -223,7 +233,7 @@ def test_전량_결측이어도_lease_ended_on_은_날짜로_저장된다(tmp_pa
     tables = build_company_snapshot(_driver_ids(), _vehicle_pool())
     assert tables.lease_contract["lease_ended_on"].isna().all()  # 전제 확인
 
-    schema = _written_schemas(tmp_path, tables, date(2026, 8, 12))["lease_contract"]
+    schema = _written_schemas(tmp_path, tables, DEFAULT_SNAPSHOT_DATE)["lease_contract"]
 
     assert schema.field("lease_ended_on").type == pa.date32()
     assert schema.field("lease_started_on").type == pa.date32()
@@ -233,12 +243,12 @@ def test_초기_스냅샷과_월별_갱신의_스키마가_같다(tmp_path):
     """계약이 종료되기 시작해도 타입이 바뀌면 안 됩니다."""
     previous = build_company_snapshot(_driver_ids(), _vehicle_pool())
     current = evolve_company_snapshot(
-        previous, _vehicle_pool(), snapshot_date=date(2026, 9, 12), change_rate=0.01,
+        previous, _vehicle_pool(), snapshot_date=NEXT_SNAPSHOT_DATE, change_rate=0.01,
     )
     assert current.lease_contract["lease_ended_on"].notna().any()  # 전제 확인
 
-    initial = _written_schemas(tmp_path / "initial", previous, date(2026, 8, 12))
-    evolved = _written_schemas(tmp_path / "evolved", current, date(2026, 9, 12))
+    initial = _written_schemas(tmp_path / "initial", previous, DEFAULT_SNAPSHOT_DATE)
+    evolved = _written_schemas(tmp_path / "evolved", current, NEXT_SNAPSHOT_DATE)
 
     assert initial == evolved
 
@@ -248,4 +258,4 @@ def test_스키마에_없는_컬럼이_빠지면_실패한다(tmp_path):
     tables.lease_contract.drop(columns=["lease_ended_on"], inplace=True)
 
     with pytest.raises(ValueError, match="lease_ended_on"):
-        write_snapshot(tables, tmp_path, date(2026, 8, 12))
+        write_snapshot(tables, tmp_path, DEFAULT_SNAPSHOT_DATE)
