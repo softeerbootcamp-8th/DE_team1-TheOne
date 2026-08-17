@@ -29,7 +29,6 @@ DAG_VARIABLES = {
     "uber_eligible_vehicles_raw_to_silver_dag": "uber_eligible_vehicles_dag",
     "vehicle_catalog_raw_to_silver_dag": "vehicle_catalog_dag",
     "vehicle_master_silver_dag": "vehicle_master_dag",
-    "synthetic_driver_trip_source_dag": "synthetic_driver_trip_source_dag",
 }
 
 SCHEDULES = {
@@ -79,11 +78,6 @@ RETRY_CONTRACTS = {
         "collection": set(),
         "transform": {"build_gold": 10},
         "validation": {"validate_inputs", "validate_gold"},
-    },
-    "synthetic_driver_trip_source_pipeline": {
-        "collection": {"collect_source_input"},
-        "transform": {"build_source_release": 30},
-        "validation": {"validate_inputs", "validate_release"},
     },
     "lyft_eligible_vehicles_raw_to_silver_pipeline": {
         "collection": {"raw_to_bronze"},
