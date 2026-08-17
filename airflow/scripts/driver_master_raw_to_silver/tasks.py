@@ -12,7 +12,7 @@ from airflow.sdk import task
 
 from common.lambda_runtime import lambda_handler_for
 from common.project_paths import PROJECT_ROOT
-from common.synthetic_release import validate_synthetic_bronze
+from common.monthly_bronze import validate_synthetic_bronze
 from schema.silver.driver_vehicle_leases import REQUIRED_NON_NULL, SCHEMA
 
 

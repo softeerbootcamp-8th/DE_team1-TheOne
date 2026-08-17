@@ -1,11 +1,12 @@
 """HVFHV+taxi_id 데이터 Raw→Bronze 수집 시나리오.
 
 1. 요청한 HVFHV 한 파일만 원본 bytes 그대로 월 파티션에 저장
-2. 같은 release 재실행은 파일을 추가하지 않고 기존 결과 재사용
+2. 같은 월 재실행은 파일을 추가하지 않고 기존 결과 재사용
 3. checksum/manifest 계약 위반은 완료 파일을 공개하지 않음
 """
 
 import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -13,13 +14,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from functions.common import synthetic_release
+from functions.common import monthly_dataset
 from functions.hvfhv_raw_to_bronze.handler import lambda_handler
 from schema.bronze.hvfhv import SCHEMA
 
 
 YEAR_MONTH = "2026-08"
-RELEASE_ID = "2026-08-seed-42"
 API_URL = "http://source.example"
 
 
@@ -48,18 +48,17 @@ CONTENT = _parquet_bytes()
 
 def _manifest() -> dict:
     return {
-        "release_id": RELEASE_ID,
         "year_month": YEAR_MONTH,
         "datasets": {
             "hvfhv_taxi_trips": {
                 "row_count": 1,
                 "sha256": hashlib.sha256(CONTENT).hexdigest(),
-                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
+                "download_url": f"/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
             },
             "driver_vehicle_leases": {
                 "row_count": 1,
                 "sha256": "0" * 64,
-                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/driver_vehicle_leases",
+                "download_url": f"/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_leases",
             },
         },
     }
@@ -79,9 +78,9 @@ class Response:
 
 def _api(monkeypatch, manifest: dict, requested: list[str] | None = None) -> None:
     responses = {
-        f"{API_URL}/v1/releases/{YEAR_MONTH}": Response(payload=manifest),
-        f"{API_URL}/v1/releases/latest": Response(payload=manifest),
-        f"{API_URL}/v1/releases/{YEAR_MONTH}/datasets/hvfhv_taxi_trips": Response(
+        f"{API_URL}/v1/data/{YEAR_MONTH}": Response(payload=manifest),
+        f"{API_URL}/v1/data/latest": Response(payload=manifest),
+        f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips": Response(
             content=CONTENT
         ),
     }
@@ -91,7 +90,7 @@ def _api(monkeypatch, manifest: dict, requested: list[str] | None = None) -> Non
             requested.append(url)
         return responses[url]
 
-    monkeypatch.setattr(synthetic_release.requests, "get", get)
+    monkeypatch.setattr(monthly_dataset.requests, "get", get)
 
 
 def _event(tmp_path) -> dict:
@@ -111,13 +110,15 @@ def test_HVFHV한파일만_원본bytes그대로_Bronze에_저장한다(tmp_path,
 
     path = Path(result["locations"][0])
     assert path.read_bytes() == CONTENT
+    assert path.name == "data.parquet"
     assert path.parent.name == f"year_month={YEAR_MONTH}"
     assert path.parent.parent.name == "hvfhv"
-    assert Path(result["marker_location"]).is_file()
+    marker = json.loads(Path(result["marker_location"]).read_text(encoding="utf-8"))
+    assert set(marker) == {"dataset", "row_count", "sha256", "year_month"}
     assert all("driver_vehicle_leases" not in url for url in requested)
 
 
-def test_같은_release를_다시수집해도_파일이_추가되지_않는다(tmp_path, monkeypatch):
+def test_같은월을_다시수집해도_파일이_추가되지_않는다(tmp_path, monkeypatch):
     _api(monkeypatch, _manifest())
     first = lambda_handler(_event(tmp_path))
     _api(monkeypatch, _manifest())
@@ -142,7 +143,7 @@ def test_checksum이_다르면_Bronze파일과_marker를_공개하지_않는다(
     assert not list(tmp_path.rglob("*.json"))
 
 
-def test_월을_지정하지_않으면_latest_release를_수집한다(tmp_path, monkeypatch):
+def test_월을_지정하지_않으면_latest_데이터를_수집한다(tmp_path, monkeypatch):
     _api(monkeypatch, _manifest())
 
     result = lambda_handler({"api_base_url": API_URL, "base_dir": str(tmp_path)})

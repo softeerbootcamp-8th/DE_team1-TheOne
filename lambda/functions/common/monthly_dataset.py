@@ -17,7 +17,6 @@ from .atomic_write import atomic_write
 
 
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
-RELEASE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -49,10 +48,10 @@ def _sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
-class SyntheticReleaseDatasetExtractor(Extractor):
-    """한 release manifest에서 요청한 데이터셋 하나만 내려받습니다."""
+class SyntheticDatasetExtractor(Extractor):
+    """월별 manifest에서 요청한 데이터셋 하나만 내려받습니다."""
 
-    name = "synthetic_release_dataset"
+    name = "synthetic_dataset"
 
     def __init__(
         self,
@@ -69,9 +68,9 @@ class SyntheticReleaseDatasetExtractor(Extractor):
 
     def extract(self) -> dict:
         endpoint = (
-            f"v1/releases/{self._year_month}"
+            f"v1/data/{self._year_month}"
             if self._year_month
-            else "v1/releases/latest"
+            else "v1/data/latest"
         )
         response = requests.get(
             urljoin(f"{self._api_base_url}/", endpoint), timeout=30
@@ -84,7 +83,6 @@ class SyntheticReleaseDatasetExtractor(Extractor):
         )
         response.raise_for_status()
         return {
-            "release_id": manifest["release_id"],
             "year_month": manifest["year_month"],
             "dataset": self._dataset,
             "metadata": metadata,
@@ -93,13 +91,8 @@ class SyntheticReleaseDatasetExtractor(Extractor):
 
     def _validate_manifest(self, manifest: object) -> dict:
         if not isinstance(manifest, dict):
-            raise ValueError("데이터 release manifest는 JSON 객체여야 합니다")
-        release_id = manifest.get("release_id")
+            raise ValueError("데이터 manifest는 JSON 객체여야 합니다")
         year_month = manifest.get("year_month")
-        if not isinstance(release_id, str) or not RELEASE_ID_PATTERN.fullmatch(
-            release_id
-        ):
-            raise ValueError("manifest release_id 형식이 올바르지 않습니다")
         if not isinstance(year_month, str) or not YEAR_MONTH_PATTERN.fullmatch(
             year_month
         ):
@@ -134,23 +127,23 @@ class SyntheticReleaseDatasetExtractor(Extractor):
         return resolved
 
 
-class SyntheticReleaseDatasetLoader(Loader):
-    """검증된 release 파일을 데이터셋별 월 파티션에 멱등 적재합니다."""
+class SyntheticDatasetLoader(Loader):
+    """검증된 원본 파일을 데이터셋별 월 파티션에 멱등 적재합니다."""
 
     def __init__(self, base_dir: str, dataset: str, dataset_dir: str):
         self._base_dir = Path(base_dir)
         self._dataset = dataset
         self._dataset_dir = dataset_dir
-        self.release: dict = {}
+        self.payload: dict = {}
         self.path: Path | None = None
         self.marker_path: Path | None = None
         self.already_collected = False
 
-    def write(self, release: dict) -> WriteResult:
-        if release.get("dataset") != self._dataset:
-            raise ValueError(f"수집 dataset이 다릅니다: {release.get('dataset')}")
-        content = release.get("content")
-        metadata = release.get("metadata", {})
+    def write(self, payload: dict) -> WriteResult:
+        if payload.get("dataset") != self._dataset:
+            raise ValueError(f"수집 dataset이 다릅니다: {payload.get('dataset')}")
+        content = payload.get("content")
+        metadata = payload.get("metadata", {})
         if not isinstance(content, bytes) or _sha256_bytes(content) != metadata.get(
             "sha256"
         ):
@@ -162,10 +155,10 @@ class SyntheticReleaseDatasetLoader(Loader):
         if parquet.metadata.num_rows != metadata.get("row_count"):
             raise ValueError(f"{self._dataset} 행 수가 manifest와 다릅니다")
 
-        self.release = release
-        self.path = self._data_path(release)
+        self.payload = payload
+        self.path = self._data_path(payload)
         self.marker_path = self.path.with_suffix(".json")
-        expected_marker = self._marker(release)
+        expected_marker = self._marker(payload)
         if self.marker_path.is_file():
             self._validate_existing(expected_marker)
             self.already_collected = True
@@ -182,21 +175,20 @@ class SyntheticReleaseDatasetLoader(Loader):
         )
         return WriteResult(str(self.path), metadata["row_count"])
 
-    def _data_path(self, release: dict) -> Path:
+    def _data_path(self, payload: dict) -> Path:
         return (
             self._base_dir
             / self._dataset_dir
-            / f"year_month={release['year_month']}"
-            / f"{release['release_id']}.parquet"
+            / f"year_month={payload['year_month']}"
+            / "data.parquet"
         )
 
-    def _marker(self, release: dict) -> dict:
+    def _marker(self, payload: dict) -> dict:
         return {
-            "release_id": release["release_id"],
-            "year_month": release["year_month"],
+            "year_month": payload["year_month"],
             "dataset": self._dataset,
-            "row_count": release["metadata"]["row_count"],
-            "sha256": release["metadata"]["sha256"],
+            "row_count": payload["metadata"]["row_count"],
+            "sha256": payload["metadata"]["sha256"],
         }
 
     def _validate_existing(self, expected_marker: dict) -> None:
@@ -204,8 +196,8 @@ class SyntheticReleaseDatasetLoader(Loader):
         try:
             stored = json.loads(self.marker_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Bronze release marker를 읽지 못했습니다: {self.marker_path}") from exc
+            raise ValueError(f"Bronze marker를 읽지 못했습니다: {self.marker_path}") from exc
         if stored != expected_marker:
-            raise ValueError("같은 release_id의 기존 marker가 release 응답과 다릅니다")
+            raise ValueError("같은 월의 기존 marker가 수집 응답과 다릅니다")
         if not self.path.is_file() or _sha256_file(self.path) != expected_marker["sha256"]:
-            raise ValueError(f"완료된 Bronze release 파일이 없거나 checksum이 다릅니다: {self.path}")
+            raise ValueError(f"완료된 Bronze 파일이 없거나 checksum이 다릅니다: {self.path}")

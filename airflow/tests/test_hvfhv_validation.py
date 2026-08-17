@@ -1,6 +1,6 @@
 """HVFHV DAG의 경계 검사와 GX 데이터 품질 규칙을 검증합니다.
 
-Bronze 는 제공된 Parquet 원본을 파싱 없이 저장하고 checksum·행 수·release marker를
+Bronze 는 제공된 Parquet 원본을 파싱 없이 저장하고 checksum·행 수·marker를
 검증합니다. Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션을
 직접 열어서 봐야 합니다.
 검증 태스크의 값어치는 "통과한다"가 아니라 "불량을 통과시키지 않는다"입니다.
@@ -29,7 +29,6 @@ transformer = importlib.import_module("jobs.bronze_to_silver.hvfhv.transformer")
 DAG = dag_module.hvfhv_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 YEAR_MONTH = "2026-07"
-RELEASE_ID = "2026-07-seed-42"
 SILVER_COLUMNS = [field.name for field in transformer.FINAL_SCHEMA.fields if field.name != "year_month"]
 BRONZE_REQUIRED_COLUMNS = transformer.REQUIRED_COLUMNS
 SILVER_REQUIRED_COLUMNS = [
@@ -82,11 +81,10 @@ def write_bronze(
 ) -> str:
     schema = bronze_schema.SCHEMA if schema is None else schema
     records = bronze_rows(rows, schema) if records is None else records
-    path = Path(base_dir) / "hvfhv" / f"year_month={year_month}" / f"{RELEASE_ID}.parquet"
+    path = Path(base_dir) / "hvfhv" / f"year_month={year_month}" / "data.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
     marker = {
-        "release_id": RELEASE_ID,
         "year_month": year_month,
         "dataset": "hvfhv_taxi_trips",
         "row_count": len(records),
@@ -99,7 +97,6 @@ def write_bronze(
 def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
     parquet = pq.ParquetFile(path)
     return {
-        "release_id": RELEASE_ID,
         "row_count": parquet.metadata.num_rows,
         "locations": [path],
         "year_month": year_month,
@@ -131,7 +128,6 @@ def test_파일이_없으면_막는다(tmp_path):
         "locations": [str(missing)],
         "year_month": YEAR_MONTH,
         "file_size_bytes": 0,
-        "release_id": RELEASE_ID,
         "sha256": "0" * 64,
         "marker_location": str(missing.with_suffix(".json")),
     }
@@ -150,7 +146,7 @@ def test_크기가_다르면_막는다_잘린_다운로드(tmp_path):
 def test_파티션이_year_month와_다르면_막는다(tmp_path):
     path = write_bronze(tmp_path)
     result = result_for(path, year_month="2026-08")
-    with pytest.raises(ValueError, match="release 계약과 다릅니다"):
+    with pytest.raises(ValueError, match="월 파티션 계약과 다릅니다"):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
