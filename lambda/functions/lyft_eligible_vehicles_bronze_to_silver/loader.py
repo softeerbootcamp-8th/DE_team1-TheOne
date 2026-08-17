@@ -6,21 +6,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from schema.silver.eligible_vehicles import SCHEMA
+
 from ..common.atomic_write import atomic_write
 from ..common import lyft_eligible_vehicles_layout as layout
 
 logger = logging.getLogger(__name__)
-
-# Uber Eligible Silver와 같은 컬럼을 사용해 차량 대장에서 함께 조인합니다.
-SCHEMA = pa.schema(
-    [
-        ("make_key", pa.string()),
-        ("model_key", pa.string()),
-        ("product", pa.string()),
-        ("min_year", pa.int16()),
-        ("bronze_path", pa.string()),
-    ]
-)
 
 
 class LyftEligibleVehiclesSilverLoader(Loader):

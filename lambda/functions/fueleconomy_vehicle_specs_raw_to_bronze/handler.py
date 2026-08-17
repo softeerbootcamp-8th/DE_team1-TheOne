@@ -12,7 +12,7 @@ from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
 from .extractor import VehicleSpecsExtractor
-from .loader import VehicleSpecsBronzeLoader
+from .loader import build_bronze_loader
 
 configure_lambda_logging()
 
@@ -20,11 +20,13 @@ configure_lambda_logging()
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
+    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     collected_at = datetime.now(timezone.utc)
 
     result = Pipeline(
         VehicleSpecsExtractor(collected_at),
-        VehicleSpecsBronzeLoader(base_dir, collected_at),
+        build_bronze_loader(storage, base_dir, collected_at, bucket=bucket),
     ).run()
 
     return {
