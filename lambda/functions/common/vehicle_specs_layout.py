@@ -49,10 +49,19 @@ def bronze_file(base_dir: str, source: str, collected_at: datetime) -> Path:
     return partition / f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
 
 
+def bronze_date_prefix(collected_date: str) -> str:
+    """S3 bronze의 날짜 파티션 prefix. 그 아래 출처별 파티션이 있습니다.
+
+    bronze_key()와 이 함수가 서로 다른 문자열을 만들면 출처 목록을 나열하는 쪽
+    (S3BronzeExtractor)이 쓰는 쪽이 실제로 쓴 위치를 못 찾게 되므로 한 곳에 모읍니다.
+    """
+    return f"bronze/{DATASET}/{DATE_PARTITION_KEY}={collected_date}/"
+
+
 def bronze_key(source: str, collected_at: datetime) -> str:
     """S3 bronze key. bronze_file()과 같은 파티션 규칙, base_dir 대신 bronze/ prefix."""
     return (
-        f"bronze/{DATASET}/{DATE_PARTITION_KEY}={collected_at:%Y-%m-%d}/"
+        f"{bronze_date_prefix(f'{collected_at:%Y-%m-%d}')}"
         f"{SOURCE_PARTITION_KEY}={source}/{collected_at:%Y%m%dT%H%M%SZ}.parquet"
     )
 
@@ -61,3 +70,19 @@ def silver_file(base_dir: str, collected_date: date, source: str) -> Path:
     """Silver 는 재실행하면 덮어씁니다. 그래서 파일명이 고정입니다."""
     partition = source_partition(base_dir, collected_date.isoformat(), source)
     return partition / SILVER_FILE_NAME
+
+
+def silver_key(collected_date: date, source: str) -> str:
+    """S3 silver key. silver_file()과 같은 파티션 규칙, base_dir 대신 silver/ prefix."""
+    return (
+        f"silver/{DATASET}/{DATE_PARTITION_KEY}={collected_date.isoformat()}/"
+        f"{SOURCE_PARTITION_KEY}={source}/{SILVER_FILE_NAME}"
+    )
+
+
+def source_from_key(key: str) -> str:
+    """S3 bronze key에서 source=<출처> 파티션 세그먼트를 읽습니다 (파일 안에는 없는 값입니다)."""
+    for segment in key.split("/"):
+        if segment.startswith(f"{SOURCE_PARTITION_KEY}="):
+            return segment.removeprefix(f"{SOURCE_PARTITION_KEY}=")
+    raise ValueError(f"key에 source 파티션이 없습니다: {key}")

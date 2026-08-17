@@ -6,8 +6,8 @@ import os
 from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
-from .extractor import UberEligibleVehiclesBronzeExtractor
-from .loader import UberEligibleVehiclesSilverLoader
+from .extractor import build_bronze_extractor
+from .loader import build_silver_loader
 from .transformer import UberEligibleVehiclesSilverTransformer
 
 configure_lambda_logging()
@@ -19,14 +19,14 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not collected_date:
         raise ValueError("collected_date 또는 COLLECTED_DATE가 필요합니다.")
 
+    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
+    bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
 
-    loader = UberEligibleVehiclesSilverLoader(
-        silver_dir, expect_collected_date=collected_date
-    )
+    loader = build_silver_loader(storage, silver_dir, collected_date, bucket=bucket)
     result = Pipeline(
-        UberEligibleVehiclesBronzeExtractor(bronze_dir, collected_date),
+        build_bronze_extractor(storage, bronze_dir, collected_date, bucket=bucket),
         loader,
         transformer=UberEligibleVehiclesSilverTransformer(),
     ).run()
