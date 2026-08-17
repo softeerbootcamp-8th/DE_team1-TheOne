@@ -1,4 +1,4 @@
-"""월별 제공 데이터의 단일 Bronze release 파일을 검증합니다."""
+"""월별 제공 데이터의 단일 Bronze 파일을 검증합니다."""
 
 import hashlib
 import json
@@ -26,19 +26,15 @@ def validate_synthetic_bronze(
 ) -> tuple[Path, str]:
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
-    release_id = result.get("release_id")
-    if not isinstance(release_id, str) or not release_id:
-        raise ValueError("release_id가 없습니다")
-
     path = parsed.locations[0]
     if not path.is_file():
         raise ValueError(f"Bronze 원본 파일이 없습니다: {path}")
     if (
         path.parent.name != f"year_month={year_month}"
         or path.parent.parent.name != dataset_dir
-        or path.stem != release_id
+        or path.name != "data.parquet"
     ):
-        raise ValueError(f"Bronze 원본 경로가 release 계약과 다릅니다: {path}")
+        raise ValueError(f"Bronze 원본 경로가 월 파티션 계약과 다릅니다: {path}")
     if base_dir is not None:
         expected_partition = Path(base_dir) / dataset_dir / f"year_month={year_month}"
         if path.parent.resolve() != expected_partition.resolve():
@@ -54,15 +50,14 @@ def validate_synthetic_bronze(
 
     marker_path = Path(str(result.get("marker_location", "")))
     if not marker_path.is_file() or marker_path.with_suffix(".parquet") != path:
-        raise ValueError(f"Bronze release marker가 없습니다: {marker_path}")
+        raise ValueError(f"Bronze marker가 없습니다: {marker_path}")
     marker = json.loads(marker_path.read_text(encoding="utf-8"))
     expected = {
-        "release_id": release_id,
         "year_month": year_month,
         "dataset": dataset,
         "row_count": parsed.row_count,
         "sha256": result["sha256"],
     }
     if any(marker.get(key) != value for key, value in expected.items()):
-        raise ValueError("Bronze release marker가 수집 결과와 다릅니다")
+        raise ValueError("Bronze marker가 수집 결과와 다릅니다")
     return path, year_month

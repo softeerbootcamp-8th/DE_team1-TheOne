@@ -2,7 +2,7 @@
 
 1. 기존 월 스케줄과 네 단계 의존성 유지
 2. 데이터 제공 주소와 선택적 연월을 기존 HVFHV 수집 핸들러에 전달
-3. Spark 명령은 수집된 release 월만 정제
+3. Spark 명령은 수집된 월만 정제
 """
 
 from datetime import timedelta
@@ -44,7 +44,7 @@ def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_�
 
     def handler(*, event):
         called.update(event)
-        return {"release_id": "release"}
+        return {"year_month": "2026-08"}
 
     monkeypatch.setattr(task_module, "lambda_handler_for", lambda name: handler)
     raw = DAG.get_task("raw_to_bronze").python_callable

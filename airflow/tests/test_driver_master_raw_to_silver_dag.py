@@ -65,7 +65,7 @@ def test_기사데이터수집task는_제공주소를_기존핸들러에_전달�
 
     def handler(*, event):
         called.update(event)
-        return {"release_id": "release"}
+        return {"year_month": "2026-08"}
 
     monkeypatch.setattr(task_module, "lambda_handler_for", lambda name: handler)
     DAG.get_task("raw_to_bronze").python_callable(

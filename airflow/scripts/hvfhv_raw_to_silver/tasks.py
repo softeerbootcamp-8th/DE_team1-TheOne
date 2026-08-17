@@ -14,7 +14,7 @@ from airflow.sdk import task
 from common.lambda_runtime import lambda_handler_for
 from common.project_paths import PROJECT_ROOT
 from common.slack_failure_callback import slack_failure_callback
-from common.synthetic_release import validate_synthetic_bronze
+from common.monthly_bronze import validate_synthetic_bronze
 from common.validation import (
     parse_handler_result,
     parse_year_month,
