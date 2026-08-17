@@ -14,18 +14,9 @@ from datetime import date
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import coalesce, col, count, countDistinct, lit, to_date, when
 
-from schema.silver.driver_vehicle_leases import SCHEMA as LEASE_SCHEMA
-from schema.silver.hvfhv import FINAL_SCHEMA as TRIP_SCHEMA
-
-# HVFHV Clean Silver 가 NULL 자리표시로 들고 있는 컬럼입니다 — 채우는 값은 리스 쪽에
-# 있습니다. 빼지 않으면 아래 select 에 같은 이름이 두 번 들어가는데, `select` 는 중복
-# 이름을 허용해 조용히 지나가고 **쓰기 단계에서야** COLUMN_ALREADY_EXISTS 로 죽습니다.
-TRIP_PLACEHOLDER_COLUMNS = ("driver_id", "taxi_model_id")
-TRIP_COLUMNS = [
-    field.name for field in TRIP_SCHEMA if field.name not in TRIP_PLACEHOLDER_COLUMNS
-]
-# `taxi_id` 는 조인 키라 양쪽 값이 같습니다. 운행 쪽 하나만 싣습니다.
-LEASE_COLUMNS = [name for name in LEASE_SCHEMA.names if name != "taxi_id"]
+# 출력 계약은 `schema/silver/hvfhv_driver_trip.py` 가 소유합니다. 여기서 컬럼을 따로
+# 세면 검증하는 쪽과 만드는 쪽이 서로 다른 표를 보게 됩니다 (#466).
+from schema.silver.hvfhv_driver_trip import LEASE_COLUMNS, TRIP_COLUMNS
 
 REQUIRED_TRIP_COLUMNS = {"trip_key", "taxi_id", "pickup_datetime", "year_month"}
 

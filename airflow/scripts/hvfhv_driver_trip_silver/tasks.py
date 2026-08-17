@@ -10,6 +10,9 @@ import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from common.project_paths import PROJECT_ROOT
+# 검증이 볼 컬럼은 생산자와 같은 곳에서 가져옵니다. 여기 다시 적으면 Spark job 이
+# 컬럼을 바꿔도 이 목록만 옛 표를 보고 통과시킵니다 (#466).
+from schema.silver.hvfhv_driver_trip import KEY_COLUMNS, REQUIRED_COLUMNS
 
 logger = logging.getLogger(__name__)
 
@@ -23,21 +26,6 @@ DEFAULT_PATHS = {
         "DRIVER_MASTER_SILVER_DIR", str(SILVER / "driver_vehicle_leases")
     ),
     "output_path": str(SILVER / "hvfhv_driver_trip"),
-}
-REQUIRED_COLUMNS = {
-    "trip_key",
-    "driver_id",
-    "customer_id",
-    "lease_id",
-    "taxi_id",
-    "pickup_datetime",
-    "lease_started_on",
-    "lease_ended_on",
-    "year_month",
-    "snapshot_date",
-    "make_key",
-    "model_key",
-    "model_year",
 }
 
 
@@ -125,7 +113,7 @@ def validate_silver_partition(
         raise ValueError(f"기사 운행 이력 Silver 필수 컬럼 누락: {sorted(missing)}")
 
     frame = table.to_pandas()
-    keys = ["trip_key", "driver_id", "customer_id", "lease_id", "taxi_id"]
+    keys = list(KEY_COLUMNS)
     if frame[keys].isna().any().any() or frame["trip_key"].duplicated().any():
         raise ValueError("기사 운행 이력 Silver 키가 null이거나 trip_key가 중복됩니다")
     if set(frame["year_month"]) != {year_month}:

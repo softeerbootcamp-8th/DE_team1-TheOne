@@ -13,6 +13,7 @@ from pyspark.sql.functions import lit
 
 from common.session import get_or_create_spark_session
 from jobs.driver_trip.transformer import build_driver_trip
+from schema.silver.hvfhv_driver_trip import COLUMNS
 
 TRIP_SCHEMA = (
     "trip_key string, pickup_datetime timestamp, dropoff_datetime timestamp, "
@@ -88,10 +89,11 @@ def test_운행에_그_시점의_기사와_계약과_차량이_붙는다(spark):
     assert (row.year_month, row.snapshot_date) == ("2024-03", date(2024, 3, 1))
     # 배정이 사라졌으니 그 흔적도 남으면 안 됩니다.
     assert not {"assignment_version", "assignment_seed", "trip_sequence"} & set(result.columns)
-    # `select` 는 중복 이름을 허용해 조용히 지나가고 **쓰기 단계에서야**
-    # COLUMN_ALREADY_EXISTS 로 죽습니다. 여기서 잡아야 합니다.
-    duplicated = sorted({c for c in result.columns if result.columns.count(c) > 1})
-    assert not duplicated, f"중복 컬럼: {duplicated}"
+    # 출력 계약은 `schema/silver/hvfhv_driver_trip.py` 가 소유합니다. 실제 산출물이
+    # 거기서 갈라지면, 검증하는 쪽은 옛 표를 보고 통과시킵니다.
+    # 이름 순서까지 보는 이유: `select` 는 중복 이름을 허용해 조용히 지나가고
+    # **쓰기 단계에서야** COLUMN_ALREADY_EXISTS 로 죽습니다.
+    assert result.columns == list(COLUMNS)
 
 
 def test_계약_기간_밖의_운행은_그_계약에_붙지_않는다(spark):
