@@ -7,7 +7,9 @@
 박아두면 원천이 파티션 규칙을 바꿔도 조용히 0건이 됩니다.
 """
 
+import io
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -22,6 +24,9 @@ from ..common import uber_eligible_vehicles_layout as uber_layout
 from ..common import vehicle_catalog_layout as catalog_layout
 from ..common import vehicle_master_layout as layout
 from ..common import vehicle_specs_layout as specs_layout
+from ..common.env import load_local_env
+from ..common.s3_loader import BUCKET_ENV_VAR
+from ..common.s3_reader import get_object_bytes, list_keys
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +40,23 @@ SOURCES: tuple[tuple[str, ModuleType, str], ...] = (
     ("uber", uber_layout, uber_layout.CITY_PARTITION_KEY),
     ("lyft", lyft_layout, lyft_layout.CITY_PARTITION_KEY),
 )
+
+
+def _validate_as_of(as_of: str) -> date:
+    if not DATE_RE.fullmatch(as_of):
+        raise ValueError("as_of는 YYYY-MM-DD 형식이어야 합니다.")
+    try:
+        return date.fromisoformat(as_of)
+    except ValueError as exc:
+        raise ValueError("유효하지 않은 as_of입니다.") from exc
+
+
+def _value_from_key(key: str, partition_key: str) -> str:
+    """S3 key에서 `<partition_key>=<값>` 파티션 세그먼트를 읽습니다 (파일 안에는 없는 값)."""
+    for segment in key.split("/"):
+        if segment.startswith(f"{partition_key}="):
+            return segment.removeprefix(f"{partition_key}=")
+    raise ValueError(f"key에 {partition_key} 파티션이 없습니다: {key}")
 
 
 @dataclass
@@ -57,12 +79,7 @@ class VehicleMasterSilverExtractor(Extractor):
     name = "vehicle_master_silver_sources"
 
     def __init__(self, base_dir: str, as_of: str):
-        if not DATE_RE.fullmatch(as_of):
-            raise ValueError("as_of는 YYYY-MM-DD 형식이어야 합니다.")
-        try:
-            self.as_of = date.fromisoformat(as_of)
-        except ValueError as exc:
-            raise ValueError("유효하지 않은 as_of입니다.") from exc
+        self.as_of = _validate_as_of(as_of)
         self._base_dir = base_dir
         # 이번 실행이 읽은 원천 스냅샷 날짜. Pipeline 이 중간 데이터를 감추므로
         # 핸들러가 반환값을 만들 때 여기서 읽습니다 (Loader.paths 와 같은 방식).
@@ -117,3 +134,83 @@ class VehicleMasterSilverExtractor(Extractor):
             rows += [{**row, sub_key: sub_value} for row in table.to_pylist()]
 
         return collected_date, rows
+
+
+class VehicleMasterSilverS3Extractor(Extractor):
+    """네 개 S3 Silver 데이터셋의 최신 파티션을 읽어 합칩니다.
+
+    로컬과 달리 파티션을 디렉터리로 순회할 수 없어, 데이터셋별 prefix 전체를
+    `list_keys` 로 한 번에 나열한 뒤 `collected_date=`/하위 파티션 키를 key
+    문자열에서 파싱합니다. `latest_date_partition()`의 S3 대응은
+    `vehicle_master_layout.latest_date_from_keys()`.
+    """
+
+    name = "vehicle_master_silver_sources"
+
+    def __init__(self, as_of: str, bucket: str | None = None):
+        self.as_of = _validate_as_of(as_of)
+        load_local_env()
+        self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
+        self.source_collected_dates: dict[str, str] = {}
+
+    def extract(self) -> SourceTables:
+        tables = SourceTables(as_of=self.as_of)
+        for attr, source_layout, sub_key in SOURCES:
+            collected_date, rows = self._read_dataset(source_layout, sub_key)
+            setattr(tables, attr, rows)
+            tables.source_collected_dates[source_layout.DATASET] = (
+                collected_date.isoformat()
+            )
+            logger.info(
+                "source_extract done dataset=%s collected_date=%s rows=%d",
+                source_layout.DATASET,
+                collected_date.isoformat(),
+                len(rows),
+            )
+        self.source_collected_dates = dict(tables.source_collected_dates)
+        return tables
+
+    def _read_dataset(
+        self, source_layout: ModuleType, sub_key: str
+    ) -> tuple[date, list[dict]]:
+        prefix = f"silver/{source_layout.DATASET}/"
+        all_keys = list_keys(self._bucket, prefix)
+        if not all_keys:
+            raise FileNotFoundError(f"원천 Silver 데이터셋이 없습니다: s3://{self._bucket}/{prefix}")
+
+        collected_date = layout.latest_date_from_keys(
+            all_keys, self.as_of, f"s3://{self._bucket}/{prefix}"
+        )
+        date_prefix = f"{prefix}{layout.DATE_PARTITION_KEY}={collected_date.isoformat()}/"
+        date_keys = sorted(
+            k for k in all_keys
+            if k.startswith(date_prefix) and k.endswith(f"/{source_layout.SILVER_FILE_NAME}")
+        )
+        if not date_keys:
+            raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: s3://{self._bucket}/{date_prefix}")
+
+        rows: list[dict] = []
+        for key in date_keys:
+            body = get_object_bytes(self._bucket, key)
+            try:
+                table = pq.ParquetFile(io.BytesIO(body)).read()
+            except (OSError, pa.ArrowInvalid) as exc:
+                raise RuntimeError(
+                    f"Silver Parquet을 읽지 못했습니다: s3://{self._bucket}/{key}"
+                ) from exc
+            if not table.num_rows:
+                raise RuntimeError(f"Silver Parquet이 비어 있습니다: s3://{self._bucket}/{key}")
+
+            sub_value = _value_from_key(key, sub_key)
+            rows += [{**row, sub_key: sub_value} for row in table.to_pylist()]
+
+        return collected_date, rows
+
+
+def build_extractor(storage: str, base_dir: str, as_of: str, bucket: str | None = None) -> Extractor:
+    """storage 파라미터로 로컬/S3 Extractor 중 하나를 고릅니다."""
+    if storage == "local":
+        return VehicleMasterSilverExtractor(base_dir, as_of)
+    if storage == "s3":
+        return VehicleMasterSilverS3Extractor(as_of, bucket=bucket)
+    raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
