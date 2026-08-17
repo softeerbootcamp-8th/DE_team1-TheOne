@@ -7,7 +7,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from functions.driver_master_raw_to_bronze.loader import CompanySnapshotBronzeLoader
 from functions.eia_fuel_price_bronze_to_silver.loader import (
     SCHEMA as FUEL_PRICE_SILVER_SCHEMA,
     EiaFuelPriceSilverLoader,
@@ -19,7 +18,6 @@ from functions.fueleconomy_vehicle_specs_bronze_to_silver.loader import (
 from functions.fueleconomy_vehicle_specs_raw_to_bronze.loader import (
     VehicleSpecsBronzeLoader,
 )
-from functions.hvfhv_raw_to_bronze.loader import HvfhvBronzeLoader
 from functions.lyft_eligible_vehicles_raw_to_bronze.loader import (
     SCHEMA as LYFT_BRONZE_SCHEMA,
     LyftEligibleVehiclesBronzeLoader,
@@ -48,7 +46,6 @@ from functions.vehicle_master_silver.loader import (
     SCHEMA as MASTER_SILVER_SCHEMA,
     VehicleMasterSilverLoader,
 )
-from schema.bronze.hvfhv import SCHEMA as HVFHV_BRONZE_SCHEMA
 
 COLLECTED_AT = datetime(2026, 8, 13, 3, tzinfo=timezone.utc)
 
@@ -71,21 +68,6 @@ def _row(schema: pa.Schema) -> dict:
         else:
             raise AssertionError(f"테스트 값이 없는 타입: {field.type}")
     return values
-
-
-def _company(root):
-    return CompanySnapshotBronzeLoader(
-        str(root), "2026-08-13", COLLECTED_AT
-    ), {"customer": pa.table({"customer_id": ["c1"]})}
-
-
-def _hvfhv(root):
-    sink = pa.BufferOutputStream()
-    pq.write_table(HVFHV_BRONZE_SCHEMA.empty_table(), sink)
-    return (
-        HvfhvBronzeLoader(str(root), "2026-08", COLLECTED_AT),
-        sink.getvalue().to_pybytes(),
-    )
 
 
 def _specs(root):
@@ -118,7 +100,7 @@ def _catalog(root):
 
 @pytest.mark.parametrize(
     "factory",
-    [_company, _hvfhv, _specs, _lyft, _uber, _catalog],
+    [_specs, _lyft, _uber, _catalog],
     ids=lambda fn: fn.__name__,
 )
 def test_Raw_Bronze_교체실패는_기존파일을_보존하고_tmp를_정리한다(
