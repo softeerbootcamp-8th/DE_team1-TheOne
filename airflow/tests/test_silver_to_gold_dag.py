@@ -44,7 +44,7 @@ def _vehicle_master(root: Path, collected_dates: list[str], cities=("new-york",)
 def _gas_ev_price(root: Path, months: list[str]) -> Path:
     dataset = root / "gas_ev_price"
     for month in months:
-        partition = dataset / f"collected_month={month}"
+        partition = dataset / f"year_month={month}"
         partition.mkdir(parents=True)
         (partition / "gas_ev_price.parquet").touch()
     return dataset
@@ -161,7 +161,7 @@ def test_입력_세개가_모두_있으면_경로를_확정한다(tmp_path):
     assert resolved["year"] == "2026" and resolved["month"] == "5"
     assert resolved["trips_path"].endswith("year_month=2026-05")
     assert resolved["vehicle_master_path"].endswith("city=new-york/vehicle_master.parquet")
-    assert resolved["gas_ev_price_path"].endswith("collected_month=2026-05/gas_ev_price.parquet")
+    assert resolved["gas_ev_price_path"].endswith("year_month=2026-05/gas_ev_price.parquet")
 
 
 def _write_gold(root: Path, year_month: str, **overrides) -> None:

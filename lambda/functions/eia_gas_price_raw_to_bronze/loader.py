@@ -20,10 +20,19 @@ class EiaGasPriceBronzeLoader(Loader):
         self._collected_date = collected_date
 
     def write(self, data: dict) -> WriteResult:
-        path = layout.gas_bronze_file(self._base_dir, self._collected_date)
-        path.parent.mkdir(parents=True, exist_ok=True)
         body = data["body"]
 
+        # 내용이 최신 수집분과 같으면 새 파티션을 만들지 않습니다. 그러면 파티션 개수
+        # 자체가 "언제 실제로 바뀌었는지" 를 말해주는 기록이 됩니다.
+        duplicate = layout.is_duplicate_of_newest(
+            self._base_dir, layout.GAS_DATASET, layout.GAS_FILE_NAME, body
+        )
+        if duplicate is not None:
+            logger.info("최신 수집분과 동일해 건너뜁니다: %s (%d bytes)", duplicate, len(body))
+            return WriteResult(location=str(duplicate), row_count=1)
+
+        path = layout.gas_bronze_file(self._base_dir, self._collected_date)
+        path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, lambda temporary: temporary.write_bytes(body))
 
         logger.info("적재 완료: %s (%d bytes)", path, len(body))
