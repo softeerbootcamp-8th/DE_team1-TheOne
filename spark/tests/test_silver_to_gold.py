@@ -22,6 +22,8 @@
 17. 배정 버전이 섞여 있으면 ValueError — 어느 규칙의 결과인지 말할 수 없음 (#418)
 15. service_tier는 트립 이력 최빈값이 아니라 현재 차량의 vehicle_master 자격
     (Comfort/Extra Comfort eligible)에서 파생. 둘 다 자격이면 Extra Comfort 우선
+18. 월말 늦은 시각 운행도 그 달 가격에 붙음 — 세션 타임존이 머신 설정을 따라가면
+    to_date 가 밀려 다음 달로 넘어가고 조인이 깨진다 (#460)
 """
 
 from dataclasses import fields
@@ -265,6 +267,95 @@ def test_매칭_안되는_운행이_있으면_ValueError다(spark, violation):
 
     with pytest.raises(ValueError):
         enrich_trips_with_fuel_cost(trips, gas_ev_price, vehicle_master)
+
+
+def _int96_trips_parquet(spark, tmp_path, pickup: datetime):
+    """운행 1건을 실제 Silver 와 같은 물리 타입(INT96)으로 써서 읽어옵니다.
+
+    타임존 민감성은 INT96 에서만 나타납니다 — `createDataFrame` 은 만들 때와 읽을 때
+    같은 타임존을 쓰므로 상쇄되어 재현되지 않고, pyarrow 기본 INT64 도 그렇습니다.
+    실제 `hvfhv_driver_trip` Silver 의 `pickup_datetime` 이 INT96 입니다.
+    """
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    row = _trip(pickup_datetime=pickup)
+    columns = {
+        key: pa.array([value], pa.timestamp("us")) if key == "pickup_datetime"
+        else pa.array([value])
+        for key, value in row.items()
+    }
+    path = str(tmp_path / "trips.parquet")
+    pq.write_table(pa.table(columns), path, use_deprecated_int96_timestamps=True)
+    return spark.read.parquet(path)
+
+
+def _corolla_master(spark):
+    return _vehicle_master(spark, [{
+        "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
+        "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
+        "spec_year_max": 2025,
+    }])
+
+
+def test_월말_늦은_시각_운행도_그달_가격에_붙는다(spark, tmp_path):
+    """세션 타임존이 머신 설정을 따라가면 이 케이스가 조용히 깨집니다.
+
+    `pickup_datetime` 은 뉴욕 현지 벽시계가 INT96 으로 담긴 값입니다. 세션 타임존이
+    UTC 가 아니면 `to_date` 결과가 밀려서 그 달 마지막 날 늦은 시각 운행이 다음 달로
+    넘어가고, 다음 달 가격은 그 파일에 없으니 조인이 깨집니다. 실측으로 2025-05 운행
+    254,848건 중 5,091건(2.0%)이 여기 걸렸습니다.
+    """
+    trips = _int96_trips_parquet(spark, tmp_path, datetime(2024, 3, 31, 23))
+    gas_ev_price = _gas_ev_price(spark, [
+        {"date": date(2024, 3, 31), "gas_price": 3.0, "ev_price": 0.5},
+    ])
+
+    enriched = enrich_trips_with_fuel_cost(trips, gas_ev_price, _corolla_master(spark))
+
+    assert enriched.first().gas_price == pytest.approx(3.0)
+
+
+def test_세션_타임존은_머신_설정과_무관하게_UTC다(spark):
+    # 머신 TZ 를 따라가면 같은 코드·같은 입력이 개발자마다 다른 결과를 냅니다.
+    assert spark.conf.get("spark.sql.session.timeZone") == "UTC"
+
+
+def test_파이썬과_세션이_같은_타임존을_쓴다(spark):
+    """둘이 어긋나면 파이썬으로 만든 데이터가 읽을 때 밀립니다.
+
+    `createDataFrame` 은 파이썬 datetime 변환에 프로세스 TZ 를, `to_date` 는 세션
+    타임존을 씁니다. 세션만 고정했을 때 실제로 테스트 5개가 깨졌습니다.
+    """
+    from datetime import datetime as dt
+
+    from pyspark.sql import functions as F
+
+    naive = dt(2024, 3, 31, 23)
+    row = spark.createDataFrame([{"ts": naive}]).select(F.to_date("ts").alias("d")).first()
+
+    assert row.d == naive.date()
+
+
+def test_타임존이_UTC가_아니면_월말_운행이_깨진다(spark, tmp_path):
+    """위 고정이 실제로 무엇을 막는지 증명합니다.
+
+    CI 가 UTC 머신이면 `test_월말_늦은_시각_운행도_그달_가격에_붙는다` 는 고정이
+    없어도 통과해버립니다. 그래서 타임존을 일부러 밀어 실패를 재현해 둡니다 — 이게
+    안 깨지면 고정이 더는 필요 없다는 뜻이므로 그때 둘 다 지우면 됩니다.
+    """
+    trips = _int96_trips_parquet(spark, tmp_path, datetime(2024, 3, 31, 23))
+    gas_ev_price = _gas_ev_price(spark, [
+        {"date": date(2024, 3, 31), "gas_price": 3.0, "ev_price": 0.5},
+    ])
+
+    original = spark.conf.get("spark.sql.session.timeZone")
+    spark.conf.set("spark.sql.session.timeZone", "Asia/Seoul")
+    try:
+        with pytest.raises(ValueError, match="매칭되지 않는 운행"):
+            enrich_trips_with_fuel_cost(trips, gas_ev_price, _corolla_master(spark))
+    finally:
+        spark.conf.set("spark.sql.session.timeZone", original)
 
 
 def test_매출_증가액이_음수면_기준을_넘어도_report_집계에서_빠진다(spark):
