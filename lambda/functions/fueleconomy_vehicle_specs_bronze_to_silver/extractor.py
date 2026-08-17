@@ -1,6 +1,8 @@
 """실행일의 차종별 제원 Bronze 스냅샷을 읽습니다."""
 
+import io
 import logging
+import os
 import re
 from datetime import date
 
@@ -9,10 +11,22 @@ import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
 from ..common import vehicle_specs_layout as layout
+from ..common.env import load_local_env
+from ..common.s3_loader import BUCKET_ENV_VAR
+from ..common.s3_reader import get_object_bytes, list_keys
 
 logger = logging.getLogger(__name__)
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _validate_collected_date(collected_date: str) -> None:
+    if not DATE_RE.fullmatch(collected_date):
+        raise ValueError("collected_date는 YYYY-MM-DD 형식이어야 합니다.")
+    try:
+        date.fromisoformat(collected_date)
+    except ValueError as exc:
+        raise ValueError("유효하지 않은 collected_date입니다.") from exc
 
 # Silver 를 만드는 데 실제로 필요한 컬럼만 읽습니다. Bronze 는 원본 84컬럼
 # 5만 행이라 전부 dict 로 펼치면 수백 MB 를 씁니다. 나머지 컬럼은 버리는 게
@@ -42,13 +56,7 @@ class VehicleSpecsBronzeExtractor(Extractor):
     name = "fueleconomy_vehicle_specs_bronze"
 
     def __init__(self, base_dir: str, collected_date: str):
-        if not DATE_RE.fullmatch(collected_date):
-            raise ValueError("collected_date는 YYYY-MM-DD 형식이어야 합니다.")
-        try:
-            date.fromisoformat(collected_date)
-        except ValueError as exc:
-            raise ValueError("유효하지 않은 collected_date입니다.") from exc
-
+        _validate_collected_date(collected_date)
         self._base_dir = base_dir
         self.collected_date = collected_date
 
@@ -92,3 +100,64 @@ class VehicleSpecsBronzeExtractor(Extractor):
             "bronze_extract done sources=%d rows=%d", len(source_dirs), len(rows)
         )
         return rows
+
+
+class VehicleSpecsS3BronzeExtractor(Extractor):
+    """S3 Bronze에서 해당 날짜 파티션의 출처별 최신 Parquet을 읽어 합칩니다."""
+
+    name = "fueleconomy_vehicle_specs_bronze"
+
+    def __init__(self, collected_date: str, bucket: str | None = None):
+        _validate_collected_date(collected_date)
+        load_local_env()
+        self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
+        self.collected_date = collected_date
+
+    def extract(self) -> list[dict]:
+        prefix = layout.bronze_date_prefix(self.collected_date)
+        keys = list_keys(self._bucket, prefix)
+        if not keys:
+            raise FileNotFoundError(f"Bronze 파티션이 없습니다: s3://{self._bucket}/{prefix}")
+
+        by_source: dict[str, list[str]] = {}
+        for key in keys:
+            by_source.setdefault(layout.source_from_key(key), []).append(key)
+
+        rows: list[dict] = []
+        for source, source_keys in sorted(by_source.items()):
+            key = sorted(source_keys)[-1]
+            body = get_object_bytes(self._bucket, key)
+            try:
+                parquet = pq.ParquetFile(io.BytesIO(body))
+                available = set(parquet.schema_arrow.names)
+                missing = [c for c in NEEDED_COLUMNS if c not in available]
+                if missing:
+                    raise RuntimeError(
+                        f"Bronze 에 필요한 컬럼이 없습니다: {missing} (s3://{self._bucket}/{key})"
+                    )
+                table = parquet.read(columns=list(NEEDED_COLUMNS))
+            except (OSError, pa.ArrowInvalid) as exc:
+                raise RuntimeError(
+                    f"Bronze Parquet을 읽지 못했습니다: s3://{self._bucket}/{key}"
+                ) from exc
+            if not table.num_rows:
+                raise RuntimeError(f"Bronze Parquet이 비어 있습니다: s3://{self._bucket}/{key}")
+
+            rows += [
+                {**row, "source": source, "bronze_path": f"s3://{self._bucket}/{key}"}
+                for row in table.to_pylist()
+            ]
+
+        logger.info("bronze_extract done sources=%d rows=%d", len(by_source), len(rows))
+        return rows
+
+
+def build_bronze_extractor(
+    storage: str, base_dir: str, collected_date: str, bucket: str | None = None
+) -> Extractor:
+    """storage 파라미터로 로컬/S3 Extractor 중 하나를 고릅니다."""
+    if storage == "local":
+        return VehicleSpecsBronzeExtractor(base_dir, collected_date)
+    if storage == "s3":
+        return VehicleSpecsS3BronzeExtractor(collected_date, bucket=bucket)
+    raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
