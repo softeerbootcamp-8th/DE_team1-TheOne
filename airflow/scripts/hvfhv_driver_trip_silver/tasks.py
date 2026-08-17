@@ -1,6 +1,7 @@
-"""HVFHV 기사 배정 Silver DAG의 실행·검증 함수."""
+"""기사 운행 이력 Silver DAG의 실행·검증 함수."""
 
 import logging
+import os
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -13,13 +14,14 @@ from common.project_paths import PROJECT_ROOT
 logger = logging.getLogger(__name__)
 
 ROOT = PROJECT_ROOT
-BRONZE = ROOT / "data" / "bronze"
 SILVER = ROOT / "data" / "silver"
 DEFAULT_PATHS = {
-    "trips_path": str(SILVER / "hvfhv"),
-    "preferences_path": str(BRONZE / "driver_preferences.parquet"),
-    "company_path": str(ROOT / "data" / "source" / "company"),
-    "travel_times_path": str(SILVER / "taxi_zone_travel_times"),
+    "trips_path": os.getenv("SILVER_DIR", str(SILVER / "hvfhv")),
+    # 생산자(`driver_master_raw_to_silver`)가 같은 env 로 쓰기 경로를 바꿉니다.
+    # 여기만 하드코딩하면 그 env 를 켜는 순간 소비자가 빈 자리를 봅니다.
+    "leases_path": os.getenv(
+        "DRIVER_MASTER_SILVER_DIR", str(SILVER / "driver_vehicle_leases")
+    ),
     "output_path": str(SILVER / "hvfhv_driver_trip"),
 }
 REQUIRED_COLUMNS = {
@@ -33,11 +35,6 @@ REQUIRED_COLUMNS = {
     "lease_ended_on",
     "year_month",
     "snapshot_date",
-    "assignment_seed",
-    "assignment_version",
-    "trip_sequence",
-    "deadhead_minutes",
-    "preference_score",
     "make_key",
     "model_key",
     "model_year",
@@ -91,30 +88,18 @@ def resolve_target_year_month(
 
 
 def validate_input_paths(year_month: str, snapshot_date: str, paths: dict) -> dict:
+    """두 Clean Silver 의 대상 월 파티션이 모두 있어야 합니다.
+
+    한쪽만 있으면 Spark 가 조인 단계까지 가서야 죽습니다. 그때는 이미 운행 파티션을
+    통째로 읽은 뒤라, 없는 경로 하나를 알려주는 데 몇 분이 듭니다.
+    """
     date.fromisoformat(snapshot_date)
     datetime.strptime(year_month, "%Y-%m")
-    for name in DEFAULT_PATHS:
-        if name == "output_path":
-            continue
-        path = Path(paths[name])
-        if name == "trips_path":
-            path = path / f"year_month={year_month}"
-        elif name == "company_path":
-            path = path / f"snapshot_date={snapshot_date}"
-        if not path.exists():
+    for name in ("trips_path", "leases_path"):
+        partition = Path(paths[name]) / f"year_month={year_month}"
+        if not partition.exists():
             raise FileNotFoundError(
-                f"기사 배정 입력 경로가 없습니다: {name}={path}"
-            )
-
-    company = Path(paths["company_path"]) / f"snapshot_date={snapshot_date}"
-    for filename in (
-        "customer.parquet",
-        "lease_contract.parquet",
-        "taxi.parquet",
-    ):
-        if not (company / filename).is_file():
-            raise FileNotFoundError(
-                f"회사 스냅샷 파일이 없습니다: {company / filename}"
+                f"기사 운행 이력 입력 파티션이 없습니다: {name}={partition}"
             )
     return {"year_month": year_month, "snapshot_date": snapshot_date}
 
@@ -125,11 +110,11 @@ def validate_silver_partition(
     partition = Path(output_dir) / f"year_month={year_month}"
     files = sorted(partition.glob("*.parquet"))
     if not files:
-        raise ValueError(f"기사 배정 Silver 파일이 없습니다: {partition}")
+        raise ValueError(f"기사 운행 이력 Silver 파일이 없습니다: {partition}")
     tables = [pq.ParquetFile(path).read() for path in files]
     table = pa.concat_tables(tables)
     if table.num_rows == 0:
-        raise ValueError(f"기사 배정 Silver 행 수가 0입니다: {partition}")
+        raise ValueError(f"기사 운행 이력 Silver 행 수가 0입니다: {partition}")
 
     if "year_month" not in table.column_names:
         table = table.append_column(
@@ -137,14 +122,14 @@ def validate_silver_partition(
         )
     missing = REQUIRED_COLUMNS - set(table.column_names)
     if missing:
-        raise ValueError(f"기사 배정 Silver 필수 컬럼 누락: {sorted(missing)}")
+        raise ValueError(f"기사 운행 이력 Silver 필수 컬럼 누락: {sorted(missing)}")
 
     frame = table.to_pandas()
     keys = ["trip_key", "driver_id", "customer_id", "lease_id", "taxi_id"]
     if frame[keys].isna().any().any() or frame["trip_key"].duplicated().any():
-        raise ValueError("기사 배정 Silver 키가 null이거나 trip_key가 중복됩니다")
+        raise ValueError("기사 운행 이력 Silver 키가 null이거나 trip_key가 중복됩니다")
     if set(frame["year_month"]) != {year_month}:
-        raise ValueError("기사 배정 Silver 행의 year_month가 파티션과 다릅니다")
+        raise ValueError("기사 운행 이력 Silver 행의 year_month가 파티션과 다릅니다")
 
     pickup_date = frame["pickup_datetime"].dt.date
     started = frame["lease_started_on"]
@@ -160,9 +145,11 @@ def validate_inputs_task(**context):
     year_month = resolve_target_year_month(
         logical_date, params, params.get("trips_path")
     )
-    logger.info("기사 배정 대상 연월: %s", year_month)
-    snapshot_date = params.get("snapshot_date") or f"{year_month}-01"
-    return validate_input_paths(year_month, snapshot_date, params)
+    logger.info("기사 운행 이력 대상 연월: %s", year_month)
+    # 리스 Clean Silver 는 `year_month` 파티션 하나가 그 달 1일 스냅샷입니다
+    # (`driver_assignment/source_job.py` 가 그렇게 만듭니다). 파라미터로 받으면
+    # 아무 경로도 고르지 않으면서 계보 컬럼만 틀리게 찍힙니다 — 실패 없이 통과합니다.
+    return validate_input_paths(year_month, f"{year_month}-01", params)
 
 
 @task(task_id="validate_silver")

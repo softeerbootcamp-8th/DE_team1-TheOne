@@ -1,4 +1,9 @@
-"""월별 HVFHV 기사 배정 Silver 파이프라인을 선언합니다."""
+"""월별 기사 운행 이력 Silver 파이프라인을 선언합니다.
+
+HVFHV Clean Silver 와 기사 리스 Clean Silver 를 `taxi_id` + 운행 시점으로 조인합니다.
+후보 생성·배정은 여기 없습니다 — 가짜 데이터 API 가 운행마다 `taxi_id` 를 붙여
+내보내므로(#450), 이 DAG 은 결정적인 조인만 합니다.
+"""
 
 import os
 from datetime import datetime, timedelta
@@ -38,8 +43,6 @@ default_args = {
     params={
         "year": Param(None, type=["string", "null"]),
         "month": Param(None, type=["string", "null"]),
-        "snapshot_date": Param(None, type=["string", "null"]),
-        "seed": Param(42, type="integer"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
     },
 )
@@ -47,21 +50,14 @@ def driver_trip_pipeline():
     build = BashOperator(
         task_id="build_driver_trip_silver",
         bash_command=(
-            f"python {ROOT}/spark/jobs/driver_assignment/silver_job.py "
+            f"python {ROOT}/spark/jobs/driver_trip/job.py "
             + "--trips_path {{ params.trips_path }}/year_month="
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
-            + "--preferences_path {{ params.preferences_path }} "
-            + "--customers_path {{ params.company_path }}/snapshot_date="
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['snapshot_date'] }}/customer.parquet "
-            + "--leases_path {{ params.company_path }}/snapshot_date="
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['snapshot_date'] }}/lease_contract.parquet "
-            + "--taxis_path {{ params.company_path }}/snapshot_date="
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['snapshot_date'] }}/taxi.parquet "
-            + "--travel_times_path {{ params.travel_times_path }} "
+            + "--leases_path {{ params.leases_path }}/year_month="
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
             + "--output_path {{ params.output_path }}"
             + " --year_month {{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }}"
             + " --snapshot_date {{ task_instance.xcom_pull(task_ids='validate_inputs')['snapshot_date'] }}"
-            + " --seed {{ params.seed }}"
         ),
         env={
             **os.environ,
