@@ -60,7 +60,7 @@ default_args = {
 )
 def vehicle_master_silver_pipeline():
     silver_result = build_vehicle_master_task()
-    validate_silver_task(silver_result)
+    validate_silver_task.override(retries=0)(silver_result)
 
 
 vehicle_master_dag = vehicle_master_silver_pipeline()

@@ -281,13 +281,11 @@ def test_잘못된_경로를_정상_silver로_오인하지_않는다(silver_dir,
         validate_gas(result(path))
 
 
-def test_validation_task는_재시도와_Slack_callback을_유지한다():
+def test_validation_task는_Slack_실패_callback을_유지한다():
     for task_id in (
         "validate_gas_silver",
         "validate_ev_silver",
         "validate_integrated_silver",
     ):
         validation = DAG.get_task(task_id)
-        assert validation.retries == 1
-        assert validation.retry_delay == timedelta(minutes=10)
         assert dag_module.slack_failure_callback in validation.on_failure_callback

@@ -11,7 +11,7 @@ Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합�
 """
 
 import importlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -103,11 +103,9 @@ def bronze_params(base_dir) -> dict:
     return {"base_dir": str(base_dir)}
 
 
-def test_Validation_Task에_재시도와_Slack_콜백이_연결된다():
+def test_Validation_Task에_Slack_실패_콜백이_연결된다():
     for task_id in ("validate_bronze", "validate_silver"):
         validation_task = DAG.get_task(task_id)
-        assert validation_task.retries == 1
-        assert validation_task.retry_delay == timedelta(minutes=10)
         assert task_module.slack_failure_callback in validation_task.on_failure_callback
 
 
@@ -428,7 +426,7 @@ def test_직전_달_파티션이_있으면_통과한다(tmp_path, monkeypatch):
     validate_silver(result_for(bronze_path))
 
 
-def test_Bronze_GX_실패는_재시도후_Spark와_Silver를_실행하지_않는다(
+def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않는다(
     tmp_path, monkeypatch, caplog
 ):
     records = bronze_rows(10)
@@ -442,7 +440,6 @@ def test_Bronze_GX_실패는_재시도후_Spark와_Silver를_실행하지_않는
     validation_task = DAG.get_task("validate_bronze")
     callbacks = []
     monkeypatch.setattr(raw_task, "python_callable", lambda **_: result)
-    monkeypatch.setattr(validation_task, "retry_delay", timedelta(0))
     monkeypatch.setattr(
         validation_task,
         "on_failure_callback",
@@ -462,7 +459,7 @@ def test_Bronze_GX_실패는_재시도후_Spark와_Silver를_실행하지_않는
     assert run.state == "failed"
     assert instances["raw_to_bronze"].state == "success"
     assert instances["validate_bronze"].state == "failed"
-    assert instances["validate_bronze"].try_number == 2
+    assert instances["validate_bronze"].try_number == 1
     assert instances["bronze_to_silver"].state == "upstream_failed"
     assert instances["validate_silver"].state == "upstream_failed"
     assert callbacks == ["validate_bronze"]
