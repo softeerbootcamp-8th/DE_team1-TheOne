@@ -9,7 +9,7 @@ from pyspark.sql.functions import (
 
 from pipeline_core.transformer import Transformer
 
-from schema.silver.hvfhv import FINAL_SCHEMA, REQUIRED_COLUMNS
+from schema.silver.hvfhv import FINAL_SCHEMA
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +24,7 @@ TRIP_KEY_COLUMNS = [
     "base_passenger_fare",
     "driver_pay",
 ]
+REQUIRED_COLUMNS = TRIP_KEY_COLUMNS
 
 PREMIUM_FARE_RATIO = 1.15
 MIN_OD_OBSERVATIONS = 20
@@ -45,10 +46,12 @@ class HVFHVCleanTransformer(Transformer):
         df_zone: Optional[DataFrame] = None,
         zone_lookup_path: Optional[str] = None,
         error_threshold: float = 0.05,
+        require_taxi_id: bool = False,
     ):
         self._df_zone = df_zone
         self._zone_lookup_path = zone_lookup_path
         self._error_threshold = error_threshold
+        self._require_taxi_id = require_taxi_id
 
     def transform(self, df: DataFrame) -> DataFrame:
         logger.info("데이터 정제 및 변환 시작...")
@@ -58,7 +61,12 @@ class HVFHVCleanTransformer(Transformer):
         # =========================================================================
         # 1. 조기 검증 및 필터링
         # =========================================================================
-        missing_required = [c for c in REQUIRED_COLUMNS if c not in df.columns]
+        required_columns = (
+            [*REQUIRED_COLUMNS, "taxi_id"]
+            if self._require_taxi_id
+            else REQUIRED_COLUMNS
+        )
+        missing_required = [c for c in required_columns if c not in df.columns]
         if missing_required:
             error_msg = f"원천 데이터에 필수 컬럼이 누락되었습니다: {missing_required}"
             logger.error(error_msg)
@@ -83,6 +91,12 @@ class HVFHVCleanTransformer(Transformer):
             (col("base_passenger_fare") >= 0) & (col("base_passenger_fare") <= 5000) &
             col("driver_pay").isNotNull() & (col("driver_pay") >= 0) & (col("driver_pay") <= 5000)
         )
+        if self._require_taxi_id:
+            valid_condition = (
+                valid_condition
+                & col("taxi_id").isNotNull()
+                & (col("taxi_id") != "")
+            )
 
         df_valid = df.filter(valid_condition)
 
@@ -144,6 +158,11 @@ class HVFHVCleanTransformer(Transformer):
             ),
             options={"ignoreNullFields": "false"},
         )
+        taxi_id = (
+            col("taxi_id").cast("string")
+            if self._require_taxi_id
+            else lit(None).cast("string")
+        )
         df_transformed = df_keyed.withColumn(
             "trip_key", sha2(canonical_trip, 256)
         ).drop("_trip_occurrence").withColumn(
@@ -153,7 +172,7 @@ class HVFHVCleanTransformer(Transformer):
             .when(col("hvfhs_license_num") == "HV0004", "Via")
             .when(col("hvfhs_license_num") == "HV0005", "Lyft")
             .otherwise("Unknown")
-        ).withColumn("taxi_id", lit(None).cast("string")) \
+        ).withColumn("taxi_id", taxi_id) \
          .withColumn("driver_id", lit(None).cast("string")) \
          .withColumn("taxi_model_id", lit(None).cast("string")) \
          .withColumn("year_month", date_format(col("pickup_datetime"), "yyyy-MM"))

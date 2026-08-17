@@ -1,9 +1,9 @@
 """월별 가짜 기사-운행 원천 생성 시나리오. 이슈 #452.
 
 1. 월별 상태 갱신 → 월초에 기존 기사 0.5~1% 이탈·동일 수 신규 유입
-2. 배정 결과 분리 → HVFHV 원본+taxi_id와 기사-차량 리스 이력
+2. 배정 결과 분리 → HVFHV+taxi_id 데이터와 기사 데이터
 3. 릴리스 재실행 → 완결된 기존 결과를 중복 생성하지 않음
-4. 정제 코드 소유권 → 중앙 Silver 스키마와 원천 변환기 공유
+4. 정제 코드 소유권 → source job은 중앙 Silver 스키마만 공유
 """
 
 from datetime import date, datetime
@@ -14,10 +14,8 @@ import pytest
 from pyspark.sql.functions import lit
 
 from common.session import get_or_create_spark_session
-from jobs.bronze_to_silver.hvfhv.transformer import (
-    HVFHVCleanTransformer as LegacyHVFHVCleanTransformer,
-)
 from jobs.driver_assignment.source_job import (
+    LEASE_SOURCE_COLUMNS,
     _apply_test_row_limit,
     _test_scoped_root,
     add_trip_keys,
@@ -31,6 +29,7 @@ from jobs.driver_assignment.source_transformer import (
 )
 from jobs.driver_master.preference import build_driver_preferences
 from schema.silver.hvfhv import FINAL_SCHEMA
+from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
 from scripts.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
     build_vehicle_pool,
@@ -40,9 +39,9 @@ from scripts.synthetic_company_snapshot.snapshot import (
 from scripts.synthetic_driver_trip_source import monthly
 
 
-def test_가짜원천_정제는_중앙_스키마와_변환기를_공유한다():
+def test_가짜원천_정제는_중앙_Silver_스키마만_공유한다():
     assert SOURCE_FINAL_SCHEMA is FINAL_SCHEMA
-    assert LegacyHVFHVCleanTransformer is HVFHVCleanTransformer
+    assert LEASE_SOURCE_COLUMNS == DRIVER_VEHICLE_LEASE_SCHEMA.names
 
 
 def test_임시행제한은_입력과_출력경로를_프로덕션에서_분리한다(tmp_path):

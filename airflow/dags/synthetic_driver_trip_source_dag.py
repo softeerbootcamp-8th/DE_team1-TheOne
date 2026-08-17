@@ -1,4 +1,4 @@
-"""검증된 월별 HVFHV로 가짜 기사-운행 API 원천 파일을 생성합니다."""
+"""검증된 월별 HVFHV로 HVFHV+taxi_id 데이터와 기사 데이터를 생성합니다."""
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -31,7 +31,7 @@ default_args = {
 @dag(
     dag_id="synthetic_driver_trip_source_pipeline",
     default_args=default_args,
-    description="월별 HVFHV에 가짜 기사·차량을 배정해 API 원천 2종 생성",
+    description="월별 HVFHV에 기사·차량을 배정해 제공 데이터 2종 생성",
     schedule="0 0 10 * *",
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,

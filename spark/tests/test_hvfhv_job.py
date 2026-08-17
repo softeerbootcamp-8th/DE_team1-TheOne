@@ -37,6 +37,7 @@ def _row(**overrides) -> dict:
         "base_passenger_fare": 10.0,
         "driver_pay": 20.0,
         "hvfhs_license_num": "HV0003",
+        "taxi_id": "taxi-1",
     }
     row.update(overrides)
     return row

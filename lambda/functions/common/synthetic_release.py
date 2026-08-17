@@ -130,7 +130,7 @@ class SyntheticReleaseDatasetExtractor(Extractor):
         resolved = urljoin(f"{self._api_base_url}/", download_url)
         base, target = urlsplit(self._api_base_url), urlsplit(resolved)
         if (target.scheme, target.netloc) != (base.scheme, base.netloc):
-            raise ValueError("dataset download_url은 manifest API와 같은 host여야 합니다")
+            raise ValueError("dataset download_url은 manifest와 같은 host여야 합니다")
         return resolved
 
 
@@ -206,6 +206,6 @@ class SyntheticReleaseDatasetLoader(Loader):
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"Bronze release marker를 읽지 못했습니다: {self.marker_path}") from exc
         if stored != expected_marker:
-            raise ValueError("같은 release_id의 기존 marker가 API 응답과 다릅니다")
+            raise ValueError("같은 release_id의 기존 marker가 release 응답과 다릅니다")
         if not self.path.is_file() or _sha256_file(self.path) != expected_marker["sha256"]:
             raise ValueError(f"완료된 Bronze release 파일이 없거나 checksum이 다릅니다: {self.path}")

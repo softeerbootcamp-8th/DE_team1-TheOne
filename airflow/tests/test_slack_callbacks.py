@@ -19,6 +19,7 @@ from common.slack_failure_callback import (
 
 
 DAG_MODULES = {
+    "dags.driver_master_raw_to_silver_dag": "driver_master_raw_to_silver_dag",
     "dags.eia_electricity_price_raw_to_bronze_dag": (
         "eia_electricity_price_raw_to_bronze_dag"
     ),

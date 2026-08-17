@@ -1,8 +1,8 @@
 """HVFHV DAG의 경계 검사와 GX 데이터 품질 규칙을 검증합니다.
 
-Bronze 는 원본 Parquet 을 파싱 없이 그대로 받아 쓰고, 행 수도 세지 않고 파일 1개를
-1로 셉니다. 그래서 다운로드가 잘려도 핸들러는 성공으로 끝납니다. Silver 는 Spark
-BashOperator 라 handler 결과 dict 자체가 없어 파티션을 직접 열어서 봐야 합니다.
+Bronze 는 제공된 Parquet 원본을 파싱 없이 저장하고 checksum·행 수·release marker를
+검증합니다. Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션을
+직접 열어서 봐야 합니다.
 검증 태스크의 값어치는 "통과한다"가 아니라 "불량을 통과시키지 않는다"입니다.
 
 대용량 원본을 Pandas 에 모두 올리지 않도록 Parquet 을 배치 단위로 검사합니다.
@@ -10,7 +10,9 @@ BashOperator 라 handler 결과 dict 자체가 없어 파티션을 직접 열어
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 """
 
+import hashlib
 import importlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,12 +23,13 @@ import pytest
 from dags import hvfhv_raw_to_silver_dag as dag_module
 from scripts.hvfhv_raw_to_silver import tasks as task_module
 
-bronze_loader = importlib.import_module("lambda.functions.hvfhv_raw_to_bronze.loader")
+bronze_schema = importlib.import_module("schema.bronze.hvfhv")
 transformer = importlib.import_module("jobs.bronze_to_silver.hvfhv.transformer")
 
 DAG = dag_module.hvfhv_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 YEAR_MONTH = "2026-07"
+RELEASE_ID = "2026-07-seed-42"
 SILVER_COLUMNS = [field.name for field in transformer.FINAL_SCHEMA.fields if field.name != "year_month"]
 BRONZE_REQUIRED_COLUMNS = transformer.REQUIRED_COLUMNS
 SILVER_REQUIRED_COLUMNS = [
@@ -59,7 +62,7 @@ validate_silver = DAG.get_task("validate_silver").python_callable
 
 
 def bronze_rows(count: int = 3, schema=None) -> list[dict]:
-    schema = bronze_loader.SCHEMA if schema is None else schema
+    schema = bronze_schema.SCHEMA if schema is None else schema
     row = {
         field.name: COLLECTED_AT if pa.types.is_timestamp(field.type)
         else 1 if pa.types.is_integer(field.type)
@@ -77,25 +80,32 @@ def write_bronze(
     schema=None,
     records: list[dict] | None = None,
 ) -> str:
-    schema = bronze_loader.SCHEMA if schema is None else schema
+    schema = bronze_schema.SCHEMA if schema is None else schema
     records = bronze_rows(rows, schema) if records is None else records
-    path = (
-        bronze_loader.HvfhvBronzeLoader(
-            str(base_dir), year_month, COLLECTED_AT
-        ).partition_path()
-        / f"{COLLECTED_AT:%Y%m%dT%H%M%SZ}.parquet"
-    )
+    path = Path(base_dir) / "hvfhv" / f"year_month={year_month}" / f"{RELEASE_ID}.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
+    marker = {
+        "release_id": RELEASE_ID,
+        "year_month": year_month,
+        "dataset": "hvfhv_taxi_trips",
+        "row_count": len(records),
+        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+    }
+    path.with_suffix(".json").write_text(json.dumps(marker), encoding="utf-8")
     return str(path)
 
 
 def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
+    parquet = pq.ParquetFile(path)
     return {
-        "row_count": 1,
+        "release_id": RELEASE_ID,
+        "row_count": parquet.metadata.num_rows,
         "locations": [path],
         "year_month": year_month,
         "file_size_bytes": Path(path).stat().st_size,
+        "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
+        "marker_location": str(Path(path).with_suffix(".json")),
     }
 
 
@@ -121,8 +131,11 @@ def test_파일이_없으면_막는다(tmp_path):
         "locations": [str(missing)],
         "year_month": YEAR_MONTH,
         "file_size_bytes": 0,
+        "release_id": RELEASE_ID,
+        "sha256": "0" * 64,
+        "marker_location": str(missing.with_suffix(".json")),
     }
-    with pytest.raises(ValueError, match="파일이 없거나"):
+    with pytest.raises(ValueError, match="파일이 없습니다"):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
@@ -130,28 +143,28 @@ def test_크기가_다르면_막는다_잘린_다운로드(tmp_path):
     path = write_bronze(tmp_path)
     result = result_for(path)
     result["file_size_bytes"] += 1
-    with pytest.raises(ValueError, match="크기가 다릅니다"):
+    with pytest.raises(ValueError, match="파일 크기"):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
 def test_파티션이_year_month와_다르면_막는다(tmp_path):
     path = write_bronze(tmp_path)
     result = result_for(path, year_month="2026-08")
-    with pytest.raises(ValueError, match="파티션이 year_month와 다릅니다"):
+    with pytest.raises(ValueError, match="release 계약과 다릅니다"):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
 def test_Bronze_경로가_base_dir_layout과_다르면_막는다(tmp_path):
     path = write_bronze(tmp_path / "elsewhere")
 
-    with pytest.raises(ValueError, match="layout 규칙과 다릅니다"):
+    with pytest.raises(ValueError, match="base_dir layout과 다릅니다"):
         validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
 # 2026-06 원본 Parquet 의 footer 에서 직접 읽은 실제 시그니처입니다.
-# `bronze_loader.SCHEMA` 로 픽스처를 만들면 SCHEMA 가 틀려도 자기 자신과 비교돼
+# `bronze_schema.SCHEMA` 로 픽스처를 만들면 SCHEMA 가 틀려도 자기 자신과 비교돼
 # 통과합니다. 실제 값과의 대조는 이렇게 문자열을 박아두어야만 됩니다 (#324).
-TLC_SCHEMA_SIGNATURE = (
+SOURCE_SCHEMA_SIGNATURE = (
     "hvfhs_license_num:large_string|dispatching_base_num:large_string"
     "|originating_base_num:large_string|request_datetime:timestamp[us]"
     "|on_scene_datetime:timestamp[us]|pickup_datetime:timestamp[us]"
@@ -161,24 +174,29 @@ TLC_SCHEMA_SIGNATURE = (
     "|tips:double|driver_pay:double|shared_request_flag:large_string"
     "|shared_match_flag:large_string|access_a_ride_flag:large_string"
     "|wav_request_flag:large_string|wav_match_flag:large_string"
-    "|cbd_congestion_fee:double"
+    "|cbd_congestion_fee:double|taxi_id:string"
 )
 
 
-def test_실제_TLC_원본_스키마와_SCHEMA_가_같다():
+def test_HVFHV_taxi_id_원본스키마는_TLC컬럼과_taxi_id를_갖는다():
     """틀리면 Bronze 검증이 **어떤 달을 넣어도** 통과하지 못합니다.
 
     Bronze Loader 는 원본 바이트를 파싱 없이 그대로 씁니다. 따라서 읽어들인
     스키마는 항상 TLC 의 물리 타입이고, `SCHEMA` 가 그와 다르면 영원히 불일치입니다.
     """
-    assert task_module._schema_signature(bronze_loader.SCHEMA) == TLC_SCHEMA_SIGNATURE
+    assert task_module._schema_signature(bronze_schema.SCHEMA) == SOURCE_SCHEMA_SIGNATURE
 
 
-def test_cbd_congestion_fee_가_없는_2024년_원본도_통과한다(tmp_path):
-    """부트스트랩 풀이 2024년 12개월을 쓰므로 그 달들도 백필할 수 있어야 합니다."""
-    path = write_bronze(tmp_path, schema=bronze_loader.LEGACY_SCHEMA)
+def test_cbd컬럼이_없던_과거월도_taxi_id가_있으면_통과한다(tmp_path):
+    path = write_bronze(tmp_path, schema=bronze_schema.LEGACY_SCHEMA)
 
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_taxi_id가_없는_기존_TLC원본은_새_데이터계약에서_실패한다(tmp_path):
+    path = write_bronze(tmp_path, schema=bronze_schema.TLC_SCHEMA)
+    with pytest.raises(ValueError, match="schema_signature|missing_required_columns"):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
 def test_스키마가_다르면_막는다_잘린_다운로드(tmp_path):
@@ -193,7 +211,7 @@ def test_스키마가_다르면_막는다_잘린_다운로드(tmp_path):
 def test_Spark_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
     missing = "pickup_datetime"
     schema = pa.schema(
-        field for field in bronze_loader.SCHEMA if field.name != missing
+        field for field in bronze_schema.SCHEMA if field.name != missing
     )
     path = write_bronze(tmp_path, schema=schema)
 
@@ -206,10 +224,10 @@ def test_Spark_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
 
 def test_행_수가_0이면_막는다(tmp_path):
     path = write_bronze(tmp_path, rows=0)
-    with pytest.raises(
-        ValueError, match=r"expect_column_values_to_be_between\[row_count\]"
-    ):
-        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+    result = result_for(path)
+    result["row_count"] = 1
+    with pytest.raises(ValueError, match="행 수가 수집 결과와 다릅니다"):
+        validate_bronze(result, params=bronze_params(tmp_path))
 
 
 def test_필수값_NULL_행이_20퍼센트_미만이면_기존_Spark_정책대로_통과한다(tmp_path):

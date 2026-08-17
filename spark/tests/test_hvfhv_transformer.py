@@ -39,6 +39,7 @@ def _row(**overrides) -> dict:
         "base_passenger_fare": 10.0,
         "driver_pay": 20.0,
         "hvfhs_license_num": "HV0003",
+        "taxi_id": "taxi-1",
     }
     row.update(overrides)
     return row
@@ -82,6 +83,14 @@ def test_출력_스키마가_FINAL_SCHEMA와_순서_타입까지_일치한다(sp
 
     assert [field.name for field in result.schema] == [field.name for field in FINAL_SCHEMA]
     assert [field.dataType for field in result.schema] == [field.dataType for field in FINAL_SCHEMA]
+
+
+def test_원천_taxi_id를_Silver에_그대로_보존한다(spark):
+    result = HVFHVCleanTransformer(error_threshold=1.0).transform(
+        spark.createDataFrame([_row(taxi_id="taxi-42")])
+    )
+
+    assert result.select("taxi_id").first()["taxi_id"] == "taxi-42"
 
 
 def test_동일_원본은_입력_순서와_재실행에_관계없이_같은_trip_key를_갖는다(spark):
