@@ -14,13 +14,14 @@ import logging
 import requests
 from pipeline_core.extractor import Extractor
 
+from ..common.eia_fuel_price_layout import GAS_MIN_BYTES as MIN_BYTES
+
 logger = logging.getLogger(__name__)
 
 # EIA Petroleum & Other Liquids — Weekly New York Regular Conventional Retail Gasoline Prices
 FILE_URL = "https://www.eia.gov/dnav/pet/hist_xls/EMM_EPMR_PTE_SNY_DPGw.xls"
 # 구형 BIFF(.xls) 파일입니다. 시그니처가 바뀌면 다른 것을 받은 것이므로 즉시 실패시킵니다.
 XLS_MAGIC = b"\xd0\xcf\x11\xe0"
-MIN_BYTES = 10_000
 
 
 def fetch(timeout: int = 60) -> bytes:
