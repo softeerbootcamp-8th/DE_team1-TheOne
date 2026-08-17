@@ -4,7 +4,7 @@
 
     hvfhv_driver_trip   <silver>/hvfhv_driver_trip/year_month=YYYY-MM/
     vehicle_master      <silver>/vehicle_master/collected_date=YYYY-MM-DD/city=<도시>/vehicle_master.parquet
-    gas_ev_price        <silver>/gas_ev_price/collected_month=YYYY-MM/gas_ev_price.parquet
+    gas_ev_price        <silver>/gas_ev_price/year_month=YYYY-MM/gas_ev_price.parquet
 """
 
 import logging
@@ -152,7 +152,7 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
 
     gas_ev_price = Path(params["gas_ev_price_path"])
     if gas_ev_price.is_dir():
-        gas_ev_price = gas_ev_price / f"collected_month={year_month}" / "gas_ev_price.parquet"
+        gas_ev_price = gas_ev_price / f"year_month={year_month}" / "gas_ev_price.parquet"
     if not gas_ev_price.is_file():
         raise FileNotFoundError(
             f"연료비 Silver 파일이 없습니다: {gas_ev_price}. "

@@ -20,7 +20,11 @@ class EiaFuelPriceTransformer(Transformer):
 
     def transform(self, data: dict) -> list[dict]:
         return build_daily_prices(
-            self._year_month, data["gas_body"], data["electricity_body"], markup=self._markup
+            self._year_month,
+            data["gas_body"],
+            data["electricity_body"],
+            data["bronze_collected_date"],
+            markup=self._markup,
         )
 
 
@@ -43,6 +47,6 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     return {
         "row_count": result.write_result.row_count,
         "locations": [result.write_result.location],
-        "collected_month": year_month,
+        "year_month": year_month,
         "markup": markup,
     }

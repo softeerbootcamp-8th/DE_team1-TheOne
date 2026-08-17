@@ -20,10 +20,19 @@ class EiaElectricityPriceBronzeLoader(Loader):
         self._collected_date = collected_date
 
     def write(self, data: dict) -> WriteResult:
-        path = layout.electricity_bronze_file(self._base_dir, self._collected_date)
-        path.parent.mkdir(parents=True, exist_ok=True)
         body = data["body"]
 
+        # 전력은 3개월에 한 번만 실제로 갱신되므로 월 1회 수집분 대부분이 바이트까지
+        # 같습니다. 같은 것을 새 파티션으로 쌓지 않습니다.
+        duplicate = layout.is_duplicate_of_newest(
+            self._base_dir, layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME, body
+        )
+        if duplicate is not None:
+            logger.info("최신 수집분과 동일해 건너뜁니다: %s (%d bytes)", duplicate, len(body))
+            return WriteResult(location=str(duplicate), row_count=1)
+
+        path = layout.electricity_bronze_file(self._base_dir, self._collected_date)
+        path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, lambda temporary: temporary.write_bytes(body))
 
         logger.info("적재 완료: %s (%d bytes)", path, len(body))

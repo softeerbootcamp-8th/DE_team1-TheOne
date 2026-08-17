@@ -6,7 +6,7 @@ output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
     cd spark && PYTHONPATH="$(pwd):$(pwd)/.." uv run --frozen python jobs/silver_to_gold/job.py \\
       --trips_path ../data/silver/hvfhv_driver_trip/year_month=2026-01 \\
       --vehicle_master_path ../data/silver/vehicle_master/collected_date=2026-01-15/city=new-york/vehicle_master.parquet \\
-      --gas_ev_price_path ../data/silver/gas_ev_price/collected_month=2026-01/gas_ev_price.parquet \\
+      --gas_ev_price_path ../data/silver/gas_ev_price/year_month=2026-01/gas_ev_price.parquet \\
       --year 2026 --month 1 --threshold_profit_increase 30 --output_dir ../data/gold
 """
 
@@ -98,7 +98,7 @@ def main(args_list: list[str] | None = None) -> None:
             vehicle_master_collected_date=partition_value(
                 args.vehicle_master_path, "collected_date"
             ),
-            gas_ev_price_month=partition_value(args.gas_ev_price_path, "collected_month"),
+            gas_ev_price_month=partition_value(args.gas_ev_price_path, "year_month"),
         )
 
         outputs: dict[str, DataFrame] = {

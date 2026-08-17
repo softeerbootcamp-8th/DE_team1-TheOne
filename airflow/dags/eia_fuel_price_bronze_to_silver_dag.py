@@ -1,6 +1,6 @@
 """EIA 원본 두 개를 대상 월의 통합 연료비 Silver 로 변환합니다.
 
-산출물은 `gas_ev_price/collected_month=YYYY-MM/gas_ev_price.parquet` — Gold 가 읽는
+산출물은 `gas_ev_price/year_month=YYYY-MM/gas_ev_price.parquet` — Gold 가 읽는
 자리입니다. 출처는 `price_source` 로 남깁니다.
 
 스케줄

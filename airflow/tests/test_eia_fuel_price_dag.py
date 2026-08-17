@@ -14,6 +14,8 @@ URL·형식·파서·공개 주기가 전부 달라서 한쪽이 죽어도 다�
  8. 정상 산출물은 검증 통과
  9. 행 수가 그 달 일수와 다르면 실패 (하루라도 비면 Gold 조인이 조용히 줄어듦)
 10. 스키마·`price_source` 가 다르면 실패
+11. 계보(`bronze_collected_date`)가 비었거나 한 달 안에서 섞이면 실패
+12. 잠정값(`Preliminary`)은 실패시키지 않고 통과 — 정상 산출물이지만 재생성 시 값이 바뀜
 
 Lambda 핸들러는 부르지 않습니다 — 파일을 직접 놓고 검증 함수만 확인합니다.
 """
@@ -31,7 +33,7 @@ import pytest
 from scripts.eia_fuel_price_bronze_to_silver import tasks as silver_tasks
 from scripts.eia_electricity_price_raw_to_bronze import tasks as electricity_tasks
 from scripts.eia_gas_price_raw_to_bronze import tasks as gas_tasks
-from schema.silver.gas_ev_price import EIA, SCHEMA
+from schema.silver.gas_ev_price import EIA, FINAL, PRELIMINARY, SCHEMA
 
 
 def _layout():
@@ -55,13 +57,22 @@ def _write_bronze(bronze, collected_date: date, *, gas=True, electricity=True) -
         path.write_bytes(BIG_ENOUGH)
 
 
-def _write_silver(silver, year_month: str, rows: int, source: str = EIA, schema=SCHEMA):
+def _write_silver(
+    silver,
+    year_month: str,
+    rows: int,
+    source: str = EIA,
+    schema=SCHEMA,
+    collected=date(2026, 8, 17),
+    status: str = FINAL,
+):
     path = silver_tasks.integrated_silver_file(str(silver), year_month)
     path.parent.mkdir(parents=True, exist_ok=True)
     year, month = (int(part) for part in year_month.split("-"))
     records = [
         {"date": date(year, month, day), "gas_price": 3.0, "ev_price": 0.4,
-         "price_source": source}
+         "price_source": source, "bronze_collected_date": collected,
+         "ev_price_status": status}
         for day in range(1, rows + 1)
     ]
     if schema is not SCHEMA:
@@ -205,3 +216,18 @@ def test_다른_출처가_만든_산출물은_EIA_검증에서_실패한다(tmp_
 def test_산출물이_없으면_실패한다(tmp_path):
     with pytest.raises(FileNotFoundError, match="통합 연료비 Silver 가 없습니다"):
         silver_tasks.validate_silver(str(tmp_path), "2025-05")
+
+
+def test_계보가_비어있으면_실패한다(tmp_path):
+    # 무엇으로 만들었는지 모르면 "왜 지난번과 숫자가 다르지" 에 답할 수 없습니다.
+    _write_silver(tmp_path, "2025-05", rows=31, collected=None)
+
+    with pytest.raises(ValueError, match="bronze_collected_date 계보가"):
+        silver_tasks.validate_silver(str(tmp_path), "2025-05")
+
+
+def test_잠정값도_검증을_통과한다(tmp_path):
+    # 잠정값은 정상 산출물입니다. 막으면 최근 3개월을 아예 만들 수 없습니다.
+    _write_silver(tmp_path, "2025-05", rows=31, status=PRELIMINARY)
+
+    silver_tasks.validate_silver(str(tmp_path), "2025-05")

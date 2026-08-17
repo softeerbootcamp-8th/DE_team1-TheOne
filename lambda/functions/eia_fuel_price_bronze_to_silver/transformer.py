@@ -30,6 +30,8 @@ from io import BytesIO
 import openpyxl
 import xlrd
 
+from schema.silver.gas_ev_price import EIA as PRICE_SOURCE, FINAL
+
 logger = logging.getLogger(__name__)
 
 # 휘발유 이력 시트 — 0번은 목차, 1번이 주간 계열입니다.
@@ -42,6 +44,8 @@ STATE = "NY"
 # 전기차 충전은 교통 부문으로 분류됩니다. 가정용(RESIDENTIAL)은 자가 충전 기준이라
 # 영업용 기사의 단가로 쓰기에 맞지 않습니다.
 ELECTRICITY_SECTOR = "TRANSPORTATION"
+# EIA 가 각 달의 확정 여부를 직접 적어주는 컬럼 (Preliminary / Final).
+STATUS_COLUMN = "Data Status"
 
 # 공공 충전 마진 배수. NLR 실측 공공 충전 단가 / EIA 전력 소매요금 으로 잰 값입니다
 # (2026-08 기준 $0.417 / $0.207). **가정입니다** — 마진율이 시간에 따라 크게 변하지
@@ -53,7 +57,8 @@ CENTS_PER_DOLLAR = 100.0
 GAS_USD_RANGE = (1.0, 15.0)
 EV_USD_RANGE = (0.05, 3.0)
 
-PRICE_SOURCE = "eia"
+# `price_source` / 확정 상태 값은 스키마가 소유합니다 (위 import). 두 곳에 적어두면
+# 갈릴 수 있어서 여기서 다시 정의하지 않습니다.
 
 
 def month_days(year_month: str) -> list[date]:
@@ -82,8 +87,13 @@ def parse_gas_weekly(body: bytes) -> list[tuple[date, float]]:
     return sorted(observations)
 
 
-def parse_electricity_monthly(body: bytes) -> dict[str, float]:
-    """월간 전력요금 이력 → {YYYY-MM: ¢/kWh} (뉴욕, 교통 부문)."""
+def parse_electricity_monthly(body: bytes) -> dict[str, tuple[float, str]]:
+    """월간 전력요금 이력 → {YYYY-MM: (¢/kWh, 확정상태)} (뉴욕, 교통 부문).
+
+    확정 상태를 함께 돌려주는 이유는 EIA 가 최근 약 17개월을 `Preliminary` 로 두고
+    나중에 `Final` 로 바꾸기 때문입니다. 같은 달을 다시 만들었을 때 숫자가 달라지는
+    유일한 원인이라, 결과에 남겨두면 그 차이를 설명할 수 있습니다.
+    """
     workbook = openpyxl.load_workbook(BytesIO(body), read_only=True, data_only=True)
     if ELECTRICITY_SHEET not in workbook.sheetnames:
         raise ValueError(f"EIA 전력 파일에 {ELECTRICITY_SHEET} 시트가 없습니다")
@@ -102,12 +112,12 @@ def parse_electricity_monthly(body: bytes) -> dict[str, float]:
     ]
 
     price_column = f"{ELECTRICITY_SECTOR}_Price"
-    for required in ("Year", "Month", "State", price_column):
+    for required in ("Year", "Month", "State", STATUS_COLUMN, price_column):
         if required not in columns:
             raise ValueError(f"EIA 전력 시트에 컬럼이 없습니다: {required}")
     index = {name: position for position, name in enumerate(columns)}
 
-    prices: dict[str, float] = {}
+    prices: dict[str, tuple[float, str]] = {}
     for row in rows:
         if row[index["State"]] != STATE:
             continue
@@ -115,7 +125,8 @@ def parse_electricity_monthly(body: bytes) -> dict[str, float]:
         if not isinstance(price, (int, float)):
             continue
         year_month = f"{int(row[index['Year']]):04d}-{int(row[index['Month']]):02d}"
-        prices[year_month] = float(price)
+        status = str(row[index[STATUS_COLUMN]] or "").strip()
+        prices[year_month] = (float(price), status)
 
     workbook.close()
     if not prices:
@@ -144,9 +155,14 @@ def build_daily_prices(
     year_month: str,
     gas_body: bytes,
     electricity_body: bytes,
+    bronze_collected_date: date,
     markup: float = PUBLIC_CHARGING_MARKUP,
 ) -> list[dict]:
-    """대상 월의 일별 `date`/`gas_price`/`ev_price`/`price_source` 행."""
+    """대상 월의 일별 가격 + 계보 행.
+
+    `bronze_collected_date` 를 받는 이유는 같은 달을 다시 만들면 숫자가 달라질 수 있어서
+    입니다. 어느 수집분으로 만들었는지 남기지 않으면 그 차이를 설명할 수 없습니다.
+    """
     datetime.strptime(year_month, "%Y-%m")
     days = month_days(year_month)
 
@@ -159,7 +175,8 @@ def build_daily_prices(
             f"EIA 전력 이력에 {year_month} 이 없습니다 (보유 {available}). "
             "전력 통계는 약 3개월 늦게 공개됩니다."
         )
-    ev_price = electricity[year_month] / CENTS_PER_DOLLAR * markup
+    cents, status = electricity[year_month]
+    ev_price = cents / CENTS_PER_DOLLAR * markup
 
     rows = [
         {
@@ -167,16 +184,25 @@ def build_daily_prices(
             "gas_price": gas_prices[day],
             "ev_price": ev_price,
             "price_source": PRICE_SOURCE,
+            "bronze_collected_date": bronze_collected_date,
+            "ev_price_status": status,
         }
         for day in days
     ]
     validate(rows, year_month)
     logger.info(
-        "EIA 일별 연료비 생성: %s %d일 gas=%.3f~%.3f ev=%.4f (배수 %.2f)",
+        "EIA 일별 연료비 생성: %s %d일 gas=%.3f~%.3f ev=%.4f (배수 %.2f) "
+        "수집분=%s 전력상태=%s",
         year_month, len(rows),
         min(row["gas_price"] for row in rows), max(row["gas_price"] for row in rows),
-        ev_price, markup,
+        ev_price, markup, bronze_collected_date, status or "(표기없음)",
     )
+    if status != FINAL:
+        # 잠정값이면 나중에 다시 만들 때 숫자가 바뀝니다. 조용히 넘기지 않습니다.
+        logger.warning(
+            "%s 전력값이 확정(%s) 이 아닙니다 (%s). 나중에 다시 만들면 값이 바뀝니다.",
+            year_month, FINAL, status or "표기없음",
+        )
     return rows
 
 
