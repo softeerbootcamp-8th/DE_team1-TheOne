@@ -3,11 +3,10 @@
 1. 월별 상태 갱신 → 월초에 기존 기사 0.5~1% 이탈·동일 수 신규 유입
 2. 배정 결과 분리 → HVFHV 원본+taxi_id와 기사-차량 리스 이력
 3. 릴리스 재실행 → 완결된 기존 결과를 중복 생성하지 않음
-4. 정제 코드 소유권 → source job은 Bronze/Silver 모듈에 의존하지 않음
+4. 정제 코드 소유권 → 중앙 Silver 스키마와 원천 변환기 공유
 """
 
 from datetime import date, datetime
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -26,8 +25,12 @@ from jobs.driver_assignment.source_job import (
     build_trip_source,
     write_source_release,
 )
-from jobs.driver_assignment.source_transformer import HVFHVCleanTransformer
+from jobs.driver_assignment.source_transformer import (
+    FINAL_SCHEMA as SOURCE_FINAL_SCHEMA,
+    HVFHVCleanTransformer,
+)
 from jobs.driver_master.preference import build_driver_preferences
+from schema.silver.hvfhv import FINAL_SCHEMA
 from scripts.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
     build_vehicle_pool,
@@ -37,15 +40,8 @@ from scripts.synthetic_company_snapshot.snapshot import (
 from scripts.synthetic_driver_trip_source import monthly
 
 
-def test_가짜원천_정제는_Bronze_Silver_모듈에_의존하지_않는다():
-    source_dir = Path(__file__).parents[1] / "jobs/driver_assignment"
-
-    source_code = "\n".join(
-        (source_dir / name).read_text(encoding="utf-8")
-        for name in ("source_job.py", "source_transformer.py", "source_schema.py")
-    )
-    assert "jobs.bronze_to_silver" not in source_code
-    assert "schema.silver" not in source_code
+def test_가짜원천_정제는_중앙_스키마와_변환기를_공유한다():
+    assert SOURCE_FINAL_SCHEMA is FINAL_SCHEMA
     assert LegacyHVFHVCleanTransformer is HVFHVCleanTransformer
 
 
