@@ -8,9 +8,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from functions.driver_master_raw_to_bronze.loader import CompanySnapshotBronzeLoader
-from functions.ev_charging_stations_bronze_to_silver.loader import (
-    SCHEMA as EV_SILVER_SCHEMA,
-    EvChargingSilverLoader,
+from functions.eia_fuel_price_bronze_to_silver.loader import (
+    SCHEMA as FUEL_PRICE_SILVER_SCHEMA,
+    EiaFuelPriceSilverLoader,
 )
 from functions.fueleconomy_vehicle_specs_bronze_to_silver.loader import (
     SCHEMA as SPECS_SILVER_SCHEMA,
@@ -27,10 +27,6 @@ from functions.lyft_eligible_vehicles_raw_to_bronze.loader import (
 from functions.lyft_eligible_vehicles_bronze_to_silver.loader import (
     SCHEMA as LYFT_SILVER_SCHEMA,
     LyftEligibleVehiclesSilverLoader,
-)
-from functions.gas_price_bronze_to_silver.loader import (
-    SCHEMA as GAS_SILVER_SCHEMA,
-    GasPriceSilverLoader,
 )
 from functions.uber_eligible_vehicles_bronze_to_silver.loader import (
     SCHEMA as UBER_SILVER_SCHEMA,
@@ -147,12 +143,11 @@ def test_Raw_Bronze_교체실패는_기존파일을_보존하고_tmp를_정리�
     assert not [path for path in tmp_path.rglob("*") if path.suffix == ".tmp"]
 
 
-def _gas_silver(root):
-    return GasPriceSilverLoader(str(root), "2026-08"), [_row(GAS_SILVER_SCHEMA)]
-
-
-def _ev_silver(root):
-    return EvChargingSilverLoader(str(root), "2026-08"), [_row(EV_SILVER_SCHEMA)]
+def _fuel_price_silver(root):
+    return (
+        EiaFuelPriceSilverLoader(str(root), "2026-08"),
+        [_row(FUEL_PRICE_SILVER_SCHEMA)],
+    )
 
 
 def _specs_silver(root):
@@ -188,8 +183,7 @@ def _master_silver(root):
 @pytest.mark.parametrize(
     "factory",
     [
-        _gas_silver,
-        _ev_silver,
+        _fuel_price_silver,
         _specs_silver,
         _lyft_silver,
         _uber_silver,

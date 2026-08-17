@@ -3,8 +3,8 @@
     <base>/eia_gas_price/collected_date=YYYY-MM-DD/gasoline_weekly_ny.xls
     <base>/eia_electricity_price/collected_date=YYYY-MM-DD/sales_revenue.xlsx
 
-Silver 는 만들지 않습니다 — 두 원본을 합쳐 기존 `gas_ev_price` Silver 에 씁니다
-(`gas_price_layout.SILVER_*` 참고). 소스가 늘어도 Gold 가 읽는 자리는 하나입니다.
+Silver 는 만들지 않습니다 — 두 원본을 합쳐 `gas_ev_price` Silver 에 씁니다
+(`schema/silver/gas_ev_price.py`). 소스가 늘어도 Gold 가 읽는 자리는 하나입니다.
 
 수집일 파티션인 이유
 -------------------

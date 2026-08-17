@@ -156,7 +156,7 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
     if not gas_ev_price.is_file():
         raise FileNotFoundError(
             f"연료비 Silver 파일이 없습니다: {gas_ev_price}. "
-            "gas_ev_price_bronze_to_silver_pipeline 을 대상 월로 먼저 돌리세요."
+            "eia_fuel_price_bronze_to_silver_pipeline 을 대상 월로 먼저 돌리세요."
         )
 
     resolved = {
