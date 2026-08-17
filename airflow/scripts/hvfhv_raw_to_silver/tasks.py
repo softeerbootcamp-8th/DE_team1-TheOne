@@ -4,22 +4,23 @@ import importlib
 import logging
 import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.sdk import task
-from airflow.sdk.exceptions import AirflowSkipException
 
 from common.lambda_runtime import lambda_handler_for
 from common.project_paths import PROJECT_ROOT
 from common.slack_failure_callback import slack_failure_callback
+from common.synthetic_release import validate_synthetic_bronze
 from common.validation import (
     parse_handler_result,
     parse_year_month,
     run_gx_validation,
 )
+from schema.bronze.hvfhv import LEGACY_SCHEMA, SCHEMA
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,7 @@ DEFAULT_ZONE_LOOKUP_PATH = os.getenv(
     str(PROJECT_ROOT / "data" / "bronze" / "taxi_zone_lookup.csv"),
 )
 HVFHV_ERROR_THRESHOLD = 0.2
+DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
 
 
 def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> str:
@@ -60,7 +62,7 @@ def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> 
     return "|".join(fields)
 
 
-def _bronze_quality_summary(parquet_file, expected_schema, required_columns):
+def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
     """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다."""
     import pandas as pd
 
@@ -69,7 +71,8 @@ def _bronze_quality_summary(parquet_file, expected_schema, required_columns):
     missing_columns = [name for name in required_columns if name not in schema.names]
     invalid_rows = 0
 
-    if row_count and not missing_columns and schema == expected_schema:
+    schema_allowed = schema in expected_schemas
+    if row_count and not missing_columns and schema_allowed:
         for batch in parquet_file.iter_batches(columns=required_columns):
             frame = batch.to_pandas()
             trip_miles = pd.to_numeric(frame["trip_miles"], errors="coerce")
@@ -91,6 +94,8 @@ def _bronze_quality_summary(parquet_file, expected_schema, required_columns):
                 & fare.le(5000)
                 & driver_pay.ge(0)
                 & driver_pay.le(5000)
+                & frame["taxi_id"].notna()
+                & frame["taxi_id"].ne("")
             )
             invalid_rows += int((~valid).sum())
 
@@ -102,7 +107,7 @@ def _bronze_quality_summary(parquet_file, expected_schema, required_columns):
                 "missing_required_columns": ",".join(missing_columns),
                 "invalid_required_row_ratio": (
                     invalid_rows / row_count
-                    if row_count and not missing_columns and schema == expected_schema
+                    if row_count and not missing_columns and schema_allowed
                     else None
                 ),
             }
@@ -158,112 +163,16 @@ def _silver_quality_summary(parquet_files, required_columns):
     )
 
 
-def resolve_target_year_month(
-    logical_date: datetime, params: dict
-) -> tuple[str, str]:
-    """실행 시점 또는 수동 입력 파라미터를 기반으로 수집/정제 대상 (year, month)를 반환합니다.
-
-    - 수동 트리거 시 params['year'], params['month'] 가 지정되어 있으면 해당 값 우선 사용
-    - 기본 스케줄 실행 시: logical_date 기준 직전 달(Previous Month) 계산
-      (예: 오늘이 4월 10일이면 3월 데이터 처리)
-    """
-    param_year = params.get("year")
-    param_month = params.get("month")
-
-    if param_year and param_month:
-        year_str = str(param_year).strip()
-        month_str = str(param_month).strip().zfill(2)
-        logger.info("수동 파라미터 적용: year=%s, month=%s", year_str, month_str)
-        return year_str, month_str
-
-    if logical_date.tzinfo is None:
-        logical_date = logical_date.replace(tzinfo=timezone.utc)
-
-    first_day_of_current_month = logical_date.replace(day=1)
-    prev_month_date = first_day_of_current_month - timedelta(days=1)
-    year_str = prev_month_date.strftime("%Y")
-    month_str = prev_month_date.strftime("%m")
-    logger.info(
-        "자동 계산 대상 연월 (직전 달): year=%s, month=%s",
-        year_str,
-        month_str,
-    )
-    return year_str, month_str
-
-
-MAX_MONTH_LOOKBACK = 6
-
-
-def already_collected(base_dir: str, year_month: str) -> bool:
-    """그 달 Bronze 파티션에 파일이 이미 있는지."""
-    partition = Path(base_dir) / "hvfhv" / f"year_month={year_month}"
-    return partition.is_dir() and any(partition.glob("*.parquet"))
-
-
-def resolve_collectable_year_month(
-    logical_date: datetime, params: dict, base_dir: str, is_available=None
-) -> tuple[str, str] | None:
-    """**아직 안 받았고 TLC 에 올라와 있는** 가장 최신 달을 고릅니다.
-
-    직전 달을 그대로 쓰면 안 됩니다 — TLC 는 두 달쯤 늦게 공개해서 그 파일은
-    존재한 적이 없습니다(#345). "2개월 전" 같은 상수도 지연 폭이 일정하지 않아
-    다시 틀립니다. 그래서 있는지 물어보고 정합니다.
-
-    이미 받은 달을 건너뛰는 이유는 따로 있습니다. "있는 것 중 최신" 만 보면 새
-    달이 공개될 때까지 매달 같은 수백 MB 를 다시 받아 파티션에 파일만 쌓입니다.
-
-    새로 받을 달이 없으면 `None` 입니다. 실패가 아닙니다 — 아직 공개되지 않은
-    것은 오류가 아니고, 다음 달에 다시 보면 됩니다.
-    """
-    if params.get("year") and params.get("month"):
-        return resolve_target_year_month(logical_date, params)
-
-    if is_available is None:
-        is_available = importlib.import_module(
-            "lambda.functions.hvfhv_raw_to_bronze.extractor"
-        ).is_available
-
-    if logical_date.tzinfo is None:
-        logical_date = logical_date.replace(tzinfo=timezone.utc)
-
-    cursor = logical_date.replace(day=1)
-    for _ in range(MAX_MONTH_LOOKBACK):
-        cursor = (cursor - timedelta(days=1)).replace(day=1)
-        year_str, month_str = cursor.strftime("%Y"), cursor.strftime("%m")
-        year_month = f"{year_str}-{month_str}"
-
-        if already_collected(base_dir, year_month):
-            logger.info("이미 수집한 달입니다: %s", year_month)
-            continue
-        if is_available(year_str, month_str):
-            logger.info("수집 대상 연월: %s", year_month)
-            return year_str, month_str
-
-    logger.info(
-        "새로 받을 달이 없습니다 (최근 %d개월 확인). 다음 실행에서 다시 봅니다.",
-        MAX_MONTH_LOOKBACK,
-    )
-    return None
-
-
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
-    """Lambda 함수(lambda/functions/hvfhv)를 호출하여 HVFHV 데이터를 Bronze 레이어에 저장합니다."""
-    logical_date = (
-        context.get("logical_date")
-        or context.get("data_interval_start")
-        or datetime.now(timezone.utc)
-    )
+    """HVFHV+taxi_id 데이터를 Bronze에 저장합니다."""
     params = context.get("params", {})
-    base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
-    target = resolve_collectable_year_month(logical_date, params, base_dir)
-    if target is None:
-        raise AirflowSkipException(
-            "TLC 에 새로 공개된 달이 없습니다. 다음 실행에서 다시 확인합니다."
-        )
-    year_str, month_str = target
-
-    event = {"year": year_str, "month": month_str, "base_dir": base_dir}
+    event = {
+        "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
+        "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
+        "year": params.get("year"),
+        "month": params.get("month"),
+    }
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
     result = lambda_handler_for("hvfhv_raw_to_bronze")(event=event)
     logger.info("raw_to_bronze 작업 완료: result=%s", result)
@@ -278,41 +187,17 @@ def raw_to_bronze_task(**context) -> dict:
 )
 def validate_bronze_task(result: dict, **context) -> None:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
-    parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
-    year_month = parse_year_month(result.get("year_month"), field="year_month")
-    path = parsed.locations[0]
-    if not path.is_file() or path.stat().st_size != result["file_size_bytes"]:
-        raise ValueError(f"Bronze 파일이 없거나 크기가 다릅니다: {path}")
+    base_dir = context.get("params", {}).get("base_dir") or DEFAULT_BRONZE_DIR
+    path, _ = validate_synthetic_bronze(
+        result,
+        dataset="hvfhv_taxi_trips",
+        dataset_dir="hvfhv",
+        base_dir=base_dir,
+    )
 
-    expected_partition = f"year_month={year_month}"
-    if path.parent.name != expected_partition:
-        raise ValueError(
-            f"파티션이 year_month와 다릅니다: "
-            f"{path.parent.name} != {expected_partition}"
-        )
-
-    loader = importlib.import_module("lambda.functions.hvfhv_raw_to_bronze.loader")
     transformer = importlib.import_module(
         "jobs.bronze_to_silver.hvfhv.transformer"
     )
-    base_dir = context.get("params", {}).get("base_dir") or DEFAULT_BRONZE_DIR
-    try:
-        collected_at = datetime.strptime(path.stem, "%Y%m%dT%H%M%SZ").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError as exc:
-        raise ValueError(
-            f"Bronze 파일명이 수집시각 형식과 다릅니다: {path.name}"
-        ) from exc
-    expected_path = (
-        loader.HvfhvBronzeLoader(base_dir, year_month, collected_at)
-        .partition_path()
-        / path.name
-    )
-    if path.resolve() != expected_path.resolve():
-        raise ValueError(
-            f"Bronze 경로가 layout 규칙과 다릅니다: {path} != {expected_path}"
-        )
     try:
         parquet_file = pq.ParquetFile(path)
     except (OSError, pa.ArrowInvalid) as exc:
@@ -322,7 +207,7 @@ def validate_bronze_task(result: dict, **context) -> None:
 
     summary = _bronze_quality_summary(
         parquet_file,
-        loader.SCHEMA,
+        (SCHEMA, LEGACY_SCHEMA),
         transformer.REQUIRED_COLUMNS,
     )
     import great_expectations as gx
@@ -334,8 +219,8 @@ def validate_bronze_task(result: dict, **context) -> None:
         gx.expectations.ExpectColumnValuesToBeInSet(
             column="schema_signature",
             value_set=[
-                _schema_signature(loader.SCHEMA),
-                _schema_signature(loader.LEGACY_SCHEMA),
+                _schema_signature(SCHEMA),
+                _schema_signature(LEGACY_SCHEMA),
             ],
         ),
         gx.expectations.ExpectColumnValuesToBeInSet(
@@ -367,9 +252,7 @@ def validate_bronze_task(result: dict, **context) -> None:
 )
 def validate_silver_task(raw_result: dict) -> None:
     """BashOperator 라 handler 결과 dict 가 없어, Silver 파티션을 직접 열어서 확인합니다."""
-    parsed = parse_handler_result(
-        raw_result, expected_locations=1, expected_rows=1
-    )
+    parsed = parse_handler_result(raw_result, expected_locations=1)
     year_month = parse_year_month(
         raw_result.get("year_month"), field="year_month"
     )

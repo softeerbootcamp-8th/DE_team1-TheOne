@@ -1,4 +1,4 @@
-"""월별 기사 배정 결과를 원천 API용 두 Parquet 데이터셋으로 분리합니다."""
+"""월별 기사 배정 결과를 HVFHV+taxi_id 데이터와 기사 데이터로 분리합니다."""
 
 from __future__ import annotations
 
@@ -34,20 +34,11 @@ from jobs.driver_assignment.source_transformer import (
     HVFHVCleanTransformer,
 )
 from jobs.travel_times.transformer import build_travel_times
+from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
 from scripts.synthetic_driver_trip_source.monthly import prepare_monthly_state
 
 
-LEASE_SOURCE_COLUMNS = [
-    "lease_id",
-    "customer_id",
-    "driver_id",
-    "taxi_id",
-    "make_key",
-    "model_key",
-    "model_year",
-    "lease_started_on",
-    "lease_ended_on",
-]
+LEASE_SOURCE_COLUMNS = DRIVER_VEHICLE_LEASE_SCHEMA.names
 
 
 def _test_scoped_root(path: str | Path, test_row_limit: int) -> Path:

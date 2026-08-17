@@ -11,6 +11,7 @@ from common.slack_failure_callback import (
     slack_retry_alert_callback,
 )
 from scripts.hvfhv_raw_to_silver.tasks import (
+    DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
     DEFAULT_ZONE_LOOKUP_PATH,
@@ -35,7 +36,7 @@ default_args = {
 @dag(
     dag_id="hvfhv_raw_to_silver_pipeline",
     default_args=default_args,
-    description="HVFHV 트립 데이터 Raw -> Bronze -> Silver 수집 및 클렌징 파이프라인",
+    description="HVFHV+taxi_id 데이터 Raw -> Bronze -> Silver 파이프라인",
     schedule="0 0 10 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
@@ -57,23 +58,23 @@ default_args = {
             type="string",
             description="Bronze 데이터 저장 기본 경로",
         ),
+        "api_base_url": Param(
+            os.getenv("SYNTHETIC_SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            type="string",
+            description="HVFHV+taxi_id 데이터 제공 주소",
+        ),
     },
 )
 def hvfhv_raw_to_silver_pipeline():
-    target_year_month = (
-        "{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['year'] }}"
-        "-{{ task_instance.xcom_pull(task_ids='raw_to_bronze')['month'] }}"
-    )
     bronze_to_silver_task = BashOperator(
         task_id="bronze_to_silver",
         bash_command=(
             f"python {PROJECT_ROOT}/spark/jobs/bronze_to_silver/hvfhv/job.py "
-            f"--input_path {DEFAULT_BRONZE_DIR}/hvfhv "
+            "--input_path \"{{ task_instance.xcom_pull(task_ids='raw_to_bronze')"
+            "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
             f"--zone_lookup_path {DEFAULT_ZONE_LOOKUP_PATH} "
-            f"--error_threshold {HVFHV_ERROR_THRESHOLD} "
-            f"--start_year_month \"{target_year_month}\" "
-            f"--end_year_month \"{target_year_month}\""
+            f"--error_threshold {HVFHV_ERROR_THRESHOLD}"
         ),
         env={
             **os.environ,

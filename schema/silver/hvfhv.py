@@ -1,4 +1,4 @@
-"""[NYC TLC HVFHV Trip Record] Silver Spark 스키마."""
+"""[HVFHV+taxi_id 데이터] Silver 스키마."""
 
 from pyspark.sql.types import (
     DoubleType, IntegerType, LongType, StringType, StructField, StructType, TimestampType
@@ -22,7 +22,7 @@ FINAL_SCHEMA = StructType([
     StructField("driver_pay", DoubleType(), True),
     StructField("platform_name", StringType(), False),
     StructField("estimated_service_tier", StringType(), False),
-    StructField("taxi_id", StringType(), True),
+    StructField("taxi_id", StringType(), False),
     StructField("driver_id", StringType(), True),
     StructField("taxi_model_id", StringType(), True),
     StructField("year_month", StringType(), True),
@@ -44,4 +44,5 @@ REQUIRED_COLUMNS = [
     "base_passenger_fare",
     "driver_pay",
     "hvfhs_license_num",
+    "taxi_id",
 ]

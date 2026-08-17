@@ -15,6 +15,7 @@ from airflow.sdk import task
 from airflow.sdk.exceptions import AirflowSkipException
 
 from common.project_paths import PROJECT_ROOT
+from schema.silver.driver_vehicle_leases import REQUIRED_NON_NULL as LEASE_REQUIRED_COLUMNS
 
 
 logger = logging.getLogger(__name__)
@@ -32,14 +33,7 @@ HVFHV_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_{yea
 MAX_MONTH_LOOKBACK = 6
 RELEASE_DATASETS = {
     "hvfhv_taxi_trips": {"pickup_datetime", "taxi_id"},
-    "driver_vehicle_leases": {
-        "lease_id",
-        "customer_id",
-        "driver_id",
-        "taxi_id",
-        "lease_started_on",
-        "lease_ended_on",
-    },
+    "driver_vehicle_leases": LEASE_REQUIRED_COLUMNS,
 }
 
 
@@ -232,7 +226,7 @@ def validate_source_inputs(source_result: dict, params: dict) -> dict:
         ("zone_lookup_path", zone_lookup),
     ):
         if not path.is_file():
-            raise FileNotFoundError(f"가짜 원천 입력 파일이 없습니다: {name}={path}")
+            raise FileNotFoundError(f"기사-운행 입력 파일이 없습니다: {name}={path}")
 
     preferences = snapshot_dir / "driver_preferences.parquet"
     return {
@@ -261,7 +255,7 @@ def _sha256(path: Path) -> str:
 
 
 def validate_release(output_dir: str | Path, year_month: str, seed: int) -> None:
-    """API가 공개할 manifest·단일 Parquet·행 수·checksum을 확인합니다."""
+    """release로 공개할 manifest·단일 Parquet·행 수·checksum을 확인합니다."""
     release = Path(output_dir) / f"year_month={year_month}"
     manifest_path = release / "manifest.json"
     if not manifest_path.is_file():

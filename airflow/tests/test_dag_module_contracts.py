@@ -18,6 +18,7 @@ import pytest
 DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
 
 DAG_VARIABLES = {
+    "driver_master_raw_to_silver_dag": "driver_master_raw_to_silver_dag",
     "eia_gas_price_raw_to_bronze_dag": "eia_gas_price_raw_to_bronze_dag",
     "eia_electricity_price_raw_to_bronze_dag": "eia_electricity_price_raw_to_bronze_dag",
     "eia_fuel_price_bronze_to_silver_dag": "eia_fuel_price_bronze_to_silver_dag",
@@ -35,6 +36,7 @@ DAG_VARIABLES = {
 SCHEDULES = {
     # EIA 파일에는 이력이 통째로 들어 있어 매일 받을 이유가 없습니다. 월 1회 갱신은
     # 과거 값 개정분을 확보하기 위한 것입니다.
+    "driver_master_raw_to_silver_dag": "0 0 10 * *",
     "eia_gas_price_raw_to_bronze_dag": "0 5 1 * *",
     "eia_electricity_price_raw_to_bronze_dag": "0 6 1 * *",
     "eia_fuel_price_bronze_to_silver_dag": "0 7 1 * *",
@@ -45,6 +47,11 @@ SCHEDULES = {
 }
 
 RETRY_CONTRACTS = {
+    "driver_master_raw_to_silver_pipeline": {
+        "collection": {"raw_to_bronze"},
+        "transform": {"bronze_to_silver": 15},
+        "validation": {"validate_bronze", "validate_silver"},
+    },
     "eia_gas_price_raw_to_bronze_pipeline": {
         "collection": {"raw_to_bronze"},
         "transform": {},

@@ -1,130 +1,157 @@
-"""HVFHV Raw -> Bronze 배선 검증 (네트워크 없이 Loader만 실행).
+"""HVFHV+taxi_id 데이터 Raw→Bronze 수집 시나리오.
 
-손상된 Parquet은 최종 경로에 쓰지 않고, 읽을 수 있는 schema drift 원본은 보존합니다.
+1. 요청한 HVFHV 한 파일만 원본 bytes 그대로 월 파티션에 저장
+2. 같은 release 재실행은 파일을 추가하지 않고 기존 결과 재사용
+3. checksum/manifest 계약 위반은 완료 파일을 공개하지 않음
 """
 
-from datetime import datetime, timezone
+import hashlib
+from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from functions.common import synthetic_release
 from functions.hvfhv_raw_to_bronze.handler import lambda_handler
-from functions.hvfhv_raw_to_bronze.loader import HvfhvBronzeLoader
 from schema.bronze.hvfhv import SCHEMA
 
-COLLECTED_AT = datetime(2026, 8, 10, 0, 0, tzinfo=timezone.utc)
+
+YEAR_MONTH = "2026-08"
+RELEASE_ID = "2026-08-seed-42"
+API_URL = "http://source.example"
 
 
-def parquet_bytes(table: pa.Table) -> bytes:
+def _parquet_bytes() -> bytes:
+    row = {
+        field.name: (
+            datetime(2026, 8, 1, 9)
+            if pa.types.is_timestamp(field.type)
+            else 1
+            if pa.types.is_integer(field.type)
+            else 1.0
+            if pa.types.is_floating(field.type)
+            else "taxi-1"
+            if field.name == "taxi_id"
+            else "x"
+        )
+        for field in SCHEMA
+    }
     sink = pa.BufferOutputStream()
-    pq.write_table(table, sink)
+    pq.write_table(pa.Table.from_pylist([row], schema=SCHEMA), sink)
     return sink.getvalue().to_pybytes()
 
 
-CONTENT = parquet_bytes(SCHEMA.empty_table())
+CONTENT = _parquet_bytes()
 
 
-def test_원본_바이너리를_그대로_쓴다(tmp_path):
-    """Bronze 는 원본 보존이 목적이라 파싱하지 않습니다."""
-    result = HvfhvBronzeLoader(str(tmp_path), "2026-08", COLLECTED_AT).write(CONTENT)
-
-    path = Path(result.location)
-    assert path.read_bytes() == CONTENT
-    assert path.parent.name == "year_month=2026-08"
-    assert path.parent.parent.name == "hvfhv"
-
-
-def test_같은_날_다시_받아도_덮어쓰지_않는다(tmp_path):
-    """파일명이 수집 시각이라 재시도분이 따로 쌓입니다."""
-    first = HvfhvBronzeLoader(str(tmp_path), "2026-08", COLLECTED_AT).write(CONTENT).location
-    second = (
-        HvfhvBronzeLoader(str(tmp_path), "2026-08", COLLECTED_AT.replace(hour=3))
-        .write(CONTENT)
-        .location
-    )
-
-    assert first != second
-    assert len(list(Path(first).parent.glob("*.parquet"))) == 2
+def _manifest() -> dict:
+    return {
+        "release_id": RELEASE_ID,
+        "year_month": YEAR_MONTH,
+        "datasets": {
+            "hvfhv_taxi_trips": {
+                "row_count": 1,
+                "sha256": hashlib.sha256(CONTENT).hexdigest(),
+                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
+            },
+            "driver_vehicle_leases": {
+                "row_count": 1,
+                "sha256": "0" * 64,
+                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/driver_vehicle_leases",
+            },
+        },
+    }
 
 
-@pytest.mark.parametrize("content", [b"", b"not-parquet"])
-def test_손상된_Parquet은_기존파일을_교체하지_않는다(content, tmp_path):
-    loader = HvfhvBronzeLoader(str(tmp_path), "2026-08", COLLECTED_AT)
-    path = Path(loader.write(CONTENT).location)
+class Response:
+    def __init__(self, *, payload=None, content=b""):
+        self._payload = payload
+        self.content = content
 
-    with pytest.raises(ValueError, match="Parquet"):
-        loader.write(content)
-
-    assert path.read_bytes() == CONTENT
-    assert not [
-        candidate
-        for candidate in tmp_path.rglob("*")
-        if candidate.suffix == ".tmp"
-    ]
-
-
-def test_읽을수있는_schema_drift_원본은_그대로_보존한다(tmp_path):
-    content = parquet_bytes(pa.table({"new_column": ["value"]}))
-
-    result = HvfhvBronzeLoader(
-        str(tmp_path), "2026-08", COLLECTED_AT
-    ).write(content)
-
-    assert Path(result.location).read_bytes() == content
-
-
-@pytest.mark.parametrize(
-    "event",
-    [
-        {"month": "08"},
-        {"year": "2026"},
-        {},
-    ],
-)
-def test_연월이_없으면_수집_전에_실패한다(event, monkeypatch):
-    monkeypatch.delenv("YEAR", raising=False)
-    monkeypatch.delenv("MONTH", raising=False)
-
-    with pytest.raises(ValueError, match="year와 month"):
-        lambda_handler(event)
-
-
-# --- 원본 공개 여부 확인 (#345) -------------------------------------------
-#
-# TLC 는 두 달쯤 늦게 공개합니다. 받기 전에 있는지 물어봐야 스케줄 실행이 매번
-# 죽지 않습니다. 네트워크를 타지 않도록 `requests.head` 만 대체합니다.
-
-
-class FakeResponse:
-    def __init__(self, status_code: int):
-        self.status_code = status_code
+    def json(self):
+        return self._payload
 
     def raise_for_status(self):
-        if self.status_code >= 400:
-            raise RuntimeError(f"HTTP {self.status_code}")
+        return None
 
 
-@pytest.mark.parametrize(
-    ("status_code", "expected"),
-    [(200, True), (403, False), (404, False)],
-)
-def test_공개_여부를_상태코드로_판단한다(monkeypatch, status_code, expected):
-    from functions.hvfhv_raw_to_bronze import extractor
+def _api(monkeypatch, manifest: dict, requested: list[str] | None = None) -> None:
+    responses = {
+        f"{API_URL}/v1/releases/{YEAR_MONTH}": Response(payload=manifest),
+        f"{API_URL}/v1/releases/latest": Response(payload=manifest),
+        f"{API_URL}/v1/releases/{YEAR_MONTH}/datasets/hvfhv_taxi_trips": Response(
+            content=CONTENT
+        ),
+    }
 
-    monkeypatch.setattr(
-        extractor.requests, "head", lambda *a, **kw: FakeResponse(status_code)
-    )
+    def get(url, **kwargs):
+        if requested is not None:
+            requested.append(url)
+        return responses[url]
 
-    assert extractor.is_available("2026", "07") is expected
+    monkeypatch.setattr(synthetic_release.requests, "get", get)
 
 
-def test_서버_오류는_아직_없음_으로_삼키지_않는다(monkeypatch):
-    """삼키면 일시 장애가 '미공개'로 둔갑해 조용히 아무것도 안 하게 됩니다."""
-    from functions.hvfhv_raw_to_bronze import extractor
+def _event(tmp_path) -> dict:
+    return {
+        "api_base_url": API_URL,
+        "base_dir": str(tmp_path),
+        "year": "2026",
+        "month": "8",
+    }
 
-    monkeypatch.setattr(extractor.requests, "head", lambda *a, **kw: FakeResponse(500))
 
-    with pytest.raises(RuntimeError):
-        extractor.is_available("2026", "07")
+def test_HVFHV한파일만_원본bytes그대로_Bronze에_저장한다(tmp_path, monkeypatch):
+    requested = []
+    _api(monkeypatch, _manifest(), requested)
+
+    result = lambda_handler(_event(tmp_path))
+
+    path = Path(result["locations"][0])
+    assert path.read_bytes() == CONTENT
+    assert path.parent.name == f"year_month={YEAR_MONTH}"
+    assert path.parent.parent.name == "hvfhv"
+    assert Path(result["marker_location"]).is_file()
+    assert all("driver_vehicle_leases" not in url for url in requested)
+
+
+def test_같은_release를_다시수집해도_파일이_추가되지_않는다(tmp_path, monkeypatch):
+    _api(monkeypatch, _manifest())
+    first = lambda_handler(_event(tmp_path))
+    _api(monkeypatch, _manifest())
+    second = lambda_handler(_event(tmp_path))
+
+    assert first["locations"] == second["locations"]
+    assert second["already_collected"] is True
+    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
+
+
+def test_checksum이_다르면_Bronze파일과_marker를_공개하지_않는다(
+    tmp_path, monkeypatch
+):
+    manifest = _manifest()
+    manifest["datasets"]["hvfhv_taxi_trips"]["sha256"] = "0" * 64
+    _api(monkeypatch, manifest)
+
+    with pytest.raises(ValueError, match="checksum"):
+        lambda_handler(_event(tmp_path))
+
+    assert not list(tmp_path.rglob("*.parquet"))
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_월을_지정하지_않으면_latest_release를_수집한다(tmp_path, monkeypatch):
+    _api(monkeypatch, _manifest())
+
+    result = lambda_handler({"api_base_url": API_URL, "base_dir": str(tmp_path)})
+
+    assert result["year_month"] == YEAR_MONTH
+
+
+@pytest.mark.parametrize("event", [{"year": "2026"}, {"month": "08"}])
+def test_연월은_둘다_주거나_둘다_비워야한다(event, tmp_path):
+    event.update({"api_base_url": API_URL, "base_dir": str(tmp_path)})
+    with pytest.raises(ValueError, match="함께"):
+        lambda_handler(event)

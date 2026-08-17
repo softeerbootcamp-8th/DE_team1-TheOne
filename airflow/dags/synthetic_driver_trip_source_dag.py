@@ -1,4 +1,4 @@
-"""검증된 월별 HVFHV로 가짜 기사-운행 API 원천 파일을 생성합니다."""
+"""검증된 월별 HVFHV로 HVFHV+taxi_id 데이터와 기사 데이터를 생성합니다."""
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -31,7 +31,7 @@ default_args = {
 @dag(
     dag_id="synthetic_driver_trip_source_pipeline",
     default_args=default_args,
-    description="월별 HVFHV에 가짜 기사·차량을 배정해 API 원천 2종 생성",
+    description="월별 HVFHV에 기사·차량을 배정해 제공 데이터 2종 생성",
     schedule="0 0 10 * *",
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
@@ -42,11 +42,22 @@ default_args = {
         "month": Param(None, type=["string", "null"]),
         "seed": Param(42, type="integer"),
         # TEMPORARY(#452): 로컬 DAG smoke test용. 0이면 전체 월을 처리합니다.
+        #
+        # 0 이 아니면 생성 결과가 `<release_output_dir>/_temporary/test_row_limit=N/`
+        # 아래로 갑니다. 가짜 데이터 API 는 그 위 디렉터리만 보므로, 하류 DAG 까지
+        # 이어서 돌리려면 API 를 그 경로로 띄워야 합니다 — 안 그러면 404 입니다.
+        #
+        #   python synthetic_source_api/server.py --port 8091 \
+        #     --root "data/source/synthetic_driver_trip_api/_temporary/test_row_limit=1000"
         "test_row_limit": Param(
             0,
             type="integer",
             minimum=0,
-            description="임시 테스트 입력 행 수(0=전체)",
+            description=(
+                "임시 테스트 입력 행 수(0=전체). 0이 아니면 생성 결과가 "
+                "_temporary/test_row_limit=N/ 아래로 가므로, API 를 그 경로를 "
+                "--root 로 지정해 띄워야 하류 DAG 가 받을 수 있습니다"
+            ),
         ),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
     },

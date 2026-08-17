@@ -1,157 +1,152 @@
-"""회사 원천 DB 스냅샷 Raw → Bronze 적재 시나리오.
+"""기사 데이터 Raw→Bronze 수집 시나리오.
 
-1. 세 원천 파일 → 테이블별 날짜 파티션과 응답 행 수
-2. 원천 → Bronze 스키마·행·값 무변형
-3. PK/FK 위반 → 명시적 실패
-4. 파일 누락 또는 0행 → 전체 실패
-5. 요청일과 데이터 snapshot_date 불일치 → 실패
-6. 같은 스냅샷 재수집 → 기존 파일 보존
+1. 기사 데이터 한 파일만 원본 그대로 저장
+2. 같은 release 재실행은 중복 파일을 만들지 않음
+3. 필수 dataset·checksum 위반은 적재 전에 실패
 """
 
-from datetime import date, datetime, timezone
+import hashlib
+from datetime import date
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from functions.driver_master_raw_to_bronze.source_snapshot import CompanySnapshotExtractor
+from functions.common import synthetic_release
 from functions.driver_master_raw_to_bronze.handler import lambda_handler
-from functions.driver_master_raw_to_bronze.loader import CompanySnapshotBronzeLoader
-
-SNAPSHOT_DATE = "2026-08-12"
 
 
-def _tables(snapshot_date: date = date(2026, 8, 12)) -> dict[str, pa.Table]:
+YEAR_MONTH = "2026-08"
+RELEASE_ID = "2026-08-seed-42"
+API_URL = "http://source.example"
+ROWS = [
+    {
+        "lease_id": "lease-1",
+        "customer_id": "customer-1",
+        "driver_id": "driver-1",
+        "taxi_id": "taxi-1",
+        "make_key": "KIA",
+        "model_key": "SPORTAGE",
+        "model_year": 2023,
+        "lease_started_on": date(2024, 1, 1),
+        "lease_ended_on": None,
+    }
+]
+
+
+def _parquet_bytes() -> bytes:
+    sink = pa.BufferOutputStream()
+    pq.write_table(pa.Table.from_pylist(ROWS), sink)
+    return sink.getvalue().to_pybytes()
+
+
+CONTENT = _parquet_bytes()
+
+
+def _manifest() -> dict:
     return {
-        "customer": pa.Table.from_pylist([
-            {"customer_id": "c1", "synthetic_driver_id": "DRIVER_000001", "snapshot_date": snapshot_date},
-            {"customer_id": "c2", "synthetic_driver_id": "DRIVER_000002", "snapshot_date": snapshot_date},
-        ]),
-        "taxi": pa.Table.from_pylist([
-            {
-                "taxi_id": "t1", "make_key": "KIA", "model_key": "SPORTAGE",
-                "model_year": 2023, "weekly_price_usd": 574.0,
-                "uber_comfort_eligible": True, "lyft_extra_comfort_eligible": True,
-                "vehicle_group": "BOTH", "snapshot_date": snapshot_date,
+        "release_id": RELEASE_ID,
+        "year_month": YEAR_MONTH,
+        "datasets": {
+            "driver_vehicle_leases": {
+                "row_count": 1,
+                "sha256": hashlib.sha256(CONTENT).hexdigest(),
+                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/driver_vehicle_leases",
             },
-            {
-                "taxi_id": "t2", "make_key": "KIA", "model_key": "FORTE",
-                "model_year": 2023, "weekly_price_usd": 514.0,
-                "uber_comfort_eligible": False, "lyft_extra_comfort_eligible": False,
-                "vehicle_group": "STANDARD", "snapshot_date": snapshot_date,
+            "hvfhv_taxi_trips": {
+                "row_count": 1,
+                "sha256": "0" * 64,
+                "download_url": f"/v1/releases/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
             },
-        ]),
-        "lease_contract": pa.Table.from_pylist([
-            {
-                "lease_id": "l1", "customer_id": "c1", "taxi_id": "t1",
-                "lease_started_on": date(2024, 1, 1), "lease_ended_on": None,
-                "snapshot_date": snapshot_date,
-            },
-            {
-                "lease_id": "l2", "customer_id": "c2", "taxi_id": "t2",
-                "lease_started_on": date(2025, 1, 1), "lease_ended_on": None,
-                "snapshot_date": snapshot_date,
-            },
-        ]),
+        },
     }
 
 
-def _write_source(base_dir: Path, tables: dict[str, pa.Table] | None = None) -> Path:
-    partition = base_dir / f"snapshot_date={SNAPSHOT_DATE}"
-    partition.mkdir(parents=True)
-    for name, table in (tables or _tables()).items():
-        pq.write_table(table, partition / f"{name}.parquet")
-    return partition
+class Response:
+    def __init__(self, *, payload=None, content=b""):
+        self._payload = payload
+        self.content = content
+
+    def json(self):
+        return self._payload
+
+    def raise_for_status(self):
+        return None
 
 
-def test_세_원천파일을_테이블별_bronze에_변형없이_적재한다(tmp_path):
-    source_dir, bronze_dir = tmp_path / "source", tmp_path / "bronze"
-    source_partition = _write_source(source_dir)
+def _api(monkeypatch, manifest: dict, requested: list[str] | None = None):
+    responses = {
+        f"{API_URL}/v1/releases/{YEAR_MONTH}": Response(payload=manifest),
+        f"{API_URL}/v1/releases/{YEAR_MONTH}/datasets/driver_vehicle_leases": Response(
+            content=CONTENT
+        ),
+    }
 
-    result = lambda_handler({
-        "snapshot_date": SNAPSHOT_DATE,
-        "source_dir": str(source_dir),
-        "bronze_dir": str(bronze_dir),
-    })
+    def get(url, **kwargs):
+        if requested is not None:
+            requested.append(url)
+        return responses[url]
 
-    assert result["row_count"] == 6
-    assert result["row_counts"] == {"customer": 2, "lease_contract": 2, "taxi": 2}
-    assert len(result["locations"]) == 3
-    for location in result["locations"]:
-        path = Path(location)
-        name = path.parents[1].name
-        source = pq.ParquetFile(source_partition / f"{name}.parquet").read()
-        written = pq.ParquetFile(path).read()
-        assert path.parent.name == f"snapshot_date={SNAPSHOT_DATE}"
-        assert written.schema == source.schema
-        assert written.to_pylist() == source.to_pylist()
+    monkeypatch.setattr(synthetic_release.requests, "get", get)
 
 
-@pytest.mark.parametrize("broken", ["duplicate_pk", "missing_customer_fk", "missing_taxi_fk"])
-def test_pk_fk_위반은_적재전에_실패한다(tmp_path, broken):
-    tables = _tables()
-    if broken == "duplicate_pk":
-        rows = tables["customer"].to_pylist()
-        rows[1]["customer_id"] = "c1"
-        tables["customer"] = pa.Table.from_pylist(rows)
-    elif broken == "missing_customer_fk":
-        rows = tables["lease_contract"].to_pylist()
-        rows[0]["customer_id"] = "missing"
-        tables["lease_contract"] = pa.Table.from_pylist(rows)
-    else:
-        rows = tables["lease_contract"].to_pylist()
-        rows[0]["taxi_id"] = "missing"
-        tables["lease_contract"] = pa.Table.from_pylist(rows)
-    _write_source(tmp_path, tables)
-
-    with pytest.raises(ValueError, match="고유|FK 위반"):
-        CompanySnapshotExtractor(str(tmp_path), SNAPSHOT_DATE).extract()
+def _event(tmp_path):
+    return {
+        "api_base_url": API_URL,
+        "base_dir": str(tmp_path),
+        "year": "2026",
+        "month": "8",
+    }
 
 
-def test_원천파일이_하나라도_없으면_실패한다(tmp_path):
-    tables = _tables()
-    tables.pop("taxi")
-    _write_source(tmp_path, tables)
+def test_기사데이터만_원본bytes그대로_Bronze에_저장한다(tmp_path, monkeypatch):
+    requested = []
+    _api(monkeypatch, _manifest(), requested)
 
-    with pytest.raises(FileNotFoundError, match="taxi.parquet"):
-        CompanySnapshotExtractor(str(tmp_path), SNAPSHOT_DATE).extract()
+    result = lambda_handler(_event(tmp_path))
 
-
-def test_원천테이블이_0행이면_실패한다(tmp_path):
-    tables = _tables()
-    tables["taxi"] = tables["taxi"].slice(0, 0)
-    _write_source(tmp_path, tables)
-
-    with pytest.raises(ValueError, match="비어 있습니다"):
-        CompanySnapshotExtractor(str(tmp_path), SNAPSHOT_DATE).extract()
+    path = Path(result["locations"][0])
+    assert path.read_bytes() == CONTENT
+    assert path.parent.parent.name == "driver_vehicle_leases"
+    assert all("hvfhv_taxi_trips" not in url for url in requested)
 
 
-def test_snapshot_date가_요청일과_다르면_실패한다(tmp_path):
-    tables = _tables(date(2026, 8, 11))
-    _write_source(tmp_path, tables)
+def test_같은release를_다시수집해도_중복파일이_생기지않는다(tmp_path, monkeypatch):
+    _api(monkeypatch, _manifest())
+    first = lambda_handler(_event(tmp_path))
+    _api(monkeypatch, _manifest())
+    second = lambda_handler(_event(tmp_path))
 
-    with pytest.raises(ValueError, match="snapshot_date 불일치"):
-        CompanySnapshotExtractor(str(tmp_path), SNAPSHOT_DATE).extract()
-
-
-def test_같은_스냅샷을_재수집해도_기존파일을_보존한다(tmp_path):
-    tables = _tables()
-    first = CompanySnapshotBronzeLoader(
-        str(tmp_path), SNAPSHOT_DATE, datetime(2026, 8, 12, 1, tzinfo=timezone.utc)
-    )
-    second = CompanySnapshotBronzeLoader(
-        str(tmp_path), SNAPSHOT_DATE, datetime(2026, 8, 12, 2, tzinfo=timezone.utc)
-    )
-
-    first.write(tables)
-    second.write(tables)
-
-    assert len(list((tmp_path / "company").glob("*/snapshot_date=*/*.parquet"))) == 6
+    assert first["locations"] == second["locations"]
+    assert second["already_collected"] is True
+    assert len(list(tmp_path.rglob("*.parquet"))) == 1
 
 
-def test_snapshot_date가_없으면_수집전에_실패한다(monkeypatch):
-    monkeypatch.delenv("SNAPSHOT_DATE", raising=False)
+def test_manifest에_기사택시dataset이_없으면_다운로드하지않는다(
+    tmp_path, monkeypatch
+):
+    manifest = _manifest()
+    del manifest["datasets"]["driver_vehicle_leases"]
+    requested = []
 
-    with pytest.raises(ValueError, match="snapshot_date"):
-        lambda_handler({})
+    def get(url, **kwargs):
+        requested.append(url)
+        return Response(payload=manifest)
+
+    monkeypatch.setattr(synthetic_release.requests, "get", get)
+    with pytest.raises(ValueError, match="필수 dataset"):
+        lambda_handler(_event(tmp_path))
+
+    assert requested == [f"{API_URL}/v1/releases/{YEAR_MONTH}"]
+
+
+def test_checksum이_다르면_완료파일을_공개하지않는다(tmp_path, monkeypatch):
+    manifest = _manifest()
+    manifest["datasets"]["driver_vehicle_leases"]["sha256"] = "0" * 64
+    _api(monkeypatch, manifest)
+
+    with pytest.raises(ValueError, match="checksum"):
+        lambda_handler(_event(tmp_path))
+
+    assert not list(tmp_path.rglob("*.parquet"))

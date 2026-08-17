@@ -1,4 +1,4 @@
-"""월별 가짜 기사-운행 원천 API 시나리오. 이슈 #452.
+"""월별 HVFHV+taxi_id 데이터와 기사 데이터 제공 시나리오. 이슈 #452.
 
 1. 월별 TLC 입력 수집 → 상태 검증 → 두 원천 생성 → 공개 검증
 2. 네트워크 수집만 짧은 지수 백오프로 재시도
@@ -184,6 +184,9 @@ def _write_release(root, *, manifest_rows=1):
                     "customer_id": "customer-1",
                     "driver_id": "driver-1",
                     "taxi_id": "taxi-1",
+                    "make_key": "KIA",
+                    "model_key": "SPORTAGE",
+                    "model_year": 2023,
                     "lease_started_on": date(2026, 9, 1),
                     "lease_ended_on": None,
                 }

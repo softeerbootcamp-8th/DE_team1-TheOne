@@ -1,4 +1,4 @@
-"""[NYC TLC HVFHV Trip Record] Bronze 물리 스키마.
+"""[HVFHV+taxi_id 데이터] Bronze 물리 스키마.
 
 TLC 원본 Parquet 의 **물리 스키마**입니다. Bronze 는 받은 바이트를 파싱 없이 그대로
 쓰므로(``hvfhv_raw_to_bronze/loader.py::write`` 참고) 여기 적힌 타입이 실제 파일과
@@ -14,7 +14,7 @@ TLC 원본 Parquet 의 **물리 스키마**입니다. Bronze 는 받은 바이�
 
 import pyarrow as pa
 
-SCHEMA = pa.schema(
+TLC_SCHEMA = pa.schema(
     [
         ("hvfhs_license_num", pa.large_string()),
         ("dispatching_base_num", pa.large_string()),
@@ -47,7 +47,34 @@ SCHEMA = pa.schema(
 )
 
 # 2024-12 이전 원본에는 cbd_congestion_fee 가 없습니다 — 그 시점 이전 데이터를 검증할 때
-# 씁니다 (기준일은 hvfhv_raw_to_bronze/loader.py 의 CBD_CONGESTION_FEE_SINCE 참고).
+# 씁니다.
+TLC_LEGACY_SCHEMA = pa.schema(
+    [field for field in TLC_SCHEMA if field.name != "cbd_congestion_fee"]
+)
+
+def _rewritten_by_spark(schema: pa.Schema) -> pa.Schema:
+    """Spark 가 다시 쓴 Parquet 의 물리 타입.
+
+    Bronze 가 받는 바이트는 더 이상 TLC 원본이 아닙니다. 가짜 데이터 API 가 내려주는
+    파일은 `driver_assignment/source_job.py::_write_one_parquet` 가 Spark 로 다시
+    쓴 것이고, Spark 는 UTF8 을 `large_string` 이 아니라 `string` 으로 씁니다.
+    TLC 타입을 그대로 두면 `schema_signature` 검증이 **영원히** 통과하지 못합니다.
+    """
+    return pa.schema(
+        [
+            pa.field(
+                field.name,
+                pa.string() if field.type == pa.large_string() else field.type,
+            )
+            for field in schema
+        ]
+    )
+
+
+# 제공 데이터는 각 월의 TLC 원본 컬럼을 보존하고 배정된 taxi_id 하나만 추가합니다.
+SCHEMA = pa.schema(
+    [*_rewritten_by_spark(TLC_SCHEMA), pa.field("taxi_id", pa.string())]
+)
 LEGACY_SCHEMA = pa.schema(
-    [field for field in SCHEMA if field.name != "cbd_congestion_fee"]
+    [*_rewritten_by_spark(TLC_LEGACY_SCHEMA), pa.field("taxi_id", pa.string())]
 )

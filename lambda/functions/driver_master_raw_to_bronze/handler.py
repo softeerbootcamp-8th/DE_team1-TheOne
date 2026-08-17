@@ -1,39 +1,44 @@
-"""회사 고객·택시·리스 원천 스냅샷을 Bronze로 적재하는 Lambda 핸들러."""
+"""기사 데이터를 Bronze에 적재합니다."""
 
 import json
 import os
-from datetime import datetime, timezone
+from pathlib import Path
 
 from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
+from ..common.synthetic_release import requested_year_month
 from .loader import CompanySnapshotBronzeLoader
 from .source_snapshot import CompanySnapshotExtractor
+
 
 configure_lambda_logging()
 
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
-    snapshot_date = event.get("snapshot_date") or os.getenv("SNAPSHOT_DATE")
-    if not snapshot_date:
-        raise ValueError("snapshot_date 또는 SNAPSHOT_DATE가 필요합니다.")
-
-    source_dir = event.get("source_dir") or os.getenv("COMPANY_SOURCE_DIR", "data/source/company")
-    bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
-    collected_at = datetime.now(timezone.utc)
-    loader = CompanySnapshotBronzeLoader(bronze_dir, snapshot_date, collected_at)
+    api_base_url = event.get("api_base_url") or os.getenv("SYNTHETIC_SOURCE_API_URL")
+    if not api_base_url:
+        raise ValueError("api_base_url이 누락되었습니다")
+    base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
+    loader = CompanySnapshotBronzeLoader(base_dir)
     result = Pipeline(
-        CompanySnapshotExtractor(source_dir, snapshot_date),
+        CompanySnapshotExtractor(api_base_url, requested_year_month(event)),
         loader,
     ).run()
-
+    path = Path(result.write_result.location)
+    release = loader.release
     return {
+        "release_id": release["release_id"],
+        "year_month": release["year_month"],
+        "year": release["year_month"][:4],
+        "month": release["year_month"][5:],
         "row_count": result.write_result.row_count,
-        "row_counts": loader.row_counts,
-        "locations": loader.paths,
-        "snapshot_date": snapshot_date,
-        "collected_date": collected_at.date().isoformat(),
+        "locations": [str(path)],
+        "marker_location": str(loader.marker_path),
+        "sha256": release["metadata"]["sha256"],
+        "file_size_bytes": path.stat().st_size,
+        "already_collected": loader.already_collected,
     }
 
 
