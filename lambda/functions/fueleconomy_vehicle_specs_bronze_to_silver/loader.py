@@ -1,6 +1,8 @@
 """정제된 차종별 제원을 Silver Parquet 으로 적재합니다."""
 
+import io
 import logging
+import os
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -10,8 +12,29 @@ from schema.silver.vehicle_specs import SCHEMA
 
 from ..common.atomic_write import atomic_write
 from ..common import vehicle_specs_layout as layout
+from ..common.env import load_local_env
+from ..common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
+
+
+def _group_by_source(data: list[dict]) -> dict[str, list[dict]]:
+    if not data:
+        raise ValueError("적재할 차종별 제원 Silver 데이터가 없습니다.")
+    by_source: dict[str, list[dict]] = {}
+    for row in data:
+        by_source.setdefault(row[layout.SOURCE_PARTITION_KEY], []).append(row)
+    return by_source
+
+
+def _ensure_collected_date_matches(source_rows: list[dict], expect_collected_date: str | None):
+    collected_date = source_rows[0]["collected_at"].date()
+    if expect_collected_date and collected_date.isoformat() != expect_collected_date:
+        raise ValueError(
+            f"요청한 수집일과 변환된 수집일이 다릅니다: "
+            f"{expect_collected_date} != {collected_date.isoformat()}"
+        )
+    return collected_date
 
 
 class VehicleSpecsSilverLoader(Loader):
@@ -29,25 +52,13 @@ class VehicleSpecsSilverLoader(Loader):
         self.paths: list[str] = []
 
     def write(self, data: list[dict]) -> WriteResult:
-        if not data:
-            raise ValueError("적재할 차종별 제원 Silver 데이터가 없습니다.")
-
-        by_source: dict[str, list[dict]] = {}
-        for row in data:
-            by_source.setdefault(row[layout.SOURCE_PARTITION_KEY], []).append(row)
+        by_source = _group_by_source(data)
 
         written_rows = 0
         for source, source_rows in sorted(by_source.items()):
-            collected_date = source_rows[0]["collected_at"].date()
-            # 요청한 수집일과 실제로 정제된 날짜가 어긋나면 엉뚱한 파티션을 덮어씁니다.
-            if (
-                self._expect_collected_date
-                and collected_date.isoformat() != self._expect_collected_date
-            ):
-                raise ValueError(
-                    f"요청한 수집일과 변환된 수집일이 다릅니다: "
-                    f"{self._expect_collected_date} != {collected_date.isoformat()}"
-                )
+            collected_date = _ensure_collected_date_matches(
+                source_rows, self._expect_collected_date
+            )
 
             path = layout.silver_file(self._base_dir, collected_date, source)
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -73,3 +84,55 @@ class VehicleSpecsSilverLoader(Loader):
             location=str(layout.dataset_path(self._base_dir)),
             row_count=written_rows,
         )
+
+
+class VehicleSpecsS3SilverLoader(Loader):
+    """출처별 Silver Parquet 하나씩 S3에 씁니다. 같은 key는 재실행 시 덮어씁니다."""
+
+    def __init__(self, expect_collected_date: str | None = None, bucket: str | None = None):
+        load_local_env()
+        self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
+        self._expect_collected_date = expect_collected_date
+        self.paths: list[str] = []
+
+    def write(self, data: list[dict]) -> WriteResult:
+        by_source = _group_by_source(data)
+
+        written_rows = 0
+        for source, source_rows in sorted(by_source.items()):
+            collected_date = _ensure_collected_date_matches(
+                source_rows, self._expect_collected_date
+            )
+
+            key = layout.silver_key(collected_date, source)
+            table = pa.Table.from_pylist(source_rows, schema=SCHEMA)
+            buffer = io.BytesIO()
+            pq.write_table(table, buffer, compression="snappy")
+
+            result = S3Loader(key=key, bucket=self._bucket).write(
+                S3Object(body=buffer.getvalue(), row_count=table.num_rows)
+            )
+            logger.info(
+                "silver_load done location=%s source=%s rows=%d",
+                result.location,
+                source,
+                table.num_rows,
+            )
+            self.paths.append(result.location)
+            written_rows += table.num_rows
+
+        return WriteResult(
+            location=f"s3://{self._bucket}/silver/{layout.DATASET}/",
+            row_count=written_rows,
+        )
+
+
+def build_silver_loader(
+    storage: str, base_dir: str, collected_date: str, bucket: str | None = None
+) -> Loader:
+    """storage 파라미터로 로컬/S3 Loader 중 하나를 고릅니다."""
+    if storage == "local":
+        return VehicleSpecsSilverLoader(base_dir, expect_collected_date=collected_date)
+    if storage == "s3":
+        return VehicleSpecsS3SilverLoader(expect_collected_date=collected_date, bucket=bucket)
+    raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
