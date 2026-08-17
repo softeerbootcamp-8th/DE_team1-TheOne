@@ -93,7 +93,7 @@ VALIDATION_CASES = [
         validate_integrated,
         integrated_path,
         task_module.INTEGRATED_SCHEMA,
-        {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3},
+        {"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3, "price_source": "crawled"},
         "gas_price",
         id="integrated",
     ),
@@ -109,7 +109,7 @@ def test_정상_개별_통합_silver는_모두_통과한다(silver_dir):
     )
     integrated = integrated_path(
         silver_dir,
-        [{"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3}],
+        [{"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": 0.3, "price_source": "crawled"}],
     )
 
     validate_gas(result(gas))
@@ -250,7 +250,7 @@ def test_Handler_행수와_실제_행수가_다르면_거부한다(silver_dir):
 def test_통합_silver_NULL을_거부한다(silver_dir):
     path = integrated_path(
         silver_dir,
-        [{"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": None}],
+        [{"date": date(2026, 7, 1), "gas_price": 3.1, "ev_price": None, "price_source": "crawled"}],
     )
 
     with pytest.raises(ValueError, match="expect_column_values_to_not_be_null"):
