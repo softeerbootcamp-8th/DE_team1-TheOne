@@ -40,29 +40,53 @@ for path in (
     sys.path.insert(0, path_text)
 
 
+def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+    """모듈 최상단의 ``NAME = "문자열"`` 만 모읍니다.
+
+    핸들러 이름을 상수로 빼서 넘기는 모듈이 있습니다
+    (``lambda_handler_for(HANDLER_NAME)``). 리터럴만 보면 그 모듈이 검사에서
+    조용히 빠집니다 — 실제로 EIA 전력요금 수집이 그렇게 빠져 있었습니다.
+    """
+    constants: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+            if isinstance(node.value.value, str):
+                for target in node.targets:
+                    if isinstance(target, ast.Name):
+                        constants[target.id] = node.value.value
+    return constants
+
+
+def _handler_name(argument: ast.expr, constants: dict[str, str]) -> str | None:
+    if isinstance(argument, ast.Constant) and isinstance(argument.value, str):
+        return argument.value
+    if isinstance(argument, ast.Name):
+        return constants.get(argument.id)
+    return None
+
+
+def source_paths() -> list[Path]:
+    return [*sorted(DAGS_DIR.glob("*.py")), *sorted(SCRIPTS_DIR.glob("**/*.py"))]
+
+
 def handler_names() -> list[tuple[str, str]]:
-    """DAG와 scripts에서 ``lambda_handler_for(...)`` 문자열 인자를 뽑습니다."""
+    """DAG와 scripts에서 ``lambda_handler_for(...)`` 가 넘기는 이름을 뽑습니다."""
     found: list[tuple[str, str]] = []
-    source_paths = [
-        *sorted(DAGS_DIR.glob("*.py")),
-        *sorted(SCRIPTS_DIR.glob("**/*.py")),
-    ]
-    for source_path in source_paths:
+    for source_path in source_paths():
         tree = ast.parse(
             source_path.read_text(encoding="utf-8"), filename=str(source_path)
         )
+        constants = _module_string_constants(tree)
         for node in ast.walk(tree):
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
                 and node.func.id == "lambda_handler_for"
                 and node.args
-                and isinstance(node.args[0], ast.Constant)
-                and isinstance(node.args[0].value, str)
             ):
-                found.append(
-                    (str(source_path.relative_to(AIRFLOW_DIR)), node.args[0].value)
-                )
+                name = _handler_name(node.args[0], constants)
+                if name is not None:
+                    found.append((str(source_path.relative_to(AIRFLOW_DIR)), name))
     return found
 
 
@@ -70,8 +94,28 @@ HANDLER_NAMES = handler_names()
 
 
 def test_핸들러를_부르는_실행_모듈을_실제로_찾았다():
-    """AST 추출이 조용히 0건이 되면 아래 테스트가 통째로 무력해집니다."""
-    assert len(HANDLER_NAMES) == 6, HANDLER_NAMES
+    """AST 추출이 조용히 0건이 되면 아래 테스트가 통째로 무력해집니다.
+
+    개수를 못박지 않습니다. 핸들러가 늘 때마다 사람이 숫자를 고쳐야 하고, 두
+    브랜치가 각자 같은 값으로 고치면 git 이 충돌 없이 합쳐 **병합 후에만** 숫자가
+    틀립니다 (#516 에서 `assert 7 == 4` 로 터졌습니다).
+    """
+    assert HANDLER_NAMES, "lambda_handler_for 호출을 한 건도 찾지 못했습니다"
+
+
+def test_핸들러를_부르는_모듈이_하나도_빠지지_않았다():
+    """개수 대신 **누락**을 봅니다 — 이름을 어떻게 넘기든 추출에 잡혀야 합니다.
+
+    핸들러 이름을 f-string 이나 dict 로 넘기면 AST 가 문자열을 되찾지 못해 그
+    모듈만 조용히 검사에서 빠집니다. 그때는 추출기를 고치라는 신호입니다.
+    """
+    calling = {
+        str(path.relative_to(AIRFLOW_DIR))
+        for path in source_paths()
+        if "lambda_handler_for(" in path.read_text(encoding="utf-8")
+    }
+    extracted = {dag_file for dag_file, _ in HANDLER_NAMES}
+    assert calling == extracted, f"이름을 뽑지 못한 모듈: {sorted(calling - extracted)}"
 
 
 @pytest.mark.parametrize(

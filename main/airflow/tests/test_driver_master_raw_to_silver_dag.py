@@ -1,9 +1,9 @@
 """기사 데이터 Raw→Bronze→Silver DAG 계약.
 
 1. HVFHV와 분리된 네 단계 월별 DAG
-2. 기사 데이터 수집 Lambda에 제공 주소 파라미터 전달
+2. 수집·정제 Lambda 에 파라미터 전달
 3. 필수 컬럼 누락 시 원천부터 한 번 재수집
-4. 리스 키·기간·재실행 Silver 검증
+4. Bronze 행 수·스키마·리스 키 규칙으로 Silver 확인
 """
 
 from datetime import date, timedelta
@@ -37,6 +37,13 @@ def _rows():
     ]
 
 
+def _silver_file(tmp_path: Path, rows: list[dict]) -> dict:
+    path = tmp_path / "year_month=2026-08" / "driver_vehicle_leases.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), path)
+    return {"locations": [str(path)], "row_count": len(rows), "year_month": "2026-08"}
+
+
 def test_DAG는_HVFHV와_분리되어_기사데이터만_Silver까지_처리한다():
     assert DAG.dag_id == "driver_master_raw_to_silver_pipeline"
     assert DAG.schedule == "0 0 10 * *"
@@ -51,23 +58,26 @@ def test_DAG는_HVFHV와_분리되어_기사데이터만_Silver까지_처리한�
         "bronze_to_silver",
         "validate_silver",
     }
-    assert DAG.get_task("bronze_to_silver").downstream_task_ids == {
-        "validate_silver"
-    }
+    assert DAG.get_task("bronze_to_silver").downstream_task_ids == {"validate_silver"}
     assert DAG.get_task("raw_to_bronze").retries == 2
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
 
 
-def test_기사데이터수집task는_제공주소를_기존핸들러에_전달한다(monkeypatch):
+def test_수집task는_제공주소를_수집핸들러에_전달한다(monkeypatch):
     called = {}
+    handlers = []
 
     def handler(*, event):
         called.update(event)
         return {"year_month": "2026-08"}
 
-    monkeypatch.setattr(task_module, "lambda_handler_for", lambda name: handler)
+    monkeypatch.setattr(
+        task_module,
+        "lambda_handler_for",
+        lambda name: handlers.append(name) or handler,
+    )
     DAG.get_task("raw_to_bronze").python_callable(
         params={
             "api_base_url": "http://source",
@@ -76,11 +86,41 @@ def test_기사데이터수집task는_제공주소를_기존핸들러에_전달�
             "month": "8",
         }
     )
+    assert handlers == ["driver_master_raw_to_bronze"]
     assert called == {
         "api_base_url": "http://source",
         "base_dir": "/bronze",
         "year": "2026",
         "month": "8",
+    }
+
+
+def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달한다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {
+            "row_count": 1,
+            "locations": ["/silver/x.parquet"],
+            "year_month": "2026-08",
+        }
+
+    monkeypatch.setattr(
+        task_module,
+        "lambda_handler_for",
+        lambda name: handlers.append(name) or handler,
+    )
+    DAG.get_task("bronze_to_silver").python_callable(
+        {"locations": ["/bronze/data.parquet"], "year_month": "2026-08"},
+        params={"silver_dir": "/silver"},
+    )
+    assert handlers == ["driver_master_bronze_to_silver"]
+    assert called == {
+        "bronze_path": "/bronze/data.parquet",
+        "year_month": "2026-08",
+        "silver_dir": "/silver",
     }
 
 
@@ -113,71 +153,26 @@ def test_기사필수컬럼이_누락되면_원천부터_다시_수집한다(mon
     assert calls == [{"base_dir": "/bronze", "api_base_url": "http://source"}]
 
 
-def test_기사데이터를_정제해_같은월Silver로_멱등적재한다(tmp_path):
+def test_Bronze와_행수가_같고_리스규칙이_맞아야_Silver를_통과시킨다(tmp_path):
+    result = _silver_file(tmp_path, _rows())
+
+    task_module.validate_silver_result(result, 1)
+
+    with pytest.raises(ValueError, match="행 수가 Bronze와 다릅니다"):
+        task_module.validate_silver_result(result, 2)
+
+
+def test_적재된_Silver가_리스규칙을_깨면_검증에서_잡는다(tmp_path):
     rows = _rows()
-    rows[0]["make_key"] = " kia "
-    rows[0]["model_key"] = " sportage "
-    bronze = tmp_path / "bronze.parquet"
-    pq.write_table(pa.Table.from_pylist(rows), bronze)
+    rows.append({**rows[0], "lease_id": "lease-2", "driver_id": "driver-2"})
+    result = _silver_file(tmp_path, rows)
 
-    first = task_module.clean_bronze_to_silver(
-        bronze, tmp_path / "silver", "2026-08"
-    )
-    second = task_module.clean_bronze_to_silver(
-        bronze, tmp_path / "silver", "2026-08"
-    )
-
-    assert first == second
-    path = tmp_path / "silver" / "year_month=2026-08" / "driver_vehicle_leases.parquet"
-    assert pq.read_schema(path) == SCHEMA
-    assert pq.ParquetFile(path).metadata.num_rows == 1
-    written = pq.ParquetFile(path).read().to_pylist()[0]
-    assert (written["make_key"], written["model_key"]) == ("KIA", "SPORTAGE")
-    assert len(list(path.parent.glob("*.parquet"))) == 1
+    with pytest.raises(ValueError, match="기간이 겹칩니다"):
+        task_module.validate_silver_result(result, 2)
 
 
-@pytest.mark.parametrize("broken", ["duplicate", "taxi_overlap", "driver_overlap"])
-def test_중복키나_리스기간중첩은_Silver적재전에_실패한다(tmp_path, broken):
-    rows = _rows()
-    second = {**rows[0], "lease_id": "lease-2"}
-    if broken == "duplicate":
-        second["lease_id"] = "lease-1"
-        second["driver_id"] = "driver-2"
-        second["taxi_id"] = "taxi-2"
-    elif broken == "taxi_overlap":
-        second["driver_id"] = "driver-2"
-    else:
-        second["taxi_id"] = "taxi-2"
-    rows.append(second)
-    bronze = tmp_path / "bronze.parquet"
-    pq.write_table(pa.Table.from_pylist(rows), bronze)
-
-    with pytest.raises(ValueError, match="중복|기간이 겹칩니다"):
-        task_module.clean_bronze_to_silver(
-            bronze, tmp_path / "silver", "2026-08"
+def test_Silver파일이_없으면_검증에서_실패한다(tmp_path):
+    with pytest.raises(ValueError, match="Silver 파일이 없습니다"):
+        task_module.validate_silver_result(
+            {"locations": [str(tmp_path / "없는파일.parquet")], "row_count": 1}, 1
         )
-
-    assert not list((tmp_path / "silver").rglob("*.parquet"))
-
-
-def test_Silver교체중_실패해도_기존월파일을_보존한다(tmp_path, monkeypatch):
-    target = task_module.write_silver(
-        pa.Table.from_pylist(_rows(), schema=SCHEMA),
-        tmp_path / "silver",
-        "2026-08",
-    )
-    before = target.read_bytes()
-
-    def fail_replace(source, destination):
-        raise OSError("교체 실패")
-
-    monkeypatch.setattr(type(target), "replace", fail_replace)
-    with pytest.raises(OSError, match="교체 실패"):
-        task_module.write_silver(
-            pa.Table.from_pylist(_rows(), schema=SCHEMA),
-            tmp_path / "silver",
-            "2026-08",
-        )
-
-    assert target.read_bytes() == before
-    assert not list(target.parent.glob("*.tmp"))
