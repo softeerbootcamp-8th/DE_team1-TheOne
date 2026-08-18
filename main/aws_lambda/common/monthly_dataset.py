@@ -13,7 +13,7 @@ import requests
 from pipeline_core.extractor import Extractor
 from pipeline_core.loader import Loader, WriteResult
 
-from .atomic_write import atomic_write
+from shared.aws_lambda.common.atomic_write import atomic_write
 
 
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")

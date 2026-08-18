@@ -39,7 +39,7 @@ from schema.silver.gas_ev_price import EIA, FINAL, PRELIMINARY, SCHEMA
 def _layout():
     import importlib
 
-    return importlib.import_module("shared.aws_lambda.common.eia_fuel_price_layout")
+    return importlib.import_module("sub.aws_lambda.common.eia_fuel_price_layout")
 
 
 BIG_ENOUGH = b"x" * (_layout().ELECTRICITY_MIN_BYTES + 1)

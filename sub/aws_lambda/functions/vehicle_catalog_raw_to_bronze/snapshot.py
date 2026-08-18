@@ -5,7 +5,7 @@ from datetime import datetime
 
 from pipeline_core.loader import Loader, WriteResult
 
-from shared.aws_lambda.common import vehicle_catalog_layout as layout
+from sub.aws_lambda.common import vehicle_catalog_layout as layout
 
 logger = logging.getLogger(__name__)
 

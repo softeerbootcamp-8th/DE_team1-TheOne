@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from airflow.sdk import task
 
-from shared.airflow.common import assets
+from sub.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
@@ -288,7 +288,7 @@ def validate_bronze_task(result: dict, **context) -> None:
     """Bronze 적재 경계를 확인한 뒤 원본 품질을 GX로 검증합니다."""
     params = context.get("params", {})
     bronze_dir = params.get("bronze_dir") or DEFAULT_BRONZE_DIR
-    layout = importlib.import_module("shared.aws_lambda.common.vehicle_catalog_layout")
+    layout = importlib.import_module("sub.aws_lambda.common.vehicle_catalog_layout")
     extractor = importlib.import_module(
         "sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.extractor"
     )
@@ -347,7 +347,7 @@ def validate_silver_task(result: dict, **context) -> None:
     """Silver 는 업체별로 파일을 씁니다. 그중 하나가 비어도 잡아냅니다."""
     params = context.get("params", {})
     silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
-    layout = importlib.import_module("shared.aws_lambda.common.vehicle_catalog_layout")
+    layout = importlib.import_module("sub.aws_lambda.common.vehicle_catalog_layout")
     loader = importlib.import_module(
         "sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.loader"
     )

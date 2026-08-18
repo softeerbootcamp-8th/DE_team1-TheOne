@@ -15,7 +15,7 @@ import logging
 import requests
 from pipeline_core.extractor import Extractor
 
-from shared.aws_lambda.common.eia_fuel_price_layout import ELECTRICITY_MIN_BYTES as MIN_BYTES
+from sub.aws_lambda.common.eia_fuel_price_layout import ELECTRICITY_MIN_BYTES as MIN_BYTES
 
 logger = logging.getLogger(__name__)
 

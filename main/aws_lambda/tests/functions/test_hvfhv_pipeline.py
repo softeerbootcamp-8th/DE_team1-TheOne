@@ -14,7 +14,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from shared.aws_lambda.common import monthly_dataset
+from main.aws_lambda.common import monthly_dataset
 from functions.hvfhv_raw_to_bronze.handler import lambda_handler
 from schema.bronze.hvfhv import SCHEMA
 

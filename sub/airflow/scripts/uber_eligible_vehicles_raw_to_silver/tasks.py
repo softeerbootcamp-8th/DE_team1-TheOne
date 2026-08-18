@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from airflow.sdk import task
 
-from shared.airflow.common import assets
+from sub.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
@@ -268,7 +268,7 @@ def validate_bronze_task(result: dict, **context) -> None:
     bronze_dir = params.get("bronze_dir") or DEFAULT_BRONZE_DIR
     requested_city = params.get("city_slug") or DEFAULT_CITY_SLUG
     layout = importlib.import_module(
-        "shared.aws_lambda.common.uber_eligible_vehicles_layout"
+        "sub.aws_lambda.common.uber_eligible_vehicles_layout"
     )
     loader = importlib.import_module(
         "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze.loader"
@@ -327,7 +327,7 @@ def validate_silver_task(result: dict, **context) -> None:
     params = context.get("params", {})
     silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
     layout = importlib.import_module(
-        "shared.aws_lambda.common.uber_eligible_vehicles_layout"
+        "sub.aws_lambda.common.uber_eligible_vehicles_layout"
     )
     loader = importlib.import_module(
         "sub.aws_lambda.functions.uber_eligible_vehicles_bronze_to_silver.loader"

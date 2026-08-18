@@ -10,10 +10,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
-from shared.aws_lambda.common import uber_eligible_vehicles_layout as layout
-from shared.aws_lambda.common.env import load_local_env
-from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
-from shared.aws_lambda.common.s3_reader import get_object_bytes, list_keys
+from sub.aws_lambda.common import uber_eligible_vehicles_layout as layout
+from sub.aws_lambda.common.env import load_local_env
+from sub.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
+from sub.aws_lambda.common.s3_reader import get_object_bytes, list_keys
 
 logger = logging.getLogger(__name__)
 

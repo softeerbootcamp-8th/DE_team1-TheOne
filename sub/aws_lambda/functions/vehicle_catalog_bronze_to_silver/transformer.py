@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from pipeline_core.transformer import Transformer
 
-from shared.aws_lambda.common.join_keys import normalize_key
+from sub.aws_lambda.common.join_keys import normalize_key
 
 EXPECTED_PRICE_PERIOD = "week"
 # 주간 렌트료로 볼 수 없는 값을 걸러냅니다. 관측된 범위는 514~749 USD 입니다.
