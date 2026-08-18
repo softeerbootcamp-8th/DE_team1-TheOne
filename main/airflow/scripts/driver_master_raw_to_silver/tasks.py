@@ -2,6 +2,7 @@
 
 import logging
 import os
+import uuid
 from datetime import date
 from pathlib import Path
 
@@ -11,16 +12,15 @@ from airflow.sdk import task
 
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from main.airflow.common.monthly_bronze import (
-    DEFAULT_API_BASE_URL,
-    DEFAULT_BRONZE_DIR,
-    validate_synthetic_bronze,
-)
-from main.airflow.common.monthly_silver import write_month_partition
+from main.airflow.common.monthly_bronze import validate_synthetic_bronze
 from schema.silver.driver_vehicle_leases import REQUIRED_NON_NULL, SCHEMA
 
 
 logger = logging.getLogger(__name__)
+DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_BRONZE_DIR = os.getenv(
+    "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
+)
 DEFAULT_SILVER_DIR = os.getenv(
     "DRIVER_MASTER_SILVER_DIR",
     str(PROJECT_ROOT / "data" / "silver" / "driver_vehicle_leases"),
@@ -77,9 +77,19 @@ def _validate_no_overlap(rows: list[dict], key: str) -> None:
 
 
 def write_silver(table: pa.Table, output_dir: str | Path, year_month: str) -> Path:
-    return write_month_partition(
-        table, output_dir, year_month, "driver_vehicle_leases.parquet"
+    target = (
+        Path(output_dir)
+        / f"year_month={year_month}"
+        / "driver_vehicle_leases.parquet"
     )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        pq.write_table(table, temporary, compression="snappy")
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    return target
 
 
 def clean_bronze_to_silver(

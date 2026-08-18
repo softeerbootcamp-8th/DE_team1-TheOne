@@ -9,11 +9,9 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
-from main.airflow.common.monthly_bronze import (
+from main.airflow.scripts.driver_master_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
-)
-from main.airflow.scripts.driver_master_raw_to_silver.tasks import (
     DEFAULT_SILVER_DIR,
     bronze_to_silver_task,
     raw_to_bronze_task,

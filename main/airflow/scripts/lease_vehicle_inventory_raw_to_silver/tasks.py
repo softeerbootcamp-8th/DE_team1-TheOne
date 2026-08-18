@@ -1,87 +1,38 @@
-"""보유 차량 데이터 수집과 Bronze·Silver 검증 함수."""
+"""보유 차량 데이터 수집·정제 Lambda 실행과 Bronze·Silver 검증 함수."""
 
+import importlib
 import logging
 import os
 from pathlib import Path
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from main.airflow.common.monthly_bronze import (
-    DEFAULT_API_BASE_URL,
-    DEFAULT_BRONZE_DIR,
-    validate_synthetic_bronze,
-)
-from main.airflow.common.monthly_silver import write_month_partition
-from schema.silver.lease_vehicle_inventory import REQUIRED_NON_NULL, SCHEMA
+from main.airflow.common.monthly_bronze import validate_synthetic_bronze
+from schema.silver.lease_vehicle_inventory import SCHEMA
 
 
 logger = logging.getLogger(__name__)
 DATASET = "lease_vehicle_inventory"
+DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_BRONZE_DIR = os.getenv(
+    "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
+)
 DEFAULT_SILVER_DIR = os.getenv(
     "LEASE_VEHICLE_INVENTORY_SILVER_DIR",
     str(PROJECT_ROOT / "data" / "silver" / DATASET),
 )
-# 0 이하면 재고·연비·가격 어느 쪽이든 계산에 쓸 수 없는 값입니다. 그대로 두면
-# Gold 의 대당 수익 계산이 0 으로 나누거나 음수 이익을 내놓습니다.
-POSITIVE_COLUMNS = ("fuel_efficiency", "weekly_price_usd", "stock")
 
 
-def _clean_table(table: pa.Table) -> pa.Table:
-    missing = set(SCHEMA.names) - set(table.column_names)
-    if missing:
-        raise ValueError(f"보유 차량 데이터 필수 컬럼 누락: {sorted(missing)}")
-    try:
-        cleaned = table.select(SCHEMA.names).cast(SCHEMA)
-    except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as exc:
-        raise ValueError("보유 차량 데이터 타입을 Silver 스키마로 변환하지 못했습니다") from exc
-    rows = cleaned.to_pylist()
-    if not rows:
-        raise ValueError("보유 차량 데이터가 비어 있습니다")
-
-    for row in rows:
-        for column in REQUIRED_NON_NULL:
-            value = row[column]
-            if value is None or (isinstance(value, str) and not value.strip()):
-                raise ValueError(f"보유 차량 데이터 필수값이 비었습니다: {column}")
-            if isinstance(value, str):
-                row[column] = value.strip()
-        # 리스 계약(driver_vehicle_leases)의 make_key·model_key 와 붙일 조인 키라
-        # 같은 대문자 규칙으로 맞춥니다.
-        row["manufacturer"] = row["manufacturer"].upper()
-        row["model_name"] = row["model_name"].upper()
-        if not 1900 <= row["model_year"] <= 2100:
-            raise ValueError("model_year가 허용 범위를 벗어났습니다")
-        for column in POSITIVE_COLUMNS:
-            if row[column] <= 0:
-                raise ValueError(f"보유 차량 데이터 값이 0 이하입니다: {column}")
-
-    model_ids = [row["vehicle_model_id"] for row in rows]
-    if len(model_ids) != len(set(model_ids)):
-        raise ValueError("vehicle_model_id가 중복됩니다")
-    return pa.Table.from_pylist(rows, schema=SCHEMA)
-
-
-def write_silver(table: pa.Table, output_dir: str | Path, year_month: str) -> Path:
-    return write_month_partition(table, output_dir, year_month, f"{DATASET}.parquet")
-
-
-def clean_bronze_to_silver(
-    bronze_path: str | Path,
-    output_dir: str | Path,
-    year_month: str,
-) -> dict:
-    table = pq.ParquetFile(bronze_path).read()
-    cleaned = _clean_table(table)
-    path = write_silver(cleaned, output_dir, year_month)
-    return {
-        "row_count": cleaned.num_rows,
-        "locations": [str(path)],
-        "year_month": year_month,
-    }
+def _silver_transformer():
+    """정제 규칙은 Lambda 쪽 Transformer 가 원본입니다. DAG 파싱까지 그 모듈을
+    끌어오지 않도록 검증할 때만 불러옵니다 (다른 DAG 도 같은 방식)."""
+    module = importlib.import_module(
+        "main.aws_lambda.functions.lease_vehicle_inventory_bronze_to_silver.transformer"
+    )
+    return module.LeaseVehicleInventorySilverTransformer()
 
 
 def validate_silver_result(result: dict, expected_rows: int) -> None:
@@ -94,7 +45,9 @@ def validate_silver_result(result: dict, expected_rows: int) -> None:
     table = pq.ParquetFile(path).read()
     if table.schema != SCHEMA or table.num_rows != expected_rows:
         raise ValueError("보유 차량 Silver 스키마 또는 행 수가 Bronze와 다릅니다")
-    _clean_table(table)
+    # 적재된 파일에 같은 정제 규칙을 다시 적용합니다. 변환이 통과했더라도 적재
+    # 과정에서 다른 파일이 놓였다면 여기서 걸립니다.
+    _silver_transformer().transform(table)
 
 
 @task(task_id="inventory_raw_to_bronze")
@@ -144,11 +97,14 @@ def _validate_bronze_result(
 
 @task(task_id="inventory_bronze_to_silver")
 def bronze_to_silver_task(result: dict, **context) -> dict:
-    return clean_bronze_to_silver(
-        result["locations"][0],
-        context["params"].get("inventory_silver_dir") or DEFAULT_SILVER_DIR,
-        result["year_month"],
-    )
+    event = {
+        "bronze_path": result["locations"][0],
+        "year_month": result["year_month"],
+        "silver_dir": context["params"].get("inventory_silver_dir")
+        or DEFAULT_SILVER_DIR,
+    }
+    logger.info("보유 차량 데이터 Bronze→Silver 정제 시작: %s", event)
+    return lambda_handler_for("lease_vehicle_inventory_bronze_to_silver")(event=event)
 
 
 @task(task_id="validate_inventory_silver")

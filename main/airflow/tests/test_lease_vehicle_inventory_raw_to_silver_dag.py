@@ -1,9 +1,9 @@
 """보유 차량 Raw→Bronze→Silver 분기 계약.
 
 1. 기사 계약 분기와 섞이지 않는 독립 네 단계
-2. 보유 차량 수집 Lambda에 제공 주소 파라미터 전달
+2. 수집·정제 Lambda 에 파라미터 전달
 3. 필수 컬럼 누락 시 원천부터 한 번 재수집
-4. 재고 품질(고유 ID·양수 값)과 같은 월 재실행 Silver 검증
+4. Bronze 행 수·스키마·재고 품질로 Silver 확인
 """
 
 from datetime import timedelta
@@ -47,6 +47,13 @@ def _rows():
     ]
 
 
+def _silver_file(tmp_path: Path, rows: list[dict]) -> dict:
+    path = tmp_path / "year_month=2026-08" / "lease_vehicle_inventory.parquet"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=SCHEMA), path)
+    return {"locations": [str(path)], "row_count": len(rows), "year_month": "2026-08"}
+
+
 def test_보유차량분기는_기사계약분기와_독립적으로_Silver까지_처리한다():
     assert INVENTORY_TASK_IDS <= set(DAG.task_ids)
     assert DAG.get_task("inventory_raw_to_bronze").upstream_task_ids == set()
@@ -68,7 +75,7 @@ def test_보유차량분기는_기사계약분기와_독립적으로_Silver까�
     assert DAG.get_task("validate_inventory_silver").retries == 0
 
 
-def test_보유차량수집task는_제공주소를_보유차량핸들러에_전달한다(monkeypatch):
+def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한다(monkeypatch):
     called = {}
     handlers = []
 
@@ -95,6 +102,31 @@ def test_보유차량수집task는_제공주소를_보유차량핸들러에_전�
         "base_dir": "/bronze",
         "year": "2026",
         "month": "8",
+    }
+
+
+def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달한다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {"row_count": 1, "locations": ["/silver/x.parquet"], "year_month": "2026-08"}
+
+    monkeypatch.setattr(
+        task_module,
+        "lambda_handler_for",
+        lambda name: handlers.append(name) or handler,
+    )
+    DAG.get_task("inventory_bronze_to_silver").python_callable(
+        {"locations": ["/bronze/data.parquet"], "year_month": "2026-08"},
+        params={"inventory_silver_dir": "/silver"},
+    )
+    assert handlers == ["lease_vehicle_inventory_bronze_to_silver"]
+    assert called == {
+        "bronze_path": "/bronze/data.parquet",
+        "year_month": "2026-08",
+        "silver_dir": "/silver",
     }
 
 
@@ -127,65 +159,26 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
     assert calls == [{"base_dir": "/bronze", "api_base_url": "http://source"}]
 
 
-def test_보유차량을_정제해_같은월Silver로_멱등적재한다(tmp_path):
+def test_Bronze와_행수가_같고_품질이_맞아야_Silver를_통과시킨다(tmp_path):
+    result = _silver_file(tmp_path, _rows())
+
+    task_module.validate_silver_result(result, 1)
+
+    with pytest.raises(ValueError, match="행 수가 Bronze와 다릅니다"):
+        task_module.validate_silver_result(result, 2)
+
+
+def test_적재된_Silver가_재고품질을_깨면_검증에서_잡는다(tmp_path):
     rows = _rows()
-    rows[0]["manufacturer"] = " kia "
-    rows[0]["model_name"] = " sportage "
-    bronze = tmp_path / "bronze.parquet"
-    pq.write_table(pa.Table.from_pylist(rows), bronze)
+    rows.append({**rows[0], "model_year": 2024})
+    result = _silver_file(tmp_path, rows)
 
-    first = task_module.clean_bronze_to_silver(bronze, tmp_path / "silver", "2026-08")
-    second = task_module.clean_bronze_to_silver(bronze, tmp_path / "silver", "2026-08")
-
-    assert first == second
-    path = (
-        tmp_path / "silver" / "year_month=2026-08" / "lease_vehicle_inventory.parquet"
-    )
-    assert pq.read_schema(path) == SCHEMA
-    assert pq.ParquetFile(path).metadata.num_rows == 1
-    written = pq.ParquetFile(path).read().to_pylist()[0]
-    assert (written["manufacturer"], written["model_name"]) == ("KIA", "SPORTAGE")
-    assert len(list(path.parent.glob("*.parquet"))) == 1
-    task_module.validate_silver_result(first, 1)
+    with pytest.raises(ValueError, match="vehicle_model_id가 중복됩니다"):
+        task_module.validate_silver_result(result, 2)
 
 
-@pytest.mark.parametrize(
-    ("broken", "message"),
-    [
-        ("duplicate_model_id", "중복"),
-        ("zero_stock", "0 이하"),
-        ("zero_price", "0 이하"),
-        ("zero_efficiency", "0 이하"),
-        ("empty_image_url", "필수값"),
-    ],
-)
-def test_재고품질이_깨지면_Silver적재전에_실패한다(tmp_path, broken, message):
-    rows = _rows()
-    if broken == "duplicate_model_id":
-        rows.append({**rows[0], "model_year": 2024})
-    elif broken == "zero_stock":
-        rows[0]["stock"] = 0
-    elif broken == "zero_price":
-        rows[0]["weekly_price_usd"] = 0.0
-    elif broken == "zero_efficiency":
-        rows[0]["fuel_efficiency"] = 0.0
-    else:
-        rows[0]["image_url"] = "   "
-    bronze = tmp_path / "bronze.parquet"
-    pq.write_table(pa.Table.from_pylist(rows), bronze)
-
-    with pytest.raises(ValueError, match=message):
-        task_module.clean_bronze_to_silver(bronze, tmp_path / "silver", "2026-08")
-
-    assert not list((tmp_path / "silver").rglob("*.parquet"))
-
-
-def test_컬럼이_빠진_Bronze는_Silver로_넘기지_않는다(tmp_path):
-    rows = [
-        {key: value for key, value in _rows()[0].items() if key != "stock"}
-    ]
-    bronze = tmp_path / "bronze.parquet"
-    pq.write_table(pa.Table.from_pylist(rows), bronze)
-
-    with pytest.raises(ValueError, match="필수 컬럼 누락"):
-        task_module.clean_bronze_to_silver(bronze, tmp_path / "silver", "2026-08")
+def test_Silver파일이_없으면_검증에서_실패한다(tmp_path):
+    with pytest.raises(ValueError, match="Silver 파일이 없습니다"):
+        task_module.validate_silver_result(
+            {"locations": [str(tmp_path / "없는파일.parquet")], "row_count": 1}, 1
+        )
