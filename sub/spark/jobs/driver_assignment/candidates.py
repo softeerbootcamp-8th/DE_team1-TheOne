@@ -27,13 +27,11 @@ from pyspark.sql.functions import (
 )
 TIME_BLOCKS = ["00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24"]
 WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
-# 합이 1.0 이어야 preference_score 가 0~1 범위를 유지합니다.
-# tier 를 넣으면서 기존 4개를 비례 축소했습니다 (0.35/0.30/0.20/0.15 -> x0.85).
-# tier 0.15 는 실측이 아니라 가정입니다 — 근거는 preference.py 의 tier_preference 주석.
-SCORE_WEIGHTS = {
-    "time": 0.2975, "distance": 0.2550, "airport": 0.1700, "manhattan": 0.1275,
-    "tier": 0.15,
-}
+# 선호 점수 가중치는 `config/generation.json` 의 `allocation.score_weights` 가
+# 소유하고 `build_trip_candidates` 인자로 들어옵니다. 합이 1.0 이어야
+# preference_score 가 0~1 범위를 유지하며, 그 검증은 설정 로더가 합니다
+# (`sub/config.py`). tier 0.15 는 실측이 아니라 가정입니다 — 근거는 preference.py 의
+# tier_preference 주석.
 
 REQUIRED = {
     "trips": {
@@ -66,8 +64,9 @@ def build_trip_candidates(
     leases: DataFrame,
     taxis: DataFrame,
     *,
-    seed: int = 42,
-    bucket_size: int = 10,
+    seed: int,
+    bucket_size: int,
+    score_weights: dict[str, float],
 ) -> DataFrame:
     """기사를 버킷으로 묶고, 각 운행을 한 버킷에만 배정해 후보를 만듭니다.
 
@@ -188,11 +187,11 @@ def build_trip_candidates(
         .withColumn("tier_score", when(is_premium, col("tier_preference")).otherwise(1.0 - col("tier_preference")))
         .withColumn(
             "preference_score",
-            col("time_score") * SCORE_WEIGHTS["time"]
-            + col("distance_score") * SCORE_WEIGHTS["distance"]
-            + col("airport_score") * SCORE_WEIGHTS["airport"]
-            + col("manhattan_score") * SCORE_WEIGHTS["manhattan"]
-            + col("tier_score") * SCORE_WEIGHTS["tier"],
+            col("time_score") * score_weights["time"]
+            + col("distance_score") * score_weights["distance"]
+            + col("airport_score") * score_weights["airport"]
+            + col("manhattan_score") * score_weights["manhattan"]
+            + col("tier_score") * score_weights["tier"],
         )
         .withColumn("tie_break", sha2(concat_ws(":", lit(seed), "trip_key", "driver_id"), 256))
         .withColumnRenamed("_candidate_taxi_id", "taxi_id")

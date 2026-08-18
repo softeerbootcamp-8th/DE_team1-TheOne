@@ -40,7 +40,10 @@ default_args = {
     params={
         "year": Param(None, type=["string", "null"]),
         "month": Param(None, type=["string", "null"]),
-        "seed": Param(42, type="integer"),
+        # 기본값을 비웁니다. 값이 있으면 CLI 로 실려 config 의 global_seed 를 덮고,
+        # 비우면 플래그 자체를 생략해 config 가 그대로 쓰입니다 — Param 에 42 를
+        # 두면 항상 CLI 로 전달돼서 설정 파일 값이 영원히 가려집니다.
+        "seed": Param(None, type=["integer", "null"]),
         # TEMPORARY(#452): 로컬 DAG smoke test용. 0이면 전체 월을 처리합니다.
         #
         # 0 이 아니면 생성 결과가 `<release_output_dir>/_temporary/test_row_limit=N/`
@@ -79,7 +82,7 @@ def synthetic_driver_trip_source_pipeline():
             + "--release_output_dir {{ params.release_output_dir }} "
             + "--year_month "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
-            + "--seed {{ params.seed }} "
+            + "{% if params.seed is not none %}--seed {{ params.seed }} {% endif %}"
             + "--test_row_limit {{ params.test_row_limit }}"
         ),
         env={

@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from conftest import TEST_SEED
 from sub.spark.jobs.driver_master.preference import (
     PREFERENCE_COLUMNS,
     build_driver_preferences,
@@ -35,7 +36,7 @@ def _build(driver_ids=None) -> pd.DataFrame:
         driver_ids or ["DRIVER_000001", "DRIVER_000002"],
         _pools(),
         as_of_date=np.datetime64("2026-08-12"),
-        seed=42,
+        seed=TEST_SEED,
     )
 
 
@@ -124,7 +125,7 @@ def test_기존선호는_보존하고_신규기사만_추가한다():
         ["DRIVER_000001", "DRIVER_000002", "DRIVER_202609_000001"],
         _pools(),
         as_of_date=np.datetime64("2026-09-12"),
-        seed=42,
+        seed=TEST_SEED,
     )
 
     pd.testing.assert_frame_equal(
@@ -149,7 +150,7 @@ def test_parquet_저장후_리스트와_숫자타입이_보존된다(tmp_path):
 def test_빈값과_중복기사_id를_거부한다(driver_ids):
     with pytest.raises(ValueError, match="driver_id"):
         build_driver_preferences(
-            driver_ids, _pools(), as_of_date=np.datetime64("2026-08-12")
+            driver_ids, _pools(), as_of_date=np.datetime64("2026-08-12"), seed=TEST_SEED
         )
 
 
@@ -160,4 +161,5 @@ def test_기존선호_스키마가_깨지면_갱신을_거부한다():
             ["DRIVER_000001"],
             _pools(),
             as_of_date=np.datetime64("2026-09-12"),
+            seed=TEST_SEED,
         )

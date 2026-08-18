@@ -86,7 +86,7 @@ def build_driver_preferences(
     bootstrap_pools: dict[str, np.ndarray],
     *,
     as_of_date: np.datetime64,
-    seed: int = 42,
+    seed: int,
 ) -> pd.DataFrame:
     """기사별 안정적인 seed로 배정용 선호를 한 행씩 생성합니다."""
     rows: list[dict] = []
@@ -148,7 +148,7 @@ def extend_driver_preferences(
     bootstrap_pools: dict[str, np.ndarray],
     *,
     as_of_date: np.datetime64,
-    seed: int = 42,
+    seed: int,
 ) -> pd.DataFrame:
     """기존 선호는 보존하고 처음 보는 기사만 같은 계약으로 추가합니다."""
     missing = set(PREFERENCE_COLUMNS) - set(previous.columns)

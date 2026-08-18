@@ -6,6 +6,9 @@
 4. 정제 코드 소유권 → source job은 중앙 Silver 스키마만 공유
 """
 
+import json
+import pathlib
+from dataclasses import replace
 from datetime import date, datetime
 
 import numpy as np
@@ -17,6 +20,7 @@ from shared.spark.common.session import get_or_create_spark_session
 from sub.spark.jobs.driver_assignment.source_job import (
     LEASE_SOURCE_COLUMNS,
     _apply_test_row_limit,
+    _existing_release,
     _test_scoped_root,
     add_trip_keys,
     build_driver_vehicle_leases,
@@ -36,7 +40,9 @@ from sub.generators.synthetic_company_snapshot.snapshot import (
     read_snapshot,
     write_snapshot,
 )
+from conftest import TEST_CONFIG, TEST_MODEL_YEAR, TEST_SEED
 from sub.generators.synthetic_driver_trip_source import monthly
+from sub.run_context import RunContext
 
 
 def test_가짜원천_정제는_중앙_Silver_스키마만_공유한다():
@@ -64,6 +70,62 @@ def test_임시행제한은_입력과_출력경로를_프로덕션에서_분리�
 
     with pytest.raises(ValueError, match="0 이상"):
         _apply_test_row_limit(frame, -1)
+
+
+def _manifest(tmp_path, run, **overrides) -> pathlib.Path:
+    release = tmp_path / f"year_month={run.target_month}"
+    release.mkdir(parents=True)
+    manifest = {
+        "release_id": f"{run.target_month}-seed-{run.config.global_seed}",
+        "year_month": run.target_month,
+        "seed": run.config.global_seed,
+        "run_id": run.run_id,
+        "config_hash": run.config_hash,
+        "datasets": {
+            "hvfhv_taxi_trips": {"file": "hvfhv_taxi_trips.parquet"},
+            "driver_vehicle_leases": {"file": "driver_vehicle_leases.parquet"},
+        },
+        **overrides,
+    }
+    for name in ("hvfhv_taxi_trips", "driver_vehicle_leases"):
+        (release / f"{name}.parquet").touch()
+    (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return release
+
+
+def test_같은_run_id의_완결된_릴리스는_재사용한다(tmp_path):
+    run = RunContext.create("2026-01", TEST_CONFIG)
+    assert _existing_release(_manifest(tmp_path, run), run) is True
+
+
+def test_계보필드가_없는_옛_릴리스는_복구명령과_함께_실패한다(tmp_path):
+    """seed 만 보던 시절의 manifest 는 어느 설정으로 만들었는지 알 수 없습니다."""
+    run = RunContext.create("2026-01", TEST_CONFIG)
+    release = _manifest(tmp_path, run)
+    manifest = json.loads((release / "manifest.json").read_text())
+    del manifest["run_id"]
+    (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError) as error:
+        _existing_release(release, run)
+    message = str(error.value)
+    assert "run_id" in message
+    # 메시지만으로 다음 사람이 복구할 수 있어야 합니다.
+    assert "rm -rf" in message
+    assert "make bootstrap FORCE=1" in message
+
+
+def test_설정이_다르면_기존_릴리스를_재사용하지_않고_실패한다(tmp_path):
+    """seed 를 키로 쓰던 때는 설정을 바꿔도 낡은 릴리스를 조용히 재사용했습니다."""
+    run = RunContext.create("2026-01", TEST_CONFIG)
+    release = _manifest(tmp_path, run)
+    changed = RunContext.create(
+        "2026-01",
+        replace(TEST_CONFIG, allocation=replace(TEST_CONFIG.allocation, bucket_size=9)),
+    )
+
+    with pytest.raises(ValueError, match="기존 릴리스 계보가 요청과 다릅니다"):
+        _existing_release(release, changed)
 
 
 @pytest.fixture(scope="module")
@@ -110,15 +172,19 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
     previous_date = date(2026, 8, 1)
     target_date = date(2026, 9, 1)
     vehicle_master = _vehicle_master()
-    pool = build_vehicle_pool(vehicle_master)
+    pool = build_vehicle_pool(vehicle_master, model_year=TEST_MODEL_YEAR)
     previous = build_company_snapshot(
-        _driver_ids(), pool, snapshot_date=previous_date
+        _driver_ids(),
+        pool,
+        seed=TEST_SEED,
+        snapshot_date=previous_date,
+        lease_start_min=date(2023, 1, 1),
     )
     previous_root = tmp_path / "previous"
     previous_dir = previous_root / f"snapshot_date={previous_date}"
     write_snapshot(previous, previous_root, previous_date)
     preferences = build_driver_preferences(
-        _driver_ids(), _bootstrap_pools(), as_of_date=np.datetime64(previous_date)
+        _driver_ids(), _bootstrap_pools(), as_of_date=np.datetime64(previous_date), seed=TEST_SEED
     )
     previous_preferences = previous_dir / "driver_preferences.parquet"
     preferences.to_parquet(previous_preferences, index=False)
@@ -130,7 +196,8 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
         snapshot_date=target_date,
-        seed=42,
+        seed=TEST_SEED,
+        sample_per_month=TEST_CONFIG.bootstrap.sample_per_month,
         change_rate=0.005,
     )
     rerun = monthly.prepare_monthly_state(
@@ -139,7 +206,8 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
         snapshot_date=target_date,
-        seed=42,
+        seed=TEST_SEED,
+        sample_per_month=TEST_CONFIG.bootstrap.sample_per_month,
         change_rate=0.005,
     )
 
@@ -222,12 +290,9 @@ def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_�
         "lease_started_on": date(2026, 1, 1), "lease_ended_on": date(2026, 2, 1),
     }])
 
-    first = write_source_release(
-        trips, leases, output_dir=tmp_path, year_month="2026-01", seed=42
-    )
-    second = write_source_release(
-        trips, leases, output_dir=tmp_path, year_month="2026-01", seed=42
-    )
+    run = RunContext.create("2026-01", TEST_CONFIG)
+    first = write_source_release(trips, leases, output_dir=tmp_path, run=run)
+    second = write_source_release(trips, leases, output_dir=tmp_path, run=run)
 
     assert first == second
     assert len(list(tmp_path.glob("year_month=2026-01"))) == 1

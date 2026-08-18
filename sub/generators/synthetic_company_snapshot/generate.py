@@ -9,9 +9,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from sub.config import DEFAULT_CONFIG_PATH, load_config
 from sub.generators.synthetic_company_snapshot.snapshot import (
-    DEFAULT_LEASE_START_MIN,
-    DEFAULT_SNAPSHOT_DATE,
+    LEASE_START_MIN,
+    MODEL_YEAR,
     build_company_snapshot,
     build_driver_ids,
     build_vehicle_pool,
@@ -69,38 +70,65 @@ def main(args_list: list[str] | None = None):
         help=f"비우면 {_VEHICLE_MASTER_DIR} 의 최신 collected_date 파티션을 씁니다",
     )
     parser.add_argument("--output_dir", default="../data/source/company")
-    # 기본값과 그 이유는 `snapshot.py` 가 소유합니다 — 두 곳에 적어두면 갈립니다.
-    parser.add_argument("--snapshot_date", default=DEFAULT_SNAPSHOT_DATE.isoformat())
-    parser.add_argument("--lease_start_min", default=DEFAULT_LEASE_START_MIN.isoformat())
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--model_year", type=int, default=2023)
-    parser.add_argument("--change_rate", type=float, default=None)
+    parser.add_argument(
+        "--config", default=None, help=f"비우면 {DEFAULT_CONFIG_PATH}"
+    )
+    # 아래 값들은 기본값을 갖지 않습니다. 비우면 config 또는 `snapshot.py` 의 이름
+    # 붙은 상수를 읽습니다 — 소유자를 한 곳으로 두려면 여기에 값이 있으면 안 됩니다.
+    parser.add_argument(
+        "--snapshot_date", default=None, help="비우면 config 의 bootstrap.snapshot_date"
+    )
+    parser.add_argument(
+        "--lease_start_min",
+        default=None,
+        help=f"비우면 snapshot.py 의 LEASE_START_MIN ({LEASE_START_MIN.isoformat()})",
+    )
+    parser.add_argument("--seed", type=int, default=None, help="비우면 config 의 global_seed")
+    parser.add_argument(
+        "--model_year", type=int, default=None, help=f"비우면 snapshot.py 의 MODEL_YEAR ({MODEL_YEAR})"
+    )
+    parser.add_argument(
+        "--change_rate",
+        type=float,
+        default=None,
+        help="비우면 MIN~MAX_MONTHLY_CHANGE_RATE 범위에서 무작위 추첨",
+    )
     args = parser.parse_args(args_list)
 
-    snapshot_date = date.fromisoformat(args.snapshot_date)
+    config = load_config(args.config)
+    seed = args.seed if args.seed is not None else config.global_seed
+    model_year = args.model_year if args.model_year is not None else MODEL_YEAR
+    snapshot_date = (
+        date.fromisoformat(args.snapshot_date)
+        if args.snapshot_date
+        else config.bootstrap.snapshot_date
+    )
+    lease_start_min = (
+        date.fromisoformat(args.lease_start_min) if args.lease_start_min else LEASE_START_MIN
+    )
     vehicle_master_path = (
         Path(args.vehicle_master_path) if args.vehicle_master_path
         else resolve_vehicle_master_path(_VEHICLE_MASTER_DIR)
     )
     vehicle_pool = build_vehicle_pool(
         pd.read_parquet(vehicle_master_path),
-        model_year=args.model_year,
+        model_year=model_year,
     )
     if args.previous_snapshot_dir:
         tables = evolve_company_snapshot(
             read_snapshot(args.previous_snapshot_dir),
             vehicle_pool,
-            seed=args.seed,
+            seed=seed,
             snapshot_date=snapshot_date,
             change_rate=args.change_rate,
         )
     else:
         tables = build_company_snapshot(
-            build_driver_ids(),
+            build_driver_ids(config.driver.initial_count),
             vehicle_pool,
-            seed=args.seed,
+            seed=seed,
             snapshot_date=snapshot_date,
-            lease_start_min=date.fromisoformat(args.lease_start_min),
+            lease_start_min=lease_start_min,
         )
     paths = write_snapshot(tables, args.output_dir, snapshot_date)
     print(f"합성 회사 원천 스냅샷 생성 완료: {', '.join(map(str, paths))}")

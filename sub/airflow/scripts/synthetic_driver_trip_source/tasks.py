@@ -254,15 +254,34 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_release(output_dir: str | Path, year_month: str, seed: int) -> None:
+def validate_release(output_dir: str | Path, year_month: str, seed: int | None) -> None:
     """release로 공개할 manifest·단일 Parquet·행 수·checksum을 확인합니다."""
     release = Path(output_dir) / f"year_month={year_month}"
     manifest_path = release / "manifest.json"
     if not manifest_path.is_file():
         raise ValueError(f"원천 릴리스 manifest가 없습니다: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("year_month") != year_month or manifest.get("seed") != seed:
+    if manifest.get("year_month") != year_month:
         raise ValueError(f"원천 릴리스 계보가 요청과 다릅니다: {manifest}")
+    # 계보 필드를 여기서 다시 해싱하지 않습니다 — 설정을 두 곳에서 읽으면 그 둘이
+    # 갈릴 수 있습니다. 대신 존재와 내부 정합성만 봅니다. 어느 설정으로 만들었는지는
+    # run_id·config_hash 가 답하고, 그 값이 config 와 맞는지는 발행 쪽
+    # (`source_job._existing_release`) 이 이미 판정합니다.
+    run_id, config_hash = manifest.get("run_id"), manifest.get("config_hash")
+    if not run_id or not config_hash:
+        raise ValueError(
+            f"원천 릴리스 manifest에 run_id/config_hash가 없습니다: {manifest_path}. "
+            f"설정 통합 이전 릴리스라면 해당 파티션을 지우고 다시 발행하세요: rm -rf {release}"
+        )
+    if run_id != f"{year_month}_{config_hash}":
+        raise ValueError(
+            f"run_id가 year_month·config_hash와 어긋납니다: run_id={run_id!r}, "
+            f"year_month={year_month!r}, config_hash={config_hash!r}"
+        )
+    # seed 를 명시해 돌린 실행만 비교합니다. 비웠으면 config 의 global_seed 를 쓴
+    # 것이므로 여기서 맞춰 볼 요청값이 없습니다.
+    if seed is not None and manifest.get("seed") != seed:
+        raise ValueError(f"원천 릴리스 seed가 요청과 다릅니다: {manifest.get('seed')} != {seed}")
 
     for dataset, required_columns in RELEASE_DATASETS.items():
         metadata = manifest.get("datasets", {}).get(dataset, {})

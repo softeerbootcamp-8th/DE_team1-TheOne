@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import uuid
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from pyspark.sql.functions import (
 import pyarrow.parquet as pq
 
 from shared.spark.common.session import get_or_create_spark_session
+from sub.config import DEFAULT_CONFIG_PATH, load_config
+from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.allocator import allocate_trips
 from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
 from shared.spark.hvfhv_clean_transformer import (
@@ -163,15 +166,32 @@ def _validate_temporal_links(trips: DataFrame, leases: DataFrame) -> None:
         raise ValueError("모든 HVFHV 행은 운행 시점의 리스 한 건과 연결돼야 합니다")
 
 
-def _existing_release(path: Path, year_month: str, seed: int) -> bool:
+def _existing_release(path: Path, run: RunContext) -> bool:
     manifest_path = path / "manifest.json"
     if not path.exists():
         return False
     if not manifest_path.is_file():
         raise ValueError(f"완료되지 않은 릴리스 경로가 남아 있습니다: {path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("year_month") != year_month or manifest.get("seed") != seed:
-        raise ValueError(f"기존 릴리스 계보가 요청과 다릅니다: {manifest}")
+    # `seed` 가 아니라 `run_id` 로 판정합니다. seed 만 보면 설정을 바꿔도 낡은
+    # 릴리스를 그대로 재사용해서 "설정을 바꿨는데 결과가 안 바뀐다" 가 됩니다.
+    if "run_id" not in manifest:
+        raise ValueError(
+            f"설정 통합 이전에 만든 릴리스입니다 (manifest 에 run_id 가 없습니다): {manifest_path}\n"
+            "이 릴리스는 어느 설정으로 만들었는지 확인할 수 없어 재사용할 수 없습니다. "
+            "아래 중 하나로 복구하세요.\n"
+            f"  1) 해당 파티션을 지우고 다시 발행: rm -rf {path}\n"
+            "     그 뒤 DAG `synthetic_driver_trip_source_pipeline` 을 다시 실행하거나\n"
+            "     source_job.py 를 같은 인자로 다시 실행하세요.\n"
+            "  2) 로컬 부트스트랩 산출물부터 다시 만들 때: make bootstrap FORCE=1"
+        )
+    if manifest.get("year_month") != run.target_month or manifest.get("run_id") != run.run_id:
+        raise ValueError(
+            f"기존 릴리스 계보가 요청과 다릅니다: "
+            f"기존={{'year_month': {manifest.get('year_month')!r}, 'run_id': {manifest.get('run_id')!r}}}, "
+            f"요청={{'year_month': {run.target_month!r}, 'run_id': {run.run_id!r}}}. "
+            f"설정을 바꿔 다시 발행하려면 {path} 를 지우고 실행하세요."
+        )
     for name in ("hvfhv_taxi_trips", "driver_vehicle_leases"):
         dataset = manifest.get("datasets", {}).get(name, {})
         file_path = path / str(dataset.get("file", ""))
@@ -204,12 +224,12 @@ def write_source_release(
     leases: DataFrame,
     *,
     output_dir: str | Path,
-    year_month: str,
-    seed: int,
+    run: RunContext,
 ) -> Path:
     """두 데이터셋과 manifest를 staging에 쓴 뒤 디렉터리 rename으로 공개합니다."""
+    year_month = run.target_month
     final = Path(output_dir) / f"year_month={year_month}"
-    if _existing_release(final, year_month, seed):
+    if _existing_release(final, run):
         return final
 
     _validate_temporal_links(trips, leases)
@@ -222,10 +242,15 @@ def write_source_release(
         lease_file = staging / "driver_vehicle_leases.parquet"
         _write_one_parquet(trips, trip_file)
         _write_one_parquet(leases, lease_file)
+        # 기존 형식을 깨지 않고 필드만 늘립니다 — `seed` 와 `release_id` 는 그대로
+        # 두고 `run_id`·`config_hash`·`created_at` 을 더합니다.
         manifest = {
-            "release_id": f"{year_month}-seed-{seed}",
+            "release_id": f"{year_month}-seed-{run.config.global_seed}",
             "year_month": year_month,
-            "seed": seed,
+            "seed": run.config.global_seed,
+            "run_id": run.run_id,
+            "config_hash": run.config_hash,
+            "created_at": run.created_at,
             "datasets": {
                 "hvfhv_taxi_trips": {
                     "file": trip_file.name,
@@ -258,12 +283,33 @@ def main(args_list: list[str] | None = None) -> Path:
     parser.add_argument("--state_output_dir", required=True)
     parser.add_argument("--release_output_dir", required=True)
     parser.add_argument("--year_month", required=True)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--change_rate", type=float, default=None)
-    parser.add_argument("--bucket_size", type=int, default=5)
+    parser.add_argument("--config", default=None, help=f"비우면 {DEFAULT_CONFIG_PATH}")
+    # 아래 두 값은 기본값이 없습니다. 비우면 config 를 읽고, 주면 config 를 덮은
+    # **유효 설정**을 만들어 그걸 해싱합니다 — 덮어쓴 값이 config_hash 에 반영되지
+    # 않으면 run_id 가 실제로 쓰이지 않은 설정을 가리키게 됩니다.
+    parser.add_argument("--seed", type=int, default=None, help="비우면 config 의 global_seed")
+    parser.add_argument(
+        "--bucket_size", type=int, default=None, help="비우면 config 의 allocation.bucket_size"
+    )
+    parser.add_argument(
+        "--change_rate",
+        type=float,
+        default=None,
+        help="비우면 MIN~MAX_MONTHLY_CHANGE_RATE 범위에서 무작위 추첨",
+    )
     parser.add_argument("--spark_memory", default="4g")
     parser.add_argument("--test_row_limit", type=int, default=0)
     args = parser.parse_args(args_list)
+
+    config = load_config(args.config)
+    if args.seed is not None:
+        config = replace(config, global_seed=args.seed)
+    if args.bucket_size is not None:
+        config = replace(config, allocation=replace(config.allocation, bucket_size=args.bucket_size))
+    run = RunContext.create(args.year_month, config)
+    seed = config.global_seed
+    bucket_size = config.allocation.bucket_size
+    print(f"run_id={run.run_id} config_hash={run.config_hash}")
 
     snapshot_date = date.fromisoformat(f"{args.year_month}-01")
     state_output_dir = _test_scoped_root(
@@ -283,7 +329,8 @@ def main(args_list: list[str] | None = None) -> Path:
         hvfhv_input_dir=Path(args.hvfhv_input_path).parent.parent,
         output_dir=state_output_dir,
         snapshot_date=snapshot_date,
-        seed=args.seed,
+        seed=seed,
+        sample_per_month=config.bootstrap.sample_per_month,
         change_rate=args.change_rate,
     )
 
@@ -292,7 +339,7 @@ def main(args_list: list[str] | None = None) -> Path:
     )
     spark.conf.set(
         "spark.sql.files.maxPartitionBytes",
-        str(128 * 1024 * 1024 // max(1, args.bucket_size)),
+        str(128 * 1024 * 1024 // bucket_size),
     )
     read = spark.read.parquet
     raw_trips = _apply_test_row_limit(
@@ -313,8 +360,9 @@ def main(args_list: list[str] | None = None) -> Path:
         customers,
         leases,
         taxis,
-        seed=args.seed,
-        bucket_size=args.bucket_size,
+        seed=seed,
+        bucket_size=bucket_size,
+        score_weights=config.allocation.score_weights,
     ).persist(StorageLevel.DISK_ONLY)
     assignments = allocate_trips(
         candidates, build_travel_times(trips)
@@ -335,8 +383,7 @@ def main(args_list: list[str] | None = None) -> Path:
             trip_source,
             lease_source,
             output_dir=release_output_dir,
-            year_month=args.year_month,
-            seed=args.seed,
+            run=run,
         )
     finally:
         for frame in (lease_source, trip_source, assignments, candidates, trips):

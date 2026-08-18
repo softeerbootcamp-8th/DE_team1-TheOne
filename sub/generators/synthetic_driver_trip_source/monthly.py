@@ -85,8 +85,9 @@ def prepare_monthly_state(
     hvfhv_input_dir: str | Path,
     output_dir: str | Path,
     snapshot_date: date,
-    seed: int = 42,
-    change_rate: float | None = None,
+    seed: int,
+    sample_per_month: int,
+    change_rate: float | None,
 ) -> MonthlyStatePaths:
     """전월 상태를 한 달 진화시켜 완결된 디렉터리로 원자적으로 공개합니다."""
     if snapshot_date.day != 1:
@@ -128,6 +129,7 @@ def prepare_monthly_state(
     pools = load_bootstrap_pools(
         bronze_dir=str(hvfhv_input_dir),
         months=[snapshot_date.strftime("%Y-%m")],
+        sample_per_month=sample_per_month,
         seed=seed,
     )
     preference_path = Path(previous_preferences_path) if previous_preferences_path else None

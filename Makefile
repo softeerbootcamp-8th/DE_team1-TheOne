@@ -143,8 +143,8 @@ TRAVEL_TIMES     := data/silver/taxi_zone_travel_times
 DRIVER_PREFS     := data/bronze/driver_preferences.parquet
 COMPANY_SNAPSHOT := data/source/company
 
-# 회사 픽스처를 어느 시점으로 만들지. 비우면 `snapshot.py` 의 DEFAULT_SNAPSHOT_DATE 를
-# 씁니다 — 기본값은 거기 한 곳이 소유합니다.
+# 회사 픽스처를 어느 시점으로 만들지. 비우면 `config/generation.json` 의
+# bootstrap.snapshot_date 를 씁니다 — 값은 그 파일 한 곳이 소유합니다.
 #
 # 이 날짜는 취향이 아니라 **데이터를 결정하는 값**입니다. 리스 시작일이
 # `[lease_start_min, snapshot_date]` 에서 추첨되고, 생성기는 여기서부터 한 달씩만
