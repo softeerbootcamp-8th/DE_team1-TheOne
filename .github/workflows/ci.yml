@@ -27,7 +27,7 @@ jobs:
   # COPY 하는 건 의존성 파일과 libs/pipeline_core 뿐이라, DAG·테스트·핸들러를 고쳐도
   # 이미지는 그대로입니다. 그래서 소스가 아니라 **이미지의 입력**을 기준으로 거릅니다.
   #
-  #   main_product/<runtime>/Dockerfile 과 각 pyproject.toml, uv.lock
+  #   main/<runtime>/Dockerfile 과 각 pyproject.toml, uv.lock
   #
   # airflow 만 libs/pipeline_core 를 COPY 하지 않아 조건에서 빠져 있습니다.
   changes:
@@ -45,27 +45,27 @@ jobs:
         with:
           filters: |
             airflow:
-              - 'main_product/airflow/Dockerfile'
-              - 'main_product/airflow/pyproject.toml'
-              - 'main_product/airflow/uv.lock'
+              - 'main/airflow/Dockerfile'
+              - 'main/airflow/pyproject.toml'
+              - 'main/airflow/uv.lock'
               - 'Makefile'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             spark:
-              - 'main_product/spark/Dockerfile'
-              - 'main_product/spark/pyproject.toml'
-              - 'main_product/spark/uv.lock'
-              - 'source_db/spark/**'
+              - 'main/spark/Dockerfile'
+              - 'main/spark/pyproject.toml'
+              - 'main/spark/uv.lock'
+              - 'sub/spark/**'
               - 'shared/spark/**'
               - 'libs/pipeline_core/**'
               - 'Makefile'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             lambda:
-              - 'main_product/lambda/Dockerfile'
-              - 'main_product/lambda/pyproject.toml'
-              - 'main_product/lambda/uv.lock'
-              - 'source_db/lambda_runtime/**'
+              - 'main/lambda/Dockerfile'
+              - 'main/lambda/pyproject.toml'
+              - 'main/lambda/uv.lock'
+              - 'sub/lambda_runtime/**'
               - 'shared/lambda_runtime/**'
               - 'libs/pipeline_core/**'
               - 'Makefile'
@@ -79,12 +79,12 @@ jobs:
         with:
           filters: |
             dags:
-              - 'main_product/airflow/dags/**'
-              - 'main_product/airflow/scripts/**'
-              - 'source_db/airflow/**'
+              - 'main/airflow/dags/**'
+              - 'main/airflow/scripts/**'
+              - 'sub/airflow/**'
               - 'shared/airflow/**'
-              - 'main_product/airflow/pyproject.toml'
-              - 'main_product/airflow/uv.lock'
+              - 'main/airflow/pyproject.toml'
+              - 'main/airflow/uv.lock'
               - '.github/workflows/ci.yml'
 
   version-lock:
@@ -108,7 +108,7 @@ jobs:
         run: |
           echo "::error::pyproject.toml 과 uv.lock 이 어긋났습니다."
           echo "고친 런타임 폴더에서 'uv lock' 을 돌리고, uv.lock 도 같이 커밋하세요."
-          echo "  예) cd main_product/airflow && uv lock"
+          echo "  예) cd main/airflow && uv lock"
 
   # `make test` 는 tests 폴더가 있는 런타임만 각자의 uv 환경으로 돌립니다.
   # 런타임에 테스트가 새로 생겨도 여기를 고칠 일이 없습니다.
@@ -153,7 +153,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: 이미지 빌드
-        run: make build RUNTIMES=main_product/${{ matrix.runtime }}
+        run: make build RUNTIMES=main/${{ matrix.runtime }}
 
       - name: 실패 시 안내
         if: failure()
@@ -184,14 +184,14 @@ jobs:
           enable-cache: true
 
       - name: DAG import 검증
-        working-directory: main_product/airflow
+        working-directory: main/airflow
         run: |
           uv run --frozen python scripts/check_dags.py
-          uv run --frozen python scripts/check_dags.py ../../source_db/airflow/dags
+          uv run --frozen python scripts/check_dags.py ../../sub/airflow/dags
 
       - name: 실패 시 안내
         if: failure()
         run: |
           echo "::error::DAG import 검증이 실패했습니다."
           echo "로컬에서 같은 검사를 돌릴 수 있습니다:"
-          echo "  cd main_product/airflow && uv run --frozen python scripts/check_dags.py"
+          echo "  cd main/airflow && uv run --frozen python scripts/check_dags.py"
