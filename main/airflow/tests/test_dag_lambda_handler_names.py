@@ -71,7 +71,7 @@ HANDLER_NAMES = handler_names()
 
 def test_핸들러를_부르는_실행_모듈을_실제로_찾았다():
     """AST 추출이 조용히 0건이 되면 아래 테스트가 통째로 무력해집니다."""
-    assert len(HANDLER_NAMES) == 3, HANDLER_NAMES
+    assert len(HANDLER_NAMES) == 4, HANDLER_NAMES
 
 
 @pytest.mark.parametrize(
