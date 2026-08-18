@@ -25,12 +25,12 @@ import pytest
 
 from dags import vehicle_catalog_raw_to_silver_dag as dag_module
 
-layout = importlib.import_module("shared.lambda_runtime.common.vehicle_catalog_layout")
+layout = importlib.import_module("shared.aws_lambda.common.vehicle_catalog_layout")
 bronze_loader = importlib.import_module(
-    "sub.lambda_runtime.functions.vehicle_catalog_raw_to_bronze.loader"
+    "sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.loader"
 )
 silver_loader = importlib.import_module(
-    "sub.lambda_runtime.functions.vehicle_catalog_bronze_to_silver.loader"
+    "sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.loader"
 )
 
 DAG = dag_module.vehicle_catalog_dag

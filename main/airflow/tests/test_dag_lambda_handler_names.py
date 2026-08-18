@@ -80,7 +80,7 @@ def test_핸들러를_부르는_실행_모듈을_실제로_찾았다():
     ids=[f"{dag}:{name}" for dag, name in HANDLER_NAMES],
 )
 def test_DAG_가_넘기는_핸들러_이름이_import_된다(dag_file, function_name):
-    module = importlib.import_module(f"main.lambda.functions.{function_name}.handler")
+    module = importlib.import_module(f"main.aws_lambda.functions.{function_name}.handler")
 
     # 이름이 맞아도 `lambda_handler` 가 없으면 태스크는 똑같이 죽습니다.
     assert callable(module.lambda_handler), f"{dag_file}: {function_name}"

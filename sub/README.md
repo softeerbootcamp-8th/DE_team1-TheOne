@@ -5,7 +5,7 @@
 차량, 차량 카탈로그와 차량 마스터를 소유합니다.
 
 - `airflow/`: 원천 수집·합성·발행 오케스트레이션
-- `lambda_runtime/`: 요금·차량 원천 수집과 정제
+- `aws_lambda/`: 요금·차량 원천 수집과 정제
 - `spark/`: Curated·Synthesize·Attribution·Published 처리
 - `scripts/`: 회사 스냅샷과 월별 상태 생성
 - `synthetic_source_api/`: Published 데이터 제공 API
