@@ -21,7 +21,7 @@ BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 
 
 def _layout():
-    return importlib.import_module("shared.lambda_runtime.common.eia_fuel_price_layout")
+    return importlib.import_module("sub.aws_lambda.common.eia_fuel_price_layout")
 
 
 @task(task_id="raw_to_bronze")

@@ -23,10 +23,10 @@ import pyarrow.parquet as pq
 import pytest
 
 from dags import vehicle_master_silver_dag as dag_module
-from shared.airflow.common import assets
+from sub.airflow.common import assets
 
-layout = importlib.import_module("shared.lambda_runtime.common.vehicle_master_layout")
-loader = importlib.import_module("sub.lambda_runtime.functions.vehicle_master_silver.loader")
+layout = importlib.import_module("sub.aws_lambda.common.vehicle_master_layout")
+loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_silver.loader")
 
 DAG = dag_module.vehicle_master_dag
 validate_silver = DAG.get_task("validate_silver").python_callable

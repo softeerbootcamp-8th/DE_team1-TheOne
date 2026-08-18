@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta, timezone
 
 from airflow.sdk import task
 
-from shared.airflow.common import assets
+from sub.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
@@ -245,7 +245,7 @@ def run_gx_silver_validation(
 def raw_to_bronze_task(**context) -> dict:
     """벌크 CSV 를 받아 원본 컬럼 그대로 Bronze 에 적재합니다."""
     params = context.get("params", {})
-    result = lambda_handler_for("fueleconomy_vehicle_specs_raw_to_bronze", package="sub.lambda_runtime.functions")(
+    result = lambda_handler_for("fueleconomy_vehicle_specs_raw_to_bronze", package="sub.aws_lambda.functions")(
         event={"base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR}
     )
     logger.info("Raw -> Bronze 완료: %s", result)
@@ -259,7 +259,7 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
     collected_date = (params.get("collected_date") or "").strip() or raw_result[
         "collected_date"
     ]
-    result = lambda_handler_for("fueleconomy_vehicle_specs_bronze_to_silver", package="sub.lambda_runtime.functions")(
+    result = lambda_handler_for("fueleconomy_vehicle_specs_bronze_to_silver", package="sub.aws_lambda.functions")(
         event={
             "collected_date": collected_date,
             "bronze_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
@@ -280,12 +280,12 @@ def validate_bronze_task(result: dict, **context) -> None:
     """Bronze 적재 경계를 확인한 뒤 Silver 입력 품질을 GX로 검증합니다."""
     params = context.get("params", {})
     bronze_dir = params.get("bronze_dir") or DEFAULT_BRONZE_DIR
-    layout = importlib.import_module("shared.lambda_runtime.common.vehicle_specs_layout")
+    layout = importlib.import_module("sub.aws_lambda.common.vehicle_specs_layout")
     extractor = importlib.import_module(
-        "sub.lambda_runtime.functions.fueleconomy_vehicle_specs_bronze_to_silver.extractor"
+        "sub.aws_lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.extractor"
     )
     transformer = importlib.import_module(
-        "sub.lambda_runtime.functions.fueleconomy_vehicle_specs_bronze_to_silver.transformer"
+        "sub.aws_lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.transformer"
     )
 
     parsed = parse_handler_result(result, expected_locations=1)
@@ -334,12 +334,12 @@ def validate_silver_task(result: dict, **context) -> None:
     """Silver 는 출처별로 파일을 씁니다. 그중 하나가 비어도 잡아냅니다."""
     params = context.get("params", {})
     silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
-    layout = importlib.import_module("shared.lambda_runtime.common.vehicle_specs_layout")
+    layout = importlib.import_module("sub.aws_lambda.common.vehicle_specs_layout")
     loader = importlib.import_module(
-        "sub.lambda_runtime.functions.fueleconomy_vehicle_specs_bronze_to_silver.loader"
+        "sub.aws_lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.loader"
     )
     transformer = importlib.import_module(
-        "sub.lambda_runtime.functions.fueleconomy_vehicle_specs_bronze_to_silver.transformer"
+        "sub.aws_lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.transformer"
     )
 
     parsed = parse_handler_result(result)

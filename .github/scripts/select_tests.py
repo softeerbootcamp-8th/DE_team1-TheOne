@@ -72,9 +72,9 @@ ALL_PROJECTS = {
     ".github/scripts",
     "main/airflow",
     "sub/airflow",
-    "main/lambda",
-    "sub/lambda_runtime",
-    "shared/lambda_runtime",
+    "main/aws_lambda",
+    "sub/aws_lambda",
+    "shared/aws_lambda",
     "main/spark",
     "sub/spark",
     "main/dashboard",
@@ -85,9 +85,9 @@ RUNNERS = {
     ".github/scripts": ("main/airflow", ".github/scripts"),
     "main/airflow": ("main/airflow", "main/airflow"),
     "sub/airflow": ("main/airflow", "sub/airflow"),
-    "main/lambda": ("main/lambda", "main/lambda"),
-    "sub/lambda_runtime": ("main/lambda", "sub/lambda_runtime"),
-    "shared/lambda_runtime": ("main/lambda", "shared/lambda_runtime"),
+    "main/aws_lambda": ("main/aws_lambda", "main/aws_lambda"),
+    "sub/aws_lambda": ("main/aws_lambda", "sub/aws_lambda"),
+    "shared/aws_lambda": ("main/aws_lambda", "shared/aws_lambda"),
     "main/spark": ("main/spark", "main/spark"),
     "sub/spark": ("main/spark", "sub/spark"),
     "main/dashboard": ("main/dashboard", "main/dashboard"),
@@ -128,9 +128,9 @@ def select_tests(changed_files: list[str]) -> Selection:
         if path.startswith("shared/airflow/"):
             selection.add_full("main/airflow", "sub/airflow")
             continue
-        if path.startswith("shared/lambda_runtime/"):
+        if path.startswith("shared/aws_lambda/"):
             selection.add_full(
-                "main/lambda", "sub/lambda_runtime", "shared/lambda_runtime"
+                "main/aws_lambda", "sub/aws_lambda", "shared/aws_lambda"
             )
             continue
         if path.startswith("shared/spark/"):
@@ -155,8 +155,8 @@ def select_tests(changed_files: list[str]) -> Selection:
             continue
 
         runtime_projects = {
-            "main/lambda": "main/lambda",
-            "sub/lambda_runtime": "sub/lambda_runtime",
+            "main/aws_lambda": "main/aws_lambda",
+            "sub/aws_lambda": "sub/aws_lambda",
             "main/spark": "main/spark",
             "sub/spark": "sub/spark",
             "main/dashboard": "main/dashboard",

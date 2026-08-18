@@ -22,12 +22,12 @@ HANDLER_NAME = "eia_electricity_price_raw_to_bronze"
 
 
 def _layout():
-    return importlib.import_module("shared.lambda_runtime.common.eia_fuel_price_layout")
+    return importlib.import_module("sub.aws_lambda.common.eia_fuel_price_layout")
 
 
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
-    result = lambda_handler_for(HANDLER_NAME, package="sub.lambda_runtime.functions")(
+    result = lambda_handler_for(HANDLER_NAME, package="sub.aws_lambda.functions")(
         event={"base_dir": context["params"]["bronze_dir"]}
     )
     logger.info("Raw -> Bronze 완료: %s", result)

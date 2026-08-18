@@ -2,7 +2,7 @@
 # Makefile  —  런타임 전체를 가로지르는 공용 명령어
 # =============================================================================
 
-RUNTIMES := main/airflow main/spark main/lambda
+RUNTIMES := main/airflow main/spark main/aws_lambda
 # uv 프로젝트 전체(Docker 이미지 유무와 무관) — lock/check/test 가 순회합니다.
 # build·sync 는 Docker 이미지가 있는 RUNTIMES 만 그대로 순회합니다.
 UV_PROJECTS := $(RUNTIMES) main/dashboard
@@ -64,8 +64,8 @@ test:
 # 저장소 루트를 직접 넘겨줍니다.
 	@echo "==> testing sub/airflow"; \
 	(cd main/airflow && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/airflow/tests) || exit 1
-	@echo "==> testing sub/lambda_runtime and shared/lambda_runtime"; \
-	(cd main/lambda && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/lambda_runtime/tests ../../shared/lambda_runtime/tests) || exit 1
+	@echo "==> testing sub/aws_lambda and shared/aws_lambda"; \
+	(cd main/aws_lambda && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/aws_lambda/tests ../../shared/aws_lambda/tests) || exit 1
 	@echo "==> testing sub/spark"; \
 	(cd main/spark && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/spark/tests) || exit 1
 
@@ -86,7 +86,7 @@ uv-bin:
 	fi
 
 # uv.lock 은 파이썬 패키지만 고정합니다. tesseract 는 시스템 바이너리라
-# lock 이 못 잡아서 여기서 챙깁니다. (sub/lambda_runtime/functions/vehicle_catalog_raw_to_bronze
+# lock 이 못 잡아서 여기서 챙깁니다. (sub/aws_lambda/functions/vehicle_catalog_raw_to_bronze
 # 이 렌탈 가격을 이미지에서 OCR 로 읽습니다.)
 .PHONY: tesseract
 tesseract:
@@ -106,6 +106,7 @@ tesseract:
 build:
 	@for r in $(RUNTIMES); do \
 		name=$$(basename $$r); \
+		if [ "$$name" = "aws_lambda" ]; then name="lambda"; fi; \
 		echo "==> building $(REGISTRY)tlc-$$name:$(GIT_SHA)"; \
 		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f $$r/Dockerfile \
 			-t $(REGISTRY)tlc-$$name:$(GIT_SHA) . || exit 1; \
@@ -147,7 +148,7 @@ COMPANY_SNAPSHOT := data/source/company
 #
 # 이 날짜는 취향이 아니라 **데이터를 결정하는 값**입니다. 리스 시작일이
 # `[lease_start_min, snapshot_date]` 에서 추첨되고, 생성기는 여기서부터 한 달씩만
-# 전진할 수 있습니다(`sub/scripts/synthetic_driver_trip_source/monthly.py`). 즉 이 값이
+# 전진할 수 있습니다(`sub/generators/synthetic_driver_trip_source/monthly.py`). 즉 이 값이
 # 곧 **그 로컬에서 만들 수 있는 첫 달**입니다. 팀이 어느 달로 작업하기로 했으면
 # 그 달을 넣으세요.
 #
@@ -202,7 +203,7 @@ company-snapshot:
 		echo "==> skip company-snapshot (이미 있음: $(COMPANY_SNAPSHOT_TARGET))"; \
 	else \
 		echo "==> building $(COMPANY_SNAPSHOT_TARGET)"; \
-		$(SPARK_RUN) -m sub.scripts.synthetic_company_snapshot.generate \
+		$(SPARK_RUN) -m sub.generators.synthetic_company_snapshot.generate \
 			--output_dir ../../$(COMPANY_SNAPSHOT) \
 			$(if $(SNAPSHOT_DATE),--snapshot_date $(SNAPSHOT_DATE)) || exit 1; \
 	fi

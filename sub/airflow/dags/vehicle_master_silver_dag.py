@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from airflow.sdk import Param, dag
 
-from shared.airflow.common import assets
+from sub.airflow.common import assets
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
