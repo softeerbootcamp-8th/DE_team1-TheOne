@@ -32,7 +32,7 @@ import pytest
 #   잡힙니다 — 런타임(DAG 파싱)도 같은 순서입니다.
 from sub.airflow.scripts.eia_fuel_price_bronze_to_silver import tasks as silver_tasks
 from sub.airflow.scripts.eia_electricity_price_raw_to_bronze import tasks as electricity_tasks
-from sub.airflow.scripts.eia_gas_price_raw_to_bronze import tasks as gas_tasks
+from main.airflow.scripts.eia_gas_price_raw_to_bronze import tasks as gas_tasks
 from schema.silver.gas_ev_price import EIA, FINAL, PRELIMINARY, SCHEMA
 
 
@@ -125,7 +125,7 @@ def test_수집과_검증이_같은_하한을_본다():
     from importlib import import_module
 
     for module_name, expected in (
-        ("sub.lambda_runtime.functions.eia_gas_price_raw_to_bronze.extractor", layout.GAS_MIN_BYTES),
+        ("main.lambda.functions.eia_gas_price_raw_to_bronze.extractor", layout.GAS_MIN_BYTES),
         (
             "sub.lambda_runtime.functions.eia_electricity_price_raw_to_bronze.extractor",
             layout.ELECTRICITY_MIN_BYTES,

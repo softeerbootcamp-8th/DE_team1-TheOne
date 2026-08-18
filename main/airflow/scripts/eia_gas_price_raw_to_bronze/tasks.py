@@ -18,7 +18,6 @@ from shared.airflow.common.validation import parse_handler_result, require_file
 logger = logging.getLogger(__name__)
 
 BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
-HANDLER_NAME = "eia_gas_price_raw_to_bronze"
 
 
 def _layout():
@@ -27,7 +26,7 @@ def _layout():
 
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
-    result = lambda_handler_for(HANDLER_NAME, package="sub.lambda_runtime.functions")(
+    result = lambda_handler_for("eia_gas_price_raw_to_bronze")(
         event={"base_dir": context["params"]["bronze_dir"]}
     )
     logger.info("Raw -> Bronze 완료: %s", result)
