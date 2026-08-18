@@ -46,6 +46,15 @@ def get_or_create_spark_session(app_name: str, driver_memory: Optional[str] = No
         SparkSession.builder.appName(app_name)
         .master("local[4]")
         .config("spark.driver.bindAddress", "127.0.0.1")
+        # bindAddress 만 두면 **듣는 주소와 알리는 주소가 갈립니다.** driver.host 는
+        # 미설정 시 hostname 으로 정해지는데, 컨테이너 안에서는 그게 172.18.0.x 라
+        # 드라이버는 127.0.0.1 에서만 듣고 172.18.0.x 로 자기를 광고합니다.
+        #
+        # local 모드는 대부분 프로세스 안에서 끝나 이 불일치가 드러나지 않습니다.
+        # 그러다 BroadcastExchangeExec 가 BlockManager 로 broadcast 를 가져오는
+        # 순간 광고된 주소로 접속해 Connection refused 로 죽습니다 — silver_to_gold
+        # 가 vehicle_master·gas_ev_price 를 broadcast join 하며 처음 걸렸습니다.
+        .config("spark.driver.host", "127.0.0.1")
         .config("spark.sql.session.timeZone", SESSION_TIME_ZONE)
     )
     if driver_memory:
