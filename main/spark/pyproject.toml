@@ -1,0 +1,36 @@
+[project]
+name = "tlc-spark"
+version = "0.1.0"
+requires-python = "==3.11.*"
+
+# ★ pyspark 는 여기 넣지 않습니다. EMR(7.13 → Spark 3.5.6-amzn)이 제공합니다.
+#   로컬 단위테스트에서만 아래 dev 그룹으로 EMR 버전에 맞춰 설치하세요.
+#
+# ★ numpy / pandas / pyarrow 는 EMR 7.13 이 제공하는 값과 똑같이 고정합니다.
+#   그래야 커스텀 이미지가 EMR 런타임을 덮어쓰지 않습니다 (pip 이 already satisfied 로 넘김).
+#   릴리스 노트에는 없으니 EMR 을 올릴 때 이미지에서 직접 확인하세요.
+#   ★ 반드시 python3.11 쪽을 봐야 합니다. 이미지 기본 python 은 3.9 이고 Spark 는 3.11 을 씁니다:
+#     docker run --rm --entrypoint /usr/bin/python3.11 \
+#       public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest -m pip list --format=freeze
+dependencies = [
+    "numpy==2.4.3",
+    "scipy==1.17.1",       # 합성 데이터 분포 (Lognormal/Gamma/logistic/softmax)
+    "pandas==3.0.1",
+    "pyarrow==23.0.1",
+    "geopandas==1.1.4",   # taxi_zone shapefile ↔ AFDC 충전소 공간조인
+    "shapely==2.1.2",
+    "requests==2.34.2",
+    "pipeline-core",
+]
+
+[dependency-groups]
+dev = [
+    "pyspark==3.5.6",   # EMR 7.13의 Spark 버전과 일치
+    "pytest==9.1.1",
+]
+
+[tool.uv.sources]
+pipeline-core = { path = "../../libs/pipeline_core" }
+
+[tool.pytest.ini_options]
+pythonpath = [".", "../.."]

@@ -8,7 +8,7 @@
 #
 # UI: http://localhost:8080 — 로그인 없이 바로 들어갑니다 (아래 all_admins 참고).
 #
-# Airflow 이미지 안의 라이브러리 버전은 airflow/uv.lock 과 같은 조합입니다.
+# Airflow 이미지 안의 라이브러리 버전은 main/airflow/uv.lock 과 같은 조합입니다.
 #
 # ⚠️ 이 파일은 로컬 개발 전용입니다. EC2 등 운영 배포에 그대로 재사용하지 마세요.
 #    특히 AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS 는 로그인 자체를 없애는
@@ -32,12 +32,12 @@ services:
     restart: unless-stopped
 
   airflow:
-    # airflow/Dockerfile을 빌드해서 씁니다(uv.lock으로 고정된 패키지 포함).
+    # main/airflow/Dockerfile을 빌드해서 씁니다(uv.lock으로 고정된 패키지 포함).
     # 컨텍스트는 저장소 루트입니다 — Dockerfile 의 COPY 경로가 `airflow/...` 로
     # 시작해서(`make build` 와 동일) 여기를 ./airflow 로 두면 빌드가 실패합니다.
     build:
       context: .
-      dockerfile: airflow/Dockerfile
+      dockerfile: main/airflow/Dockerfile
     # DAG 는 저장소 루트의 data/ 에 Bronze·Silver 를 씁니다. 이미지 기본 uid(50000)로
     # 돌면 호스트 소유(uid 1000)인 마운트에 쓰지 못해 PermissionError 가 납니다.
     # gid 는 0 을 유지해야 합니다 — /opt/airflow 가 airflow:root 775 라 gid 0 으로 씁니다.
@@ -57,13 +57,14 @@ services:
       # 로그인 화면을 없애서 매번 `docker compose logs | grep password` 하는 걸 방지합니다.
       # 인증된 모든 요청을 admin 으로 취급 — 로컬 1인 개발 전용. 운영 배포 시 반드시 제거하세요.
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
-      PYTHONPATH: /opt/airflow/project-root/airflow:/opt/airflow/project-root
+      PYTHONPATH: /opt/airflow/project-root
     ports:
       # 8080 이 다른 프로젝트에 물려 있으면 AIRFLOW_PORT=8090 docker compose up -d
       - "${AIRFLOW_PORT:-8080}:8080"
     volumes:
       # DAG 를 로컬에서 고치면 컨테이너에 바로 반영됩니다 (재빌드 불필요)
-      - ./airflow/dags:/opt/airflow/dags
+      - ./main/airflow/dags:/opt/airflow/dags/main
+      - ./sub/airflow/dags:/opt/airflow/dags/sub
       - ./config:/opt/airflow/project-config:ro
       - .:/opt/airflow/project-root
     # standalone = api-server + scheduler + dag-processor + triggerer 를 한 번에

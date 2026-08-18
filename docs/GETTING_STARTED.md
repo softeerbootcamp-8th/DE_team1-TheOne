@@ -25,7 +25,7 @@ AIRFLOW_PORT=8090 docker compose up -d
 (`AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS=true` — 로컬 1인 개발 전용 설정,
 운영 배포 시 반드시 제거).
 
-`airflow/dags/` 의 DAG 가 목록에 보이면 정상입니다. 하나도 안 보이면 import 에서 깨진 것이니
+`main/airflow/dags/` 의 DAG 가 목록에 보이면 정상입니다. 하나도 안 보이면 import 에서 깨진 것이니
 아래로 확인하세요 (정상이면 `No data found`).
 
 ```bash
@@ -80,14 +80,15 @@ RUN uv export --frozen ... -o requirements.txt && pip install -r requirements.tx
 docker-compose.yml   로컬 개발 환경 (Airflow + Postgres)
 Makefile             lock / check / sync / build
 
-airflow/    Airflow 3.3.0   → EC2          (compose 로 로컬 실행)
-spark/      Spark 3.5.6     → EMR 7.13.0
-lambda/     Python 3.11     → AWS Lambda
-  ├─ pyproject.toml    무슨 라이브러리를 쓸지 (사람이 적음)
-  ├─ uv.lock           ★ 실제 고정 — 커밋 필수
-  ├─ .python-version   3.11
-  ├─ Dockerfile        이미지 (uv.lock 그대로 설치)
-  └─ dags/             airflow 만. 로컬에서 고치면 컨테이너에 바로 반영
+sub/             가상 원천 생성·합성·Published API
+main/
+  ├─ airflow/          Airflow 3.3.0 → EC2
+  ├─ spark/            Spark 3.5.6 → EMR 7.13.0
+  ├─ lambda/           Python 3.11 → AWS Lambda
+  └─ dashboard/        추천 결과 제공
+shared/                제품 공통 Airflow·Spark 기술 계약
+schema/                제품 간 데이터 스키마 계약
+libs/pipeline_core/     런타임 중립 파이프라인 인터페이스
 
 config/              가정 파라미터 (기획서 11장). 버전 관리와 무관
 ```
@@ -127,7 +128,7 @@ source $HOME/.local/bin/env
 작업 순서:
 
 ```bash
-cd airflow
+cd main/airflow
 # 1) pyproject.toml 의 dependencies 수정
 uv lock                    # 2) 잠금 갱신 ← 빼먹으면 팀원과 버전이 갈립니다
 cd .. && make check        # 3) 루트에서 확인
@@ -182,7 +183,7 @@ pipeline-core = { path = "../libs/pipeline_core" }
 있습니다.** 이럴 땐 아래처럼 명시적으로 재설치하세요:
 
 ```bash
-cd lambda   # 또는 spark
+cd main/lambda   # 또는 spark
 uv sync --reinstall-package pipeline-core
 ```
 
@@ -190,13 +191,13 @@ uv sync --reinstall-package pipeline-core
 
 `uv.lock` 은 파이썬 패키지만 고정합니다. **시스템 바이너리는 못 잠급니다.**
 
-`lambda/functions/vehicle_catalog_raw_to_bronze` 은 렌탈 업체 사이트의 가격이
+`sub/lambda_runtime/functions/vehicle_catalog_raw_to_bronze` 은 렌탈 업체 사이트의 가격이
 이미지 안에만 있어서 OCR(tesseract)로 읽습니다. `pytesseract` 는 이 바이너리를
 호출하는 래퍼일 뿐이라, 바이너리가 없으면 실행 시점에 실패합니다.
 
 | | 고정되는 곳 | 어떻게 |
 |---|---|---|
-| `pytesseract`, `pillow` | `lambda/uv.lock` | `uv lock` 이 자동 |
+| `pytesseract`, `pillow` | `main/lambda/uv.lock` | `uv lock` 이 자동 |
 | **tesseract 바이너리** | 없음 (시스템 패키지) | **`make sync` 가 챙김** |
 
 `make sync` 가 `tesseract` 타깃을 먼저 부릅니다. 없으면 macOS 는 brew,
@@ -240,8 +241,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from functions.common import vehicle_catalog_layout as layout
-from functions.vehicle_catalog_raw_to_bronze.extractor import VehicleCatalogCardsExtractor, row_from_snapshot
-from functions.vehicle_catalog_raw_to_bronze.loader import VehicleCatalogBronzeLoader
+from sub.lambda_runtime.functions.vehicle_catalog_raw_to_bronze.extractor import VehicleCatalogCardsExtractor, row_from_snapshot
+from sub.lambda_runtime.functions.vehicle_catalog_raw_to_bronze.loader import VehicleCatalogBronzeLoader
 
 snapshot = Path("data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html")
 timestamp = snapshot.parent.name.removeprefix("collected_at=")
@@ -272,7 +273,7 @@ print(VehicleCatalogBronzeLoader("data/bronze", collected_at).write(rows))
 
 ```bash
 git checkout --theirs airflow/uv.lock   # 아무 쪽이나 택하고
-cd airflow && uv lock                   # pyproject 기준으로 재계산
+cd main/airflow && uv lock                   # pyproject 기준으로 재계산
 ```
 
 ---
@@ -282,7 +283,7 @@ cd airflow && uv lock                   # pyproject 기준으로 재계산
 IDE 자동완성·린트를 원하면:
 
 ```bash
-make sync        # 또는 cd airflow && uv sync --frozen
+make sync        # 또는 cd main/airflow && uv sync --frozen
 ```
 
 Docker 안에서 도는 것과 **같은 버전**이 깔립니다. 실행은 Docker 에서 하니
