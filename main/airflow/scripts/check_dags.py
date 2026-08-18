@@ -29,6 +29,9 @@ def main(argv: list[str]) -> int:
     # 저장소 루트의 동명 scripts 패키지로 잘못 불러오지 않습니다.
     sys.path.insert(0, str(dags_dir))
     sys.path.insert(0, str(dags_dir.parent))
+    # DAG 가 import 하는 shared/ 는 저장소 루트에 있습니다. 컨테이너는 PYTHONPATH,
+    # 테스트는 pyproject 의 pythonpath 로 넣어주는 그 경로입니다 (#485).
+    sys.path.append(str(pathlib.Path(__file__).resolve().parents[3]))
 
     files = sorted(dags_dir.glob("*_dag.py"))
     if not files:
