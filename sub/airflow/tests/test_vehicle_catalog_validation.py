@@ -76,6 +76,7 @@ def silver_rows(count: int = 2) -> list[dict]:
             "make_key": f"MAKE{i}",
             "model_key": f"MODEL{i}",
             "weekly_price_usd": 500.0 + i,
+            "image_url": f"https://example.com/model-{i}.png",
             "bronze_path": "/bronze/x.parquet",
         }
         for i in range(count)
