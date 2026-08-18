@@ -1,6 +1,8 @@
 """차량 마스터를 도시별 Silver Parquet 으로 적재합니다."""
 
+import io
 import logging
+import os
 from datetime import date
 
 import pyarrow as pa
@@ -11,8 +13,28 @@ from schema.silver.vehicle_master import SCHEMA
 
 from ..common.atomic_write import atomic_write
 from ..common import vehicle_master_layout as layout
+from ..common.env import load_local_env
+from ..common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
+
+
+def _group_by_city(data: list[dict]) -> dict[str, list[dict]]:
+    if not data:
+        raise ValueError("적재할 차량 마스터 Silver 데이터가 없습니다.")
+    by_city: dict[str, list[dict]] = {}
+    for row in data:
+        by_city.setdefault(row[layout.CITY_PARTITION_KEY], []).append(row)
+    return by_city
+
+
+def _build_table(city_rows: list[dict]) -> pa.Table:
+    # city 는 파티션 키라 컬럼에서 뺍니다. 스키마에 없는 키가 남아 있으면
+    # from_pylist 가 조용히 무시하지 않고 실패합니다.
+    return pa.Table.from_pylist(
+        [{name: row.get(name) for name in SCHEMA.names} for row in city_rows],
+        schema=SCHEMA,
+    )
 
 
 class VehicleMasterSilverLoader(Loader):
@@ -30,27 +52,14 @@ class VehicleMasterSilverLoader(Loader):
         self.paths: list[str] = []
 
     def write(self, data: list[dict]) -> WriteResult:
-        if not data:
-            raise ValueError("적재할 차량 마스터 Silver 데이터가 없습니다.")
-
-        by_city: dict[str, list[dict]] = {}
-        for row in data:
-            by_city.setdefault(row[layout.CITY_PARTITION_KEY], []).append(row)
+        by_city = _group_by_city(data)
 
         written_rows = 0
         for city, city_rows in sorted(by_city.items()):
             path = layout.silver_file(self._base_dir, self._collected_date, city)
             path.parent.mkdir(parents=True, exist_ok=True)
 
-            # city 는 파티션 키라 컬럼에서 뺍니다. 스키마에 없는 키가 남아 있으면
-            # from_pylist 가 조용히 무시하지 않고 실패합니다.
-            table = pa.Table.from_pylist(
-                [
-                    {name: row.get(name) for name in SCHEMA.names}
-                    for row in city_rows
-                ],
-                schema=SCHEMA,
-            )
+            table = _build_table(city_rows)
             atomic_write(
                 path,
                 lambda temporary: pq.write_table(
@@ -68,3 +77,49 @@ class VehicleMasterSilverLoader(Loader):
             location=str(layout.dataset_path(self._base_dir)),
             row_count=written_rows,
         )
+
+
+class VehicleMasterSilverS3Loader(Loader):
+    """도시별 Silver Parquet 하나씩 S3에 씁니다. 같은 key는 재실행 시 덮어씁니다."""
+
+    def __init__(self, collected_date: str, bucket: str | None = None):
+        load_local_env()
+        self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
+        self._collected_date = date.fromisoformat(collected_date)
+        self.paths: list[str] = []
+
+    def write(self, data: list[dict]) -> WriteResult:
+        by_city = _group_by_city(data)
+
+        written_rows = 0
+        for city, city_rows in sorted(by_city.items()):
+            key = layout.silver_key(self._collected_date, city)
+            table = _build_table(city_rows)
+            buffer = io.BytesIO()
+            pq.write_table(table, buffer, compression="snappy")
+
+            result = S3Loader(key=key, bucket=self._bucket).write(
+                S3Object(body=buffer.getvalue(), row_count=table.num_rows)
+            )
+            logger.info(
+                "silver_load done location=%s city=%s rows=%d",
+                result.location,
+                city,
+                table.num_rows,
+            )
+            self.paths.append(result.location)
+            written_rows += table.num_rows
+
+        return WriteResult(
+            location=f"s3://{self._bucket}/silver/{layout.DATASET}/",
+            row_count=written_rows,
+        )
+
+
+def build_loader(storage: str, base_dir: str, collected_date: str, bucket: str | None = None) -> Loader:
+    """storage 파라미터로 로컬/S3 Loader 중 하나를 고릅니다."""
+    if storage == "local":
+        return VehicleMasterSilverLoader(base_dir, collected_date)
+    if storage == "s3":
+        return VehicleMasterSilverS3Loader(collected_date, bucket=bucket)
+    raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
