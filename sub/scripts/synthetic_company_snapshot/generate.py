@@ -20,14 +20,18 @@ from sub.scripts.synthetic_company_snapshot.snapshot import (
     write_snapshot,
 )
 
+# 실행 위치가 아니라 이 파일 위치로 저장소 루트를 확정합니다. Makefile은
+# main/spark에서 실행하므로 상대경로를 쓰면 main/data를 보게 됩니다.
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+
 # vehicle_master 는 네 개 Silver 를 조인해 만드는 파생 Silver 라 Bronze 가 없습니다
 # (lambda/functions/common/vehicle_master_layout.py 참고). 경로에 생성일이 들어가서
 # 고정값으로 두면 다음 수집일에 낡으므로, 데이터셋 디렉터리에서 최신을 골라 씁니다.
-_VEHICLE_MASTER_DIR = "../data/silver/vehicle_master"
+_VEHICLE_MASTER_DIR = PROJECT_ROOT / "data" / "silver" / "vehicle_master"
 _VEHICLE_MASTER_FILE = "vehicle_master.parquet"
 
 
-def resolve_vehicle_master_path(dataset_dir: str) -> Path:
+def resolve_vehicle_master_path(dataset_dir: str | Path) -> Path:
     """가장 최신 `collected_date=` 파티션의 vehicle_master 를 고릅니다.
 
     ISO 날짜라 이름 정렬이 곧 시간 정렬입니다. 도시가 여러 개면 어느 쪽을 쓸지
