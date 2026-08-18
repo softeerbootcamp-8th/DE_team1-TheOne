@@ -57,12 +57,17 @@ test:
 		echo "==> testing $$p"; \
 		(cd $$p && env -u VIRTUAL_ENV uv run --frozen pytest -q) || exit 1; \
 	done
+# 아래 세 줄은 런타임 밖(../../sub/...)을 지목해서 부릅니다. 그러면 pytest 의 rootdir 이
+# 저장소 루트로 잡히면서 런타임 pyproject.toml 을 configfile 로 집지 못하고,
+# 거기 적힌 pythonpath = [..., "../.."] 가 통째로 무시됩니다. 그 결과 shared·sub 를
+# import 하는 테스트가 collection 단계에서 전부 죽습니다. SPARK_RUN 과 같은 방식으로
+# 저장소 루트를 직접 넘겨줍니다.
 	@echo "==> testing sub/airflow"; \
-	(cd main/airflow && env -u VIRTUAL_ENV uv run --frozen pytest -q ../../sub/airflow/tests) || exit 1
+	(cd main/airflow && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/airflow/tests) || exit 1
 	@echo "==> testing sub/lambda_runtime and shared/lambda_runtime"; \
-	(cd main/lambda && env -u VIRTUAL_ENV uv run --frozen pytest -q ../../sub/lambda_runtime/tests ../../shared/lambda_runtime/tests) || exit 1
+	(cd main/lambda && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/lambda_runtime/tests ../../shared/lambda_runtime/tests) || exit 1
 	@echo "==> testing sub/spark"; \
-	(cd main/spark && env -u VIRTUAL_ENV uv run --frozen pytest -q ../../sub/spark/tests) || exit 1
+	(cd main/spark && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/spark/tests) || exit 1
 
 .PHONY: sync
 sync: uv-bin tesseract
