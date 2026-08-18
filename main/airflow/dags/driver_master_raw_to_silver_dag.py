@@ -58,7 +58,7 @@ def driver_master_raw_to_silver_pipeline():
     )()
     checked = validate_bronze_task.override(retries=0)(raw)
     silver = bronze_to_silver_task(checked)
-    validate_silver_task.override(retries=0)(silver, raw)
+    validate_silver_task.override(retries=0)(silver, checked)
 
 
 driver_master_raw_to_silver_dag = driver_master_raw_to_silver_pipeline()

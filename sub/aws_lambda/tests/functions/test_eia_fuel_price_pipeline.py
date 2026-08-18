@@ -226,7 +226,7 @@ def test_같은_내용을_다시_받으면_새_파티션을_만들지_않는다(
 
     같은 것을 쌓지 않으면 파티션 개수가 "언제 실제로 바뀌었는지" 를 말해줍니다.
     """
-    from sub.aws_lambda.functions.eia_electricity_price_raw_to_bronze.loader import (
+    from main.aws_lambda.functions.eia_electricity_price_raw_to_bronze.loader import (
         EiaElectricityPriceBronzeLoader,
     )
 

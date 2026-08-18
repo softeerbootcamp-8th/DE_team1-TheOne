@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import re
 from datetime import datetime
 from pathlib import Path
@@ -18,6 +19,7 @@ from shared.aws_lambda.common.atomic_write import atomic_write
 
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+logger = logging.getLogger(__name__)
 
 
 def requested_year_month(event: dict) -> str | None:
@@ -160,9 +162,32 @@ class SyntheticDatasetLoader(Loader):
         self.marker_path = self.path.with_suffix(".json")
         expected_marker = self._marker(payload)
         if self.marker_path.is_file():
-            self._validate_existing(expected_marker)
-            self.already_collected = True
-            return WriteResult(str(self.path), metadata["row_count"])
+            stored = self._read_marker()
+            if any(
+                stored.get(key) != expected_marker[key]
+                for key in ("year_month", "dataset")
+            ):
+                raise ValueError("기존 Bronze marker의 월 또는 dataset이 다릅니다")
+            if stored.get("sha256") == expected_marker["sha256"]:
+                self._validate_existing(expected_marker, stored)
+                self.already_collected = True
+                return WriteResult(str(self.path), metadata["row_count"])
+            # 원천이 같은 달의 내용을 고쳐 다시 제공하면 새 내용으로 교체합니다.
+            # 직전 checksum과 행 수는 marker에 남겨 교체 이력을 추적합니다.
+            logger.warning(
+                "%s %s 원천 파일 교체: sha256 %s -> %s (행 수 %s -> %s)",
+                self._dataset,
+                payload["year_month"],
+                stored.get("sha256"),
+                expected_marker["sha256"],
+                stored.get("row_count"),
+                expected_marker["row_count"],
+            )
+            expected_marker = {
+                **expected_marker,
+                "previous_sha256": stored.get("sha256"),
+                "previous_row_count": stored.get("row_count"),
+            }
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(self.path, lambda temporary: temporary.write_bytes(content))
@@ -191,13 +216,27 @@ class SyntheticDatasetLoader(Loader):
             "sha256": payload["metadata"]["sha256"],
         }
 
-    def _validate_existing(self, expected_marker: dict) -> None:
-        assert self.marker_path is not None and self.path is not None
+    def _read_marker(self) -> dict:
+        assert self.marker_path is not None
         try:
-            stored = json.loads(self.marker_path.read_text(encoding="utf-8"))
+            marker = json.loads(self.marker_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise ValueError(f"Bronze marker를 읽지 못했습니다: {self.marker_path}") from exc
-        if stored != expected_marker:
+        if not isinstance(marker, dict):
+            raise ValueError(f"Bronze marker는 JSON 객체여야 합니다: {self.marker_path}")
+        return marker
+
+    def _validate_existing(self, expected_marker: dict, stored: dict) -> None:
+        """내용이 같은 재수집입니다. 계약값이 어긋나면 마커가 손상된 것으로 봅니다."""
+        assert self.marker_path is not None and self.path is not None
+        # 교체 이력(previous_*)은 비교에서 뺍니다 — 이전 수집에서만 붙는 값이라
+        # 그대로 비교하면 정정 이후 모든 재수집이 손상으로 잡힙니다.
+        comparable = {
+            key: value
+            for key, value in stored.items()
+            if not key.startswith("previous_")
+        }
+        if comparable != expected_marker:
             raise ValueError("같은 월의 기존 marker가 수집 응답과 다릅니다")
         if not self.path.is_file() or _sha256_file(self.path) != expected_marker["sha256"]:
             raise ValueError(f"완료된 Bronze 파일이 없거나 checksum이 다릅니다: {self.path}")

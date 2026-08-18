@@ -31,7 +31,7 @@ import pytest
 #   airflow 쪽을 가립니다. tasks 를 먼저 부르면 그 안에서 경로 설정이 끝나 양쪽이 다
 #   잡힙니다 — 런타임(DAG 파싱)도 같은 순서입니다.
 from sub.airflow.scripts.eia_fuel_price_bronze_to_silver import tasks as silver_tasks
-from sub.airflow.scripts.eia_electricity_price_raw_to_bronze import tasks as electricity_tasks
+from main.airflow.scripts.eia_electricity_price_raw_to_bronze import tasks as electricity_tasks
 from main.airflow.scripts.eia_gas_price_raw_to_bronze import tasks as gas_tasks
 from schema.silver.gas_ev_price import EIA, FINAL, PRELIMINARY, SCHEMA
 
@@ -127,7 +127,7 @@ def test_수집과_검증이_같은_하한을_본다():
     for module_name, expected in (
         ("main.aws_lambda.functions.eia_gas_price_raw_to_bronze.extractor", layout.GAS_MIN_BYTES),
         (
-            "sub.aws_lambda.functions.eia_electricity_price_raw_to_bronze.extractor",
+            "main.aws_lambda.functions.eia_electricity_price_raw_to_bronze.extractor",
             layout.ELECTRICITY_MIN_BYTES,
         ),
     ):

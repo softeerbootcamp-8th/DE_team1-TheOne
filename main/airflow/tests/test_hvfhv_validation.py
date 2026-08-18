@@ -205,33 +205,71 @@ def test_cbd컬럼이_없던_과거월도_taxi_id가_있으면_통과한다(tmp_
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
-def test_taxi_id가_없는_기존_TLC원본은_새_데이터계약에서_실패한다(tmp_path):
+def test_taxi_id가_없는_기존_TLC원본은_재수집후에도_실패한다(
+    tmp_path, monkeypatch
+):
     path = write_bronze(tmp_path, schema=bronze_schema.TLC_SCHEMA)
+    result = result_for(path)
+    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
     with pytest.raises(ValueError, match="schema_signature|missing_required_columns"):
-        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+        validate_bronze(result, params=bronze_params(tmp_path))
 
 
-def test_스키마가_다르면_막는다_잘린_다운로드(tmp_path):
+def test_스키마가_다르면_재수집후에도_막는다(tmp_path, monkeypatch):
     broken_schema = pa.schema([("hvfhs_license_num", pa.string())])
     path = write_bronze(tmp_path, schema=broken_schema)
+    result = result_for(path)
+    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
     with pytest.raises(
         ValueError, match=r"expect_column_values_to_be_in_set\[schema_signature\]"
     ):
-        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+        validate_bronze(result, params=bronze_params(tmp_path))
 
 
-def test_Spark_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
+def test_Spark_필수_컬럼이_재수집후에도_없으면_GX가_실패한다(
+    tmp_path, monkeypatch
+):
     missing = "pickup_datetime"
     schema = pa.schema(
         field for field in bronze_schema.SCHEMA if field.name != missing
     )
     path = write_bronze(tmp_path, schema=schema)
+    result = result_for(path)
+    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
 
     with pytest.raises(
         ValueError,
         match=r"expect_column_values_to_be_in_set\[missing_required_columns\]",
     ):
-        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+        validate_bronze(result, params=bronze_params(tmp_path))
+
+
+def test_Spark_필수_컬럼이_누락되면_원천부터_다시_수집한다(
+    tmp_path, monkeypatch
+):
+    schema = pa.schema(
+        field
+        for field in bronze_schema.SCHEMA
+        if field.name != "pickup_datetime"
+    )
+    path = write_bronze(tmp_path, schema=schema)
+    calls = []
+    refreshed_results = []
+
+    def recollect(params):
+        calls.append(params)
+        corrected_path = write_bronze(tmp_path)
+        refreshed_results.append(result_for(corrected_path))
+        return refreshed_results[-1]
+
+    monkeypatch.setattr(task_module, "_collect_bronze", recollect)
+
+    refreshed = validate_bronze(
+        result_for(path), params=bronze_params(tmp_path)
+    )
+
+    assert len(calls) == 1
+    assert refreshed == refreshed_results[0]
 
 
 def test_행_수가_0이면_막는다(tmp_path):
@@ -242,20 +280,20 @@ def test_행_수가_0이면_막는다(tmp_path):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
-def test_필수값_NULL_행이_20퍼센트_미만이면_기존_Spark_정책대로_통과한다(tmp_path):
-    records = bronze_rows(10)
-    records[0]["pickup_datetime"] = None
+def test_필수값_NULL_행이_5퍼센트_미만이면_통과한다(tmp_path):
+    records = bronze_rows(100)
+    for row in records[:4]:
+        row["pickup_datetime"] = None
     path = write_bronze(tmp_path, records=records)
 
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
-def test_필수값_NULL_행이_정확히_20퍼센트면_GX가_실패한다(
+def test_필수값_NULL_행이_정확히_5퍼센트면_GX가_실패한다(
     tmp_path, caplog
 ):
-    records = bronze_rows(10)
+    records = bronze_rows(20)
     records[0]["pickup_datetime"] = None
-    records[1]["dropoff_datetime"] = None
     path = write_bronze(tmp_path, records=records)
 
     with caplog.at_level("ERROR"), pytest.raises(
@@ -266,7 +304,7 @@ def test_필수값_NULL_행이_정확히_20퍼센트면_GX가_실패한다(
 
     assert "gx_validation failed layer=bronze" in caplog.text
     assert "column=invalid_required_row_ratio" in caplog.text
-    assert "observed_value=[0.2]" in caplog.text
+    assert "observed_value=[0.05]" in caplog.text
 
 
 # --- validate_silver -------------------------------------------------------
