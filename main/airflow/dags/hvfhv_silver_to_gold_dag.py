@@ -51,7 +51,12 @@ default_args = {
         "month": Param(None, type=["string", "null"]),
         # 차량 교체 추천으로 집계할 최소 순수익 증가액(USD). Spark 잡이 required 로
         # 받는 값이라 기본값을 여기서 정합니다.
-        "threshold_profit_increase": Param(100.0, type="number"),
+        #
+        # 600 은 서비스 조건입니다 — "차를 바꿔서 월 $600 은 더 벌어야 기사가 움직인다"
+        # 는 전제로 콜 리스트를 만듭니다. 낮추면 대상자가 늘지만 성사율이 떨어지고,
+        # 높이면 반대입니다. 운영 기준이 바뀌면 코드가 아니라 이 파라미터로 조정하세요.
+        # (근거: docs/METRICS.md - 4. 추천 기준선)
+        "threshold_profit_increase": Param(600.0, type="number"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
     },
 )
