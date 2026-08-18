@@ -115,6 +115,7 @@ def test_조인_키가_차량_대장과_같은_규칙으로_만들어진다(tmp_
                 "raw_name": "MITSUBISHI OUTLANDER SPORT",
                 "price_usd": 554.0,
                 "price_period": "week",
+                "image_url": "https://example.com/outlander-sport.png",
                 "source_url": "https://example.com",
                 "collected_at": COLLECTED_AT,
             }
