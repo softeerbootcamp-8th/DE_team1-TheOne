@@ -17,7 +17,7 @@ from sub.spark.jobs.driver_master.preference import (
     write_driver_preferences,
 )
 from sub.spark.jobs.driver_master.traits import load_bootstrap_pools
-from sub.scripts.synthetic_company_snapshot.snapshot import (
+from sub.generators.synthetic_company_snapshot.snapshot import (
     SnapshotTables,
     evolve_company_snapshot,
     read_snapshot,
