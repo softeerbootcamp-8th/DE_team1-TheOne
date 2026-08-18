@@ -42,7 +42,7 @@ def main(args_list: list[str] | None = None) -> WriteResult:
     parser.add_argument("--leases_path", required=True, help="기사 리스 Clean Silver 파티션 경로")
     parser.add_argument("--output_path", required=True)
     parser.add_argument("--year_month", required=True)
-    parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
+    parser.add_argument("--spark_memory", default="6g", help="Spark driver memory")
     args = parser.parse_args(args_list)
 
     spark = get_or_create_spark_session(
