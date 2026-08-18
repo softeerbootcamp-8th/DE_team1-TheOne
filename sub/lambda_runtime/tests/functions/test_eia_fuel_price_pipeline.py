@@ -226,9 +226,12 @@ def test_같은_내용을_다시_받으면_새_파티션을_만들지_않는다(
 
     같은 것을 쌓지 않으면 파티션 개수가 "언제 실제로 바뀌었는지" 를 말해줍니다.
     """
-    from sub.lambda_runtime.functions.eia_electricity_price_raw_to_bronze.loader import (
-        EiaElectricityPriceBronzeLoader,
-    )
+    import importlib
+
+    # `lambda` 는 예약어라 `from main.lambda.functions...` 로 직접 쓸 수 없습니다.
+    EiaElectricityPriceBronzeLoader = importlib.import_module(
+        "main.lambda.functions.eia_electricity_price_raw_to_bronze.loader"
+    ).EiaElectricityPriceBronzeLoader
 
     bronze = tmp_path / "bronze"
     body = _electricity_xlsx(ELECTRICITY)
