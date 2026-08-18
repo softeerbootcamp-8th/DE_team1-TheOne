@@ -93,7 +93,8 @@ TLC 원본에는 **상품 등급(Comfort / Extra Comfort) 컬럼이 없습니다
 **매출 증가가 음수인 추천은 제외**합니다.
 기사만 이득이고 회사 매출이 줄어드는 교체는 이 제품의 목적이 아닙니다.
 
-기준선은 DAG 실행 파라미터(`threshold_profit_increase`)로 받습니다 —
+기준선은 DAG 실행 파라미터(`threshold_profit_increase`)로 받고, **기본값은 `600.0`** 입니다
+([hvfhv_silver_to_gold_dag.py](../main/airflow/dags/hvfhv_silver_to_gold_dag.py)).
 운영 기준이 바뀌면 코드가 아니라 파라미터로 조정합니다.
 낮추면 대상자가 늘지만 성사율이 떨어지고, 높이면 반대입니다.
 
