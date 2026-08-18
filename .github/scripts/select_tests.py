@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -195,14 +196,25 @@ def render(selection: Selection) -> str:
     return "\n".join(lines) or "NONE"
 
 
-def run(selection: Selection) -> None:
-    if not selection.full and not selection.tests:
+def selected_projects(selection: Selection) -> list[str]:
+    """실행 대상 프로젝트 목록. CI 가 이 값으로 matrix 를 폅니다."""
+    return sorted(selection.full | selection.tests.keys())
+
+
+def run(selection: Selection, only: str | None = None) -> None:
+    projects = selected_projects(selection)
+    if only is not None:
+        projects = [project for project in projects if project == only]
+        if not projects:
+            print(f"{only} 는 이번 변경의 테스트 대상이 아닙니다")
+            return
+    if not projects:
         print("테스트 대상 없음")
         return
     environment = os.environ.copy()
     environment.pop("VIRTUAL_ENV", None)
     environment["PYTHONPATH"] = str(ROOT)
-    for project in sorted(selection.full | selection.tests.keys()):
+    for project in projects:
         runtime_dir, target_dir = RUNNERS[project]
         runtime = ROOT / runtime_dir
         target = ROOT / target_dir
@@ -222,13 +234,20 @@ def main() -> None:
     parser.add_argument("--base")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--run", action="store_true")
+    # CI 가 matrix 를 펼 때 씁니다. 선택된 프로젝트를 JSON 배열로만 찍습니다.
+    parser.add_argument("--matrix", action="store_true")
+    # matrix 각 갈래가 자기 프로젝트만 돌 때 씁니다.
+    parser.add_argument("--only")
     parser.add_argument("files", nargs="*")
     args = parser.parse_args()
     files = changed_files(args.base, args.head) if args.base else args.files
     selection = select_tests(files)
+    if args.matrix:
+        print(json.dumps(selected_projects(selection)))
+        return
     print(render(selection))
     if args.run:
-        run(selection)
+        run(selection, only=args.only)
 
 
 if __name__ == "__main__":
