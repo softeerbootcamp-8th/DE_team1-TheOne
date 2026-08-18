@@ -87,3 +87,46 @@ def test_shared_AWS_Lambda_변경은_세_Lambda_영역_전체_테스트를_선�
         "sub/aws_lambda",
         "shared/aws_lambda",
     }
+
+
+# --- CI matrix 연동 ---------------------------------------------------------
+#
+# 프로젝트별 러너로 나누면서 추가된 두 진입점입니다. 여기가 틀리면 CI 가 조용히
+# 일부만 돌거나(--only 오타) matrix 가 안 펴집니다(--matrix 형식).
+
+
+def test_matrix_는_선택된_프로젝트를_정렬해_돌려준다():
+    selection = select_tests.select_tests(["main/spark/jobs/x.py", "sub/spark/jobs/y.py"])
+
+    assert select_tests.selected_projects(selection) == ["main/spark", "sub/spark"]
+
+
+def test_대상이_없으면_matrix_는_빈_목록이다():
+    """CI 가 이 값으로 job 을 띄울지 정합니다. 빈 matrix 는 에러라 미리 걸러야 합니다."""
+    selection = select_tests.select_tests(["docs/README.md"])
+
+    assert select_tests.selected_projects(selection) == []
+
+
+def test_only_는_그_프로젝트만_돌린다(monkeypatch):
+    """matrix 각 갈래가 자기 몫만 돌아야 합니다. 안 그러면 spark 를 러너마다 반복합니다."""
+    ran = []
+    monkeypatch.setattr(
+        select_tests.subprocess, "run", lambda command, **kwargs: ran.append(kwargs["cwd"].name)
+    )
+    selection = select_tests.select_tests(["main/spark/jobs/x.py", "sub/spark/jobs/y.py"])
+
+    select_tests.run(selection, only="sub/spark")
+
+    assert ran == ["spark"]
+
+
+def test_only_가_대상이_아니면_아무것도_돌지_않는다(monkeypatch):
+    """선택되지 않은 프로젝트가 matrix 에 들어와도 헛돌지 않아야 합니다."""
+    ran = []
+    monkeypatch.setattr(select_tests.subprocess, "run", lambda command, **kwargs: ran.append(1))
+    selection = select_tests.select_tests(["main/spark/jobs/x.py"])
+
+    select_tests.run(selection, only="main/dashboard")
+
+    assert ran == []
