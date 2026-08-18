@@ -1,13 +1,11 @@
-"""기사 운행 이력 Silver 월간 DAG 시나리오. 이슈 #301, #456.
+"""기사 운행 이력 Silver 월간 DAG 시나리오. 이슈 #301, #456, #481.
 
 1. validate_inputs -> build_driver_trip_silver -> validate_silver 순서
-2. 직전 달·수동 연월과 snapshot_date 파라미터 전달
-3. Spark 명령에 두 Clean Silver 입력·출력·계보 포함
+2. 직전 달·수동 연월 파라미터 전달
+3. Spark 명령에 두 Clean Silver 입력·출력 포함
 4. 입력 파티션 누락, 출력 0행·스키마·키·관계·계약·월 오류 차단
 5. 월간 운영 설정과 실패 콜백 적용
-6. snapshot_date 를 안 주면 실제 존재하는 파티션 중 최신을 고름 — 전에는 대상 월의
-   1일(`{year_month}-01`)을 찾아, 대상 월과 무관하게 만들어지는 회사 원천 픽스처와
-   어긋나 매번 실패했음
+6. 스냅샷 시점은 이 DAG 이 알지 못함 — 파라미터에도 출력에도 없음
 """
 
 from datetime import date, datetime, timezone
@@ -32,7 +30,7 @@ def _row(**overrides):
         "trip_key": "t1", "driver_id": "d1", "customer_id": "c1", "lease_id": "l1",
         "taxi_id": "x1", "pickup_datetime": datetime(2024, 3, 4, 9),
         "lease_started_on": date(2024, 1, 1), "lease_ended_on": date(2025, 1, 1),
-        "year_month": "2024-03", "snapshot_date": date(2024, 3, 1),
+        "year_month": "2024-03",
         "make_key": "Toyota", "model_key": "Camry", "model_year": 2023,
     }
     row.update(overrides)
@@ -47,8 +45,9 @@ def test_DAG_구조와_월간_운영설정이_올바르다():
     assert DAG.catchup is False and DAG.max_active_runs == 1
     assert DAG.schedule == "0 1 12 * *"
     assert all(task.on_failure_callback for task in DAG.tasks)
-    # 리스 Silver 는 `year_month` 파티션으로 읽습니다. snapshot_date 를 파라미터로
-    # 두면 아무 경로도 고르지 않으면서 계보 컬럼만 틀리게 찍히고, 실패 없이 통과합니다.
+    # 스냅샷 시점은 가짜 데이터를 만드는 쪽 관심사입니다 (#481). 여기 파라미터로
+    # 두면 아무 경로도 고르지 않으면서 계보 컬럼만 찍히고, 그 값은 언제나
+    # `{year_month}-01` 이라 파티션 키를 다르게 적은 것에 불과합니다.
     assert "snapshot_date" not in DAG.params
 
 
@@ -110,7 +109,6 @@ def test_Spark_명령에_모든_경로와_실행계보가_들어간다():
     command = DAG.get_task("build_driver_trip_silver").bash_command
     for option in (
         "--trips_path", "--leases_path", "--output_path", "--year_month",
-        "--snapshot_date",
     ):
         assert option in command
     assert "xcom_pull(task_ids='validate_inputs')['year_month']" in command
@@ -127,12 +125,12 @@ def test_validate_inputs는_두_파티션이_모두_있어야_계보를_반환�
         partition.mkdir(parents=True)
         paths[f"{name}_path"] = str(tmp_path / name)
 
-    result = task_module.validate_input_paths("2024-03", "2024-03-01", paths)
+    result = task_module.validate_input_paths("2024-03", paths)
 
-    assert result == {"year_month": "2024-03", "snapshot_date": "2024-03-01"}
+    assert result == {"year_month": "2024-03"}
     (tmp_path / missing / "year_month=2024-03").rmdir()
     with pytest.raises(FileNotFoundError, match=f"{missing}_path"):
-        task_module.validate_input_paths("2024-03", "2024-03-01", paths)
+        task_module.validate_input_paths("2024-03", paths)
 
 
 @pytest.mark.parametrize("violation", ["empty", "missing_column", "duplicate", "null_fk", "contract", "month"])

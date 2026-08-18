@@ -75,7 +75,6 @@ def _build(spark, trips=None, leases=None):
         spark.createDataFrame(trips, schema=TRIP_SCHEMA),
         spark.createDataFrame(leases, schema=LEASE_SCHEMA),
         year_month="2024-03",
-        snapshot_date=date(2024, 3, 1),
     )
 
 
@@ -86,7 +85,7 @@ def test_운행에_그_시점의_기사와_계약과_차량이_붙는다(spark):
     assert (row.trip_key, row.taxi_id, row.driver_id) == ("t1", "x1", "d1")
     assert (row.customer_id, row.lease_id) == ("c1", "l1")
     assert (row.make_key, row.model_key, row.model_year) == ("TOYOTA", "CAMRY", 2023)
-    assert (row.year_month, row.snapshot_date) == ("2024-03", date(2024, 3, 1))
+    assert row.year_month == "2024-03"
     # 배정이 사라졌으니 그 흔적도 남으면 안 됩니다.
     assert not {"assignment_version", "assignment_seed", "trip_sequence"} & set(result.columns)
     # 출력 계약은 `schema/silver/hvfhv_driver_trip.py` 가 소유합니다. 실제 산출물이

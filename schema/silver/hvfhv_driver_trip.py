@@ -18,8 +18,12 @@ from schema.silver.hvfhv import FINAL_SCHEMA as _TRIP_SCHEMA
 TRIP_PLACEHOLDER_COLUMNS = ("driver_id", "taxi_model_id")
 # 조인 키라 양쪽 값이 같습니다. 운행 쪽 하나만 싣습니다.
 LEASE_JOIN_COLUMNS = ("taxi_id",)
-# 어느 리스 스냅샷을 썼는지. 두 입력 어디에도 없어 이 단계가 직접 붙입니다.
-LINEAGE_COLUMNS = ("snapshot_date",)
+
+# 계보 컬럼은 없습니다 (#481). 예전에는 `snapshot_date` 로 "어느 시점 회사 상태를
+# 썼나" 를 남겼는데, 그건 이 단계가 회사 스냅샷 폴더를 직접 골라 읽던 시절 얘기입니다.
+# 지금 리스 Clean Silver 는 `year_month` 파티션 하나가 그 달 1일자 상태라, 그 값은
+# 언제나 `{year_month}-01` 이었습니다 — 파티션 키를 다르게 적은 것에 불과합니다.
+# 스냅샷 시점은 가짜 데이터를 만드는 쪽(`synthetic_driver_trip_source`)의 관심사입니다.
 
 TRIP_COLUMNS = tuple(
     field.name for field in _TRIP_SCHEMA if field.name not in TRIP_PLACEHOLDER_COLUMNS
@@ -27,7 +31,7 @@ TRIP_COLUMNS = tuple(
 LEASE_COLUMNS = tuple(
     name for name in _LEASE_SCHEMA.names if name not in LEASE_JOIN_COLUMNS
 )
-COLUMNS = (*TRIP_COLUMNS, *LEASE_COLUMNS, *LINEAGE_COLUMNS)
+COLUMNS = (*TRIP_COLUMNS, *LEASE_COLUMNS)
 
 # 행 하나를 식별하고 하류 조인을 성립시키는 값. 비면 Gold 집계가 실패가 아니라
 # 조용히 줄어든 숫자로 나옵니다.
@@ -42,7 +46,6 @@ REQUIRED_COLUMNS = frozenset(
         "lease_started_on",
         "lease_ended_on",
         "year_month",
-        "snapshot_date",
         "make_key",
         "model_key",
         "model_year",

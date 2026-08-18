@@ -6,11 +6,10 @@
       --trips_path ../data/silver/hvfhv/year_month=2026-06 \\
       --leases_path ../data/silver/driver_vehicle_leases/year_month=2026-06 \\
       --output_path ../data/silver/hvfhv_driver_trip \\
-      --year_month 2026-06 --snapshot_date 2026-06-01
+      --year_month 2026-06
 """
 
 import argparse
-from datetime import date
 from pathlib import Path
 
 from pyspark.sql import DataFrame, SparkSession
@@ -43,11 +42,6 @@ def main(args_list: list[str] | None = None) -> WriteResult:
     parser.add_argument("--leases_path", required=True, help="기사 리스 Clean Silver 파티션 경로")
     parser.add_argument("--output_path", required=True)
     parser.add_argument("--year_month", required=True)
-    parser.add_argument(
-        "--snapshot_date",
-        required=True,
-        help="쓴 리스 스냅샷 시점 (YYYY-MM-DD). 결과에 계보로 실립니다",
-    )
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
     args = parser.parse_args(args_list)
 
@@ -58,7 +52,6 @@ def main(args_list: list[str] | None = None) -> WriteResult:
         read_trips(spark, args.trips_path),
         spark.read.parquet(args.leases_path),
         year_month=args.year_month,
-        snapshot_date=date.fromisoformat(args.snapshot_date),
     )
     return SparkParquetLoader(args.output_path, partition_by=["year_month"]).write(silver)
 
