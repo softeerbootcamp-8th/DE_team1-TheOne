@@ -30,13 +30,13 @@ from shared.spark.hvfhv_clean_transformer import (
 from sub.spark.jobs.driver_master.preference import build_driver_preferences
 from schema.silver.hvfhv import FINAL_SCHEMA
 from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
-from sub.scripts.synthetic_company_snapshot.snapshot import (
+from sub.generators.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
     build_vehicle_pool,
     read_snapshot,
     write_snapshot,
 )
-from sub.scripts.synthetic_driver_trip_source import monthly
+from sub.generators.synthetic_driver_trip_source import monthly
 
 
 def test_가짜원천_정제는_중앙_Silver_스키마만_공유한다():

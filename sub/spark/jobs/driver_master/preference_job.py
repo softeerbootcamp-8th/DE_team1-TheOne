@@ -15,7 +15,7 @@ import numpy as np
 
 from sub.spark.jobs.driver_master.preference import build_driver_preferences, write_driver_preferences
 from sub.spark.jobs.driver_master.traits import load_bootstrap_pools
-from sub.scripts.synthetic_company_snapshot.snapshot import build_driver_ids
+from sub.generators.synthetic_company_snapshot.snapshot import build_driver_ids
 
 
 def main(args_list: list[str] | None = None) -> Path:

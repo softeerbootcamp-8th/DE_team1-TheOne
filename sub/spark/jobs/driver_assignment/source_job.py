@@ -35,7 +35,7 @@ from shared.spark.hvfhv_clean_transformer import (
 )
 from sub.spark.jobs.travel_times.transformer import build_travel_times
 from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
-from sub.scripts.synthetic_driver_trip_source.monthly import prepare_monthly_state
+from sub.generators.synthetic_driver_trip_source.monthly import prepare_monthly_state
 
 
 LEASE_SOURCE_COLUMNS = DRIVER_VEHICLE_LEASE_SCHEMA.names
