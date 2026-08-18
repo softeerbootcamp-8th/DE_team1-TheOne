@@ -31,6 +31,9 @@ DAG_MODULES = {
         "eia_fuel_price_bronze_to_silver_dag"
     ),
     "dags.eia_gas_price_raw_to_bronze_dag": "eia_gas_price_raw_to_bronze_dag",
+    "dags.eia_gas_price_bronze_to_silver_dag": (
+        "eia_gas_price_bronze_to_silver_dag"
+    ),
     "dags.fueleconomy_vehicle_specs_raw_to_silver_dag": (
         "fueleconomy_vehicle_specs_dag"
     ),
