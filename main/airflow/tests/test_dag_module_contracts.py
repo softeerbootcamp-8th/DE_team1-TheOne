@@ -10,6 +10,7 @@ DAG_VARIABLES = {
     "driver_master_raw_to_silver_dag": "driver_master_raw_to_silver_dag",
     "eia_electricity_price_raw_to_bronze_dag": "eia_electricity_price_raw_to_bronze_dag",
     "eia_gas_price_raw_to_bronze_dag": "eia_gas_price_raw_to_bronze_dag",
+    "eia_gas_price_bronze_to_silver_dag": "eia_gas_price_bronze_to_silver_dag",
     "hvfhv_driver_trip_silver_dag": "hvfhv_driver_trip_silver_dag",
     "hvfhv_raw_to_silver_dag": "hvfhv_dag",
     "hvfhv_silver_to_gold_dag": "hvfhv_silver_to_gold_dag",
