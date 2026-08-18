@@ -1,4 +1,9 @@
-"""기사 데이터 Raw → Bronze → Silver 파이프라인을 선언합니다."""
+"""리스 업체 보유 차량 Raw → Bronze → Silver 파이프라인을 선언합니다.
+
+기사 계약(`driver_vehicle_leases`)과 같은 원천 API·같은 릴리스 월에서 오지만,
+한쪽 원천이 늦어도 다른 쪽이 멈추지 않도록 DAG 를 나눠 둡니다. 두 DAG 는 서로 다른
+Bronze·Silver 데이터셋 디렉터리에 쓰므로 같은 파티션을 다투지 않습니다.
+"""
 
 import os
 from datetime import datetime, timedelta
@@ -9,7 +14,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
-from main.airflow.scripts.driver_master_raw_to_silver.tasks import (
+from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
@@ -31,14 +36,14 @@ default_args = {
 
 
 @dag(
-    dag_id="driver_master_raw_to_silver_pipeline",
+    dag_id="lease_vehicle_inventory_raw_to_silver_pipeline",
     default_args=default_args,
-    description="기사 데이터 Raw→Bronze→Silver 파이프라인",
+    description="리스 업체 보유 차량 Raw→Bronze→Silver 파이프라인",
     schedule="0 0 10 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["driver", "taxi", "master", "bronze", "silver"],
+    tags=["lease", "vehicle", "inventory", "bronze", "silver"],
     params={
         "year": Param(None, type=["string", "null"]),
         "month": Param(None, type=["string", "null"]),
@@ -50,7 +55,7 @@ default_args = {
         "silver_dir": Param(DEFAULT_SILVER_DIR, type="string"),
     },
 )
-def driver_master_raw_to_silver_pipeline():
+def lease_vehicle_inventory_raw_to_silver_pipeline():
     raw = raw_to_bronze_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
@@ -61,4 +66,4 @@ def driver_master_raw_to_silver_pipeline():
     validate_silver_task.override(retries=0)(silver, checked)
 
 
-driver_master_raw_to_silver_dag = driver_master_raw_to_silver_pipeline()
+lease_vehicle_inventory_raw_to_silver_dag = lease_vehicle_inventory_raw_to_silver_pipeline()

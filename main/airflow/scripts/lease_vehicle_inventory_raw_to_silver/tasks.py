@@ -50,7 +50,7 @@ def validate_silver_result(result: dict, expected_rows: int) -> None:
     _silver_transformer().transform(table)
 
 
-@task(task_id="inventory_raw_to_bronze")
+@task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
     params = context.get("params", {})
     return _collect_bronze(params)
@@ -67,7 +67,7 @@ def _collect_bronze(params: dict) -> dict:
     return lambda_handler_for("lease_vehicle_inventory_raw_to_bronze")(event=event)
 
 
-@task(task_id="validate_inventory_bronze")
+@task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> dict:
     params = context.get("params", {})
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
@@ -95,18 +95,18 @@ def _validate_bronze_result(
     return path, missing
 
 
-@task(task_id="inventory_bronze_to_silver")
+@task(task_id="bronze_to_silver")
 def bronze_to_silver_task(result: dict, **context) -> dict:
     event = {
         "bronze_path": result["locations"][0],
         "year_month": result["year_month"],
-        "silver_dir": context["params"].get("inventory_silver_dir")
+        "silver_dir": context["params"].get("silver_dir")
         or DEFAULT_SILVER_DIR,
     }
     logger.info("보유 차량 데이터 Bronze→Silver 정제 시작: %s", event)
     return lambda_handler_for("lease_vehicle_inventory_bronze_to_silver")(event=event)
 
 
-@task(task_id="validate_inventory_silver")
+@task(task_id="validate_silver")
 def validate_silver_task(silver_result: dict, raw_result: dict) -> None:
     validate_silver_result(silver_result, raw_result["row_count"])

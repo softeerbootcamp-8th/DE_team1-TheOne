@@ -1,6 +1,6 @@
-"""보유 차량 Raw→Bronze→Silver 분기 계약.
+"""보유 차량 Raw→Bronze→Silver DAG 계약.
 
-1. 기사 계약 분기와 섞이지 않는 독립 네 단계
+1. 기사 계약 DAG 와 분리된 네 단계 월별 DAG
 2. 수집·정제 Lambda 에 파라미터 전달
 3. 필수 컬럼 누락 시 원천부터 한 번 재수집
 4. Bronze 행 수·스키마·재고 품질로 Silver 확인
@@ -13,20 +13,15 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dags import driver_master_raw_to_silver_dag as dag_module
+from dags import lease_vehicle_inventory_raw_to_silver_dag as dag_module
+from dags.driver_master_raw_to_silver_dag import driver_master_raw_to_silver_dag
 from schema.silver.lease_vehicle_inventory import SCHEMA
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
     tasks as task_module,
 )
 
 
-DAG = dag_module.driver_master_raw_to_silver_dag
-INVENTORY_TASK_IDS = {
-    "inventory_raw_to_bronze",
-    "validate_inventory_bronze",
-    "inventory_bronze_to_silver",
-    "validate_inventory_silver",
-}
+DAG = dag_module.lease_vehicle_inventory_raw_to_silver_dag
 
 
 def _rows():
@@ -54,25 +49,34 @@ def _silver_file(tmp_path: Path, rows: list[dict]) -> dict:
     return {"locations": [str(path)], "row_count": len(rows), "year_month": "2026-08"}
 
 
-def test_보유차량분기는_기사계약분기와_독립적으로_Silver까지_처리한다():
-    assert INVENTORY_TASK_IDS <= set(DAG.task_ids)
-    assert DAG.get_task("inventory_raw_to_bronze").upstream_task_ids == set()
-    assert DAG.get_task("inventory_raw_to_bronze").downstream_task_ids == {
-        "validate_inventory_bronze"
+def test_보유차량은_기사계약과_분리된_DAG에서_Silver까지_처리한다():
+    assert DAG.dag_id == "lease_vehicle_inventory_raw_to_silver_pipeline"
+    assert DAG.schedule == "0 0 10 * *"
+    assert set(DAG.task_ids) == {
+        "raw_to_bronze",
+        "validate_bronze",
+        "bronze_to_silver",
+        "validate_silver",
     }
-    assert DAG.get_task("validate_inventory_bronze").downstream_task_ids == {
-        "inventory_bronze_to_silver",
-        "validate_inventory_silver",
+    assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
+    assert DAG.get_task("validate_bronze").downstream_task_ids == {
+        "bronze_to_silver",
+        "validate_silver",
     }
-    assert DAG.get_task("inventory_bronze_to_silver").downstream_task_ids == {
-        "validate_inventory_silver"
-    }
-    # 한 분기가 죽어도 다른 분기는 그대로 돌아야 해서 두 분기를 잇지 않습니다.
-    assert not INVENTORY_TASK_IDS & DAG.get_task("validate_silver").upstream_task_ids
-    assert DAG.get_task("inventory_raw_to_bronze").retries == 2
-    assert DAG.get_task("inventory_raw_to_bronze").retry_delay == timedelta(minutes=5)
-    assert DAG.get_task("validate_inventory_bronze").retries == 0
-    assert DAG.get_task("validate_inventory_silver").retries == 0
+    assert DAG.get_task("bronze_to_silver").downstream_task_ids == {"validate_silver"}
+    assert DAG.get_task("raw_to_bronze").retries == 2
+    assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
+    assert DAG.get_task("validate_bronze").retries == 0
+    assert DAG.get_task("validate_silver").retries == 0
+
+
+def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
+    """한쪽 원천이 늦어도 다른 쪽 월 적재가 멈추지 않도록 DAG 를 나눴습니다.
+    나눈 이상 두 DAG 가 같은 Silver 디렉터리를 동시에 쓰면 안 됩니다."""
+    assert DAG.dag_id != driver_master_raw_to_silver_dag.dag_id
+    assert DAG.params["silver_dir"] != driver_master_raw_to_silver_dag.params[
+        "silver_dir"
+    ]
 
 
 def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한다(monkeypatch):
@@ -88,7 +92,7 @@ def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한
         "lambda_handler_for",
         lambda name: handlers.append(name) or handler,
     )
-    DAG.get_task("inventory_raw_to_bronze").python_callable(
+    DAG.get_task("raw_to_bronze").python_callable(
         params={
             "api_base_url": "http://source",
             "base_dir": "/bronze",
@@ -118,9 +122,9 @@ def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달
         "lambda_handler_for",
         lambda name: handlers.append(name) or handler,
     )
-    DAG.get_task("inventory_bronze_to_silver").python_callable(
+    DAG.get_task("bronze_to_silver").python_callable(
         {"locations": ["/bronze/data.parquet"], "year_month": "2026-08"},
-        params={"inventory_silver_dir": "/silver"},
+        params={"silver_dir": "/silver"},
     )
     assert handlers == ["lease_vehicle_inventory_bronze_to_silver"]
     assert called == {
@@ -150,7 +154,7 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
         lambda params: calls.append(params) or recollected,
     )
 
-    validated = DAG.get_task("validate_inventory_bronze").python_callable(
+    validated = DAG.get_task("validate_bronze").python_callable(
         {"year_month": "2026-08"},
         params={"base_dir": "/bronze", "api_base_url": "http://source"},
     )

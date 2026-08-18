@@ -212,8 +212,8 @@ data/source/synthetic_driver_trip_api/  ──HTTP──▶  data/bronze/
 코드도 이 경계에 맞춰 폴더로 나눠 두었습니다.
 
 ```text
-sub/       외부·가상 원천 수집, 합성, 정제, Published API 발행     DAG 9개
-main/      Published 원천 소비, 운행 분석, Gold, 대시보드          DAG 4개
+sub/       외부·가상 원천 수집, 합성, 정제, Published API 발행     DAG 8개
+main/      Published 원천 소비, 운행 분석, Gold, 대시보드          DAG 9개
 shared/    두 제품이 함께 쓰는 최소 Airflow/Spark/Lambda 기술 계약
 schema/    제품 간 데이터 계약
 libs/      런타임 중립 공통 라이브러리
