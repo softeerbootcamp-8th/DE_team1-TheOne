@@ -4,7 +4,7 @@
 결과를 제공하는 데이터 프로덕트입니다.
 
 - `airflow/`: 메인 파이프라인 오케스트레이션
-- `lambda/`: Published 기사·운행 원천 수집
+- `aws_lambda/`: Published 기사·운행 원천 수집
 - `spark/`: Silver·Gold 처리
 - `dashboard/`: 추천 결과 제공
 

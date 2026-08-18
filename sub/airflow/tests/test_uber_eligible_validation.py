@@ -23,13 +23,13 @@ import pytest
 from dags import uber_eligible_vehicles_raw_to_silver_dag as dag_module
 
 layout = importlib.import_module(
-    "shared.lambda_runtime.common.uber_eligible_vehicles_layout"
+    "shared.aws_lambda.common.uber_eligible_vehicles_layout"
 )
 bronze_loader = importlib.import_module(
-    "sub.lambda_runtime.functions.uber_eligible_vehicles_raw_to_bronze.loader"
+    "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze.loader"
 )
 silver_loader = importlib.import_module(
-    "sub.lambda_runtime.functions.uber_eligible_vehicles_bronze_to_silver.loader"
+    "sub.aws_lambda.functions.uber_eligible_vehicles_bronze_to_silver.loader"
 )
 
 DAG = dag_module.uber_eligible_vehicles_dag

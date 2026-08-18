@@ -39,7 +39,7 @@ from schema.silver.gas_ev_price import EIA, FINAL, PRELIMINARY, SCHEMA
 def _layout():
     import importlib
 
-    return importlib.import_module("shared.lambda_runtime.common.eia_fuel_price_layout")
+    return importlib.import_module("shared.aws_lambda.common.eia_fuel_price_layout")
 
 
 BIG_ENOUGH = b"x" * (_layout().ELECTRICITY_MIN_BYTES + 1)
@@ -125,9 +125,9 @@ def test_수집과_검증이_같은_하한을_본다():
     from importlib import import_module
 
     for module_name, expected in (
-        ("sub.lambda_runtime.functions.eia_gas_price_raw_to_bronze.extractor", layout.GAS_MIN_BYTES),
+        ("sub.aws_lambda.functions.eia_gas_price_raw_to_bronze.extractor", layout.GAS_MIN_BYTES),
         (
-            "sub.lambda_runtime.functions.eia_electricity_price_raw_to_bronze.extractor",
+            "sub.aws_lambda.functions.eia_electricity_price_raw_to_bronze.extractor",
             layout.ELECTRICITY_MIN_BYTES,
         ),
     ):

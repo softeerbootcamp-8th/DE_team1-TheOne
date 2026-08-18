@@ -4,4 +4,4 @@
 
 - `airflow/common`: DAG 경로, 검증, 알림, 실행 헬퍼
 - `spark/common`: Spark 세션과 입출력 헬퍼
-- `lambda_runtime/common`: S3 입출력, 스키마 검증, 데이터셋 레이아웃
+- `aws_lambda/common`: S3 입출력, 스키마 검증, 데이터셋 레이아웃

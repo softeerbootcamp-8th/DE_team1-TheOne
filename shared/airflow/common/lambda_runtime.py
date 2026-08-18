@@ -6,7 +6,7 @@ import importlib
 def lambda_handler_for(
     function_name: str,
     *,
-    package: str = "main.lambda.functions",
+    package: str = "main.aws_lambda.functions",
 ):
     module = importlib.import_module(f"{package}.{function_name}.handler")
     return module.lambda_handler

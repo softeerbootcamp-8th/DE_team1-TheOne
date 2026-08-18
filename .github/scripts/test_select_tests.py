@@ -6,6 +6,7 @@
 4. 알 수 없는 Python 변경은 전체 테스트 fallback
 5. 테스트 파일 변경은 해당 테스트만 선택
 6. 분리된 제품 테스트 실행은 저장소 루트를 import 경로로 사용
+7. shared AWS Lambda 변경은 세 Lambda 코드 영역 전체 테스트 선택
 """
 
 import importlib.util
@@ -76,3 +77,13 @@ def test_분리된_제품_테스트는_저장소_루트를_import_경로로_사�
     assert kwargs["cwd"] == select_tests.ROOT / "main/airflow"
     assert kwargs["env"]["PYTHONPATH"] == str(select_tests.ROOT)
     assert "VIRTUAL_ENV" not in kwargs["env"]
+
+
+def test_shared_AWS_Lambda_변경은_세_Lambda_영역_전체_테스트를_선택한다():
+    result = select_tests.select_tests(["shared/aws_lambda/common/logging_setup.py"])
+
+    assert result.full == {
+        "main/aws_lambda",
+        "sub/aws_lambda",
+        "shared/aws_lambda",
+    }

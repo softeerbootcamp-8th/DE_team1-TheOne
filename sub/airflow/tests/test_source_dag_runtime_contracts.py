@@ -35,7 +35,7 @@ def test_원천_DAG가_부르는_Lambda_핸들러가_모두_import된다():
     assert len(HANDLER_NAMES) == 9, HANDLER_NAMES
     for function_name in HANDLER_NAMES:
         module = importlib.import_module(
-            f"sub.lambda_runtime.functions.{function_name}.handler"
+            f"sub.aws_lambda.functions.{function_name}.handler"
         )
         assert callable(module.lambda_handler)
 

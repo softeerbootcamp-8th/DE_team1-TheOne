@@ -35,7 +35,7 @@ def build_vehicle_master_task(**context) -> dict:
     if collected_date:
         event["collected_date"] = collected_date
 
-    result = lambda_handler_for("vehicle_master_silver", package="sub.lambda_runtime.functions")(event=event)
+    result = lambda_handler_for("vehicle_master_silver", package="sub.aws_lambda.functions")(event=event)
     logger.info("차량 마스터 조립 완료: %s", result)
     return result
 
@@ -51,8 +51,8 @@ def validate_silver_task(result: dict, **context) -> None:
     """도시별 파일이 layout 규칙·스키마와 맞는지, 원천이 낡지 않았는지 봅니다."""
     params = context.get("params", {})
     silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
-    layout = importlib.import_module("shared.lambda_runtime.common.vehicle_master_layout")
-    loader = importlib.import_module("sub.lambda_runtime.functions.vehicle_master_silver.loader")
+    layout = importlib.import_module("shared.aws_lambda.common.vehicle_master_layout")
+    loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_silver.loader")
 
     parsed = parse_handler_result(result)
     collected_date = parse_iso_date(result.get("collected_date"))
