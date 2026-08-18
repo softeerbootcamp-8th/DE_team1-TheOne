@@ -1,4 +1,4 @@
-"""EIA 원본 두 개를 통합 연료비 Silver 로 변환하는 실행·검증 함수.
+"""휘발유·전력 CLEAN Silver 두 개를 통합 연료비 Silver 로 붙이는 실행·검증 함수.
 
 산출물은 `gas_ev_price/year_month=YYYY-MM/` — Gold 가 읽는 자리입니다.
 출처는 `price_source` 로 남깁니다.
@@ -23,9 +23,7 @@ from schema.silver.gas_ev_price import EIA, FINAL, SCHEMA
 
 logger = logging.getLogger(__name__)
 
-BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 SILVER_DIR = str(PROJECT_ROOT / "data" / "silver")
-HANDLER_NAME = "eia_fuel_price_bronze_to_silver"
 INTEGRATED_DATASET = "gas_ev_price"
 INTEGRATED_FILE_NAME = "gas_ev_price.parquet"
 # 데이터가 나타내는 달. lambda loader 의 PARTITION_KEY 와 같아야 합니다.
@@ -72,36 +70,28 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def require_bronze(base_dir: str, year_month: str) -> dict[str, str]:
-    """두 원본이 모두 있는지 변환 **전에** 확인합니다.
+def require_clean_silver(base_dir: str, year_month: str) -> dict[str, str]:
+    """두 CLEAN Silver 의 대상 월 파티션이 모두 있는지 변환 **전에** 확인합니다.
 
-    하나만 있으면 변환이 더 안쪽에서 죽어 어느 수집이 문제인지 로그를 파야 합니다.
-
-    `year_month` 로 원본을 걸러내지 않습니다 — 이력 파일이라 어느 수집분이든 여러 달을
-    담고 있고, 실제로 대상 월이 들어있는지는 파일을 열어봐야 알 수 있어서 변환이
-    판단합니다(없으면 보유 구간을 알려주며 실패). 여기서는 존재 여부만 봅니다.
+    하나만 있으면 변환이 더 안쪽에서 죽어 어느 정제가 문제인지 로그를 파야 합니다.
     """
-    layout = importlib.import_module("sub.aws_lambda.common.eia_fuel_price_layout")
+    extractor = importlib.import_module(
+        "main.aws_lambda.functions.eia_fuel_price_silver.extractor"
+    )
 
     found = {}
-    for dataset, file_name, dag_id in (
-        (layout.GAS_DATASET, layout.GAS_FILE_NAME, "eia_gas_price_raw_to_bronze_pipeline"),
-        (
-            layout.ELECTRICITY_DATASET,
-            layout.ELECTRICITY_FILE_NAME,
-            "eia_electricity_price_raw_to_bronze_pipeline",
-        ),
+    for dataset, dag_id in (
+        (extractor.GAS_DATASET, "eia_gas_price_bronze_to_silver_pipeline"),
+        (extractor.ELECTRICITY_DATASET, "eia_electricity_price_bronze_to_silver_pipeline"),
     ):
-        try:
-            _, partition = layout.newest_bronze_partition(base_dir, dataset)
-        except FileNotFoundError as exc:
-            raise FileNotFoundError(f"{exc} — {dag_id} 을 먼저 돌리세요.") from exc
-        path = partition / file_name
+        path = extractor.clean_silver_file(base_dir, dataset, year_month)
         if not path.is_file():
-            raise FileNotFoundError(f"EIA 원본이 없습니다: {path} — {dag_id} 을 먼저 돌리세요.")
+            raise FileNotFoundError(
+                f"{dataset} CLEAN Silver 가 없습니다: {path} — {dag_id} 을 먼저 돌리세요."
+            )
         found[dataset] = str(path)
 
-    logger.info("EIA 원본 확인 (%s 대상): %s", year_month, found)
+    logger.info("EIA CLEAN Silver 확인 (%s 대상): %s", year_month, found)
     return found
 
 
@@ -158,31 +148,26 @@ def validate_silver(base_dir: str, year_month: str) -> None:
     )
 
 
-@task(task_id="check_bronze")
-def check_bronze_task(**context) -> str:
+@task(task_id="check_clean_silver")
+def check_clean_silver_task(**context) -> str:
     year_month = resolve_year_month(context)
     logger.info("EIA 연료비 대상 월: %s", year_month)
-    require_bronze(context["params"]["bronze_dir"], year_month)
+    require_clean_silver(context["params"]["silver_dir"], year_month)
     return year_month
 
 
-@task(task_id="bronze_to_silver")
-def bronze_to_silver_task(**context) -> dict:
+@task(task_id="combine_silver")
+def combine_silver_task(**context) -> dict:
     params = context["params"]
-    year_month = context["task_instance"].xcom_pull(task_ids="check_bronze")
+    year_month = context["task_instance"].xcom_pull(task_ids="check_clean_silver")
 
-    result = lambda_handler_for(HANDLER_NAME, package="sub.aws_lambda.functions")(
-        event={
-            "year_month": year_month,
-            "bronze_dir": params["bronze_dir"],
-            "silver_dir": params["silver_dir"],
-            "markup": params["markup"],
-        }
+    result = lambda_handler_for("eia_fuel_price_silver")(
+        event={"year_month": year_month, "silver_dir": params["silver_dir"]}
     )
     return {"year_month": year_month, **result}
 
 
 @task(task_id="validate_silver")
 def validate_silver_task(**context) -> None:
-    result = context["task_instance"].xcom_pull(task_ids="bronze_to_silver")
+    result = context["task_instance"].xcom_pull(task_ids="combine_silver")
     validate_silver(context["params"]["silver_dir"], result["year_month"])

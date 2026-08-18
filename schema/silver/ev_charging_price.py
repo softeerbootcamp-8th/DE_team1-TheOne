@@ -7,12 +7,16 @@ EIA 전력 통계는 **월 단위 ¢/kWh** 인데 여기는 **일별 $/kWh** 입
 생산자는 `main/aws_lambda/functions/eia_electricity_price_bronze_to_silver`,
 소비자는 연료비 통합 단계입니다.
 
-계보 컬럼을 두지 않는 이유
-------------------------
-EIA 가 최근 약 17개월을 `Preliminary` 로 두고 나중에 `Final` 로 바꿉니다. 그 상태와
-수집 시점은 **통합 단계 산출물**(`gas_ev_price`)이 이미 `bronze_collected_date`·
-`ev_price_status` 로 싣고 있어, 여기서 또 들고 있으면 같은 사실이 두 곳에 남습니다.
-이 표는 "그 날의 충전 단가" 하나만 책임집니다.
+계보 컬럼
+--------
+`ev_price_status` 는 EIA 가 그 달을 `Preliminary` 로 뒀는지 `Final` 로 확정했는지입니다
+(최근 약 17개월이 잠정). `bronze_collected_date` 는 어느 수집분으로 만들었는지고요.
+같은 달을 다시 만들었을 때 숫자가 달라지는 원인이 이 둘이라, 남겨두지 않으면
+"지난번과 왜 다르지" 에 답할 수 없습니다.
+
+통합 단계가 아니라 **여기** 두는 이유는, 두 값이 통합의 성질이 아니라 전력 원천의
+성질이기 때문입니다 — 휘발유 원본에는 상태 표시가 아예 없고(주간 소매가에 날짜·가격
+두 컬럼뿐), 수집일도 두 원천이 서로 다릅니다 (#518).
 """
 
 import pyarrow as pa
@@ -21,5 +25,7 @@ SCHEMA = pa.schema(
     [
         ("date", pa.date32()),
         ("ev_price", pa.float64()),
+        ("bronze_collected_date", pa.date32()),
+        ("ev_price_status", pa.string()),
     ]
 )

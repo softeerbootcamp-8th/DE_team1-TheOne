@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from sub.aws_lambda.functions.eia_fuel_price_bronze_to_silver.loader import (
+from main.aws_lambda.functions.eia_fuel_price_silver.loader import (
     SCHEMA as FUEL_PRICE_SILVER_SCHEMA,
     EiaFuelPriceSilverLoader,
 )

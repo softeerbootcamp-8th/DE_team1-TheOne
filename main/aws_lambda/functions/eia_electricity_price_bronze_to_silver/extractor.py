@@ -13,7 +13,7 @@ import logging
 
 from pipeline_core.extractor import Extractor
 
-from sub.aws_lambda.common import eia_fuel_price_layout as layout
+from main.aws_lambda.common import eia_fuel_price_layout as layout
 
 logger = logging.getLogger(__name__)
 
