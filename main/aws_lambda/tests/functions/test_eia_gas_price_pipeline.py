@@ -77,6 +77,14 @@ def test_월_전체를_일별로_펼친다():
     assert rows[-1]["gas_price"] == 3.2
 
 
+def test_어느_수집분으로_만들었는지_모든_행에_남는다():
+    """같은 달을 다시 만들면 숫자가 달라질 수 있습니다 — EIA 가 과거 값을 개정하기
+    때문입니다. 수집분을 남겨두지 않으면 그 차이를 설명할 수 없습니다 (#518)."""
+    rows = build_daily_prices("2025-05", _xls(WEEKLY), COLLECTED)
+
+    assert {row["bronze_collected_date"] for row in rows} == {COLLECTED}
+
+
 def test_대상월_이전_관측치가_없으면_실패한다():
     with pytest.raises(ValueError, match="이전의 휘발유 관측치가 없습니다"):
         build_daily_prices("2025-03", _xls(WEEKLY), COLLECTED)

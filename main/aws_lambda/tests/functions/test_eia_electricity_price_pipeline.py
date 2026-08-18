@@ -72,6 +72,16 @@ def test_배수를_바꾸면_단가가_따라_바뀐다():
     assert rows[0]["ev_price"] == pytest.approx(0.20)
 
 
+@pytest.mark.parametrize("status", ["Final", "Preliminary"])
+def test_수집분과_확정상태가_모든_행에_남는다(status):
+    """EIA 가 최근 약 17개월을 Preliminary 로 두고 나중에 Final 로 바꿉니다. 같은 달을
+    다시 만들었을 때 숫자가 달라지는 원인이라 결과에 남깁니다 (#518)."""
+    rows = build_daily_prices("2025-05", _xlsx(ROWS, status=status), COLLECTED)
+
+    assert {row["bronze_collected_date"] for row in rows} == {COLLECTED}
+    assert {row["ev_price_status"] for row in rows} == {status}
+
+
 def test_대상_월이_이력에_없으면_보유구간을_알려주며_실패한다():
     with pytest.raises(ValueError, match="2025-07 이 없습니다"):
         build_daily_prices("2025-07", _xlsx(ROWS), COLLECTED)
@@ -108,3 +118,55 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
 def test_빈_결과는_적재를_거부한다(tmp_path):
     with pytest.raises(ValueError, match="적재할"):
         EiaElectricityPriceSilverLoader(str(tmp_path), "2025-05").write([])
+
+
+# --- Bronze 파티션 선택 규칙 ------------------------------------------------
+#
+# 통합 단계가 Bronze 를 직접 읽던 시절 그쪽 테스트에 있던 것들입니다 (#518 로 통합이
+# CLEAN Silver 만 읽게 되면서 여기로 옮겼습니다). 이 규칙을 실제로 쓰는 건 이제
+# 전력 CLEAN 파이프라인의 extractor 입니다.
+
+from main.aws_lambda.common import eia_fuel_price_layout as layout  # noqa: E402
+
+
+def _write_bronze(base, collected: date, body: bytes) -> None:
+    path = layout.electricity_bronze_file(str(base), collected)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+
+
+def test_가장_최신_수집분을_고른다(tmp_path):
+    """대상 월 이하로 고르면 안 되는 이유를 고정합니다.
+
+    전력 통계는 약 3개월 늦게 공개됩니다. 2025-05 값은 2025-05 에 받은 파일에는 아직
+    없고 2026-08 에 받은 파일에 있습니다. "대상 월 이하" 로 고르면 구조적으로 없는
+    파일을 집습니다.
+    """
+    bronze = tmp_path / "bronze"
+    _write_bronze(bronze, date(2025, 5, 10), _xlsx([(2025, 1, "NY", 20.0)]))
+    _write_bronze(bronze, COLLECTED, _xlsx(ROWS))
+
+    collected_date, partition = layout.newest_bronze_partition(
+        str(bronze), layout.ELECTRICITY_DATASET
+    )
+
+    assert collected_date == COLLECTED
+    assert partition.name == f"collected_date={COLLECTED.isoformat()}"
+
+
+def test_같은_내용을_다시_받으면_새_파티션을_만들지_않는다(tmp_path):
+    """전력은 3개월에 한 번만 갱신되므로 월 1회 수집분 대부분이 바이트까지 같습니다.
+
+    같은 것을 쌓지 않으면 파티션 개수가 "언제 실제로 바뀌었는지" 를 말해줍니다.
+    """
+    from main.aws_lambda.functions.eia_electricity_price_raw_to_bronze.loader import (
+        EiaElectricityPriceBronzeLoader,
+    )
+
+    bronze = tmp_path / "bronze"
+    body = _xlsx(ROWS)
+    first = EiaElectricityPriceBronzeLoader(str(bronze), date(2026, 8, 1)).write({"body": body})
+    same = EiaElectricityPriceBronzeLoader(str(bronze), date(2026, 9, 1)).write({"body": body})
+
+    assert same.location == first.location
+    assert len(layout.bronze_partitions(str(bronze), layout.ELECTRICITY_DATASET)) == 1
