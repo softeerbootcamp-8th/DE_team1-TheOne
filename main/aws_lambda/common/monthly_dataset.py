@@ -3,6 +3,7 @@
 import hashlib
 import json
 import logging
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +14,7 @@ import pyarrow.parquet as pq
 import requests
 from pipeline_core.extractor import Extractor
 from pipeline_core.loader import Loader, WriteResult
+from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.atomic_write import atomic_write
 
@@ -240,3 +242,34 @@ class SyntheticDatasetLoader(Loader):
             raise ValueError("같은 월의 기존 marker가 수집 응답과 다릅니다")
         if not self.path.is_file() or _sha256_file(self.path) != expected_marker["sha256"]:
             raise ValueError(f"완료된 Bronze 파일이 없거나 checksum이 다릅니다: {self.path}")
+
+
+def collect_monthly_dataset(event: dict, *, dataset: str, dataset_dir: str) -> dict:
+    """월별 API 데이터셋 하나를 Bronze에 적재하고 수집 결과를 돌려줍니다.
+
+    돌려주는 키들은 Airflow 검증 태스크(``validate_synthetic_bronze``)가 그대로
+    읽는 계약입니다. 데이터셋마다 핸들러를 복사하면 이 계약이 조용히 갈라지므로
+    한 곳에서만 만듭니다.
+    """
+    api_base_url = event.get("api_base_url") or os.getenv("SYNTHETIC_SOURCE_API_URL")
+    if not api_base_url:
+        raise ValueError("api_base_url이 누락되었습니다")
+    base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
+    loader = SyntheticDatasetLoader(base_dir, dataset, dataset_dir)
+    result = Pipeline(
+        SyntheticDatasetExtractor(api_base_url, dataset, requested_year_month(event)),
+        loader,
+    ).run()
+    path = Path(result.write_result.location)
+    payload = loader.payload
+    return {
+        "year_month": payload["year_month"],
+        "year": payload["year_month"][:4],
+        "month": payload["year_month"][5:],
+        "row_count": result.write_result.row_count,
+        "locations": [str(path)],
+        "marker_location": str(loader.marker_path),
+        "sha256": payload["metadata"]["sha256"],
+        "file_size_bytes": path.stat().st_size,
+        "already_collected": loader.already_collected,
+    }

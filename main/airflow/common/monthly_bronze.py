@@ -1,12 +1,22 @@
-"""월별 제공 데이터의 단일 Bronze 파일을 검증합니다."""
+"""월별 제공 데이터의 단일 Bronze 파일을 검증합니다.
+
+같은 원천 API에서 데이터셋을 하나씩 받아 오므로, 수집 태스크들이 공유하는
+기본 주소와 Bronze 루트도 여기서 한 번만 정합니다.
+"""
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
+from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import parse_handler_result, parse_year_month
+
+
+DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_BRONZE_DIR = os.getenv("BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze"))
 
 
 def _sha256(path: Path) -> str:

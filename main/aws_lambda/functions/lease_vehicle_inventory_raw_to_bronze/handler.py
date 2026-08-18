@@ -1,4 +1,4 @@
-"""기사 데이터를 Bronze에 적재합니다."""
+"""리스 업체 보유 차량 데이터를 Bronze에 적재합니다."""
 
 import json
 
@@ -8,7 +8,7 @@ from main.aws_lambda.common.monthly_dataset import collect_monthly_dataset
 
 configure_lambda_logging()
 
-DATASET = "driver_vehicle_leases"
+DATASET = "lease_vehicle_inventory"
 
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:

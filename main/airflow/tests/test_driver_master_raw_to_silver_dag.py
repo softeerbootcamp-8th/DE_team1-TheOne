@@ -40,12 +40,13 @@ def _rows():
 def test_DAG는_HVFHV와_분리되어_기사데이터만_Silver까지_처리한다():
     assert DAG.dag_id == "driver_master_raw_to_silver_pipeline"
     assert DAG.schedule == "0 0 10 * *"
-    assert set(DAG.task_ids) == {
+    # 보유 차량 분기는 같은 DAG의 다른 branch 입니다 (계약은 그쪽 테스트에서 봅니다).
+    assert {
         "raw_to_bronze",
         "validate_bronze",
         "bronze_to_silver",
         "validate_silver",
-    }
+    } <= set(DAG.task_ids)
     assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
     assert DAG.get_task("validate_bronze").downstream_task_ids == {
         "bronze_to_silver",
