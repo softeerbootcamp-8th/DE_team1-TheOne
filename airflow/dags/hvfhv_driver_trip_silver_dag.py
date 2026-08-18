@@ -57,7 +57,6 @@ def driver_trip_pipeline():
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
             + "--output_path {{ params.output_path }}"
             + " --year_month {{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }}"
-            + " --snapshot_date {{ task_instance.xcom_pull(task_ids='validate_inputs')['snapshot_date'] }}"
         ),
         env={
             **os.environ,
