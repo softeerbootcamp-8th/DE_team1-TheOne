@@ -183,7 +183,7 @@ pipeline-core = { path = "../libs/pipeline_core" }
 있습니다.** 이럴 땐 아래처럼 명시적으로 재설치하세요:
 
 ```bash
-cd main/lambda   # 또는 spark
+cd main/aws_lambda   # 또는 spark
 uv sync --reinstall-package pipeline-core
 ```
 
@@ -191,13 +191,13 @@ uv sync --reinstall-package pipeline-core
 
 `uv.lock` 은 파이썬 패키지만 고정합니다. **시스템 바이너리는 못 잠급니다.**
 
-`sub/lambda_runtime/functions/vehicle_catalog_raw_to_bronze` 은 렌탈 업체 사이트의 가격이
+`sub/aws_lambda/functions/vehicle_catalog_raw_to_bronze` 은 렌탈 업체 사이트의 가격이
 이미지 안에만 있어서 OCR(tesseract)로 읽습니다. `pytesseract` 는 이 바이너리를
 호출하는 래퍼일 뿐이라, 바이너리가 없으면 실행 시점에 실패합니다.
 
 | | 고정되는 곳 | 어떻게 |
 |---|---|---|
-| `pytesseract`, `pillow` | `main/lambda/uv.lock` | `uv lock` 이 자동 |
+| `pytesseract`, `pillow` | `main/aws_lambda/uv.lock` | `uv lock` 이 자동 |
 | **tesseract 바이너리** | 없음 (시스템 패키지) | **`make sync` 가 챙김** |
 
 `make sync` 가 `tesseract` 타깃을 먼저 부릅니다. 없으면 macOS 는 brew,
@@ -241,8 +241,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from functions.common import vehicle_catalog_layout as layout
-from sub.lambda_runtime.functions.vehicle_catalog_raw_to_bronze.extractor import VehicleCatalogCardsExtractor, row_from_snapshot
-from sub.lambda_runtime.functions.vehicle_catalog_raw_to_bronze.loader import VehicleCatalogBronzeLoader
+from sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.extractor import VehicleCatalogCardsExtractor, row_from_snapshot
+from sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.loader import VehicleCatalogBronzeLoader
 
 snapshot = Path("data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html")
 timestamp = snapshot.parent.name.removeprefix("collected_at=")

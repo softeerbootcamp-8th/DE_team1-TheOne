@@ -16,13 +16,13 @@ import pytest
 from dags import lyft_eligible_vehicles_raw_to_silver_dag as dag_module
 
 layout = importlib.import_module(
-    "shared.lambda_runtime.common.lyft_eligible_vehicles_layout"
+    "sub.aws_lambda.common.lyft_eligible_vehicles_layout"
 )
 bronze_loader = importlib.import_module(
-    "sub.lambda_runtime.functions.lyft_eligible_vehicles_raw_to_bronze.loader"
+    "sub.aws_lambda.functions.lyft_eligible_vehicles_raw_to_bronze.loader"
 )
 silver_loader = importlib.import_module(
-    "sub.lambda_runtime.functions.lyft_eligible_vehicles_bronze_to_silver.loader"
+    "sub.aws_lambda.functions.lyft_eligible_vehicles_bronze_to_silver.loader"
 )
 
 DAG = dag_module.lyft_eligible_vehicles_dag

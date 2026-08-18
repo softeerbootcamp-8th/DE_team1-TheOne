@@ -24,13 +24,13 @@
 
 | 데이터셋 | 한 행 | 파티션 | 규모 | 생성 |
 | --- | --- | --- | --- | --- |
-| `customer` | 고객 1명 | `snapshot_date` | 2,000행 | [snapshot.py](../sub/scripts/synthetic_company_snapshot/snapshot.py) |
+| `customer` | 고객 1명 | `snapshot_date` | 2,000행 | [snapshot.py](../sub/generators/synthetic_company_snapshot/snapshot.py) |
 | `taxi` | 차량 1대 | `snapshot_date` | 2,000행 | 〃 |
 | `lease_contract` | 계약 1건 | `snapshot_date` | 2,000행 | 〃 |
 
 `snapshot_date` 는 "그 시점의 회사 상태"를 뜻합니다.
 리스 시작일이 `[lease_start_min, snapshot_date]` 에서 추첨되므로, 이 값이 곧 **생성 가능한 첫 달**입니다.
-기본값은 [snapshot.py](../sub/scripts/synthetic_company_snapshot/snapshot.py) 의 `DEFAULT_SNAPSHOT_DATE` 한 곳이 소유합니다.
+기본값은 [snapshot.py](../sub/generators/synthetic_company_snapshot/snapshot.py) 의 `DEFAULT_SNAPSHOT_DATE` 한 곳이 소유합니다.
 
 ### 1.2 릴리스 (API 공개)
 

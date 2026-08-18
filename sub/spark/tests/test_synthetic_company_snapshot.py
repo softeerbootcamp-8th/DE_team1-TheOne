@@ -16,7 +16,7 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from sub.scripts.synthetic_company_snapshot.snapshot import (
+from sub.generators.synthetic_company_snapshot.snapshot import (
     DEFAULT_LEASE_START_MIN,
     DEFAULT_SNAPSHOT_DATE,
     build_company_snapshot,
