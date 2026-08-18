@@ -5,7 +5,7 @@ from datetime import date
 
 from pipeline_core.loader import Loader, WriteResult
 
-from sub.aws_lambda.common import eia_fuel_price_layout as layout
+from main.aws_lambda.common import eia_fuel_price_layout as layout
 from shared.aws_lambda.common.atomic_write import atomic_write
 from sub.aws_lambda.common.s3_loader import S3Loader, S3Object
 

@@ -147,7 +147,7 @@ def test_연료비_파일이_없으면_대상월을_알려주며_실패한다(tm
     _vehicle_master(tmp_path, ["2026-05-18"])
     _gas_ev_price(tmp_path, ["2026-08"])
 
-    with pytest.raises(FileNotFoundError, match="eia_fuel_price_bronze_to_silver_pipeline"):
+    with pytest.raises(FileNotFoundError, match="eia_fuel_price_silver_pipeline"):
         dag_module.resolve_input_paths("2026-05", _params(tmp_path))
 
 

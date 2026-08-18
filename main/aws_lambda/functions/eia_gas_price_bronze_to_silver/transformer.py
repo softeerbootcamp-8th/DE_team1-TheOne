@@ -84,7 +84,14 @@ def build_daily_prices(
 
     days = month_days(year_month)
     prices = gas_price_for(days, parse_gas_weekly(gas_body))
-    rows = [{"date": day, "gas_price": prices[day]} for day in days]
+    rows = [
+        {
+            "date": day,
+            "gas_price": prices[day],
+            "bronze_collected_date": bronze_collected_date,
+        }
+        for day in days
+    ]
     validate(rows, year_month)
 
     logger.info(

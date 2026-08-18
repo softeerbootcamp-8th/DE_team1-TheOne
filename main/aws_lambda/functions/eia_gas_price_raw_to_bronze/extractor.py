@@ -4,7 +4,7 @@
 2000년부터의 주간 이력이 통째로 들어 있습니다. 그래서 한 번 받으면 어느 과거 달이든
 Silver 를 만들 수 있습니다.
 
-원본 그대로 저장합니다 — 파싱은 `eia_fuel_price_bronze_to_silver` 의 몫입니다.
+원본 그대로 저장합니다 — 파싱은 `eia_gas_price_bronze_to_silver` 의 몫입니다.
 Bronze 는 "EIA 가 이렇게 줬다"를 보관하는 계층이고, EIA 는 과거 값을 개정하므로
 그때 받은 파일이 남아 있어야 결과 차이를 되짚을 수 있습니다.
 """
@@ -14,7 +14,7 @@ import logging
 import requests
 from pipeline_core.extractor import Extractor
 
-from sub.aws_lambda.common.eia_fuel_price_layout import GAS_MIN_BYTES as MIN_BYTES
+from main.aws_lambda.common.eia_fuel_price_layout import GAS_MIN_BYTES as MIN_BYTES
 
 logger = logging.getLogger(__name__)
 

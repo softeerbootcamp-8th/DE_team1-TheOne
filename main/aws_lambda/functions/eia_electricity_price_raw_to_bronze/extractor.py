@@ -4,7 +4,7 @@
 
 주의 — 이 값은 **전력 소매요금**이지 공공 충전소 요금이 아닙니다. 둘은 서로 다른
 것을 재고 실측상 2배쯤 차이 납니다(EIA $0.207 vs NLR $0.417). 충전 단가로 쓰려면
-마진 배수 보정이 필요하고, 그 처리는 `eia_fuel_price_bronze_to_silver` 에 있습니다.
+마진 배수 보정이 필요하고, 그 처리는 `eia_electricity_price_bronze_to_silver` 에 있습니다.
 
 `Electric Power Monthly` 의 Table 5.6.B 는 **연초 누적(YTD)** 이라 이력이 아닙니다.
 이력이 필요하면 반드시 이 EIA-861M 파일을 써야 합니다.
@@ -15,7 +15,7 @@ import logging
 import requests
 from pipeline_core.extractor import Extractor
 
-from sub.aws_lambda.common.eia_fuel_price_layout import ELECTRICITY_MIN_BYTES as MIN_BYTES
+from main.aws_lambda.common.eia_fuel_price_layout import ELECTRICITY_MIN_BYTES as MIN_BYTES
 
 logger = logging.getLogger(__name__)
 

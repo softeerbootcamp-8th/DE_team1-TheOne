@@ -116,7 +116,15 @@ def build_daily_prices(
     cents, status = electricity[year_month]
     ev_price = cents / CENTS_PER_DOLLAR * markup
 
-    rows = [{"date": day, "ev_price": ev_price} for day in month_days(year_month)]
+    rows = [
+        {
+            "date": day,
+            "ev_price": ev_price,
+            "bronze_collected_date": bronze_collected_date,
+            "ev_price_status": status,
+        }
+        for day in month_days(year_month)
+    ]
     validate(rows, year_month)
 
     logger.info(

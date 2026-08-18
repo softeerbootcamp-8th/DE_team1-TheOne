@@ -7,10 +7,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from sub.aws_lambda.functions.eia_fuel_price_bronze_to_silver.loader import (
-    SCHEMA as FUEL_PRICE_SILVER_SCHEMA,
-    EiaFuelPriceSilverLoader,
-)
 from sub.aws_lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.loader import (
     SCHEMA as SPECS_SILVER_SCHEMA,
     VehicleSpecsSilverLoader,
@@ -125,13 +121,6 @@ def test_Raw_Bronze_교체실패는_기존파일을_보존하고_tmp를_정리�
     assert not [path for path in tmp_path.rglob("*") if path.suffix == ".tmp"]
 
 
-def _fuel_price_silver(root):
-    return (
-        EiaFuelPriceSilverLoader(str(root), "2026-08"),
-        [_row(FUEL_PRICE_SILVER_SCHEMA)],
-    )
-
-
 def _specs_silver(root):
     row = _row(SPECS_SILVER_SCHEMA)
     row.update({"source": "fueleconomy.gov", "collected_at": COLLECTED_AT})
@@ -165,7 +154,6 @@ def _master_silver(root):
 @pytest.mark.parametrize(
     "factory",
     [
-        _fuel_price_silver,
         _specs_silver,
         _lyft_silver,
         _uber_silver,

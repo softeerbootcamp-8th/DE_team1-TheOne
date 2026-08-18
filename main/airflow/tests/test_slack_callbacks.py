@@ -27,9 +27,7 @@ DAG_MODULES = {
     "dags.eia_electricity_price_bronze_to_silver_dag": (
         "eia_electricity_price_bronze_to_silver_dag"
     ),
-    "dags.eia_fuel_price_bronze_to_silver_dag": (
-        "eia_fuel_price_bronze_to_silver_dag"
-    ),
+    "dags.eia_fuel_price_silver_dag": "eia_fuel_price_silver_dag",
     "dags.eia_gas_price_raw_to_bronze_dag": "eia_gas_price_raw_to_bronze_dag",
     "dags.eia_gas_price_bronze_to_silver_dag": (
         "eia_gas_price_bronze_to_silver_dag"
