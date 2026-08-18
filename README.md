@@ -41,6 +41,18 @@
 합성 데이터 생성을 위한 데이터 파이프라인 분리
 ![System Architecture](architecture.png)
 
+코드는 데이터 프로덕트 책임에 따라 분리합니다.
+
+```text
+main/    Published 원천 소비, 운행 분석, Gold, 대시보드
+sub/       외부·가상 원천 수집, 합성, 정제, Published API 발행
+shared/          두 제품이 함께 쓰는 최소 Airflow/Spark/Lambda 기술 계약
+schema/          제품 간 데이터 계약
+libs/            런타임 중립 공통 라이브러리
+```
+
+`main`는 `sub`의 내부 파일을 직접 참조하지 않고 Published API를 원천으로 소비합니다.
+
 ## Team Rule
 
 ### 리뷰 검토 Git 훅

@@ -15,19 +15,23 @@ libs/pipeline_core/                # 외부 의존성이 없는 공통 인터페
   tests/
     test_interfaces.py, test_pipeline.py
 
-lambda/
+main/lambda/
   common/loaders.py                # LocalParquetLoader(Loader)
   tests/common/test_loaders.py
   pyproject.toml                   # pipeline-core 로컬 경로 의존성
 
-spark/
+shared/spark/
   common/session.py                # get_or_create_spark_session(app_name)
   common/io.py                     # SparkParquetExtractor, SparkParquetLoader
+
+main/spark/
   tests/common/test_session.py, test_io.py
   pyproject.toml                   # pipeline-core 로컬 경로 의존성
 
-airflow/
-  dags/common/defaults.py          # DEFAULT_ARGS, notify_slack_on_failure()
+shared/airflow/
+  common/                          # 검증·알림·프로젝트 경로
+
+main/airflow/
   tests/dags/common/test_defaults.py
   pyproject.toml                   # pytest 개발 의존성
 ```
@@ -78,7 +82,7 @@ pipeline-core = { path = "../libs/pipeline_core" }
 
 - `S3ParquetLoader`, `PostgresLoader`: 버킷 구조, 자격증명, 연결 방식이 정해진 뒤 구현합니다. 기존 `Loader` 계약을 따르면 현재 구현체와 교체할 수 있습니다.
 - Airflow Operator: 실제 DAG가 없으므로 Lambda 호출이나 EMR Step 제출 Operator는 만들지 않았습니다. 현재는 공통 `default_args`와 Slack 실패 알림만 제공합니다.
-- Docker 빌드 컨텍스트: 현재 `lambda/Dockerfile`, `spark/Dockerfile`, `Makefile`은 각 런타임 디렉터리를 빌드 컨텍스트로 사용합니다. `libs/` 경로 의존성을 포함하려면 배포 전에 빌드 컨텍스트를 저장소 루트로 변경해야 합니다.
+- Docker 빌드 컨텍스트: `main/lambda/Dockerfile`, `main/spark/Dockerfile`, `Makefile`은 저장소 루트를 빌드 컨텍스트로 사용해 `libs/`를 포함합니다.
 
 > **주의:** Docker 빌드 컨텍스트는 아직 수정하지 않았습니다. 현재 상태에서 `make build`를 실행하면 Lambda와 Spark 이미지 빌드가 실패합니다.
 
@@ -131,7 +135,7 @@ def lambda_handler(event, context):
 테스트는 다음 명령으로 실행합니다.
 
 ```bash
-cd lambda
+cd main/lambda
 uv run pytest
 ```
 
@@ -140,7 +144,7 @@ uv run pytest
 다음은 Bronze의 `example_price` 데이터를 정제해 Silver에 적재하는 가상 예시입니다.
 
 ```python
-# spark/jobs/bronze_to_silver/example_price/transformer.py
+# main/spark/jobs/bronze_to_silver/example_price/transformer.py
 from pipeline_core.transformer import Transformer
 
 
@@ -150,10 +154,10 @@ class ExamplePriceCleanTransformer(Transformer):
 ```
 
 ```python
-# spark/jobs/bronze_to_silver/example_price/job.py
+# main/spark/jobs/bronze_to_silver/example_price/job.py
 from pipeline_core.pipeline import Pipeline
-from common.io import SparkParquetExtractor, SparkParquetLoader
-from common.session import get_or_create_spark_session
+from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
+from shared.spark.common.session import get_or_create_spark_session
 from .transformer import ExamplePriceCleanTransformer
 
 
@@ -176,7 +180,7 @@ Bronze→Silver와 Silver→Gold의 구조는 같습니다. 데이터셋별로 `
 
 ```bash
 brew install openjdk@17
-cd spark
+cd main/spark
 JAVA_HOME=/opt/homebrew/opt/openjdk@17 uv run pytest
 ```
 
@@ -208,7 +212,7 @@ Slack 알림을 사용하려면 Airflow 컨테이너에 `SLACK_WEBHOOK_URL` 환�
 `libs/pipeline_core`를 수정한 뒤에는 `uv sync`만으로 변경 사항이 반영되지 않을 수 있습니다. 다음과 같이 패키지를 명시적으로 다시 설치하세요.
 
 ```bash
-cd lambda  # 또는 spark
+cd main/lambda  # 또는 spark
 uv sync --reinstall-package pipeline-core
 ```
 
@@ -218,7 +222,7 @@ uv sync --reinstall-package pipeline-core
 
 ```bash
 cd libs/pipeline_core && uv run pytest  # 9 tests
-cd lambda && uv run pytest             # 2 tests
-cd spark && uv run pytest              # 3 tests, Java 17 필요
-cd airflow && uv run pytest            # 3 tests
+cd main/lambda && uv run pytest             # 2 tests
+cd main/spark && uv run pytest              # 3 tests, Java 17 필요
+cd main/airflow && uv run pytest            # 3 tests
 ```

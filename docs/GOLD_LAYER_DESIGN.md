@@ -4,9 +4,9 @@
 
 ## 현재 재료
 
-- **운행**: HVFHV 트립 단위 실데이터 (`spark/jobs/bronze_to_silver/hvfhv/transformer.py` — 거리/시간/driver_pay/tips/zone/platform, `taxi_id`·`driver_id`는 매핑으로 채워짐)
+- **운행**: HVFHV 트립 단위 실데이터 (`main/spark/jobs/bronze_to_silver/hvfhv/transformer.py` — 거리/시간/driver_pay/tips/zone/platform, `taxi_id`·`driver_id`는 매핑으로 채워짐)
 - **기사**: `driver_master` (성향 — 주요 거리대·시간대·요일, 근무/휴식/공차 min-max, joined_at/churned_at)
-- **회사 원장**: `customer` / `taxi` / `lease_contract` (`scripts/synthetic_company_snapshot/snapshot.py` — 차량, 주간 리스료, 등급 자격, 계약일)
+- **회사 원장**: `customer` / `taxi` / `lease_contract` (`sub/sub/scripts/synthetic_company_snapshot/snapshot.py` — 차량, 주간 리스료, 등급 자격, 계약일)
 - **차량 기준정보**: 카탈로그(주간 렌트료) + fueleconomy 제원(`combined_mpg`, `kwh_100mi`, `range_miles`, `atv_type`) + Uber/Lyft 배차 자격(`product`, `min_year`)
 - **에너지 단가**: 휘발유 $/gal, EV $/kWh
 
