@@ -48,7 +48,7 @@ def main(args_list: list[str] | None = None) -> WriteResult:
         required=True,
         help="쓴 리스 스냅샷 시점 (YYYY-MM-DD). 결과에 계보로 실립니다",
     )
-    parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
+    parser.add_argument("--spark_memory", default="6g", help="Spark driver memory")
     args = parser.parse_args(args_list)
 
     spark = get_or_create_spark_session(

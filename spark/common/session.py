@@ -39,12 +39,12 @@ def _pin_process_time_zone() -> None:
 
 
 def get_or_create_spark_session(app_name: str, driver_memory: Optional[str] = None) -> SparkSession:
-    """local[4] 세션 생성. driver_memory 는 프로세스의 첫 세션 생성 전에만 적용됨(JVM 힙은 이후 재조정 불가)."""
+    """local[3] 세션 생성. driver_memory 는 프로세스의 첫 세션 생성 전에만 적용됨(JVM 힙은 이후 재조정 불가)."""
     _pin_process_time_zone()
 
     builder = (
         SparkSession.builder.appName(app_name)
-        .master("local[4]")
+        .master("local[3]")
         .config("spark.driver.bindAddress", "127.0.0.1")
         # bindAddress 만 두면 **듣는 주소와 알리는 주소가 갈립니다.** driver.host 는
         # 미설정 시 hostname 으로 정해지는데, 컨테이너 안에서는 그게 172.18.0.x 라
