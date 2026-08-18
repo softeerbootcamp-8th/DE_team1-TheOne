@@ -1,4 +1,4 @@
-"""가짜 기사-운행 월별 릴리스를 내려주는 작은 읽기 전용 HTTP API."""
+"""가짜 기사·운행·보유 차량 월별 릴리스를 내려주는 HTTP API."""
 
 from __future__ import annotations
 
@@ -10,8 +10,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlsplit
 
-
-DATASETS = {"hvfhv_taxi_trips", "driver_vehicle_leases"}
+DATASETS = {
+    "hvfhv_taxi_trips",
+    "driver_vehicle_leases",
+    "lease_vehicle_inventory",
+}
 DATA_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})$")
 DATASET_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$")
 

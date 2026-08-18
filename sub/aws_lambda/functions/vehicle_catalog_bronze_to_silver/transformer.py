@@ -81,6 +81,9 @@ class VehicleCatalogSilverTransformer(Transformer):
                 source_url = str(row.get("source_url") or "").strip()
                 if not source_url:
                     raise ValueError("source_url이 비어 있습니다")
+                image_url = str(row.get("image_url") or "").strip()
+                if not image_url:
+                    raise ValueError("image_url이 비어 있습니다")
 
                 silver.append(
                     {
@@ -89,6 +92,7 @@ class VehicleCatalogSilverTransformer(Transformer):
                         "make_key": make_key,
                         "model_key": model_key,
                         "weekly_price_usd": _weekly_price(row.get("price_usd")),
+                        "image_url": image_url,
                         # 어느 Bronze 파일에서 나왔는지. 같은 날 여러 번 수집하면
                         # 파일이 여러 개라 파티션 경로만으로는 특정이 안 됩니다.
                         "bronze_path": bronze_path,

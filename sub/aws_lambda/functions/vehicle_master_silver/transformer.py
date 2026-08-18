@@ -287,6 +287,7 @@ class VehicleMasterSilverTransformer(Transformer):
             "product": product.get("product"),
             "min_year": product.get("min_year"),
             "weekly_price_usd": vehicle.get("weekly_price_usd"),
+            "image_url": vehicle.get("image_url"),
             "spec_match_level": match_level,
             # 후보 트림 수. 1 이면 값이 확정이고, 여러 개면 아래 범위만큼 불확실합니다.
             "spec_trim_count": len(specs),

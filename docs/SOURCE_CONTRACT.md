@@ -23,7 +23,8 @@
   "seed": 42,
   "datasets": {
     "hvfhv_taxi_trips":      { "file": "...", "row_count": 20405666, "sha256": "..." },
-    "driver_vehicle_leases": { "file": "...", "row_count": 2000,     "sha256": "..." }
+    "driver_vehicle_leases":   { "file": "...", "row_count": 2000, "sha256": "..." },
+    "lease_vehicle_inventory": { "file": "...", "row_count": 12,   "sha256": "..." }
   }
 }
 ```

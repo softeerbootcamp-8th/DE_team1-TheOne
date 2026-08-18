@@ -12,6 +12,7 @@ SCHEMA = pa.schema(
         ("make_key", pa.string()),  # 조인 키 (대문자 정규화)
         ("model_key", pa.string()),  # 조인 키 (대문자 정규화)
         ("weekly_price_usd", pa.float64()),
+        ("image_url", pa.string()),  # 보유 차량 API 표시용 원천 이미지
         ("bronze_path", pa.string()),  # 계보
     ]
 )

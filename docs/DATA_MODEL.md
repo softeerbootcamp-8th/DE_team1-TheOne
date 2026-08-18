@@ -38,6 +38,7 @@
 | --- | --- | --- | --- | --- |
 | `hvfhv_taxi_trips` | 운행 1건 | `year_month` | 월 2,040만 행 | [schema/bronze/hvfhv.py](../schema/bronze/hvfhv.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [schema/silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
+| `lease_vehicle_inventory` | 차종·연식별 재고 | `year_month` | 차종 수준 | [schema/silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 
 릴리스마다 `manifest.json` 이 함께 나갑니다.
 
@@ -48,7 +49,8 @@
   "seed": 42,
   "datasets": {
     "hvfhv_taxi_trips":      { "file": "...", "row_count": 20405666, "sha256": "..." },
-    "driver_vehicle_leases": { "file": "...", "row_count": 2000,     "sha256": "..." }
+    "driver_vehicle_leases":   { "file": "...", "row_count": 2000, "sha256": "..." },
+    "lease_vehicle_inventory": { "file": "...", "row_count": 12,   "sha256": "..." }
   }
 }
 ```

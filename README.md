@@ -205,6 +205,7 @@ data/source/synthetic_driver_trip_api/  ──HTTP──▶  data/bronze/
   └ year_month=YYYY-MM/                              └ 매니페스트 대조 후 적재
       ├ hvfhv_taxi_trips.parquet
       ├ driver_vehicle_leases.parquet
+      ├ lease_vehicle_inventory.parquet
       └ manifest.json
 ```
 
@@ -228,7 +229,7 @@ libs/      런타임 중립 공통 라이브러리
 
 | 항목 | 아키텍처 | 현재 코드 |
 | --- | --- | --- |
-| API 제공 데이터셋 | 3종 | **2종** — 보유 차량은 메인 파이프라인이 직접 크롤링 |
+| API 제공 데이터셋 | 3종 | **3종** — 메인 파이프라인 수집 연결은 #515에서 진행 |
 | 운행 기록 수집 | 일 1회 시도 | **월 1회** (10일 00:00) |
 | 운행 × 리스 조인 위치 | **Gold** | **Silver** — `hvfhv_driver_trip` 중간 테이블이 남아 있음 |
 | 저장 포맷·서빙 | Iceberg · RDS · Glue Catalog | Parquet 직접 적재 · Gold 는 CSV 파일 |
