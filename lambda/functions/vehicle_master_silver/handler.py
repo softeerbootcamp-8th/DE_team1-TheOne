@@ -13,8 +13,8 @@ from datetime import datetime, timezone
 from pipeline_core.pipeline import Pipeline
 
 from ..common.logging_setup import configure_lambda_logging
-from .extractor import VehicleMasterSilverExtractor
-from .loader import VehicleMasterSilverLoader
+from .extractor import build_extractor
+from .loader import build_loader
 from .transformer import VehicleMasterSilverTransformer
 
 configure_lambda_logging()
@@ -27,10 +27,12 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         or os.getenv("COLLECTED_DATE")
         or datetime.now(timezone.utc).date().isoformat()
     )
+    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
     silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
+    bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
 
-    extractor = VehicleMasterSilverExtractor(silver_dir, as_of=collected_date)
-    loader = VehicleMasterSilverLoader(silver_dir, collected_date=collected_date)
+    extractor = build_extractor(storage, silver_dir, collected_date, bucket=bucket)
+    loader = build_loader(storage, silver_dir, collected_date, bucket=bucket)
     result = Pipeline(
         extractor,
         loader,

@@ -45,6 +45,14 @@ def silver_file(base_dir: str, collected_date: date, city: str) -> Path:
     return city_partition(base_dir, collected_date.isoformat(), city) / SILVER_FILE_NAME
 
 
+def silver_key(collected_date: date, city: str) -> str:
+    """S3 silver key. silver_file()과 같은 파티션 규칙, base_dir 대신 silver/ prefix."""
+    return (
+        f"silver/{DATASET}/{DATE_PARTITION_KEY}={collected_date.isoformat()}/"
+        f"{CITY_PARTITION_KEY}={city}/{SILVER_FILE_NAME}"
+    )
+
+
 def latest_date_partition(dataset_dir: Path, as_of: date) -> tuple[date, Path]:
     """`as_of` 이하 중 가장 최신인 `collected_date=` 파티션을 고릅니다.
 
@@ -78,3 +86,30 @@ def latest_date_partition(dataset_dir: Path, as_of: date) -> tuple[date, Path]:
             f"{as_of.isoformat()} 이전의 Silver 파티션이 없습니다: {dataset_dir}"
         )
     return max(candidates, key=lambda item: item[0])
+
+
+def latest_date_from_keys(keys: list[str], as_of: date, dataset_dir: str) -> date:
+    """`latest_date_partition()`의 S3 대응. 파일시스템 대신 이미 나열된 key 문자열에서
+    `collected_date=` 세그먼트를 파싱해 `as_of` 이하 중 가장 최신인 날짜를 고릅니다.
+
+    `dataset_dir` 은 에러 메시지에만 쓰입니다 (`s3://bucket/prefix` 형태를 넘기세요).
+    """
+    candidates: set[date] = set()
+    for key in keys:
+        for segment in key.split("/"):
+            if segment.startswith(f"{DATE_PARTITION_KEY}="):
+                try:
+                    partition_date = date.fromisoformat(
+                        segment.removeprefix(f"{DATE_PARTITION_KEY}=")
+                    )
+                except ValueError:
+                    break
+                if partition_date <= as_of:
+                    candidates.add(partition_date)
+                break
+
+    if not candidates:
+        raise FileNotFoundError(
+            f"{as_of.isoformat()} 이전의 Silver 파티션이 없습니다: {dataset_dir}"
+        )
+    return max(candidates)

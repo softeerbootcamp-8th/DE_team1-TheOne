@@ -9,8 +9,6 @@
 `silver_to_gold/transformer.py::_lease_days_in_month` 도 같은 규칙을 씁니다.
 """
 
-from datetime import date
-
 from pyspark.sql import Column, DataFrame
 from pyspark.sql.functions import coalesce, col, count, countDistinct, lit, to_date, when
 
@@ -146,7 +144,6 @@ def build_driver_trip(
     leases: DataFrame,
     *,
     year_month: str,
-    snapshot_date: date,
 ) -> DataFrame:
     """운행 한 건에 그 시점의 기사·계약·차량을 붙인 기사 운행 이력."""
     validate_trips(trips, year_month)
@@ -154,11 +151,7 @@ def build_driver_trip(
     validate_single_lease_per_trip(trips, leases)
 
     t, l = trips.alias("t"), leases.alias("l")
-    return (
-        t.join(l, lease_match_condition(), "inner")
-        .select(
-            *(col(f"t.{name}") for name in TRIP_COLUMNS),
-            *(col(f"l.{name}") for name in LEASE_COLUMNS),
-        )
-        .withColumn("snapshot_date", lit(snapshot_date).cast("date"))
+    return t.join(l, lease_match_condition(), "inner").select(
+        *(col(f"t.{name}") for name in TRIP_COLUMNS),
+        *(col(f"l.{name}") for name in LEASE_COLUMNS),
     )

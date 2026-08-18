@@ -130,6 +130,22 @@ TRAVEL_TIMES     := data/silver/taxi_zone_travel_times
 DRIVER_PREFS     := data/bronze/driver_preferences.parquet
 COMPANY_SNAPSHOT := data/source/company
 
+# 회사 픽스처를 어느 시점으로 만들지. 비우면 `snapshot.py` 의 DEFAULT_SNAPSHOT_DATE 를
+# 씁니다 — 기본값은 거기 한 곳이 소유합니다.
+#
+# 이 날짜는 취향이 아니라 **데이터를 결정하는 값**입니다. 리스 시작일이
+# `[lease_start_min, snapshot_date]` 에서 추첨되고, 생성기는 여기서부터 한 달씩만
+# 전진할 수 있습니다(`scripts/synthetic_driver_trip_source/monthly.py`). 즉 이 값이
+# 곧 **그 로컬에서 만들 수 있는 첫 달**입니다. 팀이 어느 달로 작업하기로 했으면
+# 그 달을 넣으세요.
+#
+#   make company-snapshot SNAPSHOT_DATE=2025-01-01
+SNAPSHOT_DATE ?=
+
+# 건너뛰기 판정 대상. 시점을 지정했으면 그 파티션만 봅니다 — 데이터셋 디렉터리만
+# 보면 다른 시점 픽스처가 하나라도 있을 때 요청한 시점을 조용히 안 만듭니다.
+COMPANY_SNAPSHOT_TARGET = $(COMPANY_SNAPSHOT)$(if $(SNAPSHOT_DATE),/snapshot_date=$(SNAPSHOT_DATE))
+
 # spark/ 에서 돌립니다 — 각 스크립트가 저장소 루트를 `..` 로 참조하고, `scripts` 패키지도
 # 거기 있어서입니다. VIRTUAL_ENV 를 지우는 이유는 `make test` 주석과 같습니다.
 SPARK_RUN = cd spark && env -u VIRTUAL_ENV PYTHONPATH=.. uv run --frozen python
@@ -170,9 +186,10 @@ driver-preferences:
 
 .PHONY: company-snapshot
 company-snapshot:
-	@if [ -z "$(FORCE)" ] && [ -d "$(COMPANY_SNAPSHOT)" ]; then \
-		echo "==> skip company-snapshot (이미 있음: $(COMPANY_SNAPSHOT))"; \
+	@if [ -z "$(FORCE)" ] && [ -d "$(COMPANY_SNAPSHOT_TARGET)" ]; then \
+		echo "==> skip company-snapshot (이미 있음: $(COMPANY_SNAPSHOT_TARGET))"; \
 	else \
-		echo "==> building $(COMPANY_SNAPSHOT)"; \
-		$(SPARK_RUN) ../scripts/synthetic_company_snapshot/generate.py || exit 1; \
+		echo "==> building $(COMPANY_SNAPSHOT_TARGET)"; \
+		$(SPARK_RUN) ../scripts/synthetic_company_snapshot/generate.py \
+			$(if $(SNAPSHOT_DATE),--snapshot_date $(SNAPSHOT_DATE)) || exit 1; \
 	fi

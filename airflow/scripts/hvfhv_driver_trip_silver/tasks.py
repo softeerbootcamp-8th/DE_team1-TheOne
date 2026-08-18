@@ -2,7 +2,7 @@
 
 import logging
 import os
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -75,13 +75,12 @@ def resolve_target_year_month(
     return usable[-1]
 
 
-def validate_input_paths(year_month: str, snapshot_date: str, paths: dict) -> dict:
+def validate_input_paths(year_month: str, paths: dict) -> dict:
     """두 Clean Silver 의 대상 월 파티션이 모두 있어야 합니다.
 
     한쪽만 있으면 Spark 가 조인 단계까지 가서야 죽습니다. 그때는 이미 운행 파티션을
     통째로 읽은 뒤라, 없는 경로 하나를 알려주는 데 몇 분이 듭니다.
     """
-    date.fromisoformat(snapshot_date)
     datetime.strptime(year_month, "%Y-%m")
     for name in ("trips_path", "leases_path"):
         partition = Path(paths[name]) / f"year_month={year_month}"
@@ -89,7 +88,7 @@ def validate_input_paths(year_month: str, snapshot_date: str, paths: dict) -> di
             raise FileNotFoundError(
                 f"기사 운행 이력 입력 파티션이 없습니다: {name}={partition}"
             )
-    return {"year_month": year_month, "snapshot_date": snapshot_date}
+    return {"year_month": year_month}
 
 
 def validate_silver_partition(
@@ -134,16 +133,7 @@ def validate_inputs_task(**context):
         logical_date, params, params.get("trips_path")
     )
     logger.info("기사 운행 이력 대상 연월: %s", year_month)
-    # 리스 Clean Silver 는 `year_month` 파티션 하나가 그 달 1일 스냅샷입니다
-    # (`driver_assignment/source_job.py` 가 그렇게 만듭니다). 파라미터로 받으면
-    # 아무 경로도 고르지 않으면서 계보 컬럼만 틀리게 찍힙니다 — 실패 없이 통과합니다.
-    #
-    # #478 이 여기에 `resolve_snapshot_date(company_path)` 를 넣었는데, 그건 이 DAG 이
-    # 회사 스냅샷을 직접 읽던 시절의 처방입니다. 지금은 회사 원천을 안 봅니다 —
-    # 그 픽스처는 가짜 데이터 API 쪽(`synthetic_driver_trip_source`)에서만 쓰이고,
-    # 이 DAG 의 입력은 월 파티션이 보장된 두 Clean Silver 뿐입니다. #478 이 고치려던
-    # "없는 snapshot_date= 파티션을 찾아 실패" 자체가 성립하지 않습니다.
-    return validate_input_paths(year_month, f"{year_month}-01", params)
+    return validate_input_paths(year_month, params)
 
 
 @task(task_id="validate_silver")
