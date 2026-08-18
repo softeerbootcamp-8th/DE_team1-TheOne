@@ -2,10 +2,12 @@
 
 1. HVFHV와 분리된 네 단계 월별 DAG
 2. 기사 데이터 수집 Lambda에 제공 주소 파라미터 전달
-3. 리스 키·기간·재실행 Silver 검증
+3. 필수 컬럼 누락 시 원천부터 한 번 재수집
+4. 리스 키·기간·재실행 Silver 검증
 """
 
 from datetime import date, timedelta
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -44,12 +46,10 @@ def test_DAG는_HVFHV와_분리되어_기사데이터만_Silver까지_처리한�
         "bronze_to_silver",
         "validate_silver",
     }
-    assert DAG.get_task("raw_to_bronze").downstream_task_ids == {
-        "validate_bronze",
-        "validate_silver",
-    }
+    assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
     assert DAG.get_task("validate_bronze").downstream_task_ids == {
-        "bronze_to_silver"
+        "bronze_to_silver",
+        "validate_silver",
     }
     assert DAG.get_task("bronze_to_silver").downstream_task_ids == {
         "validate_silver"
@@ -82,6 +82,35 @@ def test_기사데이터수집task는_제공주소를_기존핸들러에_전달�
         "year": "2026",
         "month": "8",
     }
+
+
+def test_기사필수컬럼이_누락되면_원천부터_다시_수집한다(monkeypatch):
+    results = iter(
+        [
+            (Path("broken.parquet"), ["driver_id"]),
+            (Path("corrected.parquet"), []),
+        ]
+    )
+    recollected = {"year_month": "2026-08", "row_count": 1}
+    calls = []
+    monkeypatch.setattr(
+        task_module,
+        "_validate_bronze_result",
+        lambda result, base_dir: next(results),
+    )
+    monkeypatch.setattr(
+        task_module,
+        "_collect_bronze",
+        lambda params: calls.append(params) or recollected,
+    )
+
+    validated = DAG.get_task("validate_bronze").python_callable(
+        {"year_month": "2026-08"},
+        params={"base_dir": "/bronze", "api_base_url": "http://source"},
+    )
+
+    assert validated == recollected
+    assert calls == [{"base_dir": "/bronze", "api_base_url": "http://source"}]
 
 
 def test_기사데이터를_정제해_같은월Silver로_멱등적재한다(tmp_path):

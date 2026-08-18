@@ -11,6 +11,7 @@
 9. hvfhs_license_num 4종이 플랫폼명으로, 미지값은 Unknown으로 매핑
 10. 플랫폼·OD별 관측 20건 이상이고 중앙값의 115% 이상인 운임에 추정 서비스 등급 부여
 11. zone 조인에 실패한 행이 null로 남고 사라지지 않음 (left join)
+12. 문자열 타입 불일치 행 격리 및 사유별 카운트 로그
 """
 
 from datetime import datetime
@@ -18,7 +19,11 @@ from datetime import datetime
 import pytest
 
 from shared.spark.common.session import get_or_create_spark_session
-from main.spark.jobs.bronze_to_silver.hvfhv.transformer import FINAL_SCHEMA, REQUIRED_COLUMNS, HVFHVCleanTransformer
+from main.spark.jobs.bronze_to_silver.hvfhv.transformer import (
+    FINAL_SCHEMA,
+    REQUIRED_COLUMNS,
+    HVFHVCleanTransformer,
+)
 
 
 @pytest.fixture(scope="module")
@@ -62,6 +67,24 @@ def test_불합격_비율이_error_threshold보다_낮으면_통과한다(spark)
     result = transformer.transform(df)
 
     assert result.count() == 2
+
+
+def test_타입불일치_행은_격리하고_사유별_건수를_로그로_남긴다(
+    spark, caplog
+):
+    rows = [
+        _row(trip_miles="5.0"),
+        _row(trip_miles="not-a-number"),
+        _row(trip_miles="-1"),
+        _row(trip_miles=None),
+    ]
+    df = spark.createDataFrame(rows)
+
+    with caplog.at_level("WARNING"):
+        result = HVFHVCleanTransformer(error_threshold=1.0).transform(df)
+
+    assert [row["trip_miles"] for row in result.collect()] == [5.0]
+    assert "타입 불일치=1 범위 이탈=1 NULL=1" in caplog.text
 
 
 @pytest.mark.parametrize("missing_column", REQUIRED_COLUMNS)

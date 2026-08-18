@@ -56,7 +56,10 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     parser.add_argument("--input_path", default="data/bronze/hvfhv", help="Path to bronze raw data")
     parser.add_argument("--output_path", default="data/silver/hvfhv", help="Path to save silver clean data")
     parser.add_argument("--zone_lookup_path", default="data/bronze/taxi_zone_lookup.csv", help="Path to taxi_zone_lookup.csv")
-    parser.add_argument("--error_threshold", type=float, default=0.2, help="Validation error threshold (default: 0.2)")
+    parser.add_argument(
+        "--error_threshold", type=float, default=0.05,
+        help="불합격 행 허용 비율 (기본 0.05). DAG 는 HVFHV_ERROR_THRESHOLD 로 넘깁니다.",
+    )
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
     parser.add_argument("--start_year_month", default=None, help="시작 연월 (예: 2024-01). 한 달만 처리하려면 end와 동일하게")
     parser.add_argument("--end_year_month", default=None, help="종료 연월 (예: 2024-12, 포함)")

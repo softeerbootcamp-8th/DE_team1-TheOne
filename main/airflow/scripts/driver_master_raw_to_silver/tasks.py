@@ -123,6 +123,10 @@ def validate_silver_result(result: dict, expected_rows: int) -> None:
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
     params = context.get("params", {})
+    return _collect_bronze(params)
+
+
+def _collect_bronze(params: dict) -> dict:
     event = {
         "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
         "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
@@ -135,17 +139,30 @@ def raw_to_bronze_task(**context) -> dict:
 
 @task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> dict:
-    base_dir = context.get("params", {}).get("base_dir") or DEFAULT_BRONZE_DIR
+    params = context.get("params", {})
+    base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
+    _, missing = _validate_bronze_result(result, base_dir)
+    if missing:
+        logger.warning("기사 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
+        result = _collect_bronze(params)
+        _, missing = _validate_bronze_result(result, base_dir)
+    if missing:
+        raise ValueError(f"기사·택시 Bronze 필수 컬럼 누락: {missing}")
+    return result
+
+
+def _validate_bronze_result(
+    result: dict,
+    base_dir: str | Path,
+) -> tuple[Path, list[str]]:
     path, _ = validate_synthetic_bronze(
         result,
         dataset="driver_vehicle_leases",
         dataset_dir="driver_vehicle_leases",
         base_dir=base_dir,
     )
-    missing = set(SCHEMA.names) - set(pq.read_schema(path).names)
-    if missing:
-        raise ValueError(f"기사·택시 Bronze 필수 컬럼 누락: {sorted(missing)}")
-    return result
+    missing = sorted(set(SCHEMA.names) - set(pq.read_schema(path).names))
+    return path, missing
 
 
 @task(task_id="bronze_to_silver")

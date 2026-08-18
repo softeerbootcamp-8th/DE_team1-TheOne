@@ -2,7 +2,8 @@
 
 1. 요청한 HVFHV 한 파일만 원본 bytes 그대로 월 파티션에 저장
 2. 같은 월 재실행은 파일을 추가하지 않고 기존 결과 재사용
-3. checksum/manifest 계약 위반은 완료 파일을 공개하지 않음
+3. 같은 월 원천 내용이 바뀌면 파일을 교체하고 직전 checksum 기록
+4. checksum/manifest 계약 위반은 완료 파일을 공개하지 않음
 """
 
 import hashlib
@@ -23,7 +24,7 @@ YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 
 
-def _parquet_bytes() -> bytes:
+def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
     row = {
         field.name: (
             datetime(2026, 8, 1, 9)
@@ -32,7 +33,7 @@ def _parquet_bytes() -> bytes:
             if pa.types.is_integer(field.type)
             else 1.0
             if pa.types.is_floating(field.type)
-            else "taxi-1"
+            else taxi_id
             if field.name == "taxi_id"
             else "x"
         )
@@ -46,13 +47,13 @@ def _parquet_bytes() -> bytes:
 CONTENT = _parquet_bytes()
 
 
-def _manifest() -> dict:
+def _manifest(content: bytes = CONTENT) -> dict:
     return {
         "year_month": YEAR_MONTH,
         "datasets": {
             "hvfhv_taxi_trips": {
                 "row_count": 1,
-                "sha256": hashlib.sha256(CONTENT).hexdigest(),
+                "sha256": hashlib.sha256(content).hexdigest(),
                 "download_url": f"/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
             },
             "driver_vehicle_leases": {
@@ -76,12 +77,17 @@ class Response:
         return None
 
 
-def _api(monkeypatch, manifest: dict, requested: list[str] | None = None) -> None:
+def _api(
+    monkeypatch,
+    manifest: dict,
+    requested: list[str] | None = None,
+    content: bytes = CONTENT,
+) -> None:
     responses = {
         f"{API_URL}/v1/data/{YEAR_MONTH}": Response(payload=manifest),
         f"{API_URL}/v1/data/latest": Response(payload=manifest),
         f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips": Response(
-            content=CONTENT
+            content=content
         ),
     }
 
@@ -127,6 +133,26 @@ def test_같은월을_다시수집해도_파일이_추가되지_않는다(tmp_pa
     assert first["locations"] == second["locations"]
     assert second["already_collected"] is True
     assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
+
+
+def test_같은월의_원천내용이_바뀌면_교체하고_직전_checksum을_남긴다(
+    tmp_path, monkeypatch
+):
+    _api(monkeypatch, _manifest())
+    first = lambda_handler(_event(tmp_path))
+    previous_sha256 = first["sha256"]
+
+    corrected = _parquet_bytes(taxi_id="taxi-2")
+    _api(monkeypatch, _manifest(corrected), content=corrected)
+    second = lambda_handler(_event(tmp_path))
+
+    path = Path(second["locations"][0])
+    marker = json.loads(Path(second["marker_location"]).read_text(encoding="utf-8"))
+    assert path.read_bytes() == corrected
+    assert second["already_collected"] is False
+    assert marker["sha256"] == hashlib.sha256(corrected).hexdigest()
+    assert marker["previous_sha256"] == previous_sha256
+    assert marker["previous_row_count"] == 1
 
 
 def test_checksum이_다르면_Bronze파일과_marker를_공개하지_않는다(
