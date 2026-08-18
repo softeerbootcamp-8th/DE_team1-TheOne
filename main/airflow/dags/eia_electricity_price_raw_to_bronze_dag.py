@@ -12,7 +12,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
-from sub.airflow.scripts.eia_electricity_price_raw_to_bronze.tasks import (
+from main.airflow.scripts.eia_electricity_price_raw_to_bronze.tasks import (
     BRONZE_DIR,
     raw_to_bronze_task,
     validate_bronze_task,

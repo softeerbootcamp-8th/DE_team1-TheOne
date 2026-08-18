@@ -27,7 +27,7 @@ def _layout():
 
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
-    result = lambda_handler_for(HANDLER_NAME, package="sub.aws_lambda.functions")(
+    result = lambda_handler_for(HANDLER_NAME)(
         event={"base_dir": context["params"]["bronze_dir"]}
     )
     logger.info("Raw -> Bronze 완료: %s", result)
