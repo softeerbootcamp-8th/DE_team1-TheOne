@@ -23,7 +23,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from shared.aws_lambda.common import vehicle_master_layout as layout
+from sub.aws_lambda.common import vehicle_master_layout as layout
 from sub.aws_lambda.functions.vehicle_master_silver.handler import lambda_handler as to_master
 from sub.aws_lambda.functions.vehicle_master_silver.loader import SCHEMA
 

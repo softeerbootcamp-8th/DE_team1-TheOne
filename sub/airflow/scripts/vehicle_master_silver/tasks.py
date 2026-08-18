@@ -7,7 +7,7 @@ from datetime import timedelta
 
 from airflow.sdk import task
 
-from shared.airflow.common import assets
+from sub.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
@@ -51,7 +51,7 @@ def validate_silver_task(result: dict, **context) -> None:
     """도시별 파일이 layout 규칙·스키마와 맞는지, 원천이 낡지 않았는지 봅니다."""
     params = context.get("params", {})
     silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
-    layout = importlib.import_module("shared.aws_lambda.common.vehicle_master_layout")
+    layout = importlib.import_module("sub.aws_lambda.common.vehicle_master_layout")
     loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_silver.loader")
 
     parsed = parse_handler_result(result)

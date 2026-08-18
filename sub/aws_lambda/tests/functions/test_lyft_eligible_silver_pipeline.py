@@ -6,7 +6,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from shared.aws_lambda.common import lyft_eligible_vehicles_layout as layout
+from sub.aws_lambda.common import lyft_eligible_vehicles_layout as layout
 from sub.aws_lambda.functions.lyft_eligible_vehicles_bronze_to_silver.handler import (
     lambda_handler as to_silver,
 )

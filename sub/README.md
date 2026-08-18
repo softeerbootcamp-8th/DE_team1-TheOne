@@ -4,8 +4,8 @@
 합성 기사·운행 데이터뿐 아니라 EIA 연료·충전 요금, 차량 제원, Uber·Lyft Eligible
 차량, 차량 카탈로그와 차량 마스터를 소유합니다.
 
-- `airflow/`: 원천 수집·합성·발행 오케스트레이션
-- `aws_lambda/`: 요금·차량 원천 수집과 정제
+- `airflow/`: 원천 수집·합성·발행 오케스트레이션과 원천 데이터셋 계약
+- `aws_lambda/`: 요금·차량 원천 수집·정제와 S3 입출력·레이아웃 계약
 - `spark/`: Curated·Synthesize·Attribution·Published 처리
 - `scripts/`: 회사 스냅샷과 월별 상태 생성
 - `synthetic_source_api/`: Published 데이터 제공 API

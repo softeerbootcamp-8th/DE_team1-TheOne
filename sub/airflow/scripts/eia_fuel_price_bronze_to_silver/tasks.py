@@ -81,7 +81,7 @@ def require_bronze(base_dir: str, year_month: str) -> dict[str, str]:
     담고 있고, 실제로 대상 월이 들어있는지는 파일을 열어봐야 알 수 있어서 변환이
     판단합니다(없으면 보유 구간을 알려주며 실패). 여기서는 존재 여부만 봅니다.
     """
-    layout = importlib.import_module("shared.aws_lambda.common.eia_fuel_price_layout")
+    layout = importlib.import_module("sub.aws_lambda.common.eia_fuel_price_layout")
 
     found = {}
     for dataset, file_name, dag_id in (

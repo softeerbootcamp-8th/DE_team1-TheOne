@@ -1,6 +1,6 @@
 """기사 데이터 원본 Parquet을 Bronze에 보존합니다."""
 
-from shared.aws_lambda.common.monthly_dataset import SyntheticDatasetLoader
+from main.aws_lambda.common.monthly_dataset import SyntheticDatasetLoader
 from .source_snapshot import DATASET
 
 

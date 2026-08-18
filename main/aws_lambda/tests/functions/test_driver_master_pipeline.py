@@ -13,7 +13,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from shared.aws_lambda.common import monthly_dataset
+from main.aws_lambda.common import monthly_dataset
 from functions.driver_master_raw_to_bronze.handler import lambda_handler
 
 

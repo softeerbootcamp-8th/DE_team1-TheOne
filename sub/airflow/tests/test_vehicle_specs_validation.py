@@ -23,7 +23,7 @@ import pytest
 
 from dags import fueleconomy_vehicle_specs_raw_to_silver_dag as dag_module
 
-layout = importlib.import_module("shared.aws_lambda.common.vehicle_specs_layout")
+layout = importlib.import_module("sub.aws_lambda.common.vehicle_specs_layout")
 bronze_loader = importlib.import_module(
     "sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_bronze.loader"
 )

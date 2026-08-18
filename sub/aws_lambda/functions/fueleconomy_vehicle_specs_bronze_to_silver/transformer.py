@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 from pipeline_core.transformer import Transformer
 
-from shared.aws_lambda.common.join_keys import normalize_key
+from sub.aws_lambda.common.join_keys import normalize_key
 
 logger = logging.getLogger(__name__)
 

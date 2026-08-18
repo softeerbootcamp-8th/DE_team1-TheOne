@@ -18,7 +18,7 @@ from pathlib import Path
 
 from pipeline_core.extractor import Extractor
 
-from shared.aws_lambda.common import eia_fuel_price_layout as layout
+from sub.aws_lambda.common import eia_fuel_price_layout as layout
 
 logger = logging.getLogger(__name__)
 

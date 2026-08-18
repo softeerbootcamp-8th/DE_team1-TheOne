@@ -7,7 +7,7 @@ from pathlib import Path
 from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
-from shared.aws_lambda.common.monthly_dataset import requested_year_month
+from main.aws_lambda.common.monthly_dataset import requested_year_month
 from .extractor import HvfhvExtractor
 from .loader import HvfhvBronzeLoader
 
