@@ -42,7 +42,10 @@ DEFAULT_ZONE_LOOKUP_PATH = os.getenv(
     "ZONE_LOOKUP_PATH",
     str(PROJECT_ROOT / "data" / "bronze" / "taxi_zone_lookup.csv"),
 )
-HVFHV_ERROR_THRESHOLD = 0.2
+# Bronze 한 달에서 버려도 되는 행의 비율. 넘으면 원천이 바뀐 것으로 보고 멈춥니다.
+# 0.2 는 초기 관측치를 넉넉히 감싸려고 둔 값이라, 원천 스키마가 통째로 어긋나도
+# 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
+HVFHV_ERROR_THRESHOLD = 0.05
 DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
 
 
@@ -167,6 +170,10 @@ def _silver_quality_summary(parquet_files, required_columns):
 def raw_to_bronze_task(**context) -> dict:
     """HVFHV+taxi_id 데이터를 Bronze에 저장합니다."""
     params = context.get("params", {})
+    return _collect_bronze(params)
+
+
+def _collect_bronze(params: dict) -> dict:
     event = {
         "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
         "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
@@ -185,31 +192,21 @@ def raw_to_bronze_task(**context) -> dict:
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_bronze_task(result: dict, **context) -> None:
+def validate_bronze_task(result: dict, **context) -> dict:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
-    base_dir = context.get("params", {}).get("base_dir") or DEFAULT_BRONZE_DIR
-    path, _ = validate_synthetic_bronze(
-        result,
-        dataset="hvfhv_taxi_trips",
-        dataset_dir="hvfhv",
-        base_dir=base_dir,
-    )
-
+    params = context.get("params", {})
     transformer = importlib.import_module(
         "jobs.bronze_to_silver.hvfhv.transformer"
     )
-    try:
-        parquet_file = pq.ParquetFile(path)
-    except (OSError, pa.ArrowInvalid) as exc:
-        raise ValueError(
-            f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
-        ) from exc
+    summary = _bronze_quality_result(result, params, transformer.REQUIRED_COLUMNS)
+    missing = summary.at[0, "missing_required_columns"]
+    if missing:
+        logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
+        result = _collect_bronze(params)
+        summary = _bronze_quality_result(
+            result, params, transformer.REQUIRED_COLUMNS
+        )
 
-    summary = _bronze_quality_summary(
-        parquet_file,
-        (SCHEMA, LEGACY_SCHEMA),
-        transformer.REQUIRED_COLUMNS,
-    )
     import great_expectations as gx
 
     expectations = [
@@ -242,6 +239,34 @@ def validate_bronze_task(result: dict, **context) -> None:
         suite_name="hvfhv_bronze_suite",
         layer="bronze",
     )
+    return result
+
+
+def _bronze_quality_result(
+    result: dict,
+    params: dict,
+    required_columns: list[str],
+):
+    base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
+    path, _ = validate_synthetic_bronze(
+        result,
+        dataset="hvfhv_taxi_trips",
+        dataset_dir="hvfhv",
+        base_dir=base_dir,
+    )
+    try:
+        parquet_file = pq.ParquetFile(path)
+    except (OSError, pa.ArrowInvalid) as exc:
+        raise ValueError(
+            f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
+        ) from exc
+
+    summary = _bronze_quality_summary(
+        parquet_file,
+        (SCHEMA, LEGACY_SCHEMA),
+        required_columns,
+    )
+    return summary
 
 
 @task(

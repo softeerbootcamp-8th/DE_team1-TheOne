@@ -70,7 +70,7 @@ def hvfhv_raw_to_silver_pipeline():
         task_id="bronze_to_silver",
         bash_command=(
             f"python {PROJECT_ROOT}/main/spark/jobs/bronze_to_silver/hvfhv/job.py "
-            "--input_path \"{{ task_instance.xcom_pull(task_ids='raw_to_bronze')"
+            "--input_path \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
             f"--zone_lookup_path {DEFAULT_ZONE_LOOKUP_PATH} "
@@ -94,7 +94,7 @@ def hvfhv_raw_to_silver_pipeline():
     bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     bronze_checked >> bronze_to_silver_task
 
-    silver_checked = validate_silver_task.override(retries=0)(raw_result)
+    silver_checked = validate_silver_task.override(retries=0)(bronze_checked)
     bronze_to_silver_task >> silver_checked
 
 
