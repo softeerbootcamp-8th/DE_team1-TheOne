@@ -1,4 +1,4 @@
-"""월별 기사 배정 결과를 HVFHV+taxi_id 데이터와 기사 데이터로 분리합니다."""
+"""월별 기사 배정 결과를 운행·리스·보유 차량 데이터로 분리합니다."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ import uuid
 from datetime import date
 from pathlib import Path
 
+import pyarrow.parquet as pq
 from pyspark import StorageLevel
 from pyspark.sql import DataFrame, Window
 from pyspark.sql.functions import (
     col,
+    concat_ws,
     count,
     countDistinct,
     lit,
@@ -24,21 +26,23 @@ from pyspark.sql.functions import (
     to_date,
     to_json,
 )
-import pyarrow.parquet as pq
 
+from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
+from schema.silver.lease_vehicle_inventory import (
+    SCHEMA as LEASE_VEHICLE_INVENTORY_SCHEMA,
+)
 from shared.spark.common.session import get_or_create_spark_session
-from sub.spark.jobs.driver_assignment.allocator import allocate_trips
-from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
 from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
     HVFHVCleanTransformer,
 )
-from sub.spark.jobs.travel_times.transformer import build_travel_times
-from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
 from sub.generators.synthetic_driver_trip_source.monthly import prepare_monthly_state
-
+from sub.spark.jobs.driver_assignment.allocator import allocate_trips
+from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
+from sub.spark.jobs.travel_times.transformer import build_travel_times
 
 LEASE_SOURCE_COLUMNS = DRIVER_VEHICLE_LEASE_SCHEMA.names
+INVENTORY_COLUMNS = LEASE_VEHICLE_INVENTORY_SCHEMA.names
 
 
 def _test_scoped_root(path: str | Path, test_row_limit: int) -> Path:
@@ -140,6 +144,91 @@ def build_driver_vehicle_leases(
     return source.select(*LEASE_SOURCE_COLUMNS)
 
 
+def build_lease_vehicle_inventory(
+    taxis: DataFrame,
+    vehicle_master: DataFrame,
+    *,
+    snapshot_date: date,
+) -> DataFrame:
+    """보유 차량을 차종·연식별 API 재고로 집계합니다."""
+    fleet = (
+        taxis.filter(col("snapshot_date") == lit(snapshot_date)).groupBy(
+            "make_key",
+            "model_key",
+            "model_year",
+            "weekly_price_usd",
+            "uber_comfort_eligible",
+            "lyft_extra_comfort_eligible",
+        )
+        .agg(count(lit(1)).cast("int").alias("stock"))
+    )
+    metadata = vehicle_master.select(
+        "make_key",
+        "model_key",
+        "fuel_type",
+        "combined_mpg_min",
+        "combined_mpg_max",
+        "image_url",
+    ).distinct()
+
+    inventory = (
+        fleet.join(metadata, ["make_key", "model_key"], "left")
+        .withColumn("manufacturer", col("make_key"))
+        .withColumn("model_name", col("model_key"))
+        .withColumn(
+            "vehicle_model_id",
+            sha2(
+                concat_ws(
+                    ":",
+                    col("manufacturer"),
+                    col("model_name"),
+                    col("model_year").cast("string"),
+                ),
+                256,
+            ),
+        )
+        .withColumn(
+            "fuel_efficiency",
+            (col("combined_mpg_min") + col("combined_mpg_max")) / 2,
+        )
+        .select(
+            col("vehicle_model_id"),
+            col("manufacturer"),
+            col("model_name"),
+            col("model_year").cast("smallint").alias("model_year"),
+            col("fuel_type"),
+            col("fuel_efficiency").cast("double").alias("fuel_efficiency"),
+            col("uber_comfort_eligible").alias("comfort_eligible"),
+            col("lyft_extra_comfort_eligible").alias("extra_comfort_eligible"),
+            col("weekly_price_usd").cast("double").alias("weekly_price_usd"),
+            col("image_url"),
+            col("stock"),
+        )
+    )
+    stats = inventory.agg(
+        count(lit(1)).alias("rows"),
+        countDistinct("vehicle_model_id").alias("distinct_models"),
+    ).first()
+    invalid = inventory.filter(
+        col("vehicle_model_id").isNull()
+        | col("fuel_type").isNull()
+        | col("fuel_efficiency").isNull()
+        | (col("fuel_efficiency") <= 0)
+        | col("image_url").isNull()
+        | (col("image_url") == "")
+        | (col("weekly_price_usd") <= 0)
+        | (col("stock") <= 0)
+    ).limit(1)
+    if (
+        not stats
+        or stats["rows"] == 0
+        or stats["rows"] != stats["distinct_models"]
+        or invalid.count()
+    ):
+        raise ValueError("보유 차량 API 데이터의 ID·연료·가격·이미지·재고가 올바르지 않습니다")
+    return inventory.select(*INVENTORY_COLUMNS)
+
+
 def _validate_temporal_links(trips: DataFrame, leases: DataFrame) -> None:
     rows = trips.withColumn("_source_row_id", monotonically_increasing_id()).alias("t")
     matched = rows.join(
@@ -172,7 +261,11 @@ def _existing_release(path: Path, year_month: str, seed: int) -> bool:
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if manifest.get("year_month") != year_month or manifest.get("seed") != seed:
         raise ValueError(f"기존 릴리스 계보가 요청과 다릅니다: {manifest}")
-    for name in ("hvfhv_taxi_trips", "driver_vehicle_leases"):
+    for name in (
+        "hvfhv_taxi_trips",
+        "driver_vehicle_leases",
+        "lease_vehicle_inventory",
+    ):
         dataset = manifest.get("datasets", {}).get(name, {})
         file_path = path / str(dataset.get("file", ""))
         if not file_path.is_file():
@@ -202,12 +295,13 @@ def _sha256(path: Path) -> str:
 def write_source_release(
     trips: DataFrame,
     leases: DataFrame,
+    inventory: DataFrame,
     *,
     output_dir: str | Path,
     year_month: str,
     seed: int,
 ) -> Path:
-    """두 데이터셋과 manifest를 staging에 쓴 뒤 디렉터리 rename으로 공개합니다."""
+    """세 데이터셋과 manifest를 staging에 쓴 뒤 디렉터리 rename으로 공개합니다."""
     final = Path(output_dir) / f"year_month={year_month}"
     if _existing_release(final, year_month, seed):
         return final
@@ -220,8 +314,10 @@ def write_source_release(
         staging.mkdir()
         trip_file = staging / "hvfhv_taxi_trips.parquet"
         lease_file = staging / "driver_vehicle_leases.parquet"
+        inventory_file = staging / "lease_vehicle_inventory.parquet"
         _write_one_parquet(trips, trip_file)
         _write_one_parquet(leases, lease_file)
+        _write_one_parquet(inventory, inventory_file)
         manifest = {
             "release_id": f"{year_month}-seed-{seed}",
             "year_month": year_month,
@@ -236,6 +332,11 @@ def write_source_release(
                     "file": lease_file.name,
                     "row_count": pq.ParquetFile(lease_file).metadata.num_rows,
                     "sha256": _sha256(lease_file),
+                },
+                "lease_vehicle_inventory": {
+                    "file": inventory_file.name,
+                    "row_count": pq.ParquetFile(inventory_file).metadata.num_rows,
+                    "sha256": _sha256(inventory_file),
                 },
             },
         }
@@ -255,6 +356,7 @@ def main(args_list: list[str] | None = None) -> Path:
     parser.add_argument("--zone_lookup_path", required=True)
     parser.add_argument("--previous_preferences_path", default=None)
     parser.add_argument("--previous_snapshot_dir", required=True)
+    parser.add_argument("--vehicle_master_path", required=True)
     parser.add_argument("--state_output_dir", required=True)
     parser.add_argument("--release_output_dir", required=True)
     parser.add_argument("--year_month", required=True)
@@ -307,6 +409,7 @@ def main(args_list: list[str] | None = None) -> Path:
     customers = read(str(state.snapshot_dir / "customer.parquet"))
     leases = read(str(state.snapshot_dir / "lease_contract.parquet"))
     taxis = read(str(state.snapshot_dir / "taxi.parquet"))
+    vehicle_master = read(args.vehicle_master_path)
     candidates = build_trip_candidates(
         trips,
         preferences,
@@ -330,16 +433,27 @@ def main(args_list: list[str] | None = None) -> Path:
     lease_source = build_driver_vehicle_leases(
         customers, leases, taxis, snapshot_date=snapshot_date
     ).persist(StorageLevel.DISK_ONLY)
+    inventory_source = build_lease_vehicle_inventory(
+        taxis, vehicle_master, snapshot_date=snapshot_date
+    ).persist(StorageLevel.DISK_ONLY)
     try:
         return write_source_release(
             trip_source,
             lease_source,
+            inventory_source,
             output_dir=release_output_dir,
             year_month=args.year_month,
             seed=args.seed,
         )
     finally:
-        for frame in (lease_source, trip_source, assignments, candidates, trips):
+        for frame in (
+            inventory_source,
+            lease_source,
+            trip_source,
+            assignments,
+            candidates,
+            trips,
+        ):
             frame.unpersist()
 
 

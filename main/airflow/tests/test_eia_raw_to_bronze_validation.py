@@ -75,5 +75,3 @@ def test_수집과_검증이_같은_하한을_본다():
         ),
     ):
         assert import_module(module_name).MIN_BYTES == expected
-
-

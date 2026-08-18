@@ -14,9 +14,16 @@ import pyarrow.parquet as pq
 from airflow.sdk import task
 from airflow.sdk.exceptions import AirflowSkipException
 
+from schema.silver.driver_vehicle_leases import (
+    REQUIRED_NON_NULL as LEASE_REQUIRED_COLUMNS,
+)
+from schema.silver.lease_vehicle_inventory import (
+    REQUIRED_NON_NULL as INVENTORY_REQUIRED_COLUMNS,
+)
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from schema.silver.driver_vehicle_leases import REQUIRED_NON_NULL as LEASE_REQUIRED_COLUMNS
-
+from sub.generators.synthetic_company_snapshot.generate import (
+    resolve_vehicle_master_path,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +32,7 @@ SOURCE_ROOT = ROOT / "data" / "source"
 DEFAULT_PATHS = {
     "source_input_dir": str(SOURCE_ROOT / "synthetic_driver_trip_inputs"),
     "company_path": str(SOURCE_ROOT / "company"),
+    "vehicle_master_dir": str(ROOT / "data" / "silver" / "vehicle_master"),
     "state_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_state"),
     "release_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_api"),
 }
@@ -34,6 +42,7 @@ MAX_MONTH_LOOKBACK = 6
 RELEASE_DATASETS = {
     "hvfhv_taxi_trips": {"pickup_datetime", "taxi_id"},
     "driver_vehicle_leases": LEASE_REQUIRED_COLUMNS,
+    "lease_vehicle_inventory": INVENTORY_REQUIRED_COLUMNS,
 }
 
 
@@ -229,6 +238,7 @@ def validate_source_inputs(source_result: dict, params: dict) -> dict:
             raise FileNotFoundError(f"기사-운행 입력 파일이 없습니다: {name}={path}")
 
     preferences = snapshot_dir / "driver_preferences.parquet"
+    vehicle_master = resolve_vehicle_master_path(params["vehicle_master_dir"])
     return {
         "year_month": year_month,
         "snapshot_date": target_date.isoformat(),
@@ -236,6 +246,7 @@ def validate_source_inputs(source_result: dict, params: dict) -> dict:
         "zone_lookup_path": str(zone_lookup),
         "previous_snapshot_dir": str(snapshot_dir),
         "previous_preferences_path": str(preferences),
+        "vehicle_master_path": str(vehicle_master),
     }
 
 

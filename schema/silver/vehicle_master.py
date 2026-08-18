@@ -16,6 +16,7 @@ SCHEMA = pa.schema(
         ("product", pa.string()),  # UberX / Comfort / Extra Comfort ...
         ("min_year", pa.int16()),  # 이 상품에 필요한 최소 차량 연식
         ("weekly_price_usd", pa.float64()),  # 리스 업체 주간 렌트료
+        ("image_url", pa.string()),  # 리스 업체 차량 이미지
         ("spec_match_level", pa.string()),  # MODEL / DRIVETRAIN / NONE
         # 제원은 대표 1건이 아니라 후보 트림 전체의 범위입니다. 대장에 트림 정보가
         # 없어 어느 값이 맞는지 모르기 때문입니다 — 고르는 것은 Gold 가 합니다.

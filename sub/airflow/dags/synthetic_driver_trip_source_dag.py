@@ -1,4 +1,4 @@
-"""검증된 월별 HVFHV로 HVFHV+taxi_id 데이터와 기사 데이터를 생성합니다."""
+"""검증된 월별 HVFHV로 운행·리스·보유 차량 데이터를 생성합니다."""
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -18,7 +18,6 @@ from sub.airflow.scripts.synthetic_driver_trip_source.tasks import (
     validate_release_task,
 )
 
-
 default_args = {
     "owner": "DE_team1",
     "retries": 1,
@@ -31,7 +30,7 @@ default_args = {
 @dag(
     dag_id="synthetic_driver_trip_source_pipeline",
     default_args=default_args,
-    description="월별 HVFHV에 기사·차량을 배정해 제공 데이터 2종 생성",
+    description="월별 HVFHV에 기사·차량을 배정해 제공 데이터 3종 생성",
     schedule="0 0 10 * *",
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
@@ -75,6 +74,8 @@ def synthetic_driver_trip_source_pipeline():
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['previous_snapshot_dir'] }} "
             + "--previous_preferences_path "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['previous_preferences_path'] }} "
+            + "--vehicle_master_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['vehicle_master_path'] }} "
             + "--state_output_dir {{ params.state_output_dir }} "
             + "--release_output_dir {{ params.release_output_dir }} "
             + "--year_month "

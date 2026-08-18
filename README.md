@@ -205,14 +205,15 @@ data/source/synthetic_driver_trip_api/  ──HTTP──▶  data/bronze/
   └ year_month=YYYY-MM/                              └ 매니페스트 대조 후 적재
       ├ hvfhv_taxi_trips.parquet
       ├ driver_vehicle_leases.parquet
+      ├ lease_vehicle_inventory.parquet
       └ manifest.json
 ```
 
 코드도 이 경계에 맞춰 폴더로 나눠 두었습니다.
 
 ```text
-sub/       외부·가상 원천 수집, 합성, 정제, Published API 발행     DAG 9개
-main/      Published 원천 소비, 운행 분석, Gold, 대시보드          DAG 4개
+sub/       외부·가상 원천 수집, 합성, 정제, Published API 발행     DAG 8개
+main/      Published 원천 소비, 운행 분석, Gold, 대시보드          DAG 9개
 shared/    두 제품이 함께 쓰는 최소 Airflow/Spark/Lambda 기술 계약
 schema/    제품 간 데이터 계약
 libs/      런타임 중립 공통 라이브러리
@@ -228,7 +229,7 @@ libs/      런타임 중립 공통 라이브러리
 
 | 항목 | 아키텍처 | 현재 코드 |
 | --- | --- | --- |
-| API 제공 데이터셋 | 3종 | **2종** — 보유 차량은 메인 파이프라인이 직접 크롤링 |
+| API 제공 데이터셋 | 3종 | **3종** — 운행·리스·보유 차량 모두 메인 파이프라인이 수집 |
 | 운행 기록 수집 | 일 1회 시도 | **월 1회** (10일 00:00) |
 | 운행 × 리스 조인 위치 | **Gold** | **Silver** — `hvfhv_driver_trip` 중간 테이블이 남아 있음 |
 | 저장 포맷·서빙 | Iceberg · RDS · Glue Catalog | Parquet 직접 적재 · Gold 는 CSV 파일 |

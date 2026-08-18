@@ -38,6 +38,7 @@
 | --- | --- | --- | --- | --- |
 | `hvfhv_taxi_trips` | 운행 1건 | `year_month` | 월 2,040만 행 | [schema/bronze/hvfhv.py](../schema/bronze/hvfhv.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [schema/silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
+| `lease_vehicle_inventory` | 차종·연식별 재고 | `year_month` | 차종 수준 | [schema/silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 
 릴리스마다 `manifest.json` 이 함께 나갑니다.
 
@@ -48,7 +49,8 @@
   "seed": 42,
   "datasets": {
     "hvfhv_taxi_trips":      { "file": "...", "row_count": 20405666, "sha256": "..." },
-    "driver_vehicle_leases": { "file": "...", "row_count": 2000,     "sha256": "..." }
+    "driver_vehicle_leases":   { "file": "...", "row_count": 2000, "sha256": "..." },
+    "lease_vehicle_inventory": { "file": "...", "row_count": 12,   "sha256": "..." }
   }
 }
 ```
@@ -65,6 +67,7 @@
 | --- | --- | --- | --- | --- |
 | `hvfhv` | 원천 API | 운행 1건 | `year_month` | [bronze/hvfhv.py](../schema/bronze/hvfhv.py) |
 | `driver_vehicle_leases` | 원천 API | 계약 1건 | `year_month` | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
+| `lease_vehicle_inventory` | 원천 API | 차종 × 연식 1개 | `year_month` | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | `vehicle_catalog` | FastTrackLease | 차종 1개 | `collected_date` | [bronze/vehicle_catalog.py](../schema/bronze/vehicle_catalog.py) |
 | `uber_eligible_vehicles` | Uber | 차종 1개 | `collected_date` | [bronze/uber_eligible_vehicles.py](../schema/bronze/uber_eligible_vehicles.py) |
 | `lyft_eligible_vehicles` | Lyft | 차종 1개 | `collected_date` | [bronze/lyft_eligible_vehicles.py](../schema/bronze/lyft_eligible_vehicles.py) |
@@ -98,6 +101,7 @@
 | --- | --- | --- | --- | --- |
 | `hvfhv` | 운행 1건 (`trip_key`) | `year_month` | 월 2,040만 행 | [silver/hvfhv.py](../schema/silver/hvfhv.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
+| `lease_vehicle_inventory` | 차종 × 연식 1개 | `year_month` | 차종 수준 | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | **`hvfhv_driver_trip`** | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv_driver_trip.py](../schema/silver/hvfhv_driver_trip.py) |
 | `vehicle_catalog` | 차종 1개 | `collected_date` | 24행 | [silver/vehicle_catalog.py](../schema/silver/vehicle_catalog.py) |
 | `uber_eligible_vehicles` | 차종 1개 | `collected_date` | 59,650행 | [silver/eligible_vehicles.py](../schema/silver/eligible_vehicles.py) |

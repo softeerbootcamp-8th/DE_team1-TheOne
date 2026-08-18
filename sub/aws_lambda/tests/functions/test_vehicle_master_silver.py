@@ -24,7 +24,9 @@ import pyarrow.parquet as pq
 import pytest
 
 from sub.aws_lambda.common import vehicle_master_layout as layout
-from sub.aws_lambda.functions.vehicle_master_silver.handler import lambda_handler as to_master
+from sub.aws_lambda.functions.vehicle_master_silver.handler import (
+    lambda_handler as to_master,
+)
 from sub.aws_lambda.functions.vehicle_master_silver.loader import SCHEMA
 
 AS_OF = "2026-08-13"
@@ -39,6 +41,7 @@ CATALOG_SCHEMA = pa.schema(
         ("make_key", pa.string()),
         ("model_key", pa.string()),
         ("weekly_price_usd", pa.float64()),
+        ("image_url", pa.string()),
         ("bronze_path", pa.string()),
     ]
 )
@@ -71,6 +74,7 @@ def catalog_row(make, model, price):
         "make_key": make,
         "model_key": model,
         "weekly_price_usd": price,
+        "image_url": f"https://example.com/{model.casefold().replace(' ', '-')}.png",
         "bronze_path": "bronze/vehicle_catalog.parquet",
     }
 
@@ -285,6 +289,7 @@ def test_자격이_하나도_없는_차종도_남는다(tmp_path):
     # 사라져서 "아무 상품도 못 받는 차" 라는 사실이 Gold 에 전달되지 않습니다.
     fit = find(rows, "FIT")
     assert fit["weekly_price_usd"] == 514.0
+    assert fit["image_url"] == "https://example.com/fit.png"
     assert fit["platform"] is None
     assert fit["product"] is None
     assert fit["min_year"] is None
