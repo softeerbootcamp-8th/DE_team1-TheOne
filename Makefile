@@ -148,7 +148,7 @@ COMPANY_SNAPSHOT := data/source/company
 #
 # 이 날짜는 취향이 아니라 **데이터를 결정하는 값**입니다. 리스 시작일이
 # `[lease_start_min, snapshot_date]` 에서 추첨되고, 생성기는 여기서부터 한 달씩만
-# 전진할 수 있습니다(`sub/scripts/synthetic_driver_trip_source/monthly.py`). 즉 이 값이
+# 전진할 수 있습니다(`sub/generators/synthetic_driver_trip_source/monthly.py`). 즉 이 값이
 # 곧 **그 로컬에서 만들 수 있는 첫 달**입니다. 팀이 어느 달로 작업하기로 했으면
 # 그 달을 넣으세요.
 #
@@ -203,7 +203,7 @@ company-snapshot:
 		echo "==> skip company-snapshot (이미 있음: $(COMPANY_SNAPSHOT_TARGET))"; \
 	else \
 		echo "==> building $(COMPANY_SNAPSHOT_TARGET)"; \
-		$(SPARK_RUN) -m sub.scripts.synthetic_company_snapshot.generate \
+		$(SPARK_RUN) -m sub.generators.synthetic_company_snapshot.generate \
 			--output_dir ../../$(COMPANY_SNAPSHOT) \
 			$(if $(SNAPSHOT_DATE),--snapshot_date $(SNAPSHOT_DATE)) || exit 1; \
 	fi

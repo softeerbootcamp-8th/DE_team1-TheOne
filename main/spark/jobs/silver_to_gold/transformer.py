@@ -104,7 +104,7 @@ def _eligible_vehicles(vehicle_master: DataFrame, tier: str) -> DataFrame:
 def _vehicle_groups(vehicle_master: DataFrame) -> DataFrame:
     """차종별 서비스 등급 자격. Comfort/Extra Comfort 자격 boolean 두 개와, 그걸 모두/하나/전혀
     못 갖췄는지에 따른 vehicle_group(BOTH/SINGLE/STANDARD) — driver_assignment 생성 시 쓴 것과
-    동일한 규칙(sub/scripts/synthetic_company_snapshot/snapshot.py::build_vehicle_pool)."""
+    동일한 규칙(sub/generators/synthetic_company_snapshot/snapshot.py::build_vehicle_pool)."""
     all_keys = vehicle_master.select("make_key", "model_key").distinct()
     uber_comfort = _eligible_vehicles(vehicle_master, "Comfort").select("make_key", "model_key")
     lyft_extra_comfort = _eligible_vehicles(vehicle_master, "Extra Comfort").select("make_key", "model_key")

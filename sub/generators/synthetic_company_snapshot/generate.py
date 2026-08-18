@@ -1,6 +1,6 @@
 """가상 회사 고객·택시·리스 원천 스냅샷 생성 CLI.
 
-실행: ``cd main/spark && PYTHONPATH=../.. uv run --frozen python -m sub.scripts.synthetic_company_snapshot.generate``
+실행: ``cd main/spark && PYTHONPATH=../.. uv run --frozen python -m sub.generators.synthetic_company_snapshot.generate``
 """
 
 import argparse
@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from sub.scripts.synthetic_company_snapshot.snapshot import (
+from sub.generators.synthetic_company_snapshot.snapshot import (
     DEFAULT_LEASE_START_MIN,
     DEFAULT_SNAPSHOT_DATE,
     build_company_snapshot,
