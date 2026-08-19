@@ -12,7 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-from schema.bronze.uber_eligible_vehicles import SCHEMA
+from schema.source import UBER_ELIGIBLE_VEHICLES_SCHEMA as SCHEMA
 
 from sub.aws_lambda.common import uber_eligible_vehicles_layout as layout
 from shared.aws_lambda.common.atomic_write import atomic_write

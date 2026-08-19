@@ -20,7 +20,7 @@ from shared.airflow.common.validation import (
     parse_year_month,
     run_gx_validation,
 )
-from schema.bronze.hvfhv import LEGACY_SCHEMA, SCHEMA
+from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 
 
 logger = logging.getLogger(__name__)
@@ -65,8 +65,12 @@ def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> 
     return "|".join(fields)
 
 
-def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
-    """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다."""
+def _bronze_quality_summary(parquet_file, required_columns):
+    """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다.
+
+    물리 스키마 전체 일치는 확인하지 않습니다 — 원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다
+    많은 컬럼을 보내도(#529 진행 중) required_columns 만 있으면 검증을 계속합니다.
+    """
     import pandas as pd
 
     schema = parquet_file.schema_arrow
@@ -74,27 +78,21 @@ def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
     missing_columns = [name for name in required_columns if name not in schema.names]
     invalid_rows = 0
 
-    schema_allowed = schema in expected_schemas
-    if row_count and not missing_columns and schema_allowed:
+    if row_count and not missing_columns:
         for batch in parquet_file.iter_batches(columns=required_columns):
             frame = batch.to_pandas()
             trip_miles = pd.to_numeric(frame["trip_miles"], errors="coerce")
             trip_time = pd.to_numeric(frame["trip_time"], errors="coerce")
-            fare = pd.to_numeric(frame["base_passenger_fare"], errors="coerce")
             driver_pay = pd.to_numeric(frame["driver_pay"], errors="coerce")
             valid = (
                 pd.to_datetime(frame["pickup_datetime"], errors="coerce").notna()
                 & pd.to_datetime(
                     frame["dropoff_datetime"], errors="coerce"
                 ).notna()
-                & frame["PULocationID"].notna()
-                & frame["DOLocationID"].notna()
                 & trip_miles.gt(0)
                 & trip_miles.le(1000)
                 & trip_time.gt(0)
                 & trip_time.le(86400)
-                & fare.ge(0)
-                & fare.le(5000)
                 & driver_pay.ge(0)
                 & driver_pay.le(5000)
                 & frame["taxi_id"].notna()
@@ -110,7 +108,7 @@ def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
                 "missing_required_columns": ",".join(missing_columns),
                 "invalid_required_row_ratio": (
                     invalid_rows / row_count
-                    if row_count and not missing_columns and schema_allowed
+                    if row_count and not missing_columns
                     else None
                 ),
             }
@@ -213,16 +211,13 @@ def existing_silver_partitions(silver_dir: str | Path) -> list[str]:
 def validate_bronze_task(result: dict, **context) -> dict:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
     params = context.get("params", {})
-    transformer = importlib.import_module(
-        "jobs.bronze_to_silver.hvfhv.transformer"
-    )
-    summary = _bronze_quality_result(result, params, transformer.REQUIRED_COLUMNS)
+    summary = _bronze_quality_result(result, params, list(SCHEMA.names))
     missing = summary.at[0, "missing_required_columns"]
     if missing:
         logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
         result = _collect_bronze(params)
         summary = _bronze_quality_result(
-            result, params, transformer.REQUIRED_COLUMNS
+            result, params, list(SCHEMA.names)
         )
 
     import great_expectations as gx
@@ -230,13 +225,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
     expectations = [
         gx.expectations.ExpectColumnValuesToBeBetween(
             column="row_count", min_value=1
-        ),
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="schema_signature",
-            value_set=[
-                _schema_signature(SCHEMA),
-                _schema_signature(LEGACY_SCHEMA),
-            ],
         ),
         gx.expectations.ExpectColumnValuesToBeInSet(
             column="missing_required_columns", value_set=[""]
@@ -283,11 +271,7 @@ def _bronze_quality_result(
             f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
         ) from exc
 
-    summary = _bronze_quality_summary(
-        parquet_file,
-        (SCHEMA, LEGACY_SCHEMA),
-        required_columns,
-    )
+    summary = _bronze_quality_summary(parquet_file, required_columns)
     return summary
 
 

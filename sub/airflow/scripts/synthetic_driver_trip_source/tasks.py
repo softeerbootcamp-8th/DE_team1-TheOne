@@ -14,11 +14,9 @@ import pyarrow.parquet as pq
 from airflow.sdk import task
 from airflow.sdk.exceptions import AirflowSkipException
 
-from schema.silver.driver_vehicle_leases import (
-    REQUIRED_NON_NULL as LEASE_REQUIRED_COLUMNS,
-)
-from schema.silver.lease_vehicle_inventory import (
-    REQUIRED_NON_NULL as INVENTORY_REQUIRED_COLUMNS,
+from schema.source import (
+    DRIVER_VEHICLE_LEASE_REQUIRED_NON_NULL as LEASE_REQUIRED_COLUMNS,
+    LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as INVENTORY_REQUIRED_COLUMNS,
 )
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from sub.generators.synthetic_company_snapshot.generate import (
