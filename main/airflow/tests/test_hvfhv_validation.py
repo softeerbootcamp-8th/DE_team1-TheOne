@@ -269,7 +269,12 @@ def test_Spark_필수_컬럼이_누락되면_원천부터_다시_수집한다(
     )
 
     assert len(calls) == 1
-    assert refreshed == refreshed_results[0]
+    # 재수집 결과를 그대로 넘깁니다. `silver_partitions_before` 는 #165 감시용으로
+    # validate_bronze 가 덧붙이는 값이라 비교에서 뺍니다 (#532).
+    assert {k: v for k, v in refreshed.items() if k != "silver_partitions_before"} == (
+        refreshed_results[0]
+    )
+    assert "silver_partitions_before" in refreshed
 
 
 def test_행_수가_0이면_막는다(tmp_path):
@@ -473,25 +478,53 @@ def test_silver_행_수가_bronze_보다_많으면_막는다(tmp_path, monkeypat
         validate_silver(result_for(bronze_path))
 
 
-def test_직전_달_파티션이_사라지면_165_재발로_막는다(tmp_path, monkeypatch):
-    """정적 overwrite(#165)가 재발하면 최신 달만 남고 다른 달은 지워집니다."""
+def test_쓰기_전에_있던_파티션이_사라지면_165_재발로_막는다(tmp_path, monkeypatch):
+    """정적 overwrite(#165)가 재발하면 이번에 쓴 달만 남고 나머지가 지워집니다."""
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
-    # 직전 달(2026-06)이 아니라 두 달 전(2026-05)만 남아 있는 상황 — #165 재발
-    write_silver(tmp_path / "silver", year_month="2026-05", rows=5)
+    # 쓰기 전에는 2026-05 도 있었는데 지금은 없는 상황 — 정확히 #165 의 signature
+    result = result_for(bronze_path)
+    result["silver_partitions_before"] = ["year_month=2026-05"]
 
-    with pytest.raises(ValueError, match="직전 달 파티션이 사라졌습니다"):
-        validate_silver(result_for(bronze_path))
+    with pytest.raises(ValueError, match="쓰기 전에 있던 Silver 파티션이 사라졌습니다"):
+        validate_silver(result)
 
 
-def test_직전_달_파티션이_있으면_통과한다(tmp_path, monkeypatch):
+def test_과거_달_백필은_통과한다(tmp_path, monkeypatch):
+    """과거 달을 새로 채우는 것은 정상입니다. 예전 검사는 직전 달이 없다는 이유로
+    이걸 항상 막았습니다 (#532) — 어느 달을 넣든 그 직전 달은 없기 마련입니다."""
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
     write_silver(tmp_path / "silver", year_month="2026-06", rows=5)
+    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
+    result = result_for(bronze_path)
+    result["silver_partitions_before"] = ["year_month=2026-06"]
+
+    validate_silver(result)
+
+
+def test_쓰기_전_스냅샷이_없어도_통과한다(tmp_path, monkeypatch):
+    """첫 실행이나 예전 XCom 에는 이 키가 없습니다. 없다고 막으면 안 됩니다."""
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
 
     validate_silver(result_for(bronze_path))
+
+
+def test_쓰기_전_파티션_목록은_parquet_이_있는_것만_센다(tmp_path):
+    """빈 디렉터리가 남아 있는 경우가 있습니다. 그걸 세면 "사라졌다" 오탐이 납니다."""
+    silver = tmp_path / "silver"
+    write_silver(silver, year_month="2026-06", rows=5)
+    (silver / "year_month=2026-07").mkdir(parents=True)
+
+    assert task_module.existing_silver_partitions(str(silver)) == ["year_month=2026-06"]
+
+
+def test_Silver_디렉터리가_없으면_빈_목록이다(tmp_path):
+    assert task_module.existing_silver_partitions(str(tmp_path / "none")) == []
+
 
 
 def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않는다(
