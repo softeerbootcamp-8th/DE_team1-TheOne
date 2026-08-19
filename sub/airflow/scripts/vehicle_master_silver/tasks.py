@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from airflow.sdk import task
 
+from schema.source import VEHICLE_MASTER_REQUIRED_NON_NULL
 from sub.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
@@ -76,6 +77,14 @@ def validate_silver_task(result: dict, **context) -> None:
             raise ValueError(f"Silver 스키마가 loader.SCHEMA 와 다릅니다: {path}")
         if table.num_rows == 0:
             raise ValueError(f"도시 파일에 행이 없습니다: {city}")
+        # 스키마 검사는 이름과 타입만 봅니다. nullable 컬럼이 전 행 NULL 이어도
+        # 통과하므로 값이 있어야 할 컬럼은 따로 셉니다 (#567).
+        for column in sorted(VEHICLE_MASTER_REQUIRED_NON_NULL):
+            nulls = table[column].null_count
+            if nulls:
+                raise ValueError(
+                    f"{city}: {column} 이 {nulls}/{table.num_rows} 행에서 비었습니다"
+                )
         total_rows += table.num_rows
 
     if total_rows != parsed.row_count:

@@ -59,12 +59,23 @@ def master_row() -> dict:
     }
 
 
-def write_master(silver_dir: Path, rows: int = 2, schema=None, city: str = CITY) -> Path:
+def write_master(
+    silver_dir: Path,
+    rows: int = 2,
+    schema=None,
+    city: str = CITY,
+    blank: str | None = None,
+) -> Path:
+    """`blank` 를 주면 그 컬럼만 전 행 NULL 로 씁니다 (#567 재현)."""
     schema = loader.SCHEMA if schema is None else schema
     path = layout.silver_file(str(silver_dir), date.fromisoformat(COLLECTED_DATE), city)
     path.parent.mkdir(parents=True, exist_ok=True)
     records = [
-        {name: master_row().get(name, "x") for name in schema.names} for _ in range(rows)
+        {
+            name: None if name == blank else master_row().get(name, "x")
+            for name in schema.names
+        }
+        for _ in range(rows)
     ]
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
     return path
@@ -173,3 +184,25 @@ def test_원천_수집일이_없으면_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="원천 수집일이 빠졌습니다"):
         validate_silver(result_for([path], 2, sources), **params_for(tmp_path))
+
+
+# --- 계약상 비면 안 되는 컬럼 (#567) -----------------------------------------
+
+def test_요금이_전_행_NULL_이면_실패한다(tmp_path):
+    """스키마 검사는 이름과 타입만 봅니다.
+
+    `weekly_lease_fee` 는 nullable 이라 전 행이 비어도 스키마는 통과하고, 그 값은
+    Gold 의 렌탈 객단가로 이어집니다. 실제로 상류 컬럼명이 바뀌었을 때 142행 전부
+    NULL 인 마스터가 여기를 지나갔습니다.
+    """
+    path = write_master(tmp_path, rows=2, blank="weekly_lease_fee")
+
+    with pytest.raises(ValueError, match="weekly_lease_fee 이 2/2 행에서 비었습니다"):
+        validate_silver(result_for([path], 2), **params_for(tmp_path))
+
+
+def test_자격이_없어_비는_컬럼은_통과시킨다(tmp_path):
+    """`platform` 은 자격이 없으면 NULL 이 정상이라 계약에 없습니다."""
+    path = write_master(tmp_path, rows=2, blank="platform")
+
+    validate_silver(result_for([path], 2), **params_for(tmp_path))
