@@ -31,3 +31,16 @@
 1. Airflow 인프라(EC2 v.s. ECS Fargate) : EC2 사용
 2. Iceberg 도입 여부 : 도입 찬성
 3. Hive Style Partitioning 도입 : S3 기준 모든 데이터에 도입 / Iceberg 파티셔닝은 HVFHV에만
+
+### 8/13 ([상세 정리 문서 링크](/docs/decision_making/0813.md))
+1. Silver에서 단계를 분할하여 저장할 것인가? : 정제와 비즈니스 로직을 분리
+2. Silver 책임 분리 정도 : 정제된 데이터를 재사용할 가능성이 있다거나 재사용한다면 분리
+
+### 8/16 ([상세 정리 문서 링크](/docs/decision_making/0816.md))
+1. 가짜 데이터 합성 데이터 파이프라인 포함 여부 : 파이프라인에서 분리하기
+
+### 8/18 ([상세 정리 문서 링크](/docs/decision_making/0818.md))
+1. 휘발유/전기 요금 수집 방향 : 무조건 월별/주별로 고정
+
+### 8/19 ([상세 정리 문서 링크](/docs/decision_making/0819.md))
+1. Airflow Task v.s. lambda : Lambda
