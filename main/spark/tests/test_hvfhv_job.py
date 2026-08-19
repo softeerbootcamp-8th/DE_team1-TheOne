@@ -28,16 +28,20 @@ def spark():
 
 def _row(**overrides) -> dict:
     row = {
+        "taxi_id": "taxi-1",
+        "hvfhs_license_num": "HV0003",
+        "on_scene_datetime": datetime(2024, 3, 1, 9, 55, 0),
         "pickup_datetime": datetime(2024, 3, 1, 10, 0, 0),
         "dropoff_datetime": datetime(2024, 3, 1, 10, 20, 0),
         "PULocationID": 1,
         "DOLocationID": 2,
+        "pickup_zone": "Central Park",
+        "dropoff_zone": "JFK Airport",
         "trip_miles": 5.0,
         "trip_time": 600,
-        "base_passenger_fare": 10.0,
         "driver_pay": 20.0,
-        "hvfhs_license_num": "HV0003",
-        "taxi_id": "taxi-1",
+        "tips": 2.0,
+        "estimated_service_tier": "Comfort",
     }
     row.update(overrides)
     return row
@@ -46,16 +50,6 @@ def _row(**overrides) -> dict:
 def _write_partition(spark, bronze_dir: Path, year_month: str, rows: list[dict]) -> None:
     partition_dir = bronze_dir / f"year_month={year_month}"
     spark.createDataFrame(rows).write.mode("overwrite").parquet(str(partition_dir))
-
-
-def _zone_lookup_csv(tmp_path: Path) -> str:
-    path = tmp_path / "taxi_zone_lookup.csv"
-    path.write_text(
-        "LocationID,Borough,Zone,service_zone\n"
-        "1,Manhattan,Central Park,Yellow Zone\n"
-        "2,Queens,JFK Airport,Airport\n"
-    )
-    return str(path)
 
 
 def test_year_month_range은_양끝을_포함해_순서대로_반환한다():
@@ -103,7 +97,6 @@ def test_range로_여러_달_파티션을_한번에_읽어_silver로_적재한�
     job.main([
         "--input_path", str(bronze_dir),
         "--output_path", str(silver_dir),
-        "--zone_lookup_path", _zone_lookup_csv(tmp_path),
         "--error_threshold", "1.0",
         "--start_year_month", "2024-01",
         "--end_year_month", "2024-02",
@@ -127,7 +120,6 @@ def test_range_중간에_없는_달이_있으면_FileNotFoundError(spark, tmp_pa
         job.main([
             "--input_path", str(bronze_dir),
             "--output_path", str(tmp_path / "silver"),
-            "--zone_lookup_path", _zone_lookup_csv(tmp_path),
             "--error_threshold", "1.0",
             "--start_year_month", "2024-01",
             "--end_year_month", "2024-03",
@@ -148,7 +140,6 @@ def test_없는_달이_여러_개면_전부_모아서_보고한다(spark, tmp_pa
         job.main([
             "--input_path", str(bronze_dir),
             "--output_path", str(tmp_path / "silver"),
-            "--zone_lookup_path", _zone_lookup_csv(tmp_path),
             "--error_threshold", "1.0",
             "--start_year_month", "2024-01",
             "--end_year_month", "2024-04",
@@ -181,7 +172,6 @@ def test_start와_end가_같으면_한_달만_처리한다(spark, tmp_path):
     job.main([
         "--input_path", str(bronze_dir),
         "--output_path", str(silver_dir),
-        "--zone_lookup_path", _zone_lookup_csv(tmp_path),
         "--error_threshold", "1.0",
         "--start_year_month", "2024-05",
         "--end_year_month", "2024-05",

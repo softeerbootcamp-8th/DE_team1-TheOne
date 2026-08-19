@@ -4,7 +4,7 @@
 2. 원천 행 수 없이 받은 Parquet footer에서 행 수 계산
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -27,7 +27,12 @@ ROWS = [
         "model_name": "SPORTAGE",
         "fuel_type": "GAS",
         "comfort_eligible": True,
+        "extra_comfort_eligible": False,
         "weekly_lease_fee": 350.0,
+        "join_date": date(2024, 1, 1),
+        "exit_date": None,
+        "experience_years": 5,
+        "vehicle_since": date(2025, 1, 1),
         "snapshot_created_at": datetime(2026, 8, 1),
     }
     for index in range(2)

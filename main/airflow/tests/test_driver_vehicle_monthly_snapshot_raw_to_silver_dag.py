@@ -6,7 +6,7 @@
 4. Bronze 행 수·스키마·driver_id 중복 규칙으로 Silver 확인
 """
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -32,7 +32,12 @@ def _rows():
             "model_name": "SPORTAGE",
             "fuel_type": "GAS",
             "comfort_eligible": True,
+            "extra_comfort_eligible": False,
             "weekly_lease_fee": 350.0,
+            "join_date": date(2024, 1, 1),
+            "exit_date": None,
+            "experience_years": 5,
+            "vehicle_since": date(2025, 1, 1),
             "snapshot_created_at": datetime(2026, 8, 1),
         }
     ]

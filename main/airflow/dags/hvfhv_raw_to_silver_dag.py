@@ -14,7 +14,6 @@ from main.airflow.scripts.hvfhv_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
-    DEFAULT_ZONE_LOOKUP_PATH,
     HVFHV_ERROR_THRESHOLD,
     PROJECT_ROOT,
     raw_to_bronze_task,
@@ -75,7 +74,6 @@ def hvfhv_raw_to_silver_pipeline():
             "--input_path \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
-            f"--zone_lookup_path {DEFAULT_ZONE_LOOKUP_PATH} "
             f"--error_threshold {HVFHV_ERROR_THRESHOLD}"
         ),
         env={

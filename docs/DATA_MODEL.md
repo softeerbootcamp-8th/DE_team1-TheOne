@@ -84,7 +84,7 @@
 
 | 데이터셋 | 한 행 | 파티션 | 규모 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
-| `hvfhv` | 운행 1건 (`trip_key`) | `year_month` | 월 2,040만 행 | [silver/hvfhv.py](../schema/silver/hvfhv.py) |
+| `hvfhv` | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/__init__.py](../schema/silver/__init__.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
 | `lease_vehicle_inventory` | 차종 × 연식 1개 | `year_month` | 차종 수준 | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | **`hvfhv_driver_trip`** | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv_driver_trip.py](../schema/silver/hvfhv_driver_trip.py) |
@@ -153,26 +153,15 @@ HVFHV Silver가 NULL 자리표시로 들고 오는 컬럼인데 채우는 값이
 `taxi_id` 가 없는 **차종(스펙) 테이블**입니다. 실제 보유 차량이 아니라
 `(make_key, model_key, 연식)` 3개로 추천 차량을 식별합니다.
 
-### 3.4 `estimated_service_tier` — TLC에 없는 값을 추정
+### 3.4 `estimated_service_tier` — 원천에서 확정된 운행 등급
 
-TLC HVFHV 원본에는 **상품 등급(Comfort / Extra Comfort) 컬럼이 없습니다.**
-등급 상승 시 매출 증가를 계산하려면 이 값이 필요하므로, Silver 단계에서 요금으로 추정합니다.
+합성 원천 API가 매칭 전에 확정한 상품 등급을 Raw→Bronze→Silver에서 그대로 보존합니다.
+Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–등급 조합만 허용합니다.
 
-```
-플랫폼 × (승차 구역, 하차 구역) 별로
-  ├─ 관측치 ≥ 20건 이고
-  └─ base_passenger_fare ≥ 그 OD 요금 중앙값 × 1.15
-        → Uber: "Comfort" / Lyft: "Extra Comfort"
-        → 그 외: "Standard"
-```
-
-| 상수 | 값 | 의미 |
-| --- | --- | --- |
-| `MIN_OD_OBSERVATIONS` | 20 | 이 미만이면 등급을 구분하지 않음 (표본이 얇은 구역에서 중앙값이 튐) |
-| `PREMIUM_FARE_RATIO` | 1.15 | 중앙값 대비 이 배수 이상이면 프리미엄으로 간주 |
-
-**관측 등급이 아니라 추정치입니다.** 수요 할증 등 다른 원인으로 요금이 올라간 운행도 포함될 수 있어
-컬럼명에 `estimated_` 를 붙였습니다. ([source_transformer.py](../shared/spark/hvfhv_clean_transformer.py))
+| `hvfhs_license_num` | 허용 등급 |
+| --- | --- |
+| `HV0003` (Uber) | `Standard`, `Comfort` |
+| `HV0005` (Lyft) | `Standard`, `Extra Comfort` |
 
 ---
 

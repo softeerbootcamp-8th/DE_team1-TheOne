@@ -9,7 +9,9 @@ from pyspark.sql.functions import (
 
 from pipeline_core.transformer import Transformer
 
-from schema.silver.hvfhv import FINAL_SCHEMA
+# 합성 API용 main 파이프라인과 달리 이 Transformer는 TLC 원천의 27컬럼 계약을
+# 사용하는 driver_assignment 전용입니다.
+from schema.source.hvfhv import FINAL_SCHEMA
 
 logger = logging.getLogger(__name__)
 

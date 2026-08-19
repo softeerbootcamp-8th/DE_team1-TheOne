@@ -1,6 +1,5 @@
 """HVFHV Raw-to-Silver DAG의 실행·검증 함수."""
 
-import importlib
 import logging
 import os
 import sys
@@ -21,6 +20,7 @@ from shared.airflow.common.validation import (
     run_gx_validation,
 )
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
+from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA
 
 
 logger = logging.getLogger(__name__)
@@ -37,10 +37,6 @@ DEFAULT_BRONZE_DIR = os.getenv(
 )
 DEFAULT_SILVER_DIR = os.getenv(
     "SILVER_DIR", str(PROJECT_ROOT / "data" / "silver" / "hvfhv")
-)
-DEFAULT_ZONE_LOOKUP_PATH = os.getenv(
-    "ZONE_LOOKUP_PATH",
-    str(PROJECT_ROOT / "data" / "bronze" / "taxi_zone_lookup.csv"),
 )
 # Bronze 한 달에서 버려도 되는 행의 비율. 넘으면 원천이 바뀐 것으로 보고 멈춥니다.
 # 0.2 는 초기 관측치를 넉넉히 감싸려고 둔 값이라, 원천 스키마가 통째로 어긋나도
@@ -113,21 +109,6 @@ def _bronze_quality_summary(parquet_file, required_columns):
                 ),
             }
         ]
-    )
-
-
-def _spark_schema_to_arrow(spark_schema) -> pa.Schema:
-    type_map = {
-        "string": pa.string(),
-        "timestamp": pa.timestamp("us"),
-        "int": pa.int32(),
-        "bigint": pa.int64(),
-        "double": pa.float64(),
-    }
-    return pa.schema(
-        pa.field(field.name, type_map[field.dataType.simpleString()])
-        for field in spark_schema.fields
-        if field.name != "year_month"
     )
 
 
@@ -295,15 +276,8 @@ def validate_silver_task(raw_result: dict) -> None:
             f"Silver 파티션에 Parquet 파일이 없습니다: {silver_partition}"
         )
 
-    transformer = importlib.import_module(
-        "jobs.bronze_to_silver.hvfhv.transformer"
-    )
-    expected_schema = _spark_schema_to_arrow(transformer.FINAL_SCHEMA)
-    required_columns = [
-        field.name
-        for field in transformer.FINAL_SCHEMA.fields
-        if not field.nullable and field.name != "year_month"
-    ]
+    expected_schema = SILVER_SCHEMA
+    required_columns = list(SILVER_SCHEMA.names)
     parquet_files = [pq.ParquetFile(path) for path in silver_files]
     summary = _silver_quality_summary(parquet_files, required_columns)
     import great_expectations as gx

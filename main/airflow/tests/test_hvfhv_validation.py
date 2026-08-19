@@ -10,7 +10,6 @@ Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 """
 
-import importlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -21,36 +20,12 @@ import pytest
 from dags import hvfhv_raw_to_silver_dag as dag_module
 from main.airflow.scripts.hvfhv_raw_to_silver import tasks as task_module
 
-transformer = importlib.import_module("jobs.bronze_to_silver.hvfhv.transformer")
-
 DAG = dag_module.hvfhv_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 YEAR_MONTH = "2026-07"
-SILVER_COLUMNS = [field.name for field in transformer.FINAL_SCHEMA.fields if field.name != "year_month"]
-SILVER_REQUIRED_COLUMNS = [
-    field.name
-    for field in transformer.FINAL_SCHEMA.fields
-    if not field.nullable and field.name != "year_month"
-]
-
-
-def spark_type_to_arrow(data_type):
-    return {
-        "string": pa.string(),
-        "timestamp": pa.timestamp("us"),
-        "int": pa.int32(),
-        "bigint": pa.int64(),
-        "double": pa.float64(),
-    }[data_type.simpleString()]
-
-
-SILVER_SCHEMA = pa.schema(
-    [
-        pa.field(field.name, spark_type_to_arrow(field.dataType))
-        for field in transformer.FINAL_SCHEMA.fields
-        if field.name != "year_month"
-    ]
-)
+SILVER_SCHEMA = task_module.SILVER_SCHEMA
+SILVER_COLUMNS = list(SILVER_SCHEMA.names)
+SILVER_REQUIRED_COLUMNS = list(SILVER_SCHEMA.names)
 
 validate_bronze = DAG.get_task("validate_bronze").python_callable
 validate_silver = DAG.get_task("validate_silver").python_callable
@@ -113,7 +88,9 @@ def test_필수컬럼보다_컬럼이_많아도_통과한다(tmp_path):
 
     물리 스키마 전체 일치는 더 이상 보지 않습니다(#529) — 필수 컬럼만 있으면 통과합니다.
     """
-    extra_schema = pa.schema([*task_module.SCHEMA, pa.field("PULocationID", pa.int32())])
+    extra_schema = pa.schema(
+        [*task_module.SCHEMA, pa.field("source_trace_id", pa.string())]
+    )
     path = write_bronze(tmp_path, schema=extra_schema)
 
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
