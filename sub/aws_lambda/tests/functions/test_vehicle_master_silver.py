@@ -404,3 +404,41 @@ def test_layout_이_정한_경로에_스키마대로_쓴다(tmp_path):
     # city 와 collected_date 는 파티션 키라 컬럼으로 두지 않습니다.
     assert "city" not in table.schema.names
     assert "collected_date" not in table.schema.names
+
+
+# --- 상류 컬럼 유실 (#567) ----------------------------------------------------
+# 상류 Silver 의 컬럼명이 바뀌면 `_row` 의 `.get()` 이 조용히 None 을 돌려주고,
+# 그 컬럼만 통째로 빈 채 적재까지 성공합니다. `weekly_price_usd` -> `weekly_lease_fee`
+# 통일 때 실제로 142행 전부 NULL 인 마스터가 만들어졌습니다.
+
+def test_대장에_요금_컬럼이_없으면_실패한다(tmp_path):
+    renamed = [
+        {k: v for k, v in row.items() if k != "weekly_lease_fee"} | {"weekly_price_usd": 549.0}
+        for row in CATALOG
+    ]
+    build_sources(tmp_path, catalog=renamed)
+
+    with pytest.raises(ValueError, match="weekly_lease_fee"):
+        run(tmp_path)
+
+
+def test_컬럼_유실_실패는_몇_행이_비었는지_알려준다(tmp_path):
+    renamed = [
+        {k: v for k, v in row.items() if k != "weekly_lease_fee"} for row in CATALOG
+    ]
+    build_sources(tmp_path, catalog=renamed)
+
+    with pytest.raises(ValueError, match=r"\d+/\d+ 행에서 비었습니다"):
+        run(tmp_path)
+
+
+def test_자격이_없어_비는_컬럼은_계약에_넣지_않는다(tmp_path):
+    """`platform`·`product` 는 자격이 없으면 NULL 이 정상입니다.
+
+    계약을 `SCHEMA.names` 전체로 잡으면 이 정상 경로가 막힙니다.
+    """
+    build_sources(tmp_path)
+
+    table = pq.ParquetFile(run(tmp_path)["locations"][0]).read()
+
+    assert table["platform"].null_count > 0
