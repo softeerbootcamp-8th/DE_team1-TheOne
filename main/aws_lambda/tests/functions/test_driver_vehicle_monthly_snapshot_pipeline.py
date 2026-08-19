@@ -1,12 +1,12 @@
-"""기사 데이터 Raw→Bronze 수집 시나리오.
+"""기사 차량 월별 스냅샷 Raw→Bronze 수집 시나리오.
 
-1. 기사 데이터 한 파일만 원본 그대로 저장
+1. 기사 차량 스냅샷 한 파일만 원본 그대로 저장
 2. 같은 월 재실행은 중복 파일을 만들지 않음
 3. 필수 dataset·checksum 위반은 적재 전에 실패
 """
 
 import hashlib
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -14,22 +14,23 @@ import pyarrow.parquet as pq
 import pytest
 
 from main.aws_lambda.common import monthly_dataset
-from functions.driver_master_raw_to_bronze.handler import lambda_handler
+from functions.driver_vehicle_monthly_snapshot_raw_to_bronze.handler import lambda_handler
 
 
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 ROWS = [
     {
-        "lease_id": "lease-1",
-        "customer_id": "customer-1",
+        "snapshot_month": YEAR_MONTH,
         "driver_id": "driver-1",
         "taxi_id": "taxi-1",
-        "make_key": "KIA",
-        "model_key": "SPORTAGE",
-        "model_year": 2023,
-        "lease_started_on": date(2024, 1, 1),
-        "lease_ended_on": None,
+        "vehicle_model_id": "model-1",
+        "manufacturer": "KIA",
+        "model_name": "SPORTAGE",
+        "fuel_type": "GAS",
+        "comfort_eligible": True,
+        "weekly_lease_fee": 350.0,
+        "snapshot_created_at": datetime(2026, 8, 1),
     }
 ]
 
@@ -47,10 +48,12 @@ def _manifest() -> dict:
     return {
         "year_month": YEAR_MONTH,
         "datasets": {
-            "driver_vehicle_leases": {
+            "driver_vehicle_monthly_snapshot": {
                 "row_count": 1,
                 "sha256": hashlib.sha256(CONTENT).hexdigest(),
-                "download_url": f"/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_leases",
+                "download_url": (
+                    f"/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_monthly_snapshot"
+                ),
             },
             "hvfhv_taxi_trips": {
                 "row_count": 1,
@@ -76,7 +79,7 @@ class Response:
 def _api(monkeypatch, manifest: dict, requested: list[str] | None = None):
     responses = {
         f"{API_URL}/v1/data/{YEAR_MONTH}": Response(payload=manifest),
-        f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_leases": Response(
+        f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_monthly_snapshot": Response(
             content=CONTENT
         ),
     }
@@ -98,7 +101,7 @@ def _event(tmp_path):
     }
 
 
-def test_기사데이터만_원본bytes그대로_Bronze에_저장한다(tmp_path, monkeypatch):
+def test_기사차량스냅샷만_원본bytes그대로_Bronze에_저장한다(tmp_path, monkeypatch):
     requested = []
     _api(monkeypatch, _manifest(), requested)
 
@@ -106,7 +109,7 @@ def test_기사데이터만_원본bytes그대로_Bronze에_저장한다(tmp_path
 
     path = Path(result["locations"][0])
     assert path.read_bytes() == CONTENT
-    assert path.parent.parent.name == "driver_vehicle_leases"
+    assert path.parent.parent.name == "driver_vehicle_monthly_snapshot"
     assert all("hvfhv_taxi_trips" not in url for url in requested)
 
 
@@ -121,11 +124,11 @@ def test_같은월을_다시수집해도_중복파일이_생기지않는다(tmp_
     assert len(list(tmp_path.rglob("*.parquet"))) == 1
 
 
-def test_manifest에_기사택시dataset이_없으면_다운로드하지않는다(
+def test_manifest에_기사차량스냅샷dataset이_없으면_다운로드하지않는다(
     tmp_path, monkeypatch
 ):
     manifest = _manifest()
-    del manifest["datasets"]["driver_vehicle_leases"]
+    del manifest["datasets"]["driver_vehicle_monthly_snapshot"]
     requested = []
 
     def get(url, **kwargs):
@@ -141,7 +144,7 @@ def test_manifest에_기사택시dataset이_없으면_다운로드하지않는�
 
 def test_checksum이_다르면_완료파일을_공개하지않는다(tmp_path, monkeypatch):
     manifest = _manifest()
-    manifest["datasets"]["driver_vehicle_leases"]["sha256"] = "0" * 64
+    manifest["datasets"]["driver_vehicle_monthly_snapshot"]["sha256"] = "0" * 64
     _api(monkeypatch, manifest)
 
     with pytest.raises(ValueError, match="checksum"):

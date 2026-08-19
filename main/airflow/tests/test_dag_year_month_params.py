@@ -18,7 +18,7 @@ DAGS = [
     ("dags.hvfhv_raw_to_silver_dag", "hvfhv_dag"),
     ("dags.hvfhv_driver_trip_silver_dag", "hvfhv_driver_trip_silver_dag"),
     ("dags.hvfhv_silver_to_gold_dag", "hvfhv_silver_to_gold_dag"),
-    ("dags.driver_master_raw_to_silver_dag", "driver_master_raw_to_silver_dag"),
+    ("dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag", "driver_vehicle_monthly_snapshot_raw_to_silver_dag"),
 ]
 
 

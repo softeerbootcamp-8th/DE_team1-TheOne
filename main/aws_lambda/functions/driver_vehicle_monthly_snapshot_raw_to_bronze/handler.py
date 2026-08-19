@@ -1,4 +1,4 @@
-"""기사 데이터를 Bronze에 적재합니다."""
+"""기사 차량 월별 스냅샷을 Bronze에 적재합니다."""
 
 import json
 import os
@@ -8,8 +8,8 @@ from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
 from main.aws_lambda.common.monthly_dataset import requested_year_month
-from .extractor import DriverVehicleLeaseExtractor
-from .loader import DriverVehicleLeaseBronzeLoader
+from .extractor import DriverVehicleMonthlySnapshotExtractor
+from .loader import DriverVehicleMonthlySnapshotBronzeLoader
 
 
 configure_lambda_logging()
@@ -21,9 +21,9 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not api_base_url:
         raise ValueError("api_base_url이 누락되었습니다")
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
-    loader = DriverVehicleLeaseBronzeLoader(base_dir)
+    loader = DriverVehicleMonthlySnapshotBronzeLoader(base_dir)
     result = Pipeline(
-        DriverVehicleLeaseExtractor(api_base_url, requested_year_month(event)),
+        DriverVehicleMonthlySnapshotExtractor(api_base_url, requested_year_month(event)),
         loader,
     ).run()
     path = Path(result.write_result.location)

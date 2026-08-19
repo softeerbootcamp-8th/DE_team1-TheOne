@@ -1,4 +1,4 @@
-"""정제된 기사 계약을 월 파티션 Silver Parquet 으로 적재합니다."""
+"""정제된 기사 차량 월별 스냅샷을 월 파티션 Silver Parquet 으로 적재합니다."""
 
 import logging
 from pathlib import Path
@@ -7,15 +7,15 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-from schema.silver.driver_vehicle_leases import SCHEMA
+from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
 from shared.aws_lambda.common.atomic_write import atomic_write
 
 
 logger = logging.getLogger(__name__)
-DATASET = "driver_vehicle_leases"
+DATASET = "driver_vehicle_monthly_snapshot"
 
 
-class DriverVehicleLeaseSilverLoader(Loader):
+class DriverVehicleMonthlySnapshotSilverLoader(Loader):
     """월 파티션에 파일 하나를 원자적으로 교체합니다.
 
     Bronze 와 달리 Silver 는 재실행하면 덮어씁니다. 같은 달의 변환 결과가 여러 개
@@ -30,7 +30,7 @@ class DriverVehicleLeaseSilverLoader(Loader):
 
     def write(self, data: pa.Table) -> WriteResult:
         if data.schema != SCHEMA:
-            raise ValueError("적재할 기사 계약 데이터가 Silver 스키마와 다릅니다")
+            raise ValueError("적재할 기사 차량 스냅샷 데이터가 Silver 스키마와 다릅니다")
         path = self._base_dir / f"year_month={self._year_month}" / f"{DATASET}.parquet"
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
