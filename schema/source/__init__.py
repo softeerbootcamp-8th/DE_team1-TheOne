@@ -162,6 +162,60 @@ VEHICLE_SPECS_SCHEMA = pa.schema(
     ]
 )
 
+"""[월별 택시 운행 기록] 월별 API 스키마.
+
+`schema/bronze` 의 같은 이름 스키마와 **완전히 같아야** 합니다. sub/ 는 schema/bronze
+를 참조하지 않으므로 여기에 복제해 두고, 두 정의가 갈라지지 않는지는
+`main/airflow/tests/test_schema_source_mirror.py` 가 확인합니다.
+"""
+MONTHLY_TAXI_TRIP_SCHEMA = pa.schema(
+    [
+        ("taxi_id", pa.string()),  # 운행한 택시 ID
+        ("hvfhs_license_num", pa.string()),  # platform_name 역매핑 (Uber→HV0003, Lyft→HV0005)
+        ("on_scene_datetime", pa.timestamp("us")),  # 장소 도착 시각
+        ("pickup_datetime", pa.timestamp("us")),  # 승차 시각
+        ("dropoff_datetime", pa.timestamp("us")),  # 하차 시각
+        ("PULocationID", pa.int32()),  # 승차 지역 ID
+        ("DOLocationID", pa.int32()),  # 하차 지역 ID
+        ("pickup_zone", pa.string()),  # 승차 지역
+        ("dropoff_zone", pa.string()),  # 하차 지역
+        ("trip_miles", pa.float64()),  # 운행 거리
+        ("trip_time", pa.int64()),  # 운행 시간
+        ("driver_pay", pa.float64()),  # 기사 수익
+        ("tips", pa.float64()),  # 팁
+        ("estimated_service_tier", pa.string()),  # 원천에서 확정한 운행 등급
+    ]
+)
+
+"""[월 기사 차량 스냅샷] 월별 API 스키마.
+
+한 행은 (기사, 대상 월) 하나입니다 — 리스 계약 단위가 아닙니다.
+`exit_date` 만 nullable 이고(재직 중이면 NULL), 나머지는 값이 있어야 합니다.
+"""
+DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA = pa.schema(
+    [
+        ("snapshot_month", pa.string()),  # 스냅샷 대상 월 (YYYY-MM)
+        ("driver_id", pa.string()),  # 기사 ID
+        ("taxi_id", pa.string()),  # 택시 ID
+        ("vehicle_model_id", pa.string()),  # 차량 모델 ID
+        ("manufacturer", pa.string()),  # make_key
+        ("model_name", pa.string()),  # model_key
+        ("fuel_type", pa.string()),  # specs.atv_type 에서 유도
+        ("comfort_eligible", pa.bool_()),  # uber_comfort_eligible
+        ("extra_comfort_eligible", pa.bool_()),  # Lyft 자격 보존
+        ("weekly_lease_fee", pa.float64()),  # weekly_rental_fee_usd
+        ("join_date", pa.date32()),  # joined_on
+        ("exit_date", pa.date32()),  # 기사 퇴사일 (재직 중이면 NULL)
+        ("experience_years", pa.int32()),  # 운전 경력 (년)
+        ("vehicle_since", pa.date32()),  # 현재 차량 운행 시작일
+        ("snapshot_created_at", pa.timestamp("us")),  # 스냅샷 생성 시각
+    ]
+)
+
+DRIVER_VEHICLE_MONTHLY_SNAPSHOT_REQUIRED_NON_NULL = frozenset(
+    set(DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names) - {"exit_date"}
+)
+
 """기사 데이터의 논리 스키마.
 
 main/ 의 schema/silver 와 같은 모양이어야 하지만, sub/ 는 schema/bronze·silver·gold
