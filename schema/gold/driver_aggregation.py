@@ -55,7 +55,7 @@ class DriverMonthlyAggregation:
     """월간 연료비 (USD). 유종 차량은 휘발유 가격, 전기차는 충전 단가 적용."""
 
     monthly_rental_fee: float
-    """월간 렌탈료 (USD). weekly_price_usd 기반 환산."""
+    """월간 렌탈료 (USD). weekly_lease_fee 기반 환산."""
 
     monthly_net_profit: float
     """월간 순수익 (USD) = 하루 순수익(플랫폼 정산액 + Tip - 운행거리*연료단가) 의 합 - monthly_rental_fee."""

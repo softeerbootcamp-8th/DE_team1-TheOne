@@ -31,7 +31,7 @@ from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.transformer import
     gas_price_for,
     parse_gas_weekly,
 )
-from schema.silver.gas_price import SCHEMA
+from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
 
 COLLECTED = date(2026, 8, 17)
 WEEKLY = [

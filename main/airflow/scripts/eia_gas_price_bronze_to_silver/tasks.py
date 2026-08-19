@@ -17,7 +17,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
-from schema.silver.gas_price import SCHEMA
+from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 

@@ -26,11 +26,11 @@ SPEC.loader.exec_module(select_tests)
 
 def test_DAG_변경은_전용_테스트와_공통_계약을_선택한다():
     result = select_tests.select_tests(
-        ["main/airflow/dags/driver_master_raw_to_silver_dag.py"]
+        ["main/airflow/dags/driver_vehicle_monthly_snapshot_raw_to_silver_dag.py"]
     )
 
     assert result.full == set()
-    assert "tests/test_driver_master_raw_to_silver_dag.py" in result.tests["main/airflow"]
+    assert "tests/test_driver_vehicle_monthly_snapshot_raw_to_silver_dag.py" in result.tests["main/airflow"]
     assert "tests/test_dag_module_contracts.py" in result.tests["main/airflow"]
     assert "tests/test_slack_callbacks.py" in result.tests["main/airflow"]
 
@@ -55,12 +55,12 @@ def test_알_수_없는_Python_변경은_전체_테스트로_fallback한다():
 
 def test_테스트_파일_변경은_그_테스트만_선택한다():
     result = select_tests.select_tests(
-        ["main/airflow/tests/test_driver_master_raw_to_silver_dag.py"]
+        ["main/airflow/tests/test_driver_vehicle_monthly_snapshot_raw_to_silver_dag.py"]
     )
 
     assert result.full == set()
     assert result.tests == {
-        "main/airflow": {"tests/test_driver_master_raw_to_silver_dag.py"}
+        "main/airflow": {"tests/test_driver_vehicle_monthly_snapshot_raw_to_silver_dag.py"}
     }
 
 

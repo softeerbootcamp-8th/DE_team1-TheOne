@@ -14,8 +14,8 @@ import pyarrow.parquet as pq
 import pytest
 
 from dags import lease_vehicle_inventory_raw_to_silver_dag as dag_module
-from dags.driver_master_raw_to_silver_dag import driver_master_raw_to_silver_dag
-from schema.silver.lease_vehicle_inventory import SCHEMA
+from dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag import driver_vehicle_monthly_snapshot_raw_to_silver_dag
+from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
     tasks as task_module,
 )
@@ -35,7 +35,7 @@ def _rows():
             "fuel_efficiency": 28.5,
             "comfort_eligible": True,
             "extra_comfort_eligible": False,
-            "weekly_price_usd": 350.0,
+            "weekly_lease_fee": 350.0,
             "image_url": "http://images.example/kia-sportage.png",
             "stock": 12,
         }
@@ -73,8 +73,8 @@ def test_보유차량은_기사계약과_분리된_DAG에서_Silver까지_처리
 def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
     """한쪽 원천이 늦어도 다른 쪽 월 적재가 멈추지 않도록 DAG 를 나눴습니다.
     나눈 이상 두 DAG 가 같은 Silver 디렉터리를 동시에 쓰면 안 됩니다."""
-    assert DAG.dag_id != driver_master_raw_to_silver_dag.dag_id
-    assert DAG.params["silver_dir"] != driver_master_raw_to_silver_dag.params[
+    assert DAG.dag_id != driver_vehicle_monthly_snapshot_raw_to_silver_dag.dag_id
+    assert DAG.params["silver_dir"] != driver_vehicle_monthly_snapshot_raw_to_silver_dag.params[
         "silver_dir"
     ]
 

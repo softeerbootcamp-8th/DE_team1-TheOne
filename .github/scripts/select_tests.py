@@ -31,7 +31,6 @@ AIRFLOW_OVERRIDES = {
         # 가스·전력 원본 적재를 한 파일에서 함께 검증합니다.
         "eia_electricity_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
         "eia_gas_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
-        "hvfhv_driver_trip_silver": {"test_driver_trip_silver_dag.py"},
         "hvfhv_raw_to_silver": {
             "test_hvfhv_raw_to_silver_dag.py",
             "test_hvfhv_validation.py",

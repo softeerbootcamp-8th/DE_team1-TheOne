@@ -35,7 +35,7 @@ class MonthlyVehicleRecommendation:
     recommendation_reason: str
     """추천 이유. 현재 차량 대비 개선된 항목을 ", " 로 나열한 문자열 —
     "연비"(combined_mpg 가 더 높음) / "차량등급"(vehicle_group 이 더 넓음, 예: SINGLE→BOTH) /
-    "더 저렴한 렌트료"(weekly_price_usd 가 더 낮음) 중 해당하는 것. 셋 다 아니면(추천 차량이
+    "더 저렴한 렌트료"(weekly_lease_fee 가 더 낮음) 중 해당하는 것. 셋 다 아니면(추천 차량이
     현재 차량과 동일하거나 세 항목 모두 동률) "현재 차량 유지"."""
 
     combined_mpg: float

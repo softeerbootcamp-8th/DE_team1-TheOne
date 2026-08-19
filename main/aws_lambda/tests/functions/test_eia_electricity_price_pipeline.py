@@ -27,7 +27,7 @@ from main.aws_lambda.functions.eia_electricity_price_bronze_to_silver.transforme
     build_daily_prices,
     parse_electricity_monthly,
 )
-from schema.silver.ev_charging_price import SCHEMA
+from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA as SCHEMA
 
 COLLECTED = date(2026, 8, 17)
 ROWS = [(2025, 5, "NY", 20.0), (2025, 5, "CA", 99.0), (2025, 6, "NY", 21.0)]

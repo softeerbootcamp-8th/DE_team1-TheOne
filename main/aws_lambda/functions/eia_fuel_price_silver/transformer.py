@@ -14,7 +14,7 @@ import calendar
 import logging
 from datetime import date, datetime
 
-from schema.silver.gas_ev_price import EIA, FINAL
+from schema.silver import EIA, FINAL
 
 logger = logging.getLogger(__name__)
 

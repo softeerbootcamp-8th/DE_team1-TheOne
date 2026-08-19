@@ -75,7 +75,7 @@ def silver_rows(count: int = 2) -> list[dict]:
         {
             "make_key": f"MAKE{i}",
             "model_key": f"MODEL{i}",
-            "weekly_price_usd": 500.0 + i,
+            "weekly_lease_fee": 500.0 + i,
             "image_url": f"https://example.com/model-{i}.png",
             "bronze_path": "/bronze/x.parquet",
         }
@@ -412,10 +412,10 @@ def test_Silver_필수_문자열이_비어있으면_GX가_실패한다(tmp_path,
 @pytest.mark.parametrize("price", [49.99, 5000.01, math.inf, math.nan])
 def test_Silver_주간_요금이_범위를_벗어나면_GX가_실패한다(tmp_path, price):
     records = silver_rows()
-    records[0]["weekly_price_usd"] = price
+    records[0]["weekly_lease_fee"] = price
     path = write_silver(tmp_path, VENDOR, records)
 
-    with pytest.raises(ValueError, match="weekly_price_usd"):
+    with pytest.raises(ValueError, match="weekly_lease_fee"):
         validate_silver(
             silver_result([path]), params={"silver_dir": str(tmp_path)}
         )
@@ -424,7 +424,7 @@ def test_Silver_주간_요금이_범위를_벗어나면_GX가_실패한다(tmp_p
 def test_Silver_float32_요금은_float64_계약과_달라_GX가_실패한다(tmp_path):
     schema = pa.schema(
         pa.field(field.name, pa.float32())
-        if field.name == "weekly_price_usd"
+        if field.name == "weekly_lease_fee"
         else field
         for field in silver_loader.SCHEMA
     )
@@ -432,7 +432,7 @@ def test_Silver_float32_요금은_float64_계약과_달라_GX가_실패한다(tm
 
     with pytest.raises(
         ValueError,
-        match=r"expect_column_values_to_be_of_type\[weekly_price_usd\]",
+        match=r"expect_column_values_to_be_of_type\[weekly_lease_fee\]",
     ):
         validate_silver(
             silver_result([path]), params={"silver_dir": str(tmp_path)}
@@ -556,11 +556,11 @@ def test_Bronze_파일명의_수집일이_다르면_실패한다(tmp_path):
 
 
 def test_Silver_스키마가_다르면_GX가_실패한다(tmp_path):
-    other = pa.schema([("make_key", pa.string()), ("weekly_price_usd", pa.float64())])
+    other = pa.schema([("make_key", pa.string()), ("weekly_lease_fee", pa.float64())])
     path = write_silver(
         tmp_path,
         VENDOR,
-        [{"make_key": "TOYOTA", "weekly_price_usd": 564.0}] * 2,
+        [{"make_key": "TOYOTA", "weekly_lease_fee": 564.0}] * 2,
         schema=other,
     )
 

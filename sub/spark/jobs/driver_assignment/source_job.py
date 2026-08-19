@@ -156,7 +156,7 @@ def build_lease_vehicle_inventory(
             "make_key",
             "model_key",
             "model_year",
-            "weekly_price_usd",
+            "weekly_lease_fee",
             "uber_comfort_eligible",
             "lyft_extra_comfort_eligible",
         )
@@ -200,7 +200,7 @@ def build_lease_vehicle_inventory(
             col("fuel_efficiency").cast("double").alias("fuel_efficiency"),
             col("uber_comfort_eligible").alias("comfort_eligible"),
             col("lyft_extra_comfort_eligible").alias("extra_comfort_eligible"),
-            col("weekly_price_usd").cast("double").alias("weekly_price_usd"),
+            col("weekly_lease_fee").cast("double").alias("weekly_lease_fee"),
             col("image_url"),
             col("stock"),
         )
@@ -216,7 +216,7 @@ def build_lease_vehicle_inventory(
         | (col("fuel_efficiency") <= 0)
         | col("image_url").isNull()
         | (col("image_url") == "")
-        | (col("weekly_price_usd") <= 0)
+        | (col("weekly_lease_fee") <= 0)
         | (col("stock") <= 0)
     ).limit(1)
     if (

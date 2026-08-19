@@ -186,8 +186,8 @@ def run_gx_silver_validation(
 
     dataframe = table.to_pandas()
     price_values = (
-        table["weekly_price_usd"].to_pylist()
-        if "weekly_price_usd" in table.column_names
+        table["weekly_lease_fee"].to_pylist()
+        if "weekly_lease_fee" in table.column_names
         else [None] * table.num_rows
     )
     dataframe["weekly_price_is_finite"] = [
@@ -217,14 +217,14 @@ def run_gx_silver_validation(
                     ),
                 ]
             )
-    if "weekly_price_usd" in dataframe.columns:
+    if "weekly_lease_fee" in dataframe.columns:
         expectations.extend(
             [
                 gx.expectations.ExpectColumnValuesToBeOfType(
-                    column="weekly_price_usd", type_="float64"
+                    column="weekly_lease_fee", type_="float64"
                 ),
                 gx.expectations.ExpectColumnValuesToBeBetween(
-                    column="weekly_price_usd",
+                    column="weekly_lease_fee",
                     min_value=min_price,
                     max_value=max_price,
                 ),

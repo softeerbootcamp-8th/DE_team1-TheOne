@@ -27,7 +27,7 @@ from shared.airflow.common.slack_failure_callback import (
 
 
 DAG_MODULES = {
-    "dags.driver_master_raw_to_silver_dag": "driver_master_raw_to_silver_dag",
+    "dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag": "driver_vehicle_monthly_snapshot_raw_to_silver_dag",
     "dags.eia_electricity_price_raw_to_bronze_dag": (
         "eia_electricity_price_raw_to_bronze_dag"
     ),
@@ -42,7 +42,6 @@ DAG_MODULES = {
     "dags.fueleconomy_vehicle_specs_raw_to_silver_dag": (
         "fueleconomy_vehicle_specs_dag"
     ),
-    "dags.hvfhv_driver_trip_silver_dag": "hvfhv_driver_trip_silver_dag",
     "dags.hvfhv_raw_to_silver_dag": "hvfhv_dag",
     "dags.lyft_eligible_vehicles_raw_to_silver_dag": (
         "lyft_eligible_vehicles_dag"

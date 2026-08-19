@@ -1,4 +1,4 @@
-"""기사 계약 수집·정제 Lambda 실행과 Bronze·Silver 검증 함수."""
+"""기사 차량 월별 스냅샷 수집·정제 Lambda 실행과 Bronze·Silver 검증 함수."""
 
 import importlib
 import logging
@@ -11,17 +11,17 @@ from airflow.sdk import task
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from main.airflow.common.monthly_bronze import validate_synthetic_bronze
-from schema.silver.driver_vehicle_leases import SCHEMA
+from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
 
 
 logger = logging.getLogger(__name__)
-DATASET = "driver_vehicle_leases"
+DATASET = "driver_vehicle_monthly_snapshot"
 DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
 DEFAULT_BRONZE_DIR = os.getenv(
     "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
 )
 DEFAULT_SILVER_DIR = os.getenv(
-    "DRIVER_MASTER_SILVER_DIR",
+    "DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER_DIR",
     str(PROJECT_ROOT / "data" / "silver" / DATASET),
 )
 
@@ -30,21 +30,21 @@ def _silver_transformer():
     """정제 규칙은 Lambda 쪽 Transformer 가 원본입니다. DAG 파싱까지 그 모듈을
     끌어오지 않도록 검증할 때만 불러옵니다."""
     module = importlib.import_module(
-        "main.aws_lambda.functions.driver_master_bronze_to_silver.transformer"
+        "main.aws_lambda.functions.driver_vehicle_monthly_snapshot_bronze_to_silver.transformer"
     )
-    return module.DriverVehicleLeaseSilverTransformer()
+    return module.DriverVehicleMonthlySnapshotSilverTransformer()
 
 
 def validate_silver_result(result: dict, expected_rows: int) -> None:
     locations = result.get("locations")
     if not isinstance(locations, list) or len(locations) != 1:
-        raise ValueError("기사·택시 Silver 경로는 하나여야 합니다")
+        raise ValueError("기사 차량 스냅샷 Silver 경로는 하나여야 합니다")
     path = Path(locations[0])
     if not path.is_file():
-        raise ValueError(f"기사·택시 Silver 파일이 없습니다: {path}")
+        raise ValueError(f"기사 차량 스냅샷 Silver 파일이 없습니다: {path}")
     table = pq.ParquetFile(path).read()
     if table.schema != SCHEMA or table.num_rows != expected_rows:
-        raise ValueError("기사·택시 Silver 스키마 또는 행 수가 Bronze와 다릅니다")
+        raise ValueError("기사 차량 스냅샷 Silver 스키마 또는 행 수가 Bronze와 다릅니다")
     # 적재된 파일에 같은 정제 규칙을 다시 적용합니다. 변환이 통과했더라도 적재
     # 과정에서 다른 파일이 놓였다면 여기서 걸립니다.
     _silver_transformer().transform(table)
@@ -63,8 +63,8 @@ def _collect_bronze(params: dict) -> dict:
         "year": params.get("year"),
         "month": params.get("month"),
     }
-    logger.info("기사 데이터 Raw→Bronze 수집 시작: %s", event)
-    return lambda_handler_for("driver_master_raw_to_bronze")(event=event)
+    logger.info("기사 차량 스냅샷 Raw→Bronze 수집 시작: %s", event)
+    return lambda_handler_for("driver_vehicle_monthly_snapshot_raw_to_bronze")(event=event)
 
 
 @task(task_id="validate_bronze")
@@ -73,11 +73,11 @@ def validate_bronze_task(result: dict, **context) -> dict:
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     _, missing = _validate_bronze_result(result, base_dir)
     if missing:
-        logger.warning("기사 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
+        logger.warning("기사 차량 스냅샷 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
         result = _collect_bronze(params)
         _, missing = _validate_bronze_result(result, base_dir)
     if missing:
-        raise ValueError(f"기사·택시 Bronze 필수 컬럼 누락: {missing}")
+        raise ValueError(f"기사 차량 스냅샷 Bronze 필수 컬럼 누락: {missing}")
     return result
 
 
@@ -101,8 +101,8 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
         "year_month": result["year_month"],
         "silver_dir": context["params"].get("silver_dir") or DEFAULT_SILVER_DIR,
     }
-    logger.info("기사 데이터 Bronze→Silver 정제 시작: %s", event)
-    return lambda_handler_for("driver_master_bronze_to_silver")(event=event)
+    logger.info("기사 차량 스냅샷 Bronze→Silver 정제 시작: %s", event)
+    return lambda_handler_for("driver_vehicle_monthly_snapshot_bronze_to_silver")(event=event)
 
 
 @task(task_id="validate_silver")

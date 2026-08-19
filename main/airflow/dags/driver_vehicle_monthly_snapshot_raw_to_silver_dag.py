@@ -1,4 +1,4 @@
-"""기사 데이터 Raw → Bronze → Silver 파이프라인을 선언합니다."""
+"""기사 차량 월별 스냅샷 Raw → Bronze → Silver 파이프라인을 선언합니다."""
 
 import os
 from datetime import datetime, timedelta
@@ -9,7 +9,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
-from main.airflow.scripts.driver_master_raw_to_silver.tasks import (
+from main.airflow.scripts.driver_vehicle_monthly_snapshot_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
@@ -31,14 +31,14 @@ default_args = {
 
 
 @dag(
-    dag_id="driver_master_raw_to_silver_pipeline",
+    dag_id="driver_vehicle_monthly_snapshot_raw_to_silver_pipeline",
     default_args=default_args,
-    description="기사 데이터 Raw→Bronze→Silver 파이프라인",
+    description="기사 차량 월별 스냅샷 Raw→Bronze→Silver 파이프라인",
     schedule="0 0 10 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["driver", "taxi", "master", "bronze", "silver"],
+    tags=["driver", "taxi", "snapshot", "bronze", "silver"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
@@ -50,7 +50,7 @@ default_args = {
         "silver_dir": Param(DEFAULT_SILVER_DIR, type="string"),
     },
 )
-def driver_master_raw_to_silver_pipeline():
+def driver_vehicle_monthly_snapshot_raw_to_silver_pipeline():
     raw = raw_to_bronze_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
@@ -61,4 +61,4 @@ def driver_master_raw_to_silver_pipeline():
     validate_silver_task.override(retries=0)(silver, checked)
 
 
-driver_master_raw_to_silver_dag = driver_master_raw_to_silver_pipeline()
+driver_vehicle_monthly_snapshot_raw_to_silver_dag = driver_vehicle_monthly_snapshot_raw_to_silver_pipeline()

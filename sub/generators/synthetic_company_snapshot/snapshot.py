@@ -55,7 +55,7 @@ SCHEMAS = {
             ("make_key", pa.string()),
             ("model_key", pa.string()),
             ("model_year", pa.int64()),
-            ("weekly_price_usd", pa.float64()),
+            ("weekly_lease_fee", pa.float64()),
             ("uber_comfort_eligible", pa.bool_()),
             ("lyft_extra_comfort_eligible", pa.bool_()),
             ("vehicle_group", pa.string()),
@@ -105,7 +105,7 @@ def build_vehicle_pool(
 ) -> pd.DataFrame:
     """리스 업체 차량 마스터(플랫폼·상품 한 행씩)를 차종 한 행으로 접습니다."""
     key = ["make_key", "model_key"]
-    required = {*key, "vendor", "platform", "product", "min_year", "weekly_price_usd"}
+    required = {*key, "vendor", "platform", "product", "min_year", "weekly_lease_fee"}
     missing = required - set(vehicle_master.columns)
     if missing:
         raise ValueError(f"vehicle master 필수 컬럼 누락: {sorted(missing)}")
@@ -127,7 +127,7 @@ def build_vehicle_pool(
     uber_comfort = _keys_for("uber", "Comfort")
     lyft_extra_comfort = _keys_for("lyft", "Extra Comfort")
 
-    pool = vehicle_master[[*key, "weekly_price_usd"]].drop_duplicates(key).copy()
+    pool = vehicle_master[[*key, "weekly_lease_fee"]].drop_duplicates(key).copy()
     identities = list(map(tuple, pool[key].values))
     pool["uber_comfort_eligible"] = [identity in uber_comfort for identity in identities]
     pool["lyft_extra_comfort_eligible"] = [identity in lyft_extra_comfort for identity in identities]
@@ -196,7 +196,7 @@ def build_company_snapshot(
             "make_key": vehicle["make_key"],
             "model_key": vehicle["model_key"],
             "model_year": int(vehicle["model_year"]),
-            "weekly_price_usd": float(vehicle["weekly_price_usd"]),
+            "weekly_lease_fee": float(vehicle["weekly_lease_fee"]),
             "uber_comfort_eligible": bool(vehicle["uber_comfort_eligible"]),
             "lyft_extra_comfort_eligible": bool(vehicle["lyft_extra_comfort_eligible"]),
             "vehicle_group": group,
@@ -307,7 +307,7 @@ def evolve_company_snapshot(
             "make_key": vehicle["make_key"],
             "model_key": vehicle["model_key"],
             "model_year": int(vehicle["model_year"]),
-            "weekly_price_usd": float(vehicle["weekly_price_usd"]),
+            "weekly_lease_fee": float(vehicle["weekly_lease_fee"]),
             "uber_comfort_eligible": bool(vehicle["uber_comfort_eligible"]),
             "lyft_extra_comfort_eligible": bool(vehicle["lyft_extra_comfort_eligible"]),
             "vehicle_group": group,

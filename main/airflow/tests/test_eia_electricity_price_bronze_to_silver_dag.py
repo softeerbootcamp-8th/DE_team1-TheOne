@@ -15,7 +15,7 @@ import pytest
 
 from dags import eia_electricity_price_bronze_to_silver_dag as dag_module
 from main.airflow.scripts.eia_electricity_price_bronze_to_silver import tasks as task_module
-from schema.silver.ev_charging_price import SCHEMA as CLEAN_EV_CHARGING_PRICE_SCHEMA
+from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 
 
 DAG = dag_module.eia_electricity_price_bronze_to_silver_dag

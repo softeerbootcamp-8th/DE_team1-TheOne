@@ -146,7 +146,7 @@ HVFHV Silver가 NULL 자리표시로 들고 오는 컬럼인데 채우는 값이
 | 컬럼군 | 컬럼 | 쓰이는 곳 |
 | --- | --- | --- |
 | 식별 | `make_key`, `model_key`, `spec_year_min`, `spec_year_max` | 조인 키 |
-| 매출 | `weekly_price_usd` | 회사 렌탈 매출 |
+| 매출 | `weekly_lease_fee` | 회사 렌탈 매출 |
 | 연비 | `combined_mpg`, `kwh_100mi`, `fuel_type` | 연료비 계산 |
 | 자격 | `uber_comfort_eligible`, `lyft_extra_comfort_eligible`, `vehicle_group` | 등급 상승 판정 |
 

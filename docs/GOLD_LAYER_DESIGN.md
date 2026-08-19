@@ -21,7 +21,7 @@
 | 컬럼 | 비고 |
 |---|---|
 | `make_key`, `model_key`, `model_year` | 조인 키 |
-| `weekly_price_usd`, `vendor` | 리스료 = 회사 매출 |
+| `weekly_lease_fee`, `vendor` | 리스료 = 회사 매출 |
 | `fuel_type` (GAS/HYBRID/PHEV/EV) | `atv_type` 정규화 |
 | `combined_mpg`, `kwh_100mi`, `range_miles` | 제원 |
 | `energy_cost_per_mile_usd` | **핵심 파생** — 아래 계산식 |

@@ -1,4 +1,8 @@
-"""[HVFHV+taxi_id 데이터] Silver 스키마."""
+"""[HVFHV+taxi_id 데이터] Silver 스키마.
+
+pyspark 의존이라 schema/silver/__init__.py 와 분리합니다 — aws_lambda 쪽처럼
+pyspark 가 없는 환경에서도 다른 schema.silver 스키마는 그대로 import 되어야 합니다.
+"""
 
 from pyspark.sql.types import (
     DoubleType, IntegerType, LongType, StringType, StructField, StructType, TimestampType

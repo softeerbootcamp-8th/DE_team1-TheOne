@@ -11,7 +11,7 @@ from airflow.sdk import task
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from main.airflow.common.monthly_bronze import validate_synthetic_bronze
-from schema.silver.lease_vehicle_inventory import SCHEMA
+from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 
 
 logger = logging.getLogger(__name__)

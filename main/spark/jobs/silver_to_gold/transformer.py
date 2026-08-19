@@ -49,7 +49,7 @@ def _representative_vehicle_spec(vehicle_master: DataFrame) -> DataFrame:
 
     Output
     1. fuel_type: 휘발유/전기/하이브리드
-    2. weekly_price_usd: 렌트비(USD)
+    2. weekly_lease_fee: 렌트비(USD)
     3. combined_mpg: 연비(MPG)
     4. combined_kwh_per_100mi: 전기차 kWh/100mi
     5. recommended_model_year: 추천 차량 연식 — 스펙 트림 범위 중 가장 최신 연식.
@@ -60,7 +60,7 @@ def _representative_vehicle_spec(vehicle_master: DataFrame) -> DataFrame:
 
     return vehicle_master.groupBy("make_key", "model_key").agg(
         F.first("fuel_type").alias("fuel_type"),
-        F.first("weekly_price_usd").alias("weekly_price_usd"),
+        F.first("weekly_lease_fee").alias("weekly_lease_fee"),
         ((F.avg("combined_mpg_min") + F.avg("combined_mpg_max")) / 2).alias("combined_mpg"),
         (
             (F.avg("combined_kwh_per_100mi_min") + F.avg("combined_kwh_per_100mi_max")) / 2
@@ -277,7 +277,7 @@ def build_driver_monthly_aggregation(
         .withColumn("year_month", F.lit(year_month))
         .withColumn(
             "monthly_rental_fee",
-            F.col("weekly_price_usd") * (_lease_days_in_month(year_month, days_in_month) / F.lit(7.0)),
+            F.col("weekly_lease_fee") * (_lease_days_in_month(year_month, days_in_month) / F.lit(7.0)),
         )
         .withColumn("monthly_net_profit", F.col("_gross_net_profit") - F.col("monthly_rental_fee"))
         # `_current_vehicle_facts` 가 조인 키로 들고 있는 값을 그대로 싣습니다. taxi_id 만
@@ -408,7 +408,7 @@ def build_monthly_vehicle_recommendation(
         .groupBy(
             "driver_id", "make_key", "model_key", "vehicle_group",
             "uber_comfort_eligible", "lyft_extra_comfort_eligible",
-            "combined_mpg", "weekly_price_usd", "recommended_model_year",
+            "combined_mpg", "weekly_lease_fee", "recommended_model_year",
             "lease_started_on", "lease_ended_on",
         )
         .agg(F.sum("_daily_fuel_cost").alias("expected_monthly_fuel_cost"))
@@ -419,7 +419,7 @@ def build_monthly_vehicle_recommendation(
             # 후보 차량도 현재 차량과 "같은 기간"(이번 달 실제 lease 유효 일수)만 렌트했다고
             # 가정해야 아래 expected_net_profit_increase 비교가 같은 기간 기준이 된다.
             "recommended_monthly_rental_fee",
-            F.col("weekly_price_usd") * (_lease_days_in_month(year_month, days_in_month) / F.lit(7.0)),
+            F.col("weekly_lease_fee") * (_lease_days_in_month(year_month, days_in_month) / F.lit(7.0)),
         )
         .withColumn(
             "expected_monthly_net_profit",
@@ -449,7 +449,7 @@ def build_monthly_vehicle_recommendation(
             "driver_id",
             "service_tier",
             F.col("combined_mpg").alias("_current_combined_mpg"),
-            F.col("weekly_price_usd").alias("_current_weekly_price_usd"),
+            F.col("weekly_lease_fee").alias("_current_weekly_lease_fee"),
             F.col("vehicle_group").alias("_current_vehicle_group"),
         )
     )
@@ -457,7 +457,7 @@ def build_monthly_vehicle_recommendation(
     reasons = [
         F.when(F.col("combined_mpg") > F.col("_current_combined_mpg"), F.lit("연비")),
         F.when(_grade_rank("vehicle_group") > _grade_rank("_current_vehicle_group"), F.lit("차량등급")),
-        F.when(F.col("weekly_price_usd") < F.col("_current_weekly_price_usd"), F.lit("더 저렴한 렌트료")),
+        F.when(F.col("weekly_lease_fee") < F.col("_current_weekly_lease_fee"), F.lit("더 저렴한 렌트료")),
     ]
 
     result = (

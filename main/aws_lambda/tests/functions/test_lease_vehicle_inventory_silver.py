@@ -12,7 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from schema.silver.lease_vehicle_inventory import SCHEMA
+from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 from functions.lease_vehicle_inventory_bronze_to_silver.handler import lambda_handler
 from functions.lease_vehicle_inventory_bronze_to_silver.loader import (
     LeaseVehicleInventorySilverLoader,
@@ -33,7 +33,7 @@ def _rows():
             "fuel_efficiency": 28.5,
             "comfort_eligible": True,
             "extra_comfort_eligible": False,
-            "weekly_price_usd": 350.0,
+            "weekly_lease_fee": 350.0,
             "image_url": "http://images.example/kia-sportage.png",
             "stock": 12,
         }
@@ -100,7 +100,7 @@ def test_재고품질이_깨지면_적재하지_않는다(tmp_path, broken, mess
     elif broken == "zero_stock":
         rows[0]["stock"] = 0
     elif broken == "zero_price":
-        rows[0]["weekly_price_usd"] = 0.0
+        rows[0]["weekly_lease_fee"] = 0.0
     elif broken == "zero_efficiency":
         rows[0]["fuel_efficiency"] = 0.0
     elif broken == "empty_image_url":

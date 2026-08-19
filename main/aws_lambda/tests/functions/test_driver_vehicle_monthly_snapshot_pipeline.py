@@ -1,33 +1,34 @@
-"""기사 데이터 Raw→Bronze 수집 시나리오.
+"""기사 차량 월별 스냅샷 Raw→Bronze 수집 시나리오.
 
-1. 기사 Parquet URL만 호출해 원본 그대로 저장
+1. 기사 차량 스냅샷 Parquet URL만 호출해 원본 그대로 저장
 2. 원천 행 수 없이 받은 Parquet footer에서 행 수 계산
 """
 
-from datetime import date
+from datetime import datetime
 from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from main.aws_lambda.common import monthly_dataset
-from functions.driver_master_raw_to_bronze.handler import lambda_handler
+from functions.driver_vehicle_monthly_snapshot_raw_to_bronze.handler import lambda_handler
 
 
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
-DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_leases"
+DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_monthly_snapshot"
 ROWS = [
     {
-        "lease_id": f"lease-{index}",
-        "customer_id": f"customer-{index}",
+        "snapshot_month": YEAR_MONTH,
         "driver_id": f"driver-{index}",
         "taxi_id": f"taxi-{index}",
-        "make_key": "KIA",
-        "model_key": "SPORTAGE",
-        "model_year": 2023,
-        "lease_started_on": date(2024, 1, 1),
-        "lease_ended_on": None,
+        "vehicle_model_id": "model-1",
+        "manufacturer": "KIA",
+        "model_name": "SPORTAGE",
+        "fuel_type": "GAS",
+        "comfort_eligible": True,
+        "weekly_lease_fee": 350.0,
+        "snapshot_created_at": datetime(2026, 8, 1),
     }
     for index in range(2)
 ]
@@ -58,7 +59,7 @@ def _api(monkeypatch, requested: list[str]) -> None:
     monkeypatch.setattr(monthly_dataset.requests, "get", get)
 
 
-def test_기사Parquet만_직접받아_footer행수와함께_Bronze에_저장한다(
+def test_기사차량스냅샷Parquet만_직접받아_footer행수와함께_Bronze에_저장한다(
     tmp_path, monkeypatch
 ):
     requested = []
@@ -76,6 +77,6 @@ def test_기사Parquet만_직접받아_footer행수와함께_Bronze에_저장한
     path = Path(result["locations"][0])
     assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
-    assert path.parent.parent.name == "driver_vehicle_leases"
+    assert path.parent.parent.name == "driver_vehicle_monthly_snapshot"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
     assert "sha256" not in result and "marker_location" not in result
