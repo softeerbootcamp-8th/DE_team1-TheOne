@@ -18,18 +18,27 @@ from pyspark.sql.functions import (
     concat_ws,
     count,
     countDistinct,
+    datediff,
+    floor,
+    hash as spark_hash,
     lit,
+    max as spark_max,
+    min as spark_min,
     monotonically_increasing_id,
+    pmod,
     row_number,
     sha2,
     struct,
     to_date,
     to_json,
+    to_timestamp,
+    when,
 )
 
 from schema.source import (
-    DRIVER_VEHICLE_LEASE_SCHEMA,
+    DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA,
     LEASE_VEHICLE_INVENTORY_SCHEMA,
+    MONTHLY_TAXI_TRIP_SCHEMA,
 )
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import (
@@ -41,7 +50,40 @@ from sub.spark.jobs.driver_assignment.allocator import allocate_trips
 from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
 from sub.spark.jobs.travel_times.transformer import build_travel_times
 
-LEASE_SOURCE_COLUMNS = DRIVER_VEHICLE_LEASE_SCHEMA.names
+SNAPSHOT_SOURCE_COLUMNS = DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names
+TRIP_SOURCE_COLUMNS = MONTHLY_TAXI_TRIP_SCHEMA.names
+
+# 입사 전 경력의 상한(년). `experience_years` 는 회사 근속에 이 값을 더해 만듭니다 —
+# 독립 난수로 두면 "근속 5년인데 경력 1년" 같은 모순이 생깁니다.
+PRIOR_EXPERIENCE_MAX_YEARS = 10
+
+# platform_name -> 원본 라이선스 번호. 정제 단계에서 사람이 읽는 이름으로 바꾼 것을
+# 되돌립니다 (`shared/spark/hvfhv_clean_transformer.py`).
+PLATFORM_LICENSE = {"Uber": "HV0003", "Lyft": "HV0005"}
+
+# pyarrow 타입 -> Spark cast 문자열. 산출물이 `schema/source` 와 **정확히** 같은 타입이
+# 되도록 여기서 한 번에 옮깁니다. 손으로 `.cast("int")` 를 흩어 놓으면 스키마가 바뀔 때
+# 따라가지 못합니다.
+_SPARK_TYPES = {
+    "string": "string",
+    "bool": "boolean",
+    "double": "double",
+    "int32": "int",
+    "int64": "bigint",
+    "int16": "smallint",
+    "date32[day]": "date",
+    "timestamp[us]": "timestamp",
+}
+
+
+def _as_schema(frame: DataFrame, schema) -> DataFrame:
+    """`schema` 의 컬럼만 그 순서·타입으로 고릅니다."""
+    return frame.select(
+        *(
+            col(field.name).cast(_SPARK_TYPES[str(field.type)]).alias(field.name)
+            for field in schema
+        )
+    )
 INVENTORY_COLUMNS = LEASE_VEHICLE_INVENTORY_SCHEMA.names
 
 
@@ -78,8 +120,14 @@ def add_trip_keys(raw_trips: DataFrame) -> DataFrame:
     return keyed.withColumn("trip_key", sha2(canonical, 256)).drop("_trip_occurrence")
 
 
-def build_trip_source(raw_trips: DataFrame, assignments: DataFrame) -> DataFrame:
-    """배정된 원본 HVFHV 행에 taxi_id만 붙이고 내부 trip_key는 제거합니다."""
+def build_trip_source(
+    raw_trips: DataFrame, clean_trips: DataFrame, assignments: DataFrame
+) -> DataFrame:
+    """배정된 운행을 `MONTHLY_TAXI_TRIP_SCHEMA` 14컬럼으로 좁힙니다.
+
+    예전에는 TLC 원본 26컬럼을 그대로 내보냈습니다 — 공개 계약이 원본 형태에
+    묶여 있었고, 원본이 컬럼을 추가하면 하류가 조용히 따라 늘어났습니다.
+    """
     if "taxi_id" in raw_trips.columns:
         raise ValueError("HVFHV 원천에는 배정 전 taxi_id가 없어야 합니다")
     required = {"trip_key", "taxi_id"}
@@ -93,55 +141,167 @@ def build_trip_source(raw_trips: DataFrame, assignments: DataFrame) -> DataFrame
     if not stats or stats["rows"] == 0 or stats["rows"] != stats["distinct_trips"]:
         raise ValueError("배정 trip_key는 1건 이상이며 고유해야 합니다")
 
-    raw_columns = raw_trips.columns
     selected = assignments.select(
         "trip_key", col("taxi_id").alias("_assigned_taxi_id")
     )
+    # 원본에만 있는 것(on_scene_datetime)과 정제본에만 있는 것(zone·등급·platform_name)이
+    # 갈려 있어 둘 다 붙입니다. FINAL_SCHEMA 에 on_scene_datetime 이 없습니다.
+    clean = clean_trips.select(
+        "trip_key",
+        col("pickup_zone"),
+        col("dropoff_zone"),
+        col("estimated_service_tier"),
+        col("platform_name"),
+    )
+    license_number = None
+    for name, number in PLATFORM_LICENSE.items():
+        branch = when if license_number is None else license_number.when
+        license_number = branch(col("platform_name") == lit(name), lit(number))
+
     source = (
         add_trip_keys(raw_trips)
         .join(selected, "trip_key", "inner")
-        .select(
-            *(col(name) for name in raw_columns),
-            col("_assigned_taxi_id").alias("taxi_id"),
-        )
+        .join(clean, "trip_key", "inner")
+        .withColumn("taxi_id", col("_assigned_taxi_id"))
+        .withColumn("hvfhs_license_num", license_number)
     )
-    return source
+    typed = _as_schema(source, MONTHLY_TAXI_TRIP_SCHEMA)
+    _require_non_null(
+        typed,
+        set(MONTHLY_TAXI_TRIP_SCHEMA.names) - {"on_scene_datetime"},
+        "운행 기록",
+    )
+    return typed
 
 
-def build_driver_vehicle_leases(
+def _vehicle_model_id(manufacturer, model_name, model_year):
+    """차종 식별자.
+
+    `lease_vehicle_inventory` 와 `driver_vehicle_monthly_snapshot` 이 **같은 규칙**으로
+    만들어야 두 데이터셋이 조인됩니다. 한쪽만 바꾸면 조인이 전부 빗나가는데 행 수는
+    그대로라 조용히 틀립니다.
+    """
+    return sha2(
+        concat_ws(":", manufacturer, model_name, model_year.cast("string")), 256
+    )
+
+
+def build_driver_vehicle_monthly_snapshot(
     customers: DataFrame,
     leases: DataFrame,
     taxis: DataFrame,
+    vehicle_master: DataFrame,
     *,
     snapshot_date: date,
+    year_month: str,
+    seed: int,
 ) -> DataFrame:
-    """월별 회사 스냅샷을 기사·차량 리스 이력 한 테이블로 접습니다."""
+    """(기사, 대상 월) 한 행짜리 월별 스냅샷을 만듭니다.
+
+    리스 계약 단위가 아니라 **기사 단위**입니다. 기사당 계약이 여러 건일 수 있으므로
+    (`evolve_company_snapshot` 이 계약을 종료시키고 새로 맺습니다) 1:1 을 가정하지 않고
+    윈도우로 고릅니다.
+
+        join_date     그 기사의 최초 계약 시작일
+        vehicle_since 현재 계약의 시작일
+        exit_date     진행 중 계약이 하나도 없을 때만 마지막 종료일, 아니면 NULL
+    """
     c = customers.filter(col("snapshot_date") == lit(snapshot_date)).alias("c")
     l = leases.filter(col("snapshot_date") == lit(snapshot_date)).alias("l")
     x = taxis.filter(col("snapshot_date") == lit(snapshot_date)).alias("x")
-    source = (
-        l.join(c, col("l.customer_id") == col("c.customer_id"), "inner")
-        .join(x, col("l.taxi_id") == col("x.taxi_id"), "inner")
-        .select(
-            col("l.lease_id"),
-            col("l.customer_id"),
-            col("c.synthetic_driver_id").alias("driver_id"),
-            col("l.taxi_id"),
-            col("x.make_key"),
-            col("x.model_key"),
-            col("x.model_year"),
-            col("l.lease_started_on"),
-            col("l.lease_ended_on"),
-        )
+
+    joined = l.join(c, col("l.customer_id") == col("c.customer_id"), "inner").select(
+        col("c.synthetic_driver_id").alias("driver_id"),
+        col("l.taxi_id").alias("taxi_id"),
+        col("l.lease_started_on").alias("lease_started_on"),
+        col("l.lease_ended_on").alias("lease_ended_on"),
     )
-    expected = l.count()
-    stats = source.agg(
+
+    by_driver = Window.partitionBy("driver_id")
+    # 진행 중 계약을 먼저, 그다음 시작일이 늦은 순. 첫 행이 "현재 차량"입니다.
+    current = Window.partitionBy("driver_id").orderBy(
+        col("lease_ended_on").isNotNull().asc(), col("lease_started_on").desc()
+    )
+    ranked = (
+        joined.withColumn("_join_date", spark_min("lease_started_on").over(by_driver))
+        .withColumn("_open", count(when(col("lease_ended_on").isNull(), 1)).over(by_driver))
+        .withColumn("_last_end", spark_max("lease_ended_on").over(by_driver))
+        .withColumn("_rank", row_number().over(current))
+        .filter(col("_rank") == 1)
+    )
+
+    fleet = x.select(
+        col("x.taxi_id").alias("_taxi_id"),
+        col("x.make_key").alias("manufacturer"),
+        col("x.model_key").alias("model_name"),
+        col("x.model_year").alias("_model_year"),
+        col("x.weekly_lease_fee").alias("weekly_lease_fee"),
+        col("x.uber_comfort_eligible").alias("comfort_eligible"),
+        col("x.lyft_extra_comfort_eligible").alias("extra_comfort_eligible"),
+    )
+    fuel = vehicle_master.select(
+        col("make_key").alias("_mk"), col("model_key").alias("_mo"), col("fuel_type")
+    ).distinct()
+
+    snapshot = (
+        ranked.join(fleet, col("taxi_id") == col("_taxi_id"), "inner")
+        .join(
+            fuel,
+            (col("manufacturer") == col("_mk")) & (col("model_name") == col("_mo")),
+            "left",
+        )
+        .withColumn("snapshot_month", lit(year_month))
+        .withColumn(
+            "vehicle_model_id",
+            _vehicle_model_id(col("manufacturer"), col("model_name"), col("_model_year")),
+        )
+        .withColumn("join_date", col("_join_date"))
+        .withColumn(
+            "exit_date", when(col("_open") == 0, col("_last_end")).otherwise(lit(None))
+        )
+        .withColumn("vehicle_since", col("lease_started_on"))
+        .withColumn(
+            "experience_years",
+            (
+                floor(datediff(lit(snapshot_date), col("_join_date")) / lit(365.25))
+                + pmod(
+                    spark_hash(col("driver_id")) + lit(seed),
+                    lit(PRIOR_EXPERIENCE_MAX_YEARS + 1),
+                )
+            ).cast("int"),
+        )
+        .withColumn("snapshot_created_at", to_timestamp(lit(snapshot_date)))
+    )
+
+    expected = joined.select("driver_id").distinct().count()
+    stats = snapshot.agg(
         count(lit(1)).alias("rows"),
-        countDistinct("lease_id").alias("distinct_leases"),
+        countDistinct("driver_id").alias("distinct_drivers"),
     ).first()
-    if not stats or stats["rows"] != expected or stats["distinct_leases"] != expected:
-        raise ValueError("기사·계약·차량 관계가 일대일로 보존되지 않았습니다")
-    return source.select(*LEASE_SOURCE_COLUMNS)
+    if not stats or stats["rows"] != expected or stats["distinct_drivers"] != expected:
+        raise ValueError("기사 스냅샷은 기사당 정확히 한 행이어야 합니다")
+
+    typed = _as_schema(snapshot, DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA)
+    _require_non_null(
+        typed,
+        set(DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names) - {"exit_date"},
+        "기사 스냅샷",
+    )
+    return typed
+
+
+def _require_non_null(frame: DataFrame, columns: set[str], label: str) -> None:
+    """계약상 비면 안 되는 컬럼을 확인합니다.
+
+    상류 컬럼명이 바뀌면 조인이 통째로 빗나가는데 행 수는 그대로라, 값을 안 보면
+    조용히 NULL 만 남습니다.
+    """
+    condition = None
+    for name in sorted(columns):
+        missing = col(name).isNull()
+        condition = missing if condition is None else (condition | missing)
+    if condition is not None and frame.filter(condition).limit(1).count():
+        raise ValueError(f"{label}에 비면 안 되는 컬럼이 비었습니다: {sorted(columns)}")
 
 
 def build_lease_vehicle_inventory(
@@ -229,27 +389,33 @@ def build_lease_vehicle_inventory(
     return inventory.select(*INVENTORY_COLUMNS)
 
 
-def _validate_temporal_links(trips: DataFrame, leases: DataFrame) -> None:
+def _validate_temporal_links(trips: DataFrame, snapshots: DataFrame) -> None:
+    """모든 운행이 그 시점에 그 차를 몰던 기사 한 명과 연결되는지 봅니다.
+
+    예전에는 리스 계약(`lease_started_on`/`lease_ended_on`)으로 봤습니다. 공개 계약이
+    월별 기사 스냅샷으로 바뀌면서 같은 사실을 `vehicle_since`/`exit_date` 로 봅니다.
+    한 건도 못 붙거나 두 건에 붙으면 하류 조인이 조용히 행을 잃거나 늘립니다.
+    """
     rows = trips.withColumn("_source_row_id", monotonically_increasing_id()).alias("t")
     matched = rows.join(
-        leases.alias("l"),
-        (col("t.taxi_id") == col("l.taxi_id"))
-        & (col("l.lease_started_on") <= to_date(col("t.pickup_datetime")))
+        snapshots.alias("s"),
+        (col("t.taxi_id") == col("s.taxi_id"))
+        & (col("s.vehicle_since") <= to_date(col("t.pickup_datetime")))
         & (
-            col("l.lease_ended_on").isNull()
-            | (to_date(col("t.pickup_datetime")) < col("l.lease_ended_on"))
+            col("s.exit_date").isNull()
+            | (to_date(col("t.pickup_datetime")) < col("s.exit_date"))
         ),
         "left",
     )
     invalid = (
         matched.groupBy("_source_row_id")
-        .agg(count("l.lease_id").alias("matches"))
+        .agg(count("s.driver_id").alias("matches"))
         .filter(col("matches") != 1)
         .limit(1)
         .count()
     )
     if invalid:
-        raise ValueError("모든 HVFHV 행은 운행 시점의 리스 한 건과 연결돼야 합니다")
+        raise ValueError("모든 HVFHV 행은 운행 시점의 기사 스냅샷 한 건과 연결돼야 합니다")
 
 
 def _existing_release(path: Path, year_month: str, seed: int) -> bool:
@@ -263,7 +429,7 @@ def _existing_release(path: Path, year_month: str, seed: int) -> bool:
         raise ValueError(f"기존 릴리스 계보가 요청과 다릅니다: {manifest}")
     for name in (
         "hvfhv_taxi_trips",
-        "driver_vehicle_leases",
+        "driver_vehicle_monthly_snapshot",
         "lease_vehicle_inventory",
     ):
         dataset = manifest.get("datasets", {}).get(name, {})
@@ -294,7 +460,7 @@ def _sha256(path: Path) -> str:
 
 def write_source_release(
     trips: DataFrame,
-    leases: DataFrame,
+    snapshots: DataFrame,
     inventory: DataFrame,
     *,
     output_dir: str | Path,
@@ -306,17 +472,17 @@ def write_source_release(
     if _existing_release(final, year_month, seed):
         return final
 
-    _validate_temporal_links(trips, leases)
+    _validate_temporal_links(trips, snapshots)
     output_root = Path(output_dir)
     output_root.mkdir(parents=True, exist_ok=True)
     staging = output_root / f".year_month={year_month}.staging-{uuid.uuid4().hex}"
     try:
         staging.mkdir()
         trip_file = staging / "hvfhv_taxi_trips.parquet"
-        lease_file = staging / "driver_vehicle_leases.parquet"
+        snapshot_file = staging / "driver_vehicle_monthly_snapshot.parquet"
         inventory_file = staging / "lease_vehicle_inventory.parquet"
         _write_one_parquet(trips, trip_file)
-        _write_one_parquet(leases, lease_file)
+        _write_one_parquet(snapshots, snapshot_file)
         _write_one_parquet(inventory, inventory_file)
         manifest = {
             "release_id": f"{year_month}-seed-{seed}",
@@ -328,10 +494,10 @@ def write_source_release(
                     "row_count": pq.ParquetFile(trip_file).metadata.num_rows,
                     "sha256": _sha256(trip_file),
                 },
-                "driver_vehicle_leases": {
-                    "file": lease_file.name,
-                    "row_count": pq.ParquetFile(lease_file).metadata.num_rows,
-                    "sha256": _sha256(lease_file),
+                "driver_vehicle_monthly_snapshot": {
+                    "file": snapshot_file.name,
+                    "row_count": pq.ParquetFile(snapshot_file).metadata.num_rows,
+                    "sha256": _sha256(snapshot_file),
                 },
                 "lease_vehicle_inventory": {
                     "file": inventory_file.name,
@@ -426,12 +592,19 @@ def main(args_list: list[str] | None = None) -> Path:
     candidates.unpersist(blocking=True)
     trip_source = build_trip_source(
         raw_trips,
+        trips,
         assignments,
     ).persist(StorageLevel.DISK_ONLY)
     if trip_source.count() != assignment_count:
         raise ValueError("배정 결과와 HVFHV 원천 행이 일대일로 연결되지 않습니다")
-    lease_source = build_driver_vehicle_leases(
-        customers, leases, taxis, snapshot_date=snapshot_date
+    snapshot_source = build_driver_vehicle_monthly_snapshot(
+        customers,
+        leases,
+        taxis,
+        vehicle_master,
+        snapshot_date=snapshot_date,
+        year_month=args.year_month,
+        seed=args.seed,
     ).persist(StorageLevel.DISK_ONLY)
     inventory_source = build_lease_vehicle_inventory(
         taxis, vehicle_master, snapshot_date=snapshot_date
@@ -439,7 +612,7 @@ def main(args_list: list[str] | None = None) -> Path:
     try:
         return write_source_release(
             trip_source,
-            lease_source,
+            snapshot_source,
             inventory_source,
             output_dir=release_output_dir,
             year_month=args.year_month,
@@ -448,7 +621,7 @@ def main(args_list: list[str] | None = None) -> Path:
     finally:
         for frame in (
             inventory_source,
-            lease_source,
+            snapshot_source,
             trip_source,
             assignments,
             candidates,

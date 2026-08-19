@@ -21,7 +21,10 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from schema.source import LEASE_VEHICLE_INVENTORY_SCHEMA as INVENTORY_SCHEMA
+from schema.source import (
+    DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SNAPSHOT_SCHEMA,
+    LEASE_VEHICLE_INVENTORY_SCHEMA as INVENTORY_SCHEMA,
+)
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module
@@ -182,7 +185,7 @@ def _write_release(root, *, manifest_rows=1):
     release = root / "year_month=2026-09"
     release.mkdir(parents=True)
     trip_file = release / "hvfhv_taxi_trips.parquet"
-    lease_file = release / "driver_vehicle_leases.parquet"
+    snapshot_file = release / "driver_vehicle_monthly_snapshot.parquet"
     inventory_file = release / "lease_vehicle_inventory.parquet"
     pq.write_table(
         pa.Table.from_pylist(
@@ -194,19 +197,26 @@ def _write_release(root, *, manifest_rows=1):
         pa.Table.from_pylist(
             [
                 {
-                    "lease_id": "lease-1",
-                    "customer_id": "customer-1",
+                    "snapshot_month": "2026-09",
                     "driver_id": "driver-1",
                     "taxi_id": "taxi-1",
-                    "make_key": "KIA",
-                    "model_key": "SPORTAGE",
-                    "model_year": 2023,
-                    "lease_started_on": date(2026, 9, 1),
-                    "lease_ended_on": None,
+                    "vehicle_model_id": "vehicle-model-1",
+                    "manufacturer": "KIA",
+                    "model_name": "SPORTAGE",
+                    "fuel_type": "GAS",
+                    "comfort_eligible": True,
+                    "extra_comfort_eligible": False,
+                    "weekly_lease_fee": 574.0,
+                    "join_date": date(2024, 3, 1),
+                    "exit_date": None,
+                    "experience_years": 7,
+                    "vehicle_since": date(2026, 9, 1),
+                    "snapshot_created_at": datetime(2026, 9, 1),
                 }
-            ]
+            ],
+            schema=SNAPSHOT_SCHEMA,
         ),
-        lease_file,
+        snapshot_file,
     )
     pq.write_table(pa.Table.from_pylist([{}], schema=INVENTORY_SCHEMA), inventory_file)
 
@@ -223,7 +233,7 @@ def _write_release(root, *, manifest_rows=1):
         "seed": 42,
         "datasets": {
             "hvfhv_taxi_trips": metadata(trip_file),
-            "driver_vehicle_leases": metadata(lease_file),
+            "driver_vehicle_monthly_snapshot": metadata(snapshot_file),
             "lease_vehicle_inventory": metadata(inventory_file),
         },
     }

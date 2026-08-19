@@ -216,36 +216,6 @@ DRIVER_VEHICLE_MONTHLY_SNAPSHOT_REQUIRED_NON_NULL = frozenset(
     set(DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names) - {"exit_date"}
 )
 
-"""기사 데이터의 논리 스키마.
-
-main/ 의 schema/silver 와 같은 모양이어야 하지만, sub/ 는 schema/bronze·silver·gold
-를 참조하지 않습니다 — 여기 별도로 둡니다.
-"""
-DRIVER_VEHICLE_LEASE_SCHEMA = pa.schema(
-    [
-        ("lease_id", pa.string()),
-        ("customer_id", pa.string()),
-        ("driver_id", pa.string()),
-        ("taxi_id", pa.string()),
-        ("make_key", pa.string()),
-        ("model_key", pa.string()),
-        ("model_year", pa.int64()),
-        ("lease_started_on", pa.date32()),
-        ("lease_ended_on", pa.date32()),
-    ]
-)
-
-DRIVER_VEHICLE_LEASE_REQUIRED_NON_NULL = {
-    "lease_id",
-    "customer_id",
-    "driver_id",
-    "taxi_id",
-    "make_key",
-    "model_key",
-    "model_year",
-    "lease_started_on",
-}
-
 """[리스 업체 보유 차량] 월별 API 스키마.
 
 한 행은 제조사·모델·연식이 같은 보유 차량 묶음입니다. ``stock``은 그 묶음의
