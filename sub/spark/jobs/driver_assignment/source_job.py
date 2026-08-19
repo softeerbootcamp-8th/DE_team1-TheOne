@@ -27,9 +27,9 @@ from pyspark.sql.functions import (
     to_json,
 )
 
-from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
-from schema.silver.lease_vehicle_inventory import (
-    SCHEMA as LEASE_VEHICLE_INVENTORY_SCHEMA,
+from schema.source import (
+    DRIVER_VEHICLE_LEASE_SCHEMA,
+    LEASE_VEHICLE_INVENTORY_SCHEMA,
 )
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import (

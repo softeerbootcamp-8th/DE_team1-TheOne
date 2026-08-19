@@ -21,7 +21,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from schema.silver.lease_vehicle_inventory import SCHEMA as INVENTORY_SCHEMA
+from schema.source import LEASE_VEHICLE_INVENTORY_SCHEMA as INVENTORY_SCHEMA
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module

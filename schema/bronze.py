@@ -46,7 +46,7 @@ LEASE_VEHICLE_INVENTORY_SCHEMA = pa.schema(
         ("fuel_efficiency", pa.float64()),  # 연비 (전기차는 MPGe)
         ("comfort_eligible", pa.bool_()),  # Comfort 등급 대상 여부
         ("extra_comfort_eligible", pa.bool_()),  # Extra Comfort 등급 대상 여부
-        ("weekly_lease_fee", pa.float64()),  # 주간 리스료
+        ("weekly_price_usd", pa.float64()),  # 주간 리스료
         ("image_url", pa.string()),  # 차량 이미지 URL
         ("stock", pa.int32()),  # 보유 대수
     ]

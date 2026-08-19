@@ -41,8 +41,8 @@ default_args = {
     max_active_runs=1,
     tags=["hvfhv", "driver", "silver", "spark"],
     params={
-        "year": Param(None, type=["string", "null"]),
-        "month": Param(None, type=["string", "null"]),
+        "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
+        "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
     },
 )

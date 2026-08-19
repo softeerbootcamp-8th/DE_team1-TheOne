@@ -47,8 +47,8 @@ default_args = {
     max_active_runs=1,
     tags=["hvfhv", "gold", "spark"],
     params={
-        "year": Param(None, type=["string", "null"]),
-        "month": Param(None, type=["string", "null"]),
+        "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
+        "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         # 차량 교체 추천으로 집계할 최소 순수익 증가액(USD). Spark 잡이 required 로
         # 받는 값이라 기본값을 여기서 정합니다.
         #
