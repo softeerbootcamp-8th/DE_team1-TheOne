@@ -1,7 +1,7 @@
 """도메인 공용 S3 Bronze/Silver 읽기 헬퍼.
 
 bronze_to_silver 함수들이 S3에서 여러 파일을 나열·조회할 때 쓰는 최소 프리미티브.
-쓰기 쪽 대칭 구현체는 shared/aws_lambda/common/s3_loader.py 참고.
+쓰기 쪽 대칭 구현체는 s3_loader.py 참고.
 """
 
 import boto3
