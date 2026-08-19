@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 GAS_SHEET_INDEX = 1
 GAS_HEADER_ROWS = 3
 GAS_USD_RANGE = (1.0, 15.0)
+# 대상 월 마지막 관측일이 월말에서 이만큼 넘게 떨어져 있으면 원본이 낡은 것으로 봅니다.
+# 주간 계열이라 정상이면 최대 6일(마지막 관측이 25일, 월말이 31일)입니다. 공개 지연과
+# 공휴일을 감안해 두 배 남짓 잡았습니다.
+MAX_OBSERVATION_GAP_DAYS = 13
 
 
 def month_days(year_month: str) -> list[date]:
@@ -42,6 +46,31 @@ def parse_gas_weekly(body: bytes) -> list[tuple[date, float]]:
     if not observations:
         raise ValueError("EIA 휘발유 이력이 비어 있습니다")
     return sorted(observations)
+
+
+def require_fresh_observations(year_month: str, weekly: list[tuple[date, float]]) -> None:
+    """대상 월을 덮을 만큼 최근 관측이 있는지 봅니다.
+
+    `gas_price_for` 가 "그 날 이하 가장 최근 관측치"를 복제하는 forward-fill 이라,
+    관측이 몇 주 전에 끊겨도 한 달이 **같은 값 하나로** 채워지고 예외 없이 통과합니다.
+    수집이 실패해 직전 수집분이 그대로 쓰이는 경우가 여기에 해당합니다(#544).
+
+    수집일(`bronze_collected_date`)로 재지 않는 이유는, `is_duplicate_of_newest` 가
+    내용이 같으면 파티션을 안 쌓아서 그 값이 "언제 받았나"가 아니라 "언제 바뀌었나"를
+    뜻하기 때문입니다. 실제로 낡았는지는 관측일이 말해 줍니다.
+    """
+    month_end = month_days(year_month)[-1]
+    in_scope = [observed for observed, _ in weekly if observed <= month_end]
+    if not in_scope:
+        return  # 관측 자체가 없는 경우는 `gas_price_for` 가 시작일을 알려주며 실패합니다.
+
+    gap = (month_end - max(in_scope)).days
+    if gap > MAX_OBSERVATION_GAP_DAYS:
+        raise ValueError(
+            f"{year_month} 를 덮는 휘발유 관측이 낡았습니다: 마지막 관측 {max(in_scope)}, "
+            f"월말까지 {gap}일 (허용 {MAX_OBSERVATION_GAP_DAYS}일). "
+            "eia_gas_price_raw_to_bronze_pipeline 을 먼저 돌리세요."
+        )
 
 
 def gas_price_for(days: list[date], weekly: list[tuple[date, float]]) -> dict[date, float]:
@@ -83,7 +112,9 @@ def build_daily_prices(
     datetime.strptime(year_month, "%Y-%m")
 
     days = month_days(year_month)
-    prices = gas_price_for(days, parse_gas_weekly(gas_body))
+    weekly = parse_gas_weekly(gas_body)
+    require_fresh_observations(year_month, weekly)
+    prices = gas_price_for(days, weekly)
     rows = [
         {
             "date": day,

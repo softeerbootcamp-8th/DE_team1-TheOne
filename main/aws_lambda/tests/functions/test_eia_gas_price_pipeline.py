@@ -8,6 +8,10 @@
 4. 대상 월 첫날 이전 관측치가 없으면 실패
 5. 단가가 허용 범위 밖이면 실패
 6. Loader 가 CLEAN 스키마 그대로, 대상 월 파티션에 씀
+7. 대상 월을 덮는 관측이 낡았으면 실패 — forward-fill 이 한 달을 같은 값 하나로
+   채우고 일수·범위·중복 검사를 모두 통과해 버림 (#544)
+8. 그 달 마지막 주 관측이 있으면 통과. 월말 이후 관측은 기준이 아니라 과거 달
+   백필도 막지 않음
 """
 
 from datetime import date
@@ -92,7 +96,9 @@ def test_대상월_이전_관측치가_없으면_실패한다():
 
 def test_단가가_허용범위_밖이면_실패한다():
     with pytest.raises(ValueError, match="허용 범위"):
-        build_daily_prices("2025-05", _xls([(date(2025, 4, 28), 99.0)]), COLLECTED)
+        build_daily_prices(
+            "2025-05", _xls([(date(2025, 4, 28), 99.0), (date(2025, 5, 26), 99.0)]), COLLECTED
+        )
 
 
 def test_주간_계열_시트가_없으면_실패한다():
@@ -119,3 +125,55 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
 def test_빈_결과는_적재를_거부한다(tmp_path):
     with pytest.raises(ValueError, match="적재할"):
         EiaGasPriceSilverLoader(str(tmp_path), "2025-05").write([])
+
+
+# --- 원본 신선도 (#544) -------------------------------------------------------
+# 수집이 실패해 직전 수집분이 그대로 쓰이면, forward-fill 이 한 달을 같은 값 하나로
+# 채우고 기존 검사(일수·범위·중복)를 전부 통과합니다.
+
+def test_대상월을_덮는_관측이_낡았으면_실패한다():
+    """8월에서 끊긴 원본으로 9월을 만들려는 상황 — 30일이 전부 8-24 값이 됩니다."""
+    stale = [(date(2026, 8, d), 3.1) for d in (3, 10, 17, 24)]
+
+    with pytest.raises(ValueError, match="휘발유 관측이 낡았습니다"):
+        build_daily_prices("2026-09", _xls(stale), COLLECTED)
+
+
+def test_낡은_원본_실패는_다시_돌릴_DAG_을_알려준다():
+    stale = [(date(2026, 8, d), 3.1) for d in (3, 10, 17, 24)]
+
+    with pytest.raises(ValueError, match="eia_gas_price_raw_to_bronze_pipeline"):
+        build_daily_prices("2026-09", _xls(stale), COLLECTED)
+
+
+def test_그_달_마지막_주_관측이_있으면_통과한다():
+    """정상 수집 — 월말과 6일 차이. 가드가 정상 경로를 막으면 안 됩니다."""
+    fresh = [(date(2026, 7, 27), 3.0)] + [(date(2026, 8, d), 3.1) for d in (3, 10, 17, 25)]
+
+    rows = build_daily_prices("2026-08", _xls(fresh), COLLECTED)
+
+    assert len(rows) == 31
+
+
+def test_과거_달_백필은_막지_않는다():
+    """월말 **이후** 관측은 기준이 아닙니다 — 최신 파일로 옛날 달을 만드는 게 정상 경로."""
+    weekly = WEEKLY + [(date(2026, 8, 17), 3.5)]
+
+    rows = build_daily_prices("2025-05", _xls(weekly), COLLECTED)
+
+    assert len(rows) == 31
+
+
+@pytest.mark.parametrize(
+    ("last_observed", "fails"),
+    [(date(2026, 8, 18), False), (date(2026, 8, 17), True)],
+)
+def test_허용_간격_경계(last_observed, fails):
+    """월말(8-31) 기준 13일까지 허용, 14일부터 실패."""
+    weekly = [(date(2026, 7, 27), 3.0), (last_observed, 3.1)]
+
+    if fails:
+        with pytest.raises(ValueError, match="휘발유 관측이 낡았습니다"):
+            build_daily_prices("2026-08", _xls(weekly), COLLECTED)
+    else:
+        assert len(build_daily_prices("2026-08", _xls(weekly), COLLECTED)) == 31
