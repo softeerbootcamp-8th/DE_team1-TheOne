@@ -59,22 +59,9 @@ def test_새_14컬럼과_원천_운행등급을_Silver에_그대로_전달한다
         spark.createDataFrame(rows)
     )
 
-    assert result.schema.names == [*FINAL_SCHEMA.names, "year_month"]
-    assert [field.dataType.simpleString() for field in result.schema][:-1] == [
-        "string",
-        "string",
-        "timestamp",
-        "timestamp",
-        "timestamp",
-        "int",
-        "int",
-        "string",
-        "string",
-        "double",
-        "bigint",
-        "double",
-        "double",
-        "string",
+    assert result.schema.names == FINAL_SCHEMA.names
+    assert [field.dataType for field in result.schema] == [
+        field.dataType for field in FINAL_SCHEMA
     ]
     assert {
         (row["hvfhs_license_num"], row["estimated_service_tier"])

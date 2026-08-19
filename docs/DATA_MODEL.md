@@ -84,7 +84,7 @@
 
 | 데이터셋 | 한 행 | 파티션 | 규모 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
-| `hvfhv` | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/__init__.py](../schema/silver/__init__.py) |
+| `hvfhv` | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv.py](../schema/silver/hvfhv.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
 | `lease_vehicle_inventory` | 차종 × 연식 1개 | `year_month` | 차종 수준 | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | **`hvfhv_driver_trip`** | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv_driver_trip.py](../schema/silver/hvfhv_driver_trip.py) |

@@ -2,33 +2,17 @@
 
 import logging
 
-import pyarrow as pa
 from pipeline_core.transformer import Transformer
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, count, date_format, lit, trim, when
 
-from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as FINAL_SCHEMA
+from schema.silver.hvfhv import FINAL_SCHEMA, REQUIRED_COLUMNS
 
 
 logger = logging.getLogger(__name__)
 
 
-def _spark_type(data_type: pa.DataType) -> str:
-    if pa.types.is_string(data_type):
-        return "string"
-    if pa.types.is_timestamp(data_type):
-        return "timestamp"
-    if pa.types.is_int32(data_type):
-        return "int"
-    if pa.types.is_int64(data_type):
-        return "bigint"
-    if pa.types.is_float64(data_type):
-        return "double"
-    raise TypeError(f"지원하지 않는 Silver 타입입니다: {data_type}")
-
-
-REQUIRED_COLUMNS = list(FINAL_SCHEMA.names)
-_SILVER_TYPES = {field.name: _spark_type(field.type) for field in FINAL_SCHEMA}
+_SILVER_TYPES = {field.name: field.dataType for field in FINAL_SCHEMA}
 _STRING_COLUMNS = (
     "taxi_id",
     "hvfhs_license_num",
@@ -110,8 +94,7 @@ class HVFHVCleanTransformer(Transformer):
             *(
                 col(field.name).cast(_SILVER_TYPES[field.name]).alias(field.name)
                 for field in FINAL_SCHEMA
-            ),
-            col("year_month"),
+            )
         )
 
 
