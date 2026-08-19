@@ -19,7 +19,7 @@ from airflow.sdk import task
 
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from schema.silver.gas_ev_price import EIA, FINAL, SCHEMA
+from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
 
 logger = logging.getLogger(__name__)
 

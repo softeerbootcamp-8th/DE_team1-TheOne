@@ -25,9 +25,12 @@ from main.aws_lambda.functions.eia_fuel_price_silver.extractor import (
 )
 from main.aws_lambda.functions.eia_fuel_price_silver.handler import lambda_handler
 from main.aws_lambda.functions.eia_fuel_price_silver.transformer import combine_daily_prices
-from schema.silver.ev_charging_price import SCHEMA as EV_SCHEMA
-from schema.silver.gas_ev_price import EIA, SCHEMA
-from schema.silver.gas_price import SCHEMA as GAS_SCHEMA
+from schema.silver import (
+    CLEAN_EV_CHARGING_PRICE_SCHEMA as EV_SCHEMA,
+    CLEAN_FUEL_PRICE_SCHEMA as SCHEMA,
+    CLEAN_GAS_PRICE_SCHEMA as GAS_SCHEMA,
+    EIA,
+)
 
 GAS_COLLECTED = date(2026, 8, 10)
 EV_COLLECTED = date(2026, 8, 17)

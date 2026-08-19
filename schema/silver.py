@@ -40,6 +40,10 @@ CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA = pa.schema(
     ]
 )
 
+CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA_REQUIRED_NON_NULL = frozenset(
+    CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names
+)   
+
 
 """
 [CLEAN 리스 업체 보유 차량 데이터]
@@ -61,6 +65,10 @@ CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA = pa.schema(
     ]
 )
 
+CLEAN_LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL = frozenset(
+    CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA.names
+)
+
 """
 [뉴욕주 휘발유 요금]
 input: schema/bronze.py - xlsx 원본 데이터
@@ -70,6 +78,7 @@ CLEAN_GAS_PRICE_SCHEMA = pa.schema(
     [
         ("date", pa.date32()),
         ("gas_price", pa.float64()),
+        ("bronze_collected_date", pa.date32()),
     ]
 )
 
@@ -82,6 +91,8 @@ CLEAN_EV_CHARGING_PRICE_SCHEMA = pa.schema(
     [
         ("date", pa.date32()),
         ("ev_price", pa.float64()),
+        ("bronze_collected_date", pa.date32()),
+        ("ev_price_status", pa.string()),
     ]
 )
 
@@ -99,4 +110,11 @@ CLEAN_FUEL_PRICE_SCHEMA = pa.schema(
         ("ev_price_status", pa.string()),  # 전력값 확정 여부 ("Preliminary" / "Final")
     ]
 )
+
+# 출처 이름. 역할("backfill")이 아니라 어디서 왔는지로 둡니다.
+EIA = "eia"
+
+# EIA 가 파일에 직접 적는 값입니다. 우리가 정하는 것이 아니라 읽어서 옮깁니다.
+PRELIMINARY = "Preliminary"
+FINAL = "Final"
 

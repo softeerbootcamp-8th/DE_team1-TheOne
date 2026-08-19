@@ -11,7 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-from schema.silver.gas_ev_price import SCHEMA
+from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA
 
 from shared.aws_lambda.common.atomic_write import atomic_write
 

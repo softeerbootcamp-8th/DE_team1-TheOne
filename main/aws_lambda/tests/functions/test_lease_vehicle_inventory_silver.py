@@ -12,7 +12,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from schema.silver.lease_vehicle_inventory import SCHEMA
+from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 from functions.lease_vehicle_inventory_bronze_to_silver.handler import lambda_handler
 from functions.lease_vehicle_inventory_bronze_to_silver.loader import (
     LeaseVehicleInventorySilverLoader,

@@ -7,7 +7,10 @@
 import pyarrow as pa
 from pipeline_core.transformer import Transformer
 
-from schema.silver.lease_vehicle_inventory import REQUIRED_NON_NULL, SCHEMA
+from schema.silver import (
+    CLEAN_LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as REQUIRED_NON_NULL,
+    CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA,
+)
 
 
 # 0 이하면 재고·연비·가격 어느 쪽이든 계산에 쓸 수 없는 값입니다.

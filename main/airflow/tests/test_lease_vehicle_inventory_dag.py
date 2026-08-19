@@ -15,7 +15,7 @@ import pytest
 
 from dags import lease_vehicle_inventory_raw_to_silver_dag as dag_module
 from dags.driver_master_raw_to_silver_dag import driver_master_raw_to_silver_dag
-from schema.silver.lease_vehicle_inventory import SCHEMA
+from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
     tasks as task_module,
 )
