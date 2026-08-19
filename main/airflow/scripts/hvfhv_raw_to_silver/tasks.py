@@ -250,7 +250,6 @@ def _bronze_quality_result(
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     path, _ = validate_synthetic_bronze(
         result,
-        dataset="hvfhv_taxi_trips",
         dataset_dir="hvfhv",
         base_dir=base_dir,
     )

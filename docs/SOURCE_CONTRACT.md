@@ -1,50 +1,41 @@
 # 원천을 신뢰하지 않는 전제로 수집합니다
 
-원천은 우리가 만들었지만, **거기서 가져오는 데이터가 완벽할 것이라고 가정하지 않고** 파이프라인을 세웠습니다.
-원천 파이프라인을 만들 때도 마찬가지입니다 — 크롤링하는 공개 사이트는 우리 통제 밖이라
-언제든 응답이 끊기거나 표 구조가 바뀝니다.
+원천과 메인 데이터 프로덕트는 HTTP API 경계로 분리합니다. 메인은 원천 내부의 릴리스 정보가 아니라 공개된 Parquet 파일만 사용합니다.
 
 | 어디서 | 무엇을 가정하지 않는가 | 어떻게 |
 | --- | --- | --- |
-| 원천 시스템의 공개 원천 수집 | 사이트가 늘 같은 형식으로 응답한다 | 기대 스키마와 대조해 누락·타입 불일치·신규 컬럼을 구분 보고 → [DATA_QUALITY.md](DATA_QUALITY.md#3-스키마-드리프트-감지) |
-| 메인 파이프라인의 API 수집 | 요청한 달을 온전히 받았다 | 매니페스트와 행 수·SHA-256·경로를 **수집·적재·검증 세 지점**에서 대조 (아래) |
-| 두 파이프라인 공통 | 적재가 성공했으니 내용도 맞다 | 적재 후 Great Expectations 검증을 붙이고, 실패하면 하류로 내려보내지 않음 |
+| 원천 시스템의 공개 원천 수집 | 사이트가 늘 같은 형식으로 응답한다 | 원천 내부에서 기대 스키마와 릴리스 완성도 확인 |
+| 메인 파이프라인의 API 수집 | 응답이 읽을 수 있는 파일이다 | HTTP 응답·파일 크기·Parquet 가독성 확인 |
+| 메인 파이프라인의 값 품질 | 원천 메타데이터가 값 품질까지 보장한다 | Silver 품질 규칙은 후속 이슈 #543에서 별도 정의 |
 
 ---
 
-## 데이터 계약 — `manifest.json`
+## 공개 API 계약
 
-원천 릴리스는 매니페스트를 동반합니다. 수집 측은 이것을 **계약**으로 씁니다.
+메인은 아래 세 데이터셋의 월별 URL만 호출합니다. 응답 본문은 Parquet 파일이며 원천 행 수·SHA-256·실행 계보를 담은 JSON Manifest는 공개하지 않습니다.
 
-```json
-{
-  "release_id": "2025-01-seed-42",
-  "year_month": "2025-01",
-  "seed": 42,
-  "datasets": {
-    "hvfhv_taxi_trips":      { "file": "...", "row_count": 20405666, "sha256": "..." },
-    "driver_vehicle_leases":   { "file": "...", "row_count": 2000, "sha256": "..." },
-    "lease_vehicle_inventory": { "file": "...", "row_count": 12,   "sha256": "..." }
-  }
-}
+```text
+GET /v1/data/{YYYY-MM}/datasets/hvfhv_taxi_trips
+GET /v1/data/{YYYY-MM}/datasets/driver_vehicle_leases
+GET /v1/data/{YYYY-MM}/datasets/lease_vehicle_inventory
 ```
+
+`YYYY-MM` 대신 `latest`를 요청하면 최신 월의 같은 데이터셋 URL로 리다이렉트합니다. 실제 월은 최종 URL에 나타나며 응답은 동일하게 Parquet 파일만 반환합니다.
+
+## 내부 릴리스 Manifest
+
+원천은 세 파일을 모두 생성했는지 게시 전에 확인하기 위해 `manifest.json`을 내부에서 유지합니다. 이 파일의 행 수·SHA-256·실행 계보는 원천 구현 정보이며 메인 수집 계약이 아닙니다.
 
 ## 가정하는 실패와 방어
 
 | 가정하는 실패 | 방어 | 위치 |
 | --- | --- | --- |
-| 매니페스트가 깨진 JSON / 형식 위반 | `year_month` 형식·유효 월 검사, `row_count` 양의 정수, `sha256` 64자 hex 검사 | 수집 |
-| **요청한 달과 다른 달을 내려줌** | 요청 월 ≠ 매니페스트 월이면 즉시 실패 | 수집 |
-| **다운로드 URL 이 딴 데를 가리킴** | `download_url` 의 scheme·host 가 API 와 다르면 거부 | 수집 |
-| 전송 중 손상 / 다운로드 중단 | 받은 바이트의 SHA-256 을 매니페스트와 대조 | 적재 |
-| Parquet 이 아닌 것을 받음 | `pq.ParquetFile` 로 실제 열리는지 확인 | 적재 |
-| 행이 덜 옴 | Parquet 메타데이터 행 수를 매니페스트와 대조 | 적재 |
-| 같은 달을 두 번 수집 | 마커 파일이 있으면 **기존 파일 checksum 까지 재확인** 후 스킵 (멱등) | 적재 |
-| 쓰다 만 파일이 하류에 노출 | 임시 파일 완성 후 원자적 교체 → [DATA_QUALITY.md](DATA_QUALITY.md#2-원자적-공개) | 적재 |
-| 적재는 됐는데 메타가 어긋남 | 파티션 경로 형식 · 파일 크기 · 마커 내용을 **적재 후 다시** 대조 | 검증 태스크 |
+| 요청한 월이나 데이터셋이 없음 | API `404` 응답 | 원천 API |
+| 최신 URL이 다른 호스트나 데이터셋으로 이동 | 최종 URL의 host·월·데이터셋 확인 | 수집 |
+| 빈 응답 또는 Parquet이 아닌 응답 | 응답 바이트와 `pq.ParquetFile` 확인 | 적재 |
+| 같은 달을 다시 수집 | 같은 월 파티션의 `data.parquet`을 원자적으로 교체 | 적재 |
+| 저장 결과가 수집 응답과 다름 | 파일 크기·Parquet footer 행 수·파티션 경로 확인 | 검증 태스크 |
 
-같은 것을 **적재 시점과 검증 태스크에서 두 번** 확인합니다.
-적재는 Lambda 안에서, 검증은 Airflow 태스크로 분리되어 있어
-"적재가 성공했다고 보고했는데 실제 파일이 다른" 상태를 잡아냅니다.
+행 수는 원천이 알려 준 값과 비교하지 않고, 다운로드한 Parquet footer에서 계산해 Main 내부 결과로만 사용합니다.
 
-([monthly_dataset.py](../shared/lambda_runtime/common/monthly_dataset.py) · [monthly_bronze.py](../shared/airflow/common/monthly_bronze.py))
+([monthly_dataset.py](../main/aws_lambda/common/monthly_dataset.py) · [monthly_bronze.py](../main/airflow/common/monthly_bronze.py))

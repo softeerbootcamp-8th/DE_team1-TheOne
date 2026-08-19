@@ -40,22 +40,7 @@
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [schema/silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
 | `lease_vehicle_inventory` | 차종·연식별 재고 | `year_month` | 차종 수준 | [schema/silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 
-릴리스마다 `manifest.json` 이 함께 나갑니다.
-
-```json
-{
-  "release_id": "2025-01-seed-42",
-  "year_month": "2025-01",
-  "seed": 42,
-  "datasets": {
-    "hvfhv_taxi_trips":      { "file": "...", "row_count": 20405666, "sha256": "..." },
-    "driver_vehicle_leases":   { "file": "...", "row_count": 2000, "sha256": "..." },
-    "lease_vehicle_inventory": { "file": "...", "row_count": 12,   "sha256": "..." }
-  }
-}
-```
-
-수집 측은 이 매니페스트를 **계약**으로 사용합니다 → [3.1 수집 검증](#31-수집-검증)
+세 데이터셋은 `/v1/data/{YYYY-MM}/datasets/{dataset}`에서 Parquet 파일로 공개됩니다. 원천의 `manifest.json`은 게시 전 내부 검증용이며 메인 수집 계약으로 노출하지 않습니다.
 
 ---
 
@@ -115,16 +100,13 @@
 
 ### 3.1 수집 검증
 
-원천 API에서 받은 Bronze는 적재 직후 **매니페스트와 5가지를 대조**합니다.
-하나라도 어긋나면 태스크가 실패하고 하류로 내려가지 않습니다. ([monthly_bronze.py](../shared/airflow/common/monthly_bronze.py))
+원천 API에서 받은 Bronze는 적재 직후 실제 저장 파일을 확인합니다. 하나라도 어긋나면 태스크가 실패하고 하류로 내려가지 않습니다. ([monthly_bronze.py](../main/airflow/common/monthly_bronze.py))
 
 | 검사 | 잡아내는 실패 |
 | --- | --- |
 | 파일 크기 | 다운로드 중단 |
-| SHA-256 | 전송 중 손상 |
-| 행 수 (Parquet 메타데이터) | 부분 적재 |
+| Parquet 가독성·footer 행 수 | 잘못된 파일 또는 부분 적재 |
 | 파티션 경로 형식 | `year_month=` 계약 위반 |
-| 마커 파일 내용 | 적재는 됐는데 메타가 어긋난 상태 |
 
 ### 3.2 `hvfhv_driver_trip` — 운행 × 리스 계약
 

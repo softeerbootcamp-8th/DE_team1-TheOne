@@ -1,7 +1,7 @@
 """HVFHV DAG의 경계 검사와 GX 데이터 품질 규칙을 검증합니다.
 
-Bronze 는 제공된 Parquet 원본을 파싱 없이 저장하고 checksum·행 수·marker를
-검증합니다. Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션을
+Bronze 는 제공된 Parquet 원본의 경로·크기·footer 행 수를 검증합니다.
+Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션을
 직접 열어서 봐야 합니다.
 검증 태스크의 값어치는 "통과한다"가 아니라 "불량을 통과시키지 않는다"입니다.
 
@@ -10,9 +10,7 @@ Bronze 는 제공된 Parquet 원본을 파싱 없이 저장하고 checksum·행 
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 """
 
-import hashlib
 import importlib
-import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -84,13 +82,6 @@ def write_bronze(
     path = Path(base_dir) / "hvfhv" / f"year_month={year_month}" / "data.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
-    marker = {
-        "year_month": year_month,
-        "dataset": "hvfhv_taxi_trips",
-        "row_count": len(records),
-        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
-    }
-    path.with_suffix(".json").write_text(json.dumps(marker), encoding="utf-8")
     return str(path)
 
 
@@ -101,8 +92,6 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
         "locations": [path],
         "year_month": year_month,
         "file_size_bytes": Path(path).stat().st_size,
-        "sha256": hashlib.sha256(Path(path).read_bytes()).hexdigest(),
-        "marker_location": str(Path(path).with_suffix(".json")),
     }
 
 
@@ -128,8 +117,6 @@ def test_파일이_없으면_막는다(tmp_path):
         "locations": [str(missing)],
         "year_month": YEAR_MONTH,
         "file_size_bytes": 0,
-        "sha256": "0" * 64,
-        "marker_location": str(missing.with_suffix(".json")),
     }
     with pytest.raises(ValueError, match="파일이 없습니다"):
         validate_bronze(result, params=bronze_params(tmp_path))
