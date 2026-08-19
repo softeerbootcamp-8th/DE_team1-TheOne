@@ -1,110 +1,38 @@
-"""기사 데이터 수집과 Bronze·Silver 검증 함수."""
+"""기사 계약 수집·정제 Lambda 실행과 Bronze·Silver 검증 함수."""
 
+import importlib
 import logging
 import os
-import uuid
-from datetime import date
 from pathlib import Path
 
-import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from main.airflow.common.monthly_bronze import validate_synthetic_bronze
-from schema.silver.driver_vehicle_leases import REQUIRED_NON_NULL, SCHEMA
+from schema.silver.driver_vehicle_leases import SCHEMA
 
 
 logger = logging.getLogger(__name__)
+DATASET = "driver_vehicle_leases"
 DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
 DEFAULT_BRONZE_DIR = os.getenv(
     "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
 )
 DEFAULT_SILVER_DIR = os.getenv(
     "DRIVER_MASTER_SILVER_DIR",
-    str(PROJECT_ROOT / "data" / "silver" / "driver_vehicle_leases"),
+    str(PROJECT_ROOT / "data" / "silver" / DATASET),
 )
 
 
-def _clean_table(table: pa.Table) -> pa.Table:
-    missing = set(SCHEMA.names) - set(table.column_names)
-    if missing:
-        raise ValueError(f"기사 데이터 필수 컬럼 누락: {sorted(missing)}")
-    try:
-        cleaned = table.select(SCHEMA.names).cast(SCHEMA)
-    except (pa.ArrowInvalid, pa.ArrowNotImplementedError) as exc:
-        raise ValueError("기사 데이터 타입을 Silver 스키마로 변환하지 못했습니다") from exc
-    rows = cleaned.to_pylist()
-    if not rows:
-        raise ValueError("기사 데이터가 비어 있습니다")
-
-    for row in rows:
-        for column in REQUIRED_NON_NULL:
-            value = row[column]
-            if value is None or (isinstance(value, str) and not value.strip()):
-                raise ValueError(f"기사 데이터 필수값이 비었습니다: {column}")
-            if isinstance(value, str):
-                row[column] = value.strip()
-        row["make_key"] = row["make_key"].upper()
-        row["model_key"] = row["model_key"].upper()
-        if not 1900 <= row["model_year"] <= 2100:
-            raise ValueError("model_year가 허용 범위를 벗어났습니다")
-        ended = row["lease_ended_on"]
-        if ended is not None and row["lease_started_on"] >= ended:
-            raise ValueError("리스 종료일은 시작일보다 늦어야 합니다")
-
-    lease_ids = [row["lease_id"] for row in rows]
-    if len(lease_ids) != len(set(lease_ids)):
-        raise ValueError("lease_id가 중복됩니다")
-    _validate_no_overlap(rows, "taxi_id")
-    _validate_no_overlap(rows, "driver_id")
-    return pa.Table.from_pylist(rows, schema=SCHEMA)
-
-
-def _validate_no_overlap(rows: list[dict], key: str) -> None:
-    grouped: dict[str, list[tuple[date, date | None]]] = {}
-    for row in rows:
-        grouped.setdefault(row[key], []).append(
-            (row["lease_started_on"], row["lease_ended_on"])
-        )
-    for value, periods in grouped.items():
-        periods.sort(key=lambda period: period[0])
-        for previous, current in zip(periods, periods[1:]):
-            previous_end = previous[1]
-            if previous_end is None or current[0] < previous_end:
-                raise ValueError(f"{key}의 리스 기간이 겹칩니다: {value}")
-
-
-def write_silver(table: pa.Table, output_dir: str | Path, year_month: str) -> Path:
-    target = (
-        Path(output_dir)
-        / f"year_month={year_month}"
-        / "driver_vehicle_leases.parquet"
+def _silver_transformer():
+    """정제 규칙은 Lambda 쪽 Transformer 가 원본입니다. DAG 파싱까지 그 모듈을
+    끌어오지 않도록 검증할 때만 불러옵니다."""
+    module = importlib.import_module(
+        "main.aws_lambda.functions.driver_master_bronze_to_silver.transformer"
     )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    temporary = target.with_name(f".{target.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        pq.write_table(table, temporary, compression="snappy")
-        temporary.replace(target)
-    finally:
-        temporary.unlink(missing_ok=True)
-    return target
-
-
-def clean_bronze_to_silver(
-    bronze_path: str | Path,
-    output_dir: str | Path,
-    year_month: str,
-) -> dict:
-    table = pq.ParquetFile(bronze_path).read()
-    cleaned = _clean_table(table)
-    path = write_silver(cleaned, output_dir, year_month)
-    return {
-        "row_count": cleaned.num_rows,
-        "locations": [str(path)],
-        "year_month": year_month,
-    }
+    return module.DriverVehicleLeaseSilverTransformer()
 
 
 def validate_silver_result(result: dict, expected_rows: int) -> None:
@@ -117,7 +45,9 @@ def validate_silver_result(result: dict, expected_rows: int) -> None:
     table = pq.ParquetFile(path).read()
     if table.schema != SCHEMA or table.num_rows != expected_rows:
         raise ValueError("기사·택시 Silver 스키마 또는 행 수가 Bronze와 다릅니다")
-    _clean_table(table)
+    # 적재된 파일에 같은 정제 규칙을 다시 적용합니다. 변환이 통과했더라도 적재
+    # 과정에서 다른 파일이 놓였다면 여기서 걸립니다.
+    _silver_transformer().transform(table)
 
 
 @task(task_id="raw_to_bronze")
@@ -157,8 +87,8 @@ def _validate_bronze_result(
 ) -> tuple[Path, list[str]]:
     path, _ = validate_synthetic_bronze(
         result,
-        dataset="driver_vehicle_leases",
-        dataset_dir="driver_vehicle_leases",
+        dataset=DATASET,
+        dataset_dir=DATASET,
         base_dir=base_dir,
     )
     missing = sorted(set(SCHEMA.names) - set(pq.read_schema(path).names))
@@ -167,11 +97,13 @@ def _validate_bronze_result(
 
 @task(task_id="bronze_to_silver")
 def bronze_to_silver_task(result: dict, **context) -> dict:
-    return clean_bronze_to_silver(
-        result["locations"][0],
-        context["params"].get("silver_dir") or DEFAULT_SILVER_DIR,
-        result["year_month"],
-    )
+    event = {
+        "bronze_path": result["locations"][0],
+        "year_month": result["year_month"],
+        "silver_dir": context["params"].get("silver_dir") or DEFAULT_SILVER_DIR,
+    }
+    logger.info("기사 데이터 Bronze→Silver 정제 시작: %s", event)
+    return lambda_handler_for("driver_master_bronze_to_silver")(event=event)
 
 
 @task(task_id="validate_silver")

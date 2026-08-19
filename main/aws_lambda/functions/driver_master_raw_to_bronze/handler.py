@@ -8,8 +8,8 @@ from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
 from main.aws_lambda.common.monthly_dataset import requested_year_month
-from .loader import CompanySnapshotBronzeLoader
-from .source_snapshot import CompanySnapshotExtractor
+from .extractor import DriverVehicleLeaseExtractor
+from .loader import DriverVehicleLeaseBronzeLoader
 
 
 configure_lambda_logging()
@@ -21,9 +21,9 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not api_base_url:
         raise ValueError("api_base_url이 누락되었습니다")
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
-    loader = CompanySnapshotBronzeLoader(base_dir)
+    loader = DriverVehicleLeaseBronzeLoader(base_dir)
     result = Pipeline(
-        CompanySnapshotExtractor(api_base_url, requested_year_month(event)),
+        DriverVehicleLeaseExtractor(api_base_url, requested_year_month(event)),
         loader,
     ).run()
     path = Path(result.write_result.location)
