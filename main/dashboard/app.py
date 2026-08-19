@@ -4,21 +4,24 @@ data/gold/ 의 CSV(`driver_car_suggestion`, `driver_aggregation`, `monthly_repor
 세 데이터셋 모두 `year_month` 단일 그레인 — `main/spark/jobs/silver_to_gold/job.py` 산출물.
 """
 
+import os
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
-GOLD_DIR = Path(__file__).resolve().parents[2] / "data" / "gold"
-
-HOUR_BLOCKS = ["00_03", "03_06", "06_09", "09_12", "12_15", "15_18", "18_21", "21_24"]
+GOLD_DIR = Path(
+    os.environ.get(
+        "GOLD_DIR",
+        Path(__file__).resolve().parents[2] / "data" / "gold",
+    )
+)
 
 SUGGESTION_COLUMNS = {
     "driver_id": "기사 ID",
-    "service_tier": "서비스 등급",
-    "recommended_make_key": "추천 제조사",
-    "recommended_model_key": "추천 모델",
-    "recommended_model_year": "추천 연식",
+    "manufacturer": "추천 제조사",
+    "model_name": "추천 모델",
+    "model_year": "추천 연식",
     "recommendation_reason": "추천 사유",
     "expected_net_profit_increase": "예상 순이익 증가액",
     "expected_revenue_increase": "예상 매출 증가액",
@@ -38,25 +41,32 @@ def load(dataset: str) -> pd.DataFrame:
     return _read_partitions(GOLD_DIR, dataset)
 
 
-def hourly_ratio_frame(agg_row: pd.Series) -> pd.DataFrame:
-    """시간대별 운행 비중을 막대차트 입력 모양으로."""
-    return pd.DataFrame(
-        {"운행 비중": [round(agg_row[f"ratio_{block}"], 2) for block in HOUR_BLOCKS]}, index=HOUR_BLOCKS
+def recommendation_scope(
+    suggestion: pd.DataFrame,
+    aggregation: pd.DataFrame,
+    period: str,
+    threshold: float,
+) -> pd.DataFrame:
+    """Gold 월간 리포트와 같은 기준을 통과한 기사에 현재 차량 정보를 붙입니다."""
+    current = aggregation.rename(
+        columns={
+            "manufacturer": "current_manufacturer",
+            "model_name": "current_model_name",
+            "model_year": "current_model_year",
+            "monthly_lease_fee": "current_monthly_lease_fee",
+            "monthly_fuel_cost": "current_monthly_fuel_cost",
+            "monthly_net_profit": "current_monthly_net_profit",
+        }
     )
-
-
-def top_zone_frame(agg_row: pd.Series) -> pd.DataFrame:
-    """상위 3개 zone 을 순위별 표 모양으로."""
-    return pd.DataFrame(
-        {
-            "zone_id": [agg_row["top1_zone_id"], agg_row["top2_zone_id"], agg_row["top3_zone_id"]],
-            "비중": [
-                round(agg_row["top1_zone_ratio"], 2),
-                round(agg_row["top2_zone_ratio"], 2),
-                round(agg_row["top3_zone_ratio"], 2),
-            ],
-        },
-        index=["1위", "2위", "3위"],
+    eligible = suggestion[
+        (suggestion["year_month"] == period)
+        & (suggestion["expected_net_profit_increase"] >= threshold)
+        & (suggestion["expected_revenue_increase"] >= 0)
+    ]
+    return (
+        eligible.merge(current, on=["driver_id", "year_month"], how="inner")
+        .sort_values("expected_net_profit_increase", ascending=False)
+        .reset_index(drop=True)
     )
 
 
@@ -68,7 +78,7 @@ def render() -> None:
     suggestion = load("driver_car_suggestion")
     aggregation = load("driver_aggregation")
 
-    if report.empty or suggestion.empty:
+    if report.empty or suggestion.empty or aggregation.empty:
         st.error("data/gold 가 비어 있습니다. main/spark/jobs/silver_to_gold/job.py 를 먼저 실행하세요.")
         st.stop()
 
@@ -82,14 +92,15 @@ def render() -> None:
     c4.metric("총 매출 증가", f"${report_row['total_revenue_increase']:,.0f}")
     st.caption(f"순이익 증가 임계값 ${report_row['threshold_profit_increase']:,.0f} 이상인 기사만 집계")
 
-    scope = (
-        suggestion[(suggestion["year_month"] == period) & (suggestion["expected_revenue_increase"] > 0)]
-        .sort_values("expected_revenue_increase", ascending=False)
-        .reset_index(drop=True)
+    scope = recommendation_scope(
+        suggestion,
+        aggregation,
+        period,
+        float(report_row["threshold_profit_increase"]),
     )
 
     st.subheader("차량 추천 리스트")
-    st.caption("매출 증가액 > $0 인 기사만 표시, 매출 증가액 내림차순. 행을 선택하면 기사 상세가 표시됩니다.")
+    st.caption("월간 리포트의 순이익 기준과 회사 매출 비감소 조건을 통과한 기사만 표시합니다.")
     display = scope[list(SUGGESTION_COLUMNS)].rename(columns=SUGGESTION_COLUMNS)
     display = display.round(2)
     event = st.dataframe(
@@ -112,27 +123,45 @@ def render() -> None:
         return
 
     picked = scope.iloc[selected_rows[0]]
-    driver = picked["driver_id"]
-    detail = aggregation[(aggregation["driver_id"] == driver) & (aggregation["year_month"] == period)]
-
     d1, d2, d3 = st.columns(3)
-    d1.metric("추천 차량", f"{picked['recommended_make_key']} {picked['recommended_model_key']}")
+    d1.metric("추천 차량", f"{picked['manufacturer']} {picked['model_name']}")
     d2.metric("예상 월 순이익 증가", f"${picked['expected_net_profit_increase']:,.2f}")
     d3.metric("예상 월 매출 증가", f"${picked['expected_revenue_increase']:,.2f}")
-    st.caption(picked["recommendation_reason"])
+    st.info(f"추천 사유: {picked['recommendation_reason']}")
 
-    if detail.empty:
-        st.info("`driver_aggregation` 에 이 기사·월의 운행 데이터가 없습니다.")
-        return
-
-    agg_row = detail.iloc[0]
-    st.bar_chart(hourly_ratio_frame(agg_row))
-    st.table(top_zone_frame(agg_row))
+    st.write(
+        "현재 차량: "
+        f"{picked['current_manufacturer']} {picked['current_model_name']} "
+        f"({int(picked['current_model_year'])}) → "
+        f"추천 차량: {picked['manufacturer']} {picked['model_name']} "
+        f"({int(picked['model_year'])})"
+    )
 
     e1, e2, e3 = st.columns(3)
-    e1.metric("현재 월 순이익", f"${agg_row['monthly_net_profit']:,.2f}")
-    e2.metric("현재 월 렌트료", f"${agg_row['monthly_rental_fee']:,.2f}")
-    e3.metric("현재 월 연료비", f"${agg_row['monthly_fuel_cost']:,.2f}")
+    e1.metric(
+        "월 리스료",
+        f"${picked['recommended_monthly_lease_fee']:,.2f}",
+        delta=f"${picked['recommended_monthly_lease_fee'] - picked['current_monthly_lease_fee']:,.2f}",
+        delta_color="inverse",
+    )
+    e2.metric(
+        "월 연료비",
+        f"${picked['expected_monthly_fuel_cost']:,.2f}",
+        delta=f"${picked['expected_monthly_fuel_cost'] - picked['current_monthly_fuel_cost']:,.2f}",
+        delta_color="inverse",
+    )
+    e3.metric(
+        "월 순이익",
+        f"${picked['expected_monthly_net_profit']:,.2f}",
+        delta=f"${picked['expected_net_profit_increase']:,.2f}",
+    )
+
+    st.caption(
+        f"현재 순이익 ${picked['current_monthly_net_profit']:,.2f} · "
+        f"월 주행 {picked['monthly_mileage']:,.1f} mile · "
+        f"플랫폼 정산 ${picked['monthly_driver_pay']:,.2f} · "
+        f"팁 ${picked['monthly_tips']:,.2f}"
+    )
 
 
 if __name__ == "__main__":
