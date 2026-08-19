@@ -1,7 +1,7 @@
-"""[HVFHV+taxi_id 데이터] Silver 스키마.
+"""driver_assignment가 TLC 원천을 정제할 때 사용하는 Spark 스키마.
 
-main/ 의 schema/silver/hvfhv.py 와 같은 모양이어야 하지만, sub/ 는 schema/bronze·
-silver·gold 를 참조하지 않습니다 — 여기 별도로 둡니다.
+합성 API를 읽는 main 파이프라인의 Silver 계약은 ``schema.silver``가 소유합니다.
+이 스키마는 TLC 27컬럼을 쓰는 별도 source job용입니다.
 
 pyspark 의존이라 schema/source/__init__.py 와 분리합니다 — aws_lambda 쪽처럼
 pyspark 가 없는 환경에서도 다른 schema.source 스키마는 그대로 import 되어야 합니다.

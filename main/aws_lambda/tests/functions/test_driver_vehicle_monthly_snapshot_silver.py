@@ -6,7 +6,7 @@
 4. 교체 중 실패해도 기존 월 파일이 남음
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pyarrow as pa
@@ -34,7 +34,12 @@ def _rows():
             "model_name": "SPORTAGE",
             "fuel_type": "GAS",
             "comfort_eligible": True,
+            "extra_comfort_eligible": False,
             "weekly_lease_fee": 350.0,
+            "join_date": date(2024, 1, 1),
+            "exit_date": None,
+            "experience_years": 5,
+            "vehicle_since": date(2025, 1, 1),
             "snapshot_created_at": datetime(2026, 8, 1),
         }
     ]
@@ -69,6 +74,9 @@ def test_정제한_기사차량스냅샷을_월파티션_한파일로_적재한�
     assert pq.read_schema(path) == SCHEMA
     written = pq.ParquetFile(path).read().to_pylist()[0]
     assert (written["manufacturer"], written["model_name"]) == ("KIA", "SPORTAGE")
+    assert written["exit_date"] is None
+    assert written["extra_comfort_eligible"] is False
+    assert written["vehicle_since"] == date(2025, 1, 1)
 
 
 def test_같은월을_다시_정제해도_파일이_늘지않는다(tmp_path):
