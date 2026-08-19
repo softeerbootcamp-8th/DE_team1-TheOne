@@ -186,6 +186,24 @@ def _collect_bronze(params: dict) -> dict:
     return result
 
 
+def existing_silver_partitions(silver_dir: str | Path) -> list[str]:
+    """지금 있는 `year_month=` 파티션 이름들. Spark 쓰기 **전에** 찍어 둡니다.
+
+    #165 는 정적 overwrite 가 **기존에 있던** 다른 달을 지운 사고였습니다. 그러니
+    감시해야 할 것은 "쓰기 전에 있던 것이 쓰기 후에도 있는가" 입니다. 쓰기 후의 모양만
+    보고 판단하면(예전처럼 "직전 달이 있어야 한다") 과거 달을 새로 채우는 정상 백필을
+    구분할 수 없습니다 — 어느 달을 넣든 그 직전 달은 없기 마련이라 항상 막혔습니다.
+    """
+    root = Path(silver_dir)
+    if not root.is_dir():
+        return []
+    return sorted(
+        partition.name
+        for partition in root.glob("year_month=*")
+        if partition.is_dir() and any(partition.glob("*.parquet"))
+    )
+
+
 @task(
     task_id="validate_bronze",
     retries=1,
@@ -239,7 +257,11 @@ def validate_bronze_task(result: dict, **context) -> dict:
         suite_name="hvfhv_bronze_suite",
         layer="bronze",
     )
-    return result
+    # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
+    return {
+        **result,
+        "silver_partitions_before": existing_silver_partitions(DEFAULT_SILVER_DIR),
+    }
 
 
 def _bronze_quality_result(
@@ -333,21 +355,12 @@ def validate_silver_task(raw_result: dict) -> None:
             f"Silver 행 수가 Bronze 보다 많습니다: {silver_rows} > {bronze_rows}"
         )
 
-    other_partitions = [
-        p
-        for p in Path(DEFAULT_SILVER_DIR).glob("year_month=*")
-        if p.name != silver_partition.name
-    ]
-    if other_partitions:
-        prev_first_day = datetime.strptime(year_month, "%Y-%m").replace(
-            day=1
-        ) - timedelta(days=1)
-        prev_partition = (
-            Path(DEFAULT_SILVER_DIR)
-            / f"year_month={prev_first_day:%Y-%m}"
+    # #165 재발 감시 — 쓰기 전에 있던 파티션이 사라졌는지만 봅니다. 이번에 쓴 달은
+    # 당연히 새로 생기므로 비교 대상이 아닙니다.
+    before = set(raw_result.get("silver_partitions_before") or [])
+    after = set(existing_silver_partitions(DEFAULT_SILVER_DIR))
+    lost = sorted(before - after)
+    if lost:
+        raise ValueError(
+            f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
-        if not any(prev_partition.glob("*.parquet")):
-            raise ValueError(
-                "직전 달 파티션이 사라졌습니다 (#165 재발): "
-                f"{prev_partition}"
-            )
