@@ -20,6 +20,12 @@ RUN pip install --no-cache-dir "uv==0.12.2" \
 # 메인 제품 함수는 기존 배포 핸들러 경로를 유지합니다.
 COPY main/aws_lambda/functions/ ${LAMBDA_TASK_ROOT}/functions/
 
+# main 함수들은 handler 경로와 무관하게 `main.aws_lambda.common` 을 절대 import 합니다
+# (예: eia_fuel_price_layout). 위에서 functions/ 만 접두사 없이 복사해서 이 패키지가
+# 이미지에 없으면 콜드스타트 시점에 "No module named 'main'" 으로 죽습니다.
+COPY main/__init__.py ${LAMBDA_TASK_ROOT}/main/__init__.py
+COPY main/aws_lambda/common/ ${LAMBDA_TASK_ROOT}/main/aws_lambda/common/
+
 # 동일한 런타임 의존성을 쓰는 원천 제품 함수와 공통 유틸은 제품 namespace 그대로
 # 패키징합니다. 원천 핸들러 경로는
 # sub.aws_lambda.functions.<이름>.handler.lambda_handler 입니다.
@@ -28,9 +34,9 @@ COPY sub/aws_lambda/ ${LAMBDA_TASK_ROOT}/sub/aws_lambda/
 COPY shared/__init__.py ${LAMBDA_TASK_ROOT}/shared/__init__.py
 COPY shared/aws_lambda/ ${LAMBDA_TASK_ROOT}/shared/aws_lambda/
 
-# lyft/uber_eligible_vehicles, vehicle_catalog, hvfhv 는 저장소 루트의 schema.bronze.*
-# 를 import 합니다(로컬은 aws_lambda/pyproject.toml 의 pythonpath="../.." 로 풀림). 이미지에
-# 안 넣으면 그 함수들만 "No module named 'schema'" 로 콜드스타트 시점에 죽습니다.
+# main·sub 여러 함수가 저장소 루트의 schema.* (bronze/silver/source) 를 절대 import 합니다
+# (로컬은 aws_lambda/pyproject.toml 의 pythonpath="../.." 로 풀림). 이미지에 안 넣으면
+# 그 함수들만 "No module named 'schema'" 로 콜드스타트 시점에 죽습니다.
 COPY schema/ ${LAMBDA_TASK_ROOT}/schema/
 
 # vehicle_catalog_raw_to_bronze 가 pytesseract 로 OCR 호출을 하는데, 그건 파이썬
