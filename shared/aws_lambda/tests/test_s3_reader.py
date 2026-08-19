@@ -3,7 +3,7 @@
 import boto3
 from moto import mock_aws
 
-from sub.aws_lambda.common.s3_reader import get_object_bytes, list_keys
+from shared.aws_lambda.common.s3_reader import get_object_bytes, list_keys
 
 BUCKET = "test-bucket"
 REGION = "ap-northeast-2"
