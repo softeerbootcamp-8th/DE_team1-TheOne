@@ -11,7 +11,7 @@ from schema.silver.lease_vehicle_inventory import REQUIRED_NON_NULL, SCHEMA
 
 
 # 0 이하면 재고·연비·가격 어느 쪽이든 계산에 쓸 수 없는 값입니다.
-POSITIVE_COLUMNS = ("fuel_efficiency", "weekly_price_usd", "stock")
+POSITIVE_COLUMNS = ("fuel_efficiency", "weekly_lease_fee", "stock")
 MIN_MODEL_YEAR = 1900
 MAX_MODEL_YEAR = 2100
 

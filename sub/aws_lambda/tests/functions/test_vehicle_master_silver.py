@@ -40,7 +40,7 @@ CATALOG_SCHEMA = pa.schema(
     [
         ("make_key", pa.string()),
         ("model_key", pa.string()),
-        ("weekly_price_usd", pa.float64()),
+        ("weekly_lease_fee", pa.float64()),
         ("image_url", pa.string()),
         ("bronze_path", pa.string()),
     ]
@@ -73,7 +73,7 @@ def catalog_row(make, model, price):
     return {
         "make_key": make,
         "model_key": model,
-        "weekly_price_usd": price,
+        "weekly_lease_fee": price,
         "image_url": f"https://example.com/{model.casefold().replace(' ', '-')}.png",
         "bronze_path": "bronze/vehicle_catalog.parquet",
     }
@@ -226,7 +226,7 @@ def test_원천마다_수집일이_달라도_각자의_최신_파티션을_읽�
     build_sources(tmp_path)
     # 지난주 대장. 파티션이 여러 개일 때 최신이 아니라 아무거나 고르면 지난주
     # 가격으로 추천이 나갑니다.
-    stale = [{**row, "weekly_price_usd": 111.0} for row in CATALOG]
+    stale = [{**row, "weekly_lease_fee": 111.0} for row in CATALOG]
     write_source(
         tmp_path, "vehicle_catalog", "2026-08-05", "vendor", VENDOR,
         stale, CATALOG_SCHEMA,
@@ -243,7 +243,7 @@ def test_원천마다_수집일이_달라도_각자의_최신_파티션을_읽�
         "lyft_eligible_vehicles": "2026-08-12",
     }
     rows = read_rows(result)
-    assert all(row["weekly_price_usd"] != 111.0 for row in rows)
+    assert all(row["weekly_lease_fee"] != 111.0 for row in rows)
     assert find(rows, "CAMRY", "lyft", "Extra Comfort")["combined_mpg_max"] == 32.0
 
 
@@ -251,7 +251,7 @@ def test_기준일_이후에_수집된_파티션은_쓰지_않는다(tmp_path):
     build_sources(tmp_path)
     # 기준일 다음날 대장이 갱신돼 가격이 바뀐 상황. 과거 날짜로 다시 돌렸을 때
     # 이 파티션을 읽으면 그때의 결과를 재현할 수 없습니다.
-    future = [{**row, "weekly_price_usd": 999.0} for row in CATALOG]
+    future = [{**row, "weekly_lease_fee": 999.0} for row in CATALOG]
     write_source(
         tmp_path, "vehicle_catalog", "2026-08-14", "vendor", VENDOR,
         future, CATALOG_SCHEMA,
@@ -260,7 +260,7 @@ def test_기준일_이후에_수집된_파티션은_쓰지_않는다(tmp_path):
     result = run(tmp_path)
 
     assert result["source_collected_dates"]["vehicle_catalog"] == "2026-08-12"
-    assert all(row["weekly_price_usd"] != 999.0 for row in read_rows(result))
+    assert all(row["weekly_lease_fee"] != 999.0 for row in read_rows(result))
 
 
 def test_차종_하나가_자격_수만큼_펼쳐지고_플랫폼이_구분된다(tmp_path):
@@ -288,7 +288,7 @@ def test_자격이_하나도_없는_차종도_남는다(tmp_path):
     # HONDA FIT 은 두 플랫폼 어느 목록에도 없습니다. INNER JOIN 이 되면 통째로
     # 사라져서 "아무 상품도 못 받는 차" 라는 사실이 Gold 에 전달되지 않습니다.
     fit = find(rows, "FIT")
-    assert fit["weekly_price_usd"] == 514.0
+    assert fit["weekly_lease_fee"] == 514.0
     assert fit["image_url"] == "https://example.com/fit.png"
     assert fit["platform"] is None
     assert fit["product"] is None

@@ -82,7 +82,7 @@ VEHICLE_CATALOG_SCHEMA = pa.schema(
     [
         ("make_key", pa.string()),  # 조인 키 (대문자 정규화)
         ("model_key", pa.string()),  # 조인 키 (대문자 정규화)
-        ("weekly_price_usd", pa.float64()),
+        ("weekly_lease_fee", pa.float64()),
         ("image_url", pa.string()),  # 보유 차량 API 표시용 원천 이미지
         ("bronze_path", pa.string()),  # 계보
     ]
@@ -102,7 +102,7 @@ VEHICLE_MASTER_SCHEMA = pa.schema(
         ("platform", pa.string()),  # uber / lyft, 자격 없으면 NULL
         ("product", pa.string()),  # UberX / Comfort / Extra Comfort ...
         ("min_year", pa.int16()),  # 이 상품에 필요한 최소 차량 연식
-        ("weekly_price_usd", pa.float64()),  # 리스 업체 주간 렌트료
+        ("weekly_lease_fee", pa.float64()),  # 리스 업체 주간 렌트료
         ("image_url", pa.string()),  # 리스 업체 차량 이미지
         ("spec_match_level", pa.string()),  # MODEL / DRIVETRAIN / NONE
         # 제원은 대표 1건이 아니라 후보 트림 전체의 범위입니다. 대장에 트림 정보가
@@ -188,7 +188,7 @@ LEASE_VEHICLE_INVENTORY_SCHEMA = pa.schema(
         ("fuel_efficiency", pa.float64()),
         ("comfort_eligible", pa.bool_()),
         ("extra_comfort_eligible", pa.bool_()),
-        ("weekly_price_usd", pa.float64()),
+        ("weekly_lease_fee", pa.float64()),
         ("image_url", pa.string()),
         ("stock", pa.int32()),
     ]

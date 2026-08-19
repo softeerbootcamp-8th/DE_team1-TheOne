@@ -28,7 +28,7 @@ ROWS = [
         "fuel_efficiency": 28.5,
         "comfort_eligible": True,
         "extra_comfort_eligible": False,
-        "weekly_price_usd": 350.0,
+        "weekly_lease_fee": 350.0,
         "image_url": "http://images.example/kia-sportage.png",
         "stock": 12,
     }

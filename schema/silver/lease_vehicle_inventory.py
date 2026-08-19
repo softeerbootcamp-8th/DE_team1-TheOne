@@ -16,7 +16,7 @@ SCHEMA = pa.schema(
         ("fuel_efficiency", pa.float64()),
         ("comfort_eligible", pa.bool_()),
         ("extra_comfort_eligible", pa.bool_()),
-        ("weekly_price_usd", pa.float64()),
+        ("weekly_lease_fee", pa.float64()),
         ("image_url", pa.string()),
         ("stock", pa.int32()),
     ]

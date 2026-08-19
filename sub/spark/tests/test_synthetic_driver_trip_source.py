@@ -95,7 +95,7 @@ def _vehicle_master() -> pd.DataFrame:
             **row,
             "vendor": "fasttrack",
             "min_year": 2020,
-            "weekly_price_usd": prices[row["model_key"]],
+            "weekly_lease_fee": prices[row["model_key"]],
         }
         for row in rows
     ])
@@ -225,7 +225,7 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
             for taxi_id in ("taxi-1", "taxi-2")
         ],
         "taxi_id string, make_key string, model_key string, model_year int, "
-        "weekly_price_usd double, uber_comfort_eligible boolean, "
+        "weekly_lease_fee double, uber_comfort_eligible boolean, "
         "lyft_extra_comfort_eligible boolean, snapshot_date date",
     )
     vehicle_master = spark.createDataFrame(
@@ -256,7 +256,7 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
     assert row.fuel_efficiency == 26.0
     assert row.manufacturer == "KIA" and row.model_name == "SPORTAGE"
     assert row.comfort_eligible is True and row.extra_comfort_eligible is False
-    assert row.weekly_price_usd == 574.0
+    assert row.weekly_lease_fee == 574.0
     assert row.image_url == "https://example.com/sportage.png"
     assert row.vehicle_model_id
 

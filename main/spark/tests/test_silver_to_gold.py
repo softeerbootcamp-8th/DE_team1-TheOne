@@ -43,7 +43,7 @@ from schema.gold.driver_aggregation import DriverMonthlyAggregation
 from schema.gold.driver_car_suggestion import MonthlyVehicleRecommendation
 
 YEAR_MONTH = "2024-03"
-DAYS_IN_MONTH = 7  # 7 로 두면 weekly_price_usd * (7/7) == weekly_price_usd 라 계산이 깔끔해짐
+DAYS_IN_MONTH = 7  # 7 로 두면 weekly_lease_fee * (7/7) == weekly_lease_fee 라 계산이 깔끔해짐
 
 
 @pytest.fixture(scope="module")
@@ -54,7 +54,7 @@ def spark():
 
 
 def _vehicle_master(spark, rows):
-    """row 는 vendor/make_key/model_key/fuel_type/weekly_price_usd/combined_mpg_min/max/
+    """row 는 vendor/make_key/model_key/fuel_type/weekly_lease_fee/combined_mpg_min/max/
     combined_kwh_per_100mi_min/max/spec_year_max 는 필수. platform/product/min_year 는
     등급 자격이 없으면 생략(None)해도 됨."""
     # platform/product 는 None 대신 "" — Spark 스키마 추론이 모든 행에서 null인 컬럼의
@@ -89,7 +89,7 @@ def _trip(**overrides) -> dict:
 def test_정상_집계는_렌트료를_차감한_순수익을_낸다(spark):
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
+        "weekly_lease_fee": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
         "spec_year_max": 2025,
     }])
     trips = spark.createDataFrame([
@@ -122,7 +122,7 @@ def test_정상_집계는_렌트료를_차감한_순수익을_낸다(spark):
 def test_연료_단가는_유종에_따라_다른_공식을_쓴다(spark, fuel_type, expected_fuel_cost):
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": fuel_type,
-        "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
+        "weekly_lease_fee": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
         "combined_kwh_per_100mi_min": 28.0, "combined_kwh_per_100mi_max": 32.0,
         "spec_year_max": 2025,
     }])
@@ -138,9 +138,9 @@ def test_연료_단가는_유종에_따라_다른_공식을_쓴다(spark, fuel_t
 def test_vehicle_master에_vendor가_둘이면_ValueError다(spark):
     vehicle_master = _vehicle_master(spark, [
         {"vendor": "v1", "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-         "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025},
+         "weekly_lease_fee": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025},
         {"vendor": "v2", "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-         "weekly_price_usd": 25.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025},
+         "weekly_lease_fee": 25.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025},
     ])
     trips = spark.createDataFrame([_trip()])
     gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
@@ -151,9 +151,9 @@ def test_vehicle_master에_vendor가_둘이면_ValueError다(spark):
 
 def _standard_and_comfort_vehicle_master(spark):
     return _vehicle_master(spark, [
-        {"make_key": "A", "model_key": "STD", "fuel_type": "GAS", "weekly_price_usd": 200.0,
+        {"make_key": "A", "model_key": "STD", "fuel_type": "GAS", "weekly_lease_fee": 200.0,
          "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025},
-        {"make_key": "B", "model_key": "COMFORT", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+        {"make_key": "B", "model_key": "COMFORT", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
          "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
          "platform": "uber", "product": "Comfort", "min_year": 2000},
     ])
@@ -186,9 +186,9 @@ def test_comfort_자격_차량은_서비스한_적_없는_기사에게도_후보
 )
 def test_recommendation_reason은_개선된_항목만_나열한다(spark, current_make_key, expected_reason):
     vehicle_master = _vehicle_master(spark, [
-        {"make_key": "B", "model_key": "BETTER", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+        {"make_key": "B", "model_key": "BETTER", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
          "combined_mpg_min": 40.0, "combined_mpg_max": 40.0, "spec_year_max": 2025},
-        {"make_key": "W", "model_key": "WORSE", "fuel_type": "GAS", "weekly_price_usd": 200.0,
+        {"make_key": "W", "model_key": "WORSE", "fuel_type": "GAS", "weekly_lease_fee": 200.0,
          "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025},
     ])
     model_key = "BETTER" if current_make_key == "B" else "WORSE"
@@ -213,7 +213,7 @@ def test_이미_가진_등급자격에는_상승매출을_가정하지_않는다
     그대로 `build_monthly_report` 의 성과 집계에까지 들어갑니다.
     """
     vehicle_master = _vehicle_master(spark, [
-        {"make_key": "B", "model_key": "COMFORT", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+        {"make_key": "B", "model_key": "COMFORT", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
          "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
          "platform": "uber", "product": "Comfort", "min_year": 2000},
     ])
@@ -237,7 +237,7 @@ def test_이미_가진_등급자격에는_상승매출을_가정하지_않는다
 def test_zone이_3개_미만이면_top2_top3는_None이다(spark):
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
+        "weekly_lease_fee": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
     }])
     trips = spark.createDataFrame([
         _trip(PULocationID=10), _trip(PULocationID=10), _trip(PULocationID=10),
@@ -257,7 +257,7 @@ def test_zone이_3개_미만이면_top2_top3는_None이다(spark):
 def test_매칭_안되는_운행이_있으면_ValueError다(spark, violation):
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
+        "weekly_lease_fee": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
     }])
     trip = _trip(make_key="HONDA", model_key="CIVIC") if violation == "vehicle" else _trip()
     trips = spark.createDataFrame([trip])
@@ -292,7 +292,7 @@ def _int96_trips_parquet(spark, tmp_path, pickup: datetime):
 def _corolla_master(spark):
     return _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
+        "weekly_lease_fee": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
         "spec_year_max": 2025,
     }])
 
@@ -395,9 +395,9 @@ def test_현재_차량은_추천_차량과_별개로_이름이_나온다(spark):
     make/model 이어야 합니다. 추천 차량과 값이 갈리는 상황으로 확인합니다.
     """
     vehicle_master = _vehicle_master(spark, [
-        {"make_key": "W", "model_key": "WORSE", "fuel_type": "GAS", "weekly_price_usd": 200.0,
+        {"make_key": "W", "model_key": "WORSE", "fuel_type": "GAS", "weekly_lease_fee": 200.0,
          "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025},
-        {"make_key": "B", "model_key": "BETTER", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+        {"make_key": "B", "model_key": "BETTER", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
          "combined_mpg_min": 40.0, "combined_mpg_max": 40.0, "spec_year_max": 2025},
     ])
     trips = spark.createDataFrame([_trip(make_key="W", model_key="WORSE")])
@@ -419,7 +419,7 @@ def test_현재_차량은_추천_차량과_별개로_이름이_나온다(spark):
 def test_출력_컬럼_순서가_schema_gold_dataclass와_일치한다(spark):
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
+        "weekly_lease_fee": 20.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
     }])
     trips = spark.createDataFrame([_trip()])
     gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
@@ -438,9 +438,9 @@ def test_comfort_자격_차량은_zone_요금_배수만큼_매출을_가정한�
     # A(현재 차량)와 Z(Comfort 자격)는 가격·연비가 완전히 같아서, 매출 가정을
     # 안 걸면 이 둘은 동률(사전순으로 A 승) — Z 가 이기면 배수 로직이 실제로 반영된 것.
     vehicle_master = _vehicle_master(spark, [
-        {"make_key": "A", "model_key": "STD", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+        {"make_key": "A", "model_key": "STD", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
          "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025},
-        {"make_key": "Z", "model_key": "CMF", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+        {"make_key": "Z", "model_key": "CMF", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
          "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
          "platform": "uber", "product": "Comfort", "min_year": 2000},
     ])
@@ -473,7 +473,7 @@ def test_comfort_자격_차량은_zone_요금_배수만큼_매출을_가정한�
 def test_lease가_이번_달_중간에_시작하면_렌트료를_시작일부터만_계산한다(spark):
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 70.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
+        "weekly_lease_fee": 70.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
     }])
     trips = spark.createDataFrame([_trip(lease_started_on=date(2024, 3, 4))])
     gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
@@ -493,7 +493,7 @@ def test_lease가_이번_달_중간에_시작하면_렌트료를_시작일부터
 def test_lease가_이번_달_중간에_끝나면_렌트료를_종료_전날까지만_계산한다(spark):
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 70.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
+        "weekly_lease_fee": 70.0, "combined_mpg_min": 28.0, "combined_mpg_max": 32.0, "spec_year_max": 2025,
     }])
     trips = spark.createDataFrame([_trip(lease_ended_on=date(2024, 3, 5))])
     gas_ev_price = _gas_ev_price(spark, [{"date": date(2024, 3, 1), "gas_price": 3.0, "ev_price": 0.5}])
@@ -514,28 +514,28 @@ def test_lease가_이번_달_중간에_끝나면_렌트료를_종료_전날까�
     "vehicle_rows, expected_service_tier",
     [
         (
-            [{"make_key": "STD", "model_key": "STD", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+            [{"make_key": "STD", "model_key": "STD", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
               "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025}],
             "Standard",
         ),
         (
-            [{"make_key": "CMF", "model_key": "CMF", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+            [{"make_key": "CMF", "model_key": "CMF", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
               "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
               "platform": "uber", "product": "Comfort", "min_year": 2000}],
             "Comfort",
         ),
         (
-            [{"make_key": "XCMF", "model_key": "XCMF", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+            [{"make_key": "XCMF", "model_key": "XCMF", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
               "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
               "platform": "lyft", "product": "Extra Comfort", "min_year": 2000}],
             "Extra Comfort",
         ),
         (
             [
-                {"make_key": "BOTH", "model_key": "BOTH", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+                {"make_key": "BOTH", "model_key": "BOTH", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
                  "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
                  "platform": "uber", "product": "Comfort", "min_year": 2000},
-                {"make_key": "BOTH", "model_key": "BOTH", "fuel_type": "GAS", "weekly_price_usd": 100.0,
+                {"make_key": "BOTH", "model_key": "BOTH", "fuel_type": "GAS", "weekly_lease_fee": 100.0,
                  "combined_mpg_min": 20.0, "combined_mpg_max": 20.0, "spec_year_max": 2025,
                  "platform": "lyft", "product": "Extra Comfort", "min_year": 2000},
             ],
@@ -565,7 +565,7 @@ def test_monthly_report에_계보가_실린다(spark):
     """Gold 만 보고 어떤 입력으로 나온 숫자인지 알 수 있어야 합니다 (#418)."""
     vehicle_master = _vehicle_master(spark, [{
         "make_key": "TOYOTA", "model_key": "COROLLA", "fuel_type": "GAS",
-        "weekly_price_usd": 20.0, "combined_mpg_min": 30.0, "combined_mpg_max": 30.0,
+        "weekly_lease_fee": 20.0, "combined_mpg_min": 30.0, "combined_mpg_max": 30.0,
         "spec_year_max": 2025,
     }])
     trips = spark.createDataFrame([_trip()])
