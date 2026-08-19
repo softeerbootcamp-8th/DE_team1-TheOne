@@ -122,6 +122,25 @@ VEHICLE_MASTER_SCHEMA = pa.schema(
     ]
 )
 
+# 자격·제원 매칭 결과와 무관하게 **항상** 값이 있어야 하는 컬럼.
+# `platform`·`product`·`min_year` 는 자격이 없으면 NULL 이고, `spec_*`·`combined_*` 는
+# 제원 매칭이 NONE 이면 NULL 이라 여기 넣지 않습니다.
+#
+# 상류 컬럼명이 바뀌면 `.get()` 이 조용히 None 을 돌려줘 그 컬럼이 통째로 빕니다.
+# 실제로 `weekly_price_usd` -> `weekly_lease_fee` 통일 때 142행 전부 NULL 인 마스터가
+# 검증을 통과했습니다 (#567). 그 값은 Gold 의 렌탈 객단가로 이어집니다.
+VEHICLE_MASTER_REQUIRED_NON_NULL = frozenset(
+    {
+        "vendor",
+        "make_key",
+        "model_key",
+        "weekly_lease_fee",
+        "spec_match_level",
+        "spec_trim_count",
+        "catalog_bronze_path",
+    }
+)
+
 """[fueleconomy.gov 차종별 제원] Silver 스키마.
 
 원본 84컬럼 중 소비자가 실제로 쓰는 것만 남깁니다. 나머지는 Bronze 에
