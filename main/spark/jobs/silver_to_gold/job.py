@@ -64,6 +64,11 @@ def main(args_list: list[str] | None = None) -> None:
     parser.add_argument("--output_dir", default="data/gold")
     args = parser.parse_args(args_list)
 
+    raise NotImplementedError(
+        "silver_to_gold 는 재작성 중입니다 (#530) — "
+        "Gold 입력이 원천 Silver 4종 직접 결합으로 바뀌는 작업이 끝나야 다시 동작합니다."
+    )
+
     year_month = f"{args.year:04d}-{args.month:02d}"
     days_in_month = calendar.monthrange(args.year, args.month)[1]
 
