@@ -12,8 +12,8 @@ from schema.silver.eligible_vehicles import SCHEMA
 
 from shared.aws_lambda.common.atomic_write import atomic_write
 from sub.aws_lambda.common import uber_eligible_vehicles_layout as layout
-from sub.aws_lambda.common.env import load_local_env
-from sub.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
+from shared.aws_lambda.common.env import load_local_env
+from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
 
