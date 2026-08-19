@@ -23,8 +23,8 @@ SUGGESTION_COLUMNS = {
     "model_name": "추천 모델",
     "model_year": "추천 연식",
     "recommendation_reason": "추천 사유",
-    "expected_net_profit_increase": "예상 순이익 증가액",
-    "expected_revenue_increase": "예상 매출 증가액",
+    "expected_net_profit_increase": "기사 예상 월 순수익 증가",
+    "expected_revenue_increase": "회사 월 렌탈 객단가 증가",
 }
 
 
@@ -61,7 +61,7 @@ def recommendation_scope(
     eligible = suggestion[
         (suggestion["year_month"] == period)
         & (suggestion["expected_net_profit_increase"] >= threshold)
-        & (suggestion["expected_revenue_increase"] >= 0)
+        & (suggestion["expected_revenue_increase"] > 0)
     ]
     return (
         eligible.merge(current, on=["driver_id", "year_month"], how="inner")
@@ -84,23 +84,29 @@ def render() -> None:
 
     period = st.selectbox("월", sorted(report["year_month"].unique(), reverse=True))
     report_row = report[report["year_month"] == period].iloc[0]
+    threshold = float(report_row["threshold_profit_increase"])
+    scope = recommendation_scope(suggestion, aggregation, period, threshold)
+
+    avg_profit_increase = (
+        scope["expected_net_profit_increase"].mean() if not scope.empty else 0.0
+    )
+    avg_revenue_increase = (
+        scope["expected_revenue_increase"].mean() if not scope.empty else 0.0
+    )
+    total_revenue_increase = scope["expected_revenue_increase"].sum()
 
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("추천 대상 기사", f"{int(report_row['recommended_driver_count'])}명")
-    c2.metric("기사 1인당 평균 순이익 증가", f"${report_row['avg_net_profit_increase_per_driver']:,.2f}")
-    c3.metric("기사 1인당 평균 매출 증가", f"${report_row['avg_revenue_increase_per_driver']:,.2f}")
-    c4.metric("총 매출 증가", f"${report_row['total_revenue_increase']:,.0f}")
-    st.caption(f"순이익 증가 임계값 ${report_row['threshold_profit_increase']:,.0f} 이상인 기사만 집계")
-
-    scope = recommendation_scope(
-        suggestion,
-        aggregation,
-        period,
-        float(report_row["threshold_profit_increase"]),
+    c1.metric("추천 대상 기사", f"{len(scope)}명")
+    c2.metric("기사 1인당 예상 월 순수익 증가", f"${avg_profit_increase:,.2f}")
+    c3.metric("회사 평균 월 렌탈 객단가 증가", f"${avg_revenue_increase:,.2f}")
+    c4.metric("회사 월 렌탈 매출 총 증가", f"${total_revenue_increase:,.0f}")
+    st.caption(
+        f"기사 예상 월 순수익 ${threshold:,.0f} 이상 · "
+        "회사 월 렌탈 객단가 $0 초과"
     )
 
     st.subheader("차량 추천 리스트")
-    st.caption("월간 리포트의 순이익 기준과 회사 매출 비감소 조건을 통과한 기사만 표시합니다.")
+    st.caption("기사 순수익 기준과 회사 월 렌탈 객단가 상승 조건을 모두 통과한 기사만 표시합니다.")
     display = scope[list(SUGGESTION_COLUMNS)].rename(columns=SUGGESTION_COLUMNS)
     display = display.round(2)
     event = st.dataframe(
@@ -125,8 +131,8 @@ def render() -> None:
     picked = scope.iloc[selected_rows[0]]
     d1, d2, d3 = st.columns(3)
     d1.metric("추천 차량", f"{picked['manufacturer']} {picked['model_name']}")
-    d2.metric("예상 월 순이익 증가", f"${picked['expected_net_profit_increase']:,.2f}")
-    d3.metric("예상 월 매출 증가", f"${picked['expected_revenue_increase']:,.2f}")
+    d2.metric("기사 예상 월 순수익 증가", f"${picked['expected_net_profit_increase']:,.2f}")
+    d3.metric("회사 월 렌탈 객단가 증가", f"${picked['expected_revenue_increase']:,.2f}")
     st.info(f"추천 사유: {picked['recommendation_reason']}")
 
     st.write(

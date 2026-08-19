@@ -74,7 +74,8 @@ def test_월별_Gold_파티션을_모두_읽는다(tmp_path):
 def test_리포트_추천_기준을_통과한_기사만_표시한다():
     suggestion = pd.DataFrame(
         [
-            _suggestion("eligible", 600.0, 0.0),
+            _suggestion("eligible", 600.0, 1.0),
+            _suggestion("no_company_gain", 700.0, 0.0),
             _suggestion("low_profit", 599.0, 10.0),
             _suggestion("company_loss", 700.0, -1.0),
         ]
