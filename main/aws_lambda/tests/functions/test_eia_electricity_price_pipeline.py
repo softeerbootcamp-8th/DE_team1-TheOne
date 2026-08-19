@@ -170,3 +170,24 @@ def test_같은_내용을_다시_받으면_새_파티션을_만들지_않는다(
 
     assert same.location == first.location
     assert len(layout.bronze_partitions(str(bronze), layout.ELECTRICITY_DATASET)) == 1
+
+
+def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
+    """S3 배포(#558)에서 로컬 `newest_bronze_partition` 과 같은 "무조건 최신" 규칙이
+    키 목록 기반으로도 성립하는지 고정합니다."""
+    keys = [
+        layout.electricity_bronze_key(date(2025, 5, 10)),
+        layout.electricity_bronze_key(COLLECTED),
+    ]
+
+    collected_date, key = layout.newest_bronze_s3_key(
+        keys, layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME
+    )
+
+    assert collected_date == COLLECTED
+    assert key == layout.electricity_bronze_key(COLLECTED)
+
+
+def test_S3_키_목록이_비면_실패한다():
+    with pytest.raises(FileNotFoundError, match="EIA Bronze S3 파티션이 없습니다"):
+        layout.newest_bronze_s3_key([], layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME)

@@ -66,6 +66,29 @@ def electricity_bronze_key(collected_date: date) -> str:
     return _bronze_key(ELECTRICITY_DATASET, ELECTRICITY_FILE_NAME, collected_date)
 
 
+def bronze_s3_prefix(dataset: str) -> str:
+    """`shared.aws_lambda.common.s3_reader.list_keys` 에 넘길 접두사."""
+    return f"bronze/{dataset}/{BRONZE_PARTITION_KEY}="
+
+
+def newest_bronze_s3_key(keys: list[str], dataset: str, file_name: str) -> tuple[date, str]:
+    """`list_keys(bucket, bronze_s3_prefix(dataset))` 결과에서 가장 최근 `collected_date` 키를 고른다.
+    """
+    prefix = bronze_s3_prefix(dataset)
+    partitions: list[tuple[date, str]] = []
+    for key in keys:
+        if not key.endswith(f"/{file_name}"):
+            continue
+        marker = key[len(prefix):].split("/", 1)[0]
+        try:
+            partitions.append((date.fromisoformat(marker), key))
+        except ValueError:
+            continue
+    if not partitions:
+        raise FileNotFoundError(f"EIA Bronze S3 파티션이 없습니다: {prefix}")
+    return sorted(partitions)[-1]
+
+
 def bronze_partitions(base_dir: str, dataset: str) -> list[tuple[date, Path]]:
     """수집일 오름차순 `collected_date=` 파티션 목록."""
     dataset_dir = Path(base_dir) / dataset
