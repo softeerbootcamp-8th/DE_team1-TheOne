@@ -332,11 +332,67 @@ def build_driver_monthly_profit(driver_metrics: DataFrame) -> DataFrame:
     return driver_metrics.select(*_columns(DriverMonthlyProfit))
 
 
+def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
+    """기사 선호 순서대로 제안하되 모델 재고 안에서 수익 증가가 큰 기사부터 배정합니다."""
+    preference = Window.partitionBy("driver_id").orderBy(
+        F.col("expected_monthly_net_profit").desc(),
+        F.col("_is_current").desc(),
+        F.col("_candidate_model_year").desc(),
+        F.col("_candidate_vehicle_model_id").asc(),
+    )
+    ranked = candidates.withColumn(
+        "_driver_rank", F.row_number().over(preference)
+    ).persist()
+    max_rank = ranked.agg(F.max("_driver_rank")).first()[0]
+    assigned = None
+
+    for driver_rank in range(1, max_rank + 1):
+        proposals = ranked.filter(F.col("_driver_rank") == driver_rank)
+        if assigned is not None:
+            proposals = proposals.join(
+                assigned.select("driver_id"), "driver_id", "left_anti"
+            )
+
+        keep_current = proposals.filter(F.col("_is_current"))
+        changes = proposals.filter(~F.col("_is_current"))
+        if assigned is None:
+            changes = changes.withColumn("_used_stock", F.lit(0))
+        else:
+            used_stock = (
+                assigned.filter(~F.col("_is_current"))
+                .groupBy("_candidate_vehicle_model_id")
+                .agg(F.count(F.lit(1)).alias("_used_stock"))
+            )
+            changes = changes.join(
+                used_stock, "_candidate_vehicle_model_id", "left"
+            ).fillna({"_used_stock": 0})
+
+        stock_priority = Window.partitionBy("_candidate_vehicle_model_id").orderBy(
+            F.col("expected_net_profit_increase").desc(),
+            F.col("expected_revenue_increase").desc(),
+            F.col("driver_id").asc(),
+        )
+        changes = (
+            changes.withColumn("_stock_rank", F.row_number().over(stock_priority))
+            .filter(
+                F.col("_stock_rank")
+                <= F.col("_candidate_stock") - F.col("_used_stock")
+            )
+            .drop("_used_stock", "_stock_rank")
+        )
+        winners = keep_current.unionByName(changes)
+        assigned = winners if assigned is None else assigned.unionByName(winners)
+        assigned = assigned.coalesce(8).localCheckpoint(eager=True)
+
+    ranked.unpersist()
+    return assigned
+
+
 def build_monthly_vehicle_recommendation(
     driver_metrics: DataFrame,
     inventory: DataFrame,
 ) -> DataFrame:
-    """재고가 있는 후보 중 기사 예상 순수익이 가장 높은 차량 한 대를 고릅니다."""
+    """재고 한도 안에서 수익 개선이 큰 기사부터 최선·차선 차량을 배정합니다."""
     available = inventory.select(
         F.col("vehicle_model_id").alias("_candidate_vehicle_model_id"),
         F.col("manufacturer").alias("_candidate_manufacturer"),
@@ -434,15 +490,7 @@ def build_monthly_vehicle_recommendation(
         .otherwise(F.lit("예상 순수익 개선")),
     )
 
-    rank = Window.partitionBy("driver_id").orderBy(
-        F.col("expected_monthly_net_profit").desc(),
-        F.col("_is_current").desc(),
-        F.col("_candidate_model_year").desc(),
-        F.col("_candidate_vehicle_model_id").asc(),
-    )
-    best = candidates.withColumn("_rank", F.row_number().over(rank)).filter(
-        F.col("_rank") == 1
-    )
+    best = _allocate_candidates_by_stock(candidates)
     return best.select(
         "driver_id",
         "year_month",
