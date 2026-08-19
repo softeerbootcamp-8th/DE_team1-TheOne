@@ -1,7 +1,5 @@
-"""월별 제공 데이터의 단일 Bronze 파일을 검증합니다."""
+"""월별 원천 API에서 받은 단일 Bronze 파일을 검증합니다."""
 
-import hashlib
-import json
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -9,18 +7,9 @@ import pyarrow.parquet as pq
 from shared.airflow.common.validation import parse_handler_result, parse_year_month
 
 
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-
 def validate_synthetic_bronze(
     result: dict,
     *,
-    dataset: str,
     dataset_dir: str,
     base_dir: str | Path | None = None,
 ) -> tuple[Path, str]:
@@ -43,21 +32,6 @@ def validate_synthetic_bronze(
             )
     if path.stat().st_size != result.get("file_size_bytes"):
         raise ValueError(f"Bronze 원본 파일 크기가 수집 결과와 다릅니다: {path}")
-    if _sha256(path) != result.get("sha256"):
-        raise ValueError(f"Bronze 원본 checksum이 수집 결과와 다릅니다: {path}")
     if pq.ParquetFile(path).metadata.num_rows != parsed.row_count:
         raise ValueError(f"Bronze 원본 행 수가 수집 결과와 다릅니다: {path}")
-
-    marker_path = Path(str(result.get("marker_location", "")))
-    if not marker_path.is_file() or marker_path.with_suffix(".parquet") != path:
-        raise ValueError(f"Bronze marker가 없습니다: {marker_path}")
-    marker = json.loads(marker_path.read_text(encoding="utf-8"))
-    expected = {
-        "year_month": year_month,
-        "dataset": dataset,
-        "row_count": parsed.row_count,
-        "sha256": result["sha256"],
-    }
-    if any(marker.get(key) != value for key, value in expected.items()):
-        raise ValueError("Bronze marker가 수집 결과와 다릅니다")
     return path, year_month

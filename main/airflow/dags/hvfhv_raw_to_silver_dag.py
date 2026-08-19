@@ -14,7 +14,6 @@ from main.airflow.scripts.hvfhv_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
-    DEFAULT_ZONE_LOOKUP_PATH,
     HVFHV_ERROR_THRESHOLD,
     PROJECT_ROOT,
     raw_to_bronze_task,
@@ -46,11 +45,13 @@ default_args = {
         "year": Param(
             None,
             type=["string", "null"],
+            pattern=r"^\d{4}$",
             description="수동 수집 연도 (예: '2024'). 비워두면 실행일 기준 직전 달 자동 계산",
         ),
         "month": Param(
             None,
             type=["string", "null"],
+            pattern=r"^(0?[1-9]|1[0-2])$",
             description="수동 수집 월 (예: '03' 또는 '3'). 비워두면 실행일 기준 직전 달 자동 계산",
         ),
         "base_dir": Param(
@@ -70,10 +71,9 @@ def hvfhv_raw_to_silver_pipeline():
         task_id="bronze_to_silver",
         bash_command=(
             f"python {PROJECT_ROOT}/main/spark/jobs/bronze_to_silver/hvfhv/job.py "
-            "--input_path \"{{ task_instance.xcom_pull(task_ids='raw_to_bronze')"
+            "--input_path \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
-            f"--zone_lookup_path {DEFAULT_ZONE_LOOKUP_PATH} "
             f"--error_threshold {HVFHV_ERROR_THRESHOLD}"
         ),
         env={
@@ -94,7 +94,7 @@ def hvfhv_raw_to_silver_pipeline():
     bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     bronze_checked >> bronze_to_silver_task
 
-    silver_checked = validate_silver_task.override(retries=0)(raw_result)
+    silver_checked = validate_silver_task.override(retries=0)(bronze_checked)
     bronze_to_silver_task >> silver_checked
 
 

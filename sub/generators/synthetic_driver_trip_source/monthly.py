@@ -108,7 +108,7 @@ def prepare_monthly_state(
                 "make_key",
                 "model_key",
                 "model_year",
-                "weekly_price_usd",
+                "weekly_lease_fee",
                 "uber_comfort_eligible",
                 "lyft_extra_comfort_eligible",
                 "vehicle_group",

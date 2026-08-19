@@ -1,10 +1,10 @@
 """월별 HVFHV+taxi_id 데이터와 기사 데이터 제공 시나리오. 이슈 #452.
 
-1. 월별 TLC 입력 수집 → 상태 검증 → 두 원천 생성 → 공개 검증
+1. 월별 TLC 입력 수집 → 상태 검증 → 세 원천 생성 → 공개 검증
 2. 네트워크 수집만 짧은 지수 백오프로 재시도
 3. 생성 Spark 명령은 source 입력과 상태·릴리스 경로만 사용
-4. manifest 행 수·checksum·필수 컬럼 검증
-5. API manifest 조회와 두 Parquet 다운로드
+4. 내부 manifest 행 수·checksum·필수 컬럼 검증
+5. API는 manifest를 공개하지 않고 세 Parquet만 다운로드
 """
 
 import hashlib
@@ -12,25 +12,30 @@ import io
 import json
 import sys
 import threading
+import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
+from schema.source import (
+    DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SNAPSHOT_SCHEMA,
+    LEASE_VEHICLE_INVENTORY_SCHEMA as INVENTORY_SCHEMA,
+)
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module
 
 sys.path.append(str(PROJECT_ROOT))
 from sub.synthetic_source_api.server import create_server
 
-
 DAG = dag_module.synthetic_driver_trip_source_dag
 
 
-def test_DAG는_월별로_두_원천을_생성하고_API_릴리스를_검증한다():
+def test_DAG는_월별로_세_원천을_생성하고_API_릴리스를_검증한다():
     assert DAG.dag_id == "synthetic_driver_trip_source_pipeline"
     assert set(DAG.task_ids) == {
         "collect_source_input",
@@ -59,6 +64,7 @@ def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다()
         "--zone_lookup_path",
         "--previous_snapshot_dir",
         "--previous_preferences_path",
+        "--vehicle_master_path",
         "--state_output_dir",
         "--release_output_dir",
         "--year_month",
@@ -190,7 +196,16 @@ def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(
         "company_path": str(tmp_path / "company"),
         "state_output_dir": str(state),
         "release_output_dir": str(tmp_path / "release"),
+        "vehicle_master_dir": str(tmp_path / "silver" / "vehicle_master"),
     }
+    vehicle_master = (
+        Path(params["vehicle_master_dir"])
+        / "collected_date=2026-08-17"
+        / "city=new-york"
+        / "vehicle_master.parquet"
+    )
+    vehicle_master.parent.mkdir(parents=True)
+    vehicle_master.touch()
 
     result = task_module.validate_source_inputs(
         {
@@ -204,6 +219,7 @@ def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(
     assert result["snapshot_date"] == "2026-09-01"
     assert result["previous_snapshot_dir"] == str(previous)
     assert result["previous_preferences_path"] == str(preferences)
+    assert result["vehicle_master_path"] == str(vehicle_master)
 
 
 CONFIG_HASH = "0123456789ab"
@@ -213,7 +229,8 @@ def _write_release(root, *, manifest_rows=1):
     release = root / "year_month=2026-09"
     release.mkdir(parents=True)
     trip_file = release / "hvfhv_taxi_trips.parquet"
-    lease_file = release / "driver_vehicle_leases.parquet"
+    snapshot_file = release / "driver_vehicle_monthly_snapshot.parquet"
+    inventory_file = release / "lease_vehicle_inventory.parquet"
     pq.write_table(
         pa.Table.from_pylist(
             [{"pickup_datetime": datetime(2026, 9, 2, 9), "taxi_id": "taxi-1"}]
@@ -224,20 +241,28 @@ def _write_release(root, *, manifest_rows=1):
         pa.Table.from_pylist(
             [
                 {
-                    "lease_id": "lease-1",
-                    "customer_id": "customer-1",
+                    "snapshot_month": "2026-09",
                     "driver_id": "driver-1",
                     "taxi_id": "taxi-1",
-                    "make_key": "KIA",
-                    "model_key": "SPORTAGE",
-                    "model_year": 2023,
-                    "lease_started_on": date(2026, 9, 1),
-                    "lease_ended_on": None,
+                    "vehicle_model_id": "vehicle-model-1",
+                    "manufacturer": "KIA",
+                    "model_name": "SPORTAGE",
+                    "fuel_type": "GAS",
+                    "comfort_eligible": True,
+                    "extra_comfort_eligible": False,
+                    "weekly_lease_fee": 574.0,
+                    "join_date": date(2024, 3, 1),
+                    "exit_date": None,
+                    "experience_years": 7,
+                    "vehicle_since": date(2026, 9, 1),
+                    "snapshot_created_at": datetime(2026, 9, 1),
                 }
-            ]
+            ],
+            schema=SNAPSHOT_SCHEMA,
         ),
-        lease_file,
+        snapshot_file,
     )
+    pq.write_table(pa.Table.from_pylist([{}], schema=INVENTORY_SCHEMA), inventory_file)
 
     def metadata(path):
         return {
@@ -256,7 +281,8 @@ def _write_release(root, *, manifest_rows=1):
         "created_at": "2026-09-10T00:00:00+00:00",
         "datasets": {
             "hvfhv_taxi_trips": metadata(trip_file),
-            "driver_vehicle_leases": metadata(lease_file),
+            "driver_vehicle_monthly_snapshot": metadata(snapshot_file),
+            "lease_vehicle_inventory": metadata(inventory_file),
         },
     }
     (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
@@ -304,23 +330,32 @@ def test_릴리스행수가_manifest와_다르면_실패한다(tmp_path):
         task_module.validate_release(tmp_path, "2026-09", 42)
 
 
-def test_API는_manifest와_두_Parquet을_다운로드한다(tmp_path):
+def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다(tmp_path):
     release, manifest = _write_release(tmp_path)
     server = create_server(tmp_path, port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
     try:
-        with urllib.request.urlopen(f"{base_url}/v1/data/latest") as response:
-            public_body = json.load(response)
-        assert "release_id" not in public_body
+        for path in ("/v1/data/latest", "/v1/data/2026-09"):
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(f"{base_url}{path}")
+            assert exc_info.value.code == 404
+
         for dataset in manifest["datasets"]:
-            assert public_body["datasets"][dataset]["download_url"] == (
-                f"/v1/data/2026-09/datasets/{dataset}"
-            )
+            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{dataset}"
+            with urllib.request.urlopen(dataset_url) as response:
+                assert response.headers["Content-Type"] == (
+                    "application/vnd.apache.parquet"
+                )
+                assert response.read() == (
+                    release / manifest["datasets"][dataset]["file"]
+                ).read_bytes()
+
             with urllib.request.urlopen(
-                f"{base_url}/v1/data/2026-09/datasets/{dataset}"
+                f"{base_url}/v1/data/latest/datasets/{dataset}"
             ) as response:
+                assert response.geturl() == dataset_url
                 assert response.read() == (
                     release / manifest["datasets"][dataset]["file"]
                 ).read_bytes()

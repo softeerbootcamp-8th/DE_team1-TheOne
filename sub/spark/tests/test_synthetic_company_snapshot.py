@@ -49,7 +49,7 @@ def _vehicle_master(vendor: str = "fasttrack") -> pd.DataFrame:
         {"make_key": "D", "model_key": "LYFT_ONLY", "platform": "lyft", "product": "Extra Comfort"},
     ]
     return pd.DataFrame([
-        {**row, "vendor": vendor, "min_year": 2020, "weekly_price_usd": prices[row["model_key"]]}
+        {**row, "vendor": vendor, "min_year": 2020, "weekly_lease_fee": prices[row["model_key"]]}
         for row in rows
     ])
 

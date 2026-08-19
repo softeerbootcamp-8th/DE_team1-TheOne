@@ -1,6 +1,5 @@
 """HVFHV Raw-to-Silver DAG의 실행·검증 함수."""
 
-import importlib
 import logging
 import os
 import sys
@@ -20,7 +19,8 @@ from shared.airflow.common.validation import (
     parse_year_month,
     run_gx_validation,
 )
-from schema.bronze.hvfhv import LEGACY_SCHEMA, SCHEMA
+from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
+from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA
 
 
 logger = logging.getLogger(__name__)
@@ -38,11 +38,10 @@ DEFAULT_BRONZE_DIR = os.getenv(
 DEFAULT_SILVER_DIR = os.getenv(
     "SILVER_DIR", str(PROJECT_ROOT / "data" / "silver" / "hvfhv")
 )
-DEFAULT_ZONE_LOOKUP_PATH = os.getenv(
-    "ZONE_LOOKUP_PATH",
-    str(PROJECT_ROOT / "data" / "bronze" / "taxi_zone_lookup.csv"),
-)
-HVFHV_ERROR_THRESHOLD = 0.2
+# Bronze 한 달에서 버려도 되는 행의 비율. 넘으면 원천이 바뀐 것으로 보고 멈춥니다.
+# 0.2 는 초기 관측치를 넉넉히 감싸려고 둔 값이라, 원천 스키마가 통째로 어긋나도
+# 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
+HVFHV_ERROR_THRESHOLD = 0.05
 DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
 
 
@@ -62,8 +61,12 @@ def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> 
     return "|".join(fields)
 
 
-def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
-    """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다."""
+def _bronze_quality_summary(parquet_file, required_columns):
+    """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다.
+
+    물리 스키마 전체 일치는 확인하지 않습니다 — 원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다
+    많은 컬럼을 보내도(#529 진행 중) required_columns 만 있으면 검증을 계속합니다.
+    """
     import pandas as pd
 
     schema = parquet_file.schema_arrow
@@ -71,27 +74,21 @@ def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
     missing_columns = [name for name in required_columns if name not in schema.names]
     invalid_rows = 0
 
-    schema_allowed = schema in expected_schemas
-    if row_count and not missing_columns and schema_allowed:
+    if row_count and not missing_columns:
         for batch in parquet_file.iter_batches(columns=required_columns):
             frame = batch.to_pandas()
             trip_miles = pd.to_numeric(frame["trip_miles"], errors="coerce")
             trip_time = pd.to_numeric(frame["trip_time"], errors="coerce")
-            fare = pd.to_numeric(frame["base_passenger_fare"], errors="coerce")
             driver_pay = pd.to_numeric(frame["driver_pay"], errors="coerce")
             valid = (
                 pd.to_datetime(frame["pickup_datetime"], errors="coerce").notna()
                 & pd.to_datetime(
                     frame["dropoff_datetime"], errors="coerce"
                 ).notna()
-                & frame["PULocationID"].notna()
-                & frame["DOLocationID"].notna()
                 & trip_miles.gt(0)
                 & trip_miles.le(1000)
                 & trip_time.gt(0)
                 & trip_time.le(86400)
-                & fare.ge(0)
-                & fare.le(5000)
                 & driver_pay.ge(0)
                 & driver_pay.le(5000)
                 & frame["taxi_id"].notna()
@@ -107,26 +104,11 @@ def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
                 "missing_required_columns": ",".join(missing_columns),
                 "invalid_required_row_ratio": (
                     invalid_rows / row_count
-                    if row_count and not missing_columns and schema_allowed
+                    if row_count and not missing_columns
                     else None
                 ),
             }
         ]
-    )
-
-
-def _spark_schema_to_arrow(spark_schema) -> pa.Schema:
-    type_map = {
-        "string": pa.string(),
-        "timestamp": pa.timestamp("us"),
-        "int": pa.int32(),
-        "bigint": pa.int64(),
-        "double": pa.float64(),
-    }
-    return pa.schema(
-        pa.field(field.name, type_map[field.dataType.simpleString()])
-        for field in spark_schema.fields
-        if field.name != "year_month"
     )
 
 
@@ -167,6 +149,10 @@ def _silver_quality_summary(parquet_files, required_columns):
 def raw_to_bronze_task(**context) -> dict:
     """HVFHV+taxi_id 데이터를 Bronze에 저장합니다."""
     params = context.get("params", {})
+    return _collect_bronze(params)
+
+
+def _collect_bronze(params: dict) -> dict:
     event = {
         "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
         "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
@@ -179,49 +165,47 @@ def raw_to_bronze_task(**context) -> dict:
     return result
 
 
+def existing_silver_partitions(silver_dir: str | Path) -> list[str]:
+    """지금 있는 `year_month=` 파티션 이름들. Spark 쓰기 **전에** 찍어 둡니다.
+
+    #165 는 정적 overwrite 가 **기존에 있던** 다른 달을 지운 사고였습니다. 그러니
+    감시해야 할 것은 "쓰기 전에 있던 것이 쓰기 후에도 있는가" 입니다. 쓰기 후의 모양만
+    보고 판단하면(예전처럼 "직전 달이 있어야 한다") 과거 달을 새로 채우는 정상 백필을
+    구분할 수 없습니다 — 어느 달을 넣든 그 직전 달은 없기 마련이라 항상 막혔습니다.
+    """
+    root = Path(silver_dir)
+    if not root.is_dir():
+        return []
+    return sorted(
+        partition.name
+        for partition in root.glob("year_month=*")
+        if partition.is_dir() and any(partition.glob("*.parquet"))
+    )
+
+
 @task(
     task_id="validate_bronze",
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_bronze_task(result: dict, **context) -> None:
+def validate_bronze_task(result: dict, **context) -> dict:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
-    base_dir = context.get("params", {}).get("base_dir") or DEFAULT_BRONZE_DIR
-    path, _ = validate_synthetic_bronze(
-        result,
-        dataset="hvfhv_taxi_trips",
-        dataset_dir="hvfhv",
-        base_dir=base_dir,
-    )
+    params = context.get("params", {})
+    summary = _bronze_quality_result(result, params, list(SCHEMA.names))
+    missing = summary.at[0, "missing_required_columns"]
+    if missing:
+        logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
+        result = _collect_bronze(params)
+        summary = _bronze_quality_result(
+            result, params, list(SCHEMA.names)
+        )
 
-    transformer = importlib.import_module(
-        "jobs.bronze_to_silver.hvfhv.transformer"
-    )
-    try:
-        parquet_file = pq.ParquetFile(path)
-    except (OSError, pa.ArrowInvalid) as exc:
-        raise ValueError(
-            f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
-        ) from exc
-
-    summary = _bronze_quality_summary(
-        parquet_file,
-        (SCHEMA, LEGACY_SCHEMA),
-        transformer.REQUIRED_COLUMNS,
-    )
     import great_expectations as gx
 
     expectations = [
         gx.expectations.ExpectColumnValuesToBeBetween(
             column="row_count", min_value=1
-        ),
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="schema_signature",
-            value_set=[
-                _schema_signature(SCHEMA),
-                _schema_signature(LEGACY_SCHEMA),
-            ],
         ),
         gx.expectations.ExpectColumnValuesToBeInSet(
             column="missing_required_columns", value_set=[""]
@@ -242,6 +226,33 @@ def validate_bronze_task(result: dict, **context) -> None:
         suite_name="hvfhv_bronze_suite",
         layer="bronze",
     )
+    # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
+    return {
+        **result,
+        "silver_partitions_before": existing_silver_partitions(DEFAULT_SILVER_DIR),
+    }
+
+
+def _bronze_quality_result(
+    result: dict,
+    params: dict,
+    required_columns: list[str],
+):
+    base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
+    path, _ = validate_synthetic_bronze(
+        result,
+        dataset_dir="hvfhv",
+        base_dir=base_dir,
+    )
+    try:
+        parquet_file = pq.ParquetFile(path)
+    except (OSError, pa.ArrowInvalid) as exc:
+        raise ValueError(
+            f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
+        ) from exc
+
+    summary = _bronze_quality_summary(parquet_file, required_columns)
+    return summary
 
 
 @task(
@@ -265,15 +276,8 @@ def validate_silver_task(raw_result: dict) -> None:
             f"Silver 파티션에 Parquet 파일이 없습니다: {silver_partition}"
         )
 
-    transformer = importlib.import_module(
-        "jobs.bronze_to_silver.hvfhv.transformer"
-    )
-    expected_schema = _spark_schema_to_arrow(transformer.FINAL_SCHEMA)
-    required_columns = [
-        field.name
-        for field in transformer.FINAL_SCHEMA.fields
-        if not field.nullable and field.name != "year_month"
-    ]
+    expected_schema = SILVER_SCHEMA
+    required_columns = list(SILVER_SCHEMA.names)
     parquet_files = [pq.ParquetFile(path) for path in silver_files]
     summary = _silver_quality_summary(parquet_files, required_columns)
     import great_expectations as gx
@@ -308,21 +312,12 @@ def validate_silver_task(raw_result: dict) -> None:
             f"Silver 행 수가 Bronze 보다 많습니다: {silver_rows} > {bronze_rows}"
         )
 
-    other_partitions = [
-        p
-        for p in Path(DEFAULT_SILVER_DIR).glob("year_month=*")
-        if p.name != silver_partition.name
-    ]
-    if other_partitions:
-        prev_first_day = datetime.strptime(year_month, "%Y-%m").replace(
-            day=1
-        ) - timedelta(days=1)
-        prev_partition = (
-            Path(DEFAULT_SILVER_DIR)
-            / f"year_month={prev_first_day:%Y-%m}"
+    # #165 재발 감시 — 쓰기 전에 있던 파티션이 사라졌는지만 봅니다. 이번에 쓴 달은
+    # 당연히 새로 생기므로 비교 대상이 아닙니다.
+    before = set(raw_result.get("silver_partitions_before") or [])
+    after = set(existing_silver_partitions(DEFAULT_SILVER_DIR))
+    lost = sorted(before - after)
+    if lost:
+        raise ValueError(
+            f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
-        if not any(prev_partition.glob("*.parquet")):
-            raise ValueError(
-                "직전 달 파티션이 사라졌습니다 (#165 재발): "
-                f"{prev_partition}"
-            )

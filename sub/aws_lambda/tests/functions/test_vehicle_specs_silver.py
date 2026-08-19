@@ -98,6 +98,7 @@ def test_대장과_붙일_조인_키가_만들어진다(tmp_path):
                 "raw_name": "MITSUBISHI OUTLANDER SPORT",
                 "price_usd": 554.0,
                 "price_period": "week",
+                "image_url": "https://example.com/outlander-sport.png",
                 "source_url": "https://example.com",
                 "collected_at": COLLECTED_AT,
             }

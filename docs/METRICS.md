@@ -46,52 +46,39 @@
 
 ## 3. 요금 배수는 어디서 오는가
 
-TLC 원본에는 **상품 등급(Comfort / Extra Comfort) 컬럼이 없습니다.**
-"등급을 올리면 요금이 몇 % 오르는가"를 상수로 가정하지 않고, **우리 운행 데이터에서 직접 추정**합니다.
-추정과 배수 산출 모두 메인 파이프라인이 합니다 — 원천 API 는 운행 기록만 내려주고 등급은 주지 않습니다.
+원천 API가 매칭 전에 확정한 `estimated_service_tier`를 제공합니다.
+Silver는 등급을 다시 추정하지 않고 license–등급 조합을 검증한 뒤 그대로 전달합니다.
+등급 배수는 상수로 가정하지 않고 **우리 운행 데이터에서 직접 계산**합니다.
 
 ```
-① Silver — 등급 추정 (bronze_to_silver/hvfhv)
-   플랫폼 × (승차 구역, 하차 구역) 별로
-     관측치 ≥ 20건  AND  base_passenger_fare ≥ 그 OD 요금 중앙값 × 1.15
-       → Uber: Comfort / Lyft: Extra Comfort,  그 외: Standard
+① Silver — 원천 등급 전달 (bronze_to_silver/hvfhv)
+   HV0003 → Standard / Comfort
+   HV0005 → Standard / Extra Comfort
 
-② Gold — 배수 산출 (silver_to_gold/transformer.py::_zone_tier_multipliers)
-   마일당 요금 = driver_pay ÷ trip_miles
-   (승차 구역, 하차 구역, 등급) 별 평균 → 피벗
-     comfort_multiplier       = Comfort 평균       ÷ Standard 평균
-     extra_comfort_multiplier = Extra Comfort 평균 ÷ Standard 평균
+② Gold — license·등급별 배수 산출
+   마일당 요금 = driver_pay 합계 ÷ trip_miles 합계
+   (license, 등급) 별 마일당 요금 → 피벗
+     comfort_multiplier       = Comfort 마일당 요금       ÷ Standard 마일당 요금
+     extra_comfort_multiplier = Extra Comfort 마일당 요금 ÷ Standard 마일당 요금
 ```
 
 | 판단 | 근거 |
 | --- | --- |
-| **OD 관측치 20건 미만이면 등급을 구분하지 않음** | 표본이 얇은 구역에서 중앙값이 튐 |
-| **승차 구역 단독이 아니라 (승차, 하차) 쌍으로 파티션** | 요금은 출발지가 아니라 실제 이동 경로에 따라 갈림 |
-| **관측치가 없는 등급은 배수 1.0** (= 가정하지 않음) | 데이터가 없는 구역에서 매출 증가를 지어내지 않음 |
+| **원천 등급을 Silver에서 재추정하지 않음** | 실제 상품 등급을 운임 추정치로 덮어쓰지 않음 |
+| **마일당 요금은 합계/합계로 계산** | 짧은 운행의 극단값이 단순 평균을 왜곡하지 않음 |
+| **관측치가 없는 등급은 배수 1.0** (= 가정하지 않음) | 데이터가 없는 등급에서 매출 증가를 지어내지 않음 |
 | **이미 프리미엄 요금으로 뛴 운행에는 곱하지 않음** | 중복 가산 방지 |
-
-| 상수 | 값 | 의미 |
-| --- | --- | --- |
-| `MIN_OD_OBSERVATIONS` | 20 | 이 미만이면 등급을 구분하지 않음 |
-| `PREMIUM_FARE_RATIO` | 1.15 | 중앙값 대비 이 배수 이상이면 프리미엄으로 간주 |
-
-관측 등급이 아니라 **추정치**입니다 — 수요 할증 등 다른 원인으로 요금이 올라간 운행도 섞일 수 있어
-컬럼명에 `estimated_` 를 붙였습니다.
-
-추정 규칙은 [`shared/spark/hvfhv_clean_transformer.py`](../shared/spark/hvfhv_clean_transformer.py) 가 소유합니다.
-메인은 이 규칙으로 Silver 에서 등급을 계산하고, 원천 DB 는 배정할 때 *"그 차가 받을 수 있는 운행인지"* 판정에 씁니다.
-두 제품이 각자 구현하면 배정한 근거와 추천한 근거가 갈라지므로, 규칙 하나를 공용으로 둡니다.
 
 ---
 
 ## 4. 추천 기준선
 
 ```
-추천 대상  =  순수익 증가 ≥ $600  AND  매출 증가 ≥ 0
+추천 대상  =  순수익 증가 ≥ $600  AND  회사 렌탈 객단가 증가 > $0
 ```
 
-**매출 증가가 음수인 추천은 제외**합니다.
-기사만 이득이고 회사 매출이 줄어드는 교체는 이 제품의 목적이 아닙니다.
+**회사 렌탈 객단가가 실제로 상승하지 않는 추천은 제외**합니다.
+기사만 이득이거나 회사 매출이 그대로인 교체는 이 제품의 목적이 아닙니다.
 
 기준선은 DAG 실행 파라미터(`threshold_profit_increase`)로 받고, **기본값은 `600.0`** 입니다
 ([hvfhv_silver_to_gold_dag.py](../main/airflow/dags/hvfhv_silver_to_gold_dag.py)).

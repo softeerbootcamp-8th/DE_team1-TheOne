@@ -19,9 +19,6 @@ DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
 
 DAG_VARIABLES = {
     "driver_master_raw_to_silver_dag": "driver_master_raw_to_silver_dag",
-    "eia_gas_price_raw_to_bronze_dag": "eia_gas_price_raw_to_bronze_dag",
-    "eia_electricity_price_raw_to_bronze_dag": "eia_electricity_price_raw_to_bronze_dag",
-    "eia_fuel_price_bronze_to_silver_dag": "eia_fuel_price_bronze_to_silver_dag",
     "fueleconomy_vehicle_specs_raw_to_silver_dag": "fueleconomy_vehicle_specs_dag",
     "hvfhv_driver_trip_silver_dag": "hvfhv_driver_trip_silver_dag",
     "hvfhv_raw_to_silver_dag": "hvfhv_dag",
@@ -41,9 +38,6 @@ SCHEDULES = {
     # EIA 파일에는 이력이 통째로 들어 있어 매일 받을 이유가 없습니다. 월 1회 갱신은
     # 과거 값 개정분을 확보하기 위한 것입니다.
     "driver_master_raw_to_silver_dag": "0 0 10 * *",
-    "eia_gas_price_raw_to_bronze_dag": "0 5 1 * *",
-    "eia_electricity_price_raw_to_bronze_dag": "0 6 1 * *",
-    "eia_fuel_price_bronze_to_silver_dag": "0 7 1 * *",
     "hvfhv_raw_to_silver_dag": "0 0 10 * *",
     "vehicle_catalog_raw_to_silver_dag": "0 3 * * 1",
     "lyft_eligible_vehicles_raw_to_silver_dag": "0 4 * * 1",
@@ -55,21 +49,6 @@ RETRY_CONTRACTS = {
         "collection": {"raw_to_bronze"},
         "transform": {"bronze_to_silver": 15},
         "validation": {"validate_bronze", "validate_silver"},
-    },
-    "eia_gas_price_raw_to_bronze_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {},
-        "validation": {"validate_bronze"},
-    },
-    "eia_electricity_price_raw_to_bronze_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {},
-        "validation": {"validate_bronze"},
-    },
-    "eia_fuel_price_bronze_to_silver_pipeline": {
-        "collection": set(),
-        "transform": {"bronze_to_silver": 10},
-        "validation": {"check_bronze", "validate_silver"},
     },
     "fueleconomy_vehicle_specs_raw_to_silver_pipeline": {
         "collection": {"raw_to_bronze"},
@@ -117,9 +96,6 @@ RETRY_CONTRACTS = {
     for dag_id, contract in RETRY_CONTRACTS.items()
     if dag_id
     in {
-        "eia_gas_price_raw_to_bronze_pipeline",
-        "eia_electricity_price_raw_to_bronze_pipeline",
-        "eia_fuel_price_bronze_to_silver_pipeline",
         "fueleconomy_vehicle_specs_raw_to_silver_pipeline",
         "lyft_eligible_vehicles_raw_to_silver_pipeline",
         "uber_eligible_vehicles_raw_to_silver_pipeline",
@@ -222,13 +198,3 @@ def test_Vehicle_Master_DAG의_공개_계약을_유지한다():
     assert dag.get_task("validate_silver").upstream_task_ids == {
         "build_vehicle_master"
     }
-
-
-def test_EIA_통합_DAG는_원본확인을_변환보다_먼저_한다():
-    # 원본이 하나만 있으면 변환이 더 안쪽에서 죽어 어느 수집이 문제인지 로그를 파야
-    # 합니다. 확인이 변환 앞에 있어야 그 상황에서 바로 알 수 있습니다.
-    module = importlib.import_module("dags.eia_fuel_price_bronze_to_silver_dag")
-    dag = module.eia_fuel_price_bronze_to_silver_dag
-
-    assert dag.get_task("bronze_to_silver").upstream_task_ids == {"check_bronze"}
-    assert dag.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}

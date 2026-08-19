@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 from dataclasses import dataclass, field
@@ -20,19 +21,24 @@ AIRFLOW_GLOBAL_TESTS = {
     "test_dag_spark_pythonpath.py",
     "test_slack_callbacks.py",
 }
+# 규약(`test_{pipeline}_dag.py`)으로 못 찾는 것만 적습니다. 이름이 규약과 다르거나,
+# 한 테스트가 여러 파이프라인을 함께 보는 경우입니다.
+# 여기 적은 이름이 실재하는지는 `test_select_tests.py` 가 확인합니다 — 예전에 EIA 가
+# main 으로 옮겨간 뒤(#518) `sub` 쪽 항목이 죽은 참조로 남아, EIA 를 고쳐도 전용
+# 테스트가 하나도 안 돌았습니다(#538).
 AIRFLOW_OVERRIDES = {
     "main": {
-        "hvfhv_driver_trip_silver": {"test_driver_trip_silver_dag.py"},
+        # 가스·전력 원본 적재를 한 파일에서 함께 검증합니다.
+        "eia_electricity_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
+        "eia_gas_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
         "hvfhv_raw_to_silver": {
             "test_hvfhv_raw_to_silver_dag.py",
             "test_hvfhv_validation.py",
         },
         "hvfhv_silver_to_gold": {"test_silver_to_gold_dag.py"},
+        "lease_vehicle_inventory_raw_to_silver": {"test_lease_vehicle_inventory_dag.py"},
     },
     "sub": {
-        "eia_electricity_price_raw_to_bronze": {"test_eia_fuel_price_dag.py"},
-        "eia_fuel_price_bronze_to_silver": {"test_eia_fuel_price_dag.py"},
-        "eia_gas_price_raw_to_bronze": {"test_eia_fuel_price_dag.py"},
         "fueleconomy_vehicle_specs_raw_to_silver": {
             "test_fueleconomy_vehicle_specs_raw_to_silver_dag.py",
             "test_vehicle_specs_validation.py",
@@ -195,14 +201,25 @@ def render(selection: Selection) -> str:
     return "\n".join(lines) or "NONE"
 
 
-def run(selection: Selection) -> None:
-    if not selection.full and not selection.tests:
+def selected_projects(selection: Selection) -> list[str]:
+    """실행 대상 프로젝트 목록. CI 가 이 값으로 matrix 를 폅니다."""
+    return sorted(selection.full | selection.tests.keys())
+
+
+def run(selection: Selection, only: str | None = None) -> None:
+    projects = selected_projects(selection)
+    if only is not None:
+        projects = [project for project in projects if project == only]
+        if not projects:
+            print(f"{only} 는 이번 변경의 테스트 대상이 아닙니다")
+            return
+    if not projects:
         print("테스트 대상 없음")
         return
     environment = os.environ.copy()
     environment.pop("VIRTUAL_ENV", None)
     environment["PYTHONPATH"] = str(ROOT)
-    for project in sorted(selection.full | selection.tests.keys()):
+    for project in projects:
         runtime_dir, target_dir = RUNNERS[project]
         runtime = ROOT / runtime_dir
         target = ROOT / target_dir
@@ -222,13 +239,20 @@ def main() -> None:
     parser.add_argument("--base")
     parser.add_argument("--head", default="HEAD")
     parser.add_argument("--run", action="store_true")
+    # CI 가 matrix 를 펼 때 씁니다. 선택된 프로젝트를 JSON 배열로만 찍습니다.
+    parser.add_argument("--matrix", action="store_true")
+    # matrix 각 갈래가 자기 프로젝트만 돌 때 씁니다.
+    parser.add_argument("--only")
     parser.add_argument("files", nargs="*")
     args = parser.parse_args()
     files = changed_files(args.base, args.head) if args.base else args.files
     selection = select_tests(files)
+    if args.matrix:
+        print(json.dumps(selected_projects(selection)))
+        return
     print(render(selection))
     if args.run:
-        run(selection)
+        run(selection, only=args.only)
 
 
 if __name__ == "__main__":

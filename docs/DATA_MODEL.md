@@ -38,22 +38,9 @@
 | --- | --- | --- | --- | --- |
 | `hvfhv_taxi_trips` | 운행 1건 | `year_month` | 월 2,040만 행 | [schema/bronze/hvfhv.py](../schema/bronze/hvfhv.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [schema/silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
+| `lease_vehicle_inventory` | 차종·연식별 재고 | `year_month` | 차종 수준 | [schema/silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 
-릴리스마다 `manifest.json` 이 함께 나갑니다.
-
-```json
-{
-  "release_id": "2025-01-seed-42",
-  "year_month": "2025-01",
-  "seed": 42,
-  "datasets": {
-    "hvfhv_taxi_trips":      { "file": "...", "row_count": 20405666, "sha256": "..." },
-    "driver_vehicle_leases": { "file": "...", "row_count": 2000,     "sha256": "..." }
-  }
-}
-```
-
-수집 측은 이 매니페스트를 **계약**으로 사용합니다 → [3.1 수집 검증](#31-수집-검증)
+세 데이터셋은 `/v1/data/{YYYY-MM}/datasets/{dataset}`에서 Parquet 파일로 공개됩니다. 원천의 `manifest.json`은 게시 전 내부 검증용이며 메인 수집 계약으로 노출하지 않습니다.
 
 ---
 
@@ -65,6 +52,7 @@
 | --- | --- | --- | --- | --- |
 | `hvfhv` | 원천 API | 운행 1건 | `year_month` | [bronze/hvfhv.py](../schema/bronze/hvfhv.py) |
 | `driver_vehicle_leases` | 원천 API | 계약 1건 | `year_month` | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
+| `lease_vehicle_inventory` | 원천 API | 차종 × 연식 1개 | `year_month` | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | `vehicle_catalog` | FastTrackLease | 차종 1개 | `collected_date` | [bronze/vehicle_catalog.py](../schema/bronze/vehicle_catalog.py) |
 | `uber_eligible_vehicles` | Uber | 차종 1개 | `collected_date` | [bronze/uber_eligible_vehicles.py](../schema/bronze/uber_eligible_vehicles.py) |
 | `lyft_eligible_vehicles` | Lyft | 차종 1개 | `collected_date` | [bronze/lyft_eligible_vehicles.py](../schema/bronze/lyft_eligible_vehicles.py) |
@@ -96,8 +84,9 @@
 
 | 데이터셋 | 한 행 | 파티션 | 규모 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
-| `hvfhv` | 운행 1건 (`trip_key`) | `year_month` | 월 2,040만 행 | [silver/hvfhv.py](../schema/silver/hvfhv.py) |
+| `hvfhv` | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv.py](../schema/silver/hvfhv.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
+| `lease_vehicle_inventory` | 차종 × 연식 1개 | `year_month` | 차종 수준 | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | **`hvfhv_driver_trip`** | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv_driver_trip.py](../schema/silver/hvfhv_driver_trip.py) |
 | `vehicle_catalog` | 차종 1개 | `collected_date` | 24행 | [silver/vehicle_catalog.py](../schema/silver/vehicle_catalog.py) |
 | `uber_eligible_vehicles` | 차종 1개 | `collected_date` | 59,650행 | [silver/eligible_vehicles.py](../schema/silver/eligible_vehicles.py) |
@@ -111,16 +100,13 @@
 
 ### 3.1 수집 검증
 
-원천 API에서 받은 Bronze는 적재 직후 **매니페스트와 5가지를 대조**합니다.
-하나라도 어긋나면 태스크가 실패하고 하류로 내려가지 않습니다. ([monthly_bronze.py](../shared/airflow/common/monthly_bronze.py))
+원천 API에서 받은 Bronze는 적재 직후 실제 저장 파일을 확인합니다. 하나라도 어긋나면 태스크가 실패하고 하류로 내려가지 않습니다. ([monthly_bronze.py](../main/airflow/common/monthly_bronze.py))
 
 | 검사 | 잡아내는 실패 |
 | --- | --- |
 | 파일 크기 | 다운로드 중단 |
-| SHA-256 | 전송 중 손상 |
-| 행 수 (Parquet 메타데이터) | 부분 적재 |
+| Parquet 가독성·footer 행 수 | 잘못된 파일 또는 부분 적재 |
 | 파티션 경로 형식 | `year_month=` 계약 위반 |
-| 마커 파일 내용 | 적재는 됐는데 메타가 어긋난 상태 |
 
 ### 3.2 `hvfhv_driver_trip` — 운행 × 리스 계약
 
@@ -160,33 +146,22 @@ HVFHV Silver가 NULL 자리표시로 들고 오는 컬럼인데 채우는 값이
 | 컬럼군 | 컬럼 | 쓰이는 곳 |
 | --- | --- | --- |
 | 식별 | `make_key`, `model_key`, `spec_year_min`, `spec_year_max` | 조인 키 |
-| 매출 | `weekly_price_usd` | 회사 렌탈 매출 |
+| 매출 | `weekly_lease_fee` | 회사 렌탈 매출 |
 | 연비 | `combined_mpg`, `kwh_100mi`, `fuel_type` | 연료비 계산 |
 | 자격 | `uber_comfort_eligible`, `lyft_extra_comfort_eligible`, `vehicle_group` | 등급 상승 판정 |
 
 `taxi_id` 가 없는 **차종(스펙) 테이블**입니다. 실제 보유 차량이 아니라
 `(make_key, model_key, 연식)` 3개로 추천 차량을 식별합니다.
 
-### 3.4 `estimated_service_tier` — TLC에 없는 값을 추정
+### 3.4 `estimated_service_tier` — 원천에서 확정된 운행 등급
 
-TLC HVFHV 원본에는 **상품 등급(Comfort / Extra Comfort) 컬럼이 없습니다.**
-등급 상승 시 매출 증가를 계산하려면 이 값이 필요하므로, Silver 단계에서 요금으로 추정합니다.
+합성 원천 API가 매칭 전에 확정한 상품 등급을 Raw→Bronze→Silver에서 그대로 보존합니다.
+Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–등급 조합만 허용합니다.
 
-```
-플랫폼 × (승차 구역, 하차 구역) 별로
-  ├─ 관측치 ≥ 20건 이고
-  └─ base_passenger_fare ≥ 그 OD 요금 중앙값 × 1.15
-        → Uber: "Comfort" / Lyft: "Extra Comfort"
-        → 그 외: "Standard"
-```
-
-| 상수 | 값 | 의미 |
-| --- | --- | --- |
-| `MIN_OD_OBSERVATIONS` | 20 | 이 미만이면 등급을 구분하지 않음 (표본이 얇은 구역에서 중앙값이 튐) |
-| `PREMIUM_FARE_RATIO` | 1.15 | 중앙값 대비 이 배수 이상이면 프리미엄으로 간주 |
-
-**관측 등급이 아니라 추정치입니다.** 수요 할증 등 다른 원인으로 요금이 올라간 운행도 포함될 수 있어
-컬럼명에 `estimated_` 를 붙였습니다. ([source_transformer.py](../shared/spark/hvfhv_clean_transformer.py))
+| `hvfhs_license_num` | 허용 등급 |
+| --- | --- |
+| `HV0003` (Uber) | `Standard`, `Comfort` |
+| `HV0005` (Lyft) | `Standard`, `Extra Comfort` |
 
 ---
 

@@ -1,4 +1,4 @@
-"""검증된 월별 HVFHV로 HVFHV+taxi_id 데이터와 기사 데이터를 생성합니다."""
+"""검증된 월별 HVFHV로 운행·리스·보유 차량 데이터를 생성합니다."""
 
 import os
 from datetime import datetime, timedelta, timezone
@@ -18,7 +18,6 @@ from sub.airflow.scripts.synthetic_driver_trip_source.tasks import (
     validate_release_task,
 )
 
-
 default_args = {
     "owner": "DE_team1",
     "retries": 1,
@@ -31,19 +30,16 @@ default_args = {
 @dag(
     dag_id="synthetic_driver_trip_source_pipeline",
     default_args=default_args,
-    description="월별 HVFHV에 기사·차량을 배정해 제공 데이터 2종 생성",
+    description="월별 HVFHV에 기사·차량을 배정해 제공 데이터 3종 생성",
     schedule="0 0 10 * *",
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
     tags=["hvfhv", "driver", "synthetic", "source", "spark"],
     params={
-        "year": Param(None, type=["string", "null"]),
-        "month": Param(None, type=["string", "null"]),
-        # 기본값을 비웁니다. 값이 있으면 CLI 로 실려 config 의 global_seed 를 덮고,
-        # 비우면 플래그 자체를 생략해 config 가 그대로 쓰입니다 — Param 에 42 를
-        # 두면 항상 CLI 로 전달돼서 설정 파일 값이 영원히 가려집니다.
-        "seed": Param(None, type=["integer", "null"]),
+        "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
+        "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
+        "seed": Param(42, type="integer"),
         # TEMPORARY(#452): 로컬 DAG smoke test용. 0이면 전체 월을 처리합니다.
         #
         # 0 이 아니면 생성 결과가 `<release_output_dir>/_temporary/test_row_limit=N/`
@@ -78,11 +74,13 @@ def synthetic_driver_trip_source_pipeline():
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['previous_snapshot_dir'] }} "
             + "--previous_preferences_path "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['previous_preferences_path'] }} "
+            + "--vehicle_master_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['vehicle_master_path'] }} "
             + "--state_output_dir {{ params.state_output_dir }} "
             + "--release_output_dir {{ params.release_output_dir }} "
             + "--year_month "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
-            + "{% if params.seed is not none %}--seed {{ params.seed }} {% endif %}"
+            + "--seed {{ params.seed }} "
             + "--test_row_limit {{ params.test_row_limit }}"
         ),
         env={

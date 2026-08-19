@@ -20,6 +20,9 @@ dependencies = [
     #   JVM 은 airflow/Dockerfile 의 default-jre-headless 가 제공합니다.
     "pyspark==3.5.6",
     "apache-airflow-providers-http==6.0.4",          # vPIC / EIA / NREL API
+    # 실패 알림. 없으면 slack_failure_callback 이 로그 폴백으로 조용히 강등됩니다 (#546).
+    # 로컬에서 알림을 끄려면 이걸 빼지 말고 slack_webhook Connection 을 안 만들면 됩니다.
+    "apache-airflow-providers-slack==9.10.2",
     # ─── 아래는 DAG 가 lambda/functions 핸들러를 그대로 import 하기 때문에 필요합니다.
     #     lambda/pyproject.toml 과 버전이 정확히 같아야 합니다. 어긋나면 로컬에서
     #     통과한 코드가 Lambda 이미지에서 다르게 돕니다. 한쪽만 바꾸지 마세요.

@@ -12,73 +12,36 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-# 스냅샷 시점(`snapshot_date`)은 이제 `config/generation.json` 의
-# `bootstrap.snapshot_date` 가 소유합니다. 실행일(`date.today()`)을 쓰지 않는 이유는
-# 그 파일과 `config/README.md` 에 적어 두었습니다 — 요약하면 이건 수집한 데이터가
-# 아니라 회사 DB 를 대신해 **생성한 픽스처**이고, 픽스처는 고정되어야 합니다.
-#
-# 리스 시작 하한은 config 로 올리지 않았습니다. 바꿔가며 돌려볼 손잡이가 아니라
-# "리스 이력이 언제부터 있다고 볼 것인가" 라는 픽스처의 기준점이고, 분류상
-# 가정 파라미터입니다(`docs/config_inventory.md`). 이름에서 `DEFAULT_` 를 뺀 것은
-# 이게 폴백이 아니라 **유일한 소유자**라는 뜻입니다 — 시그니처 기본값으로는 두지
-# 않고 진입점이 명시적으로 넘깁니다.
-LEASE_START_MIN = date(2023, 1, 1)
-# 초기 기사단이 리스하는 차량의 연식. `LEASE_START_MIN` 과 같은 이유로 config 가
-# 아니라 이 상수 한 곳이 소유합니다.
-MODEL_YEAR = 2023
+from schema.source import COMPANY_SNAPSHOT_SCHEMAS
 
-# 회사 원천 스냅샷의 저장 스키마.
+# 기본 스냅샷 시점.
 #
-# pandas 가 추론하게 두면 안 됩니다. 초기 스냅샷은 모든 계약이 진행 중이라
-# `lease_ended_on` 이 전량 결측이고, 그러면 Parquet 타입이 `null` 로 굳어
-# Spark 가 날짜로 못 읽습니다 — 기사 배정이 분석 단계에서 죽습니다(#353).
+# 실행일(`date.today()`)을 쓰지 않는 이유
+# ------------------------------------
+# 이건 수집한 데이터가 아니라 회사 DB 를 대신해 **생성한 픽스처**입니다. 픽스처는
+# 고정되어야 합니다.
 #
-# 더 나쁜 건 타입이 스냅샷마다 달라진다는 점입니다. `evolve_company_snapshot` 이
-# 일부 계약을 종료시키면 그때는 값이 생겨 날짜로 추론됩니다. 소비하는 쪽은
-# 어느 달 스냅샷을 읽느냐에 따라 되기도 하고 안 되기도 합니다.
-SCHEMAS = {
-    "customer": pa.schema(
-        [
-            ("customer_id", pa.string()),
-            ("synthetic_driver_id", pa.string()),
-            ("snapshot_date", pa.date32()),
-        ]
-    ),
-    "taxi": pa.schema(
-        [
-            ("taxi_id", pa.string()),
-            ("make_key", pa.string()),
-            ("model_key", pa.string()),
-            ("model_year", pa.int64()),
-            ("weekly_price_usd", pa.float64()),
-            ("uber_comfort_eligible", pa.bool_()),
-            ("lyft_extra_comfort_eligible", pa.bool_()),
-            ("vehicle_group", pa.string()),
-            ("snapshot_date", pa.date32()),
-        ]
-    ),
-    "lease_contract": pa.schema(
-        [
-            ("lease_id", pa.string()),
-            ("customer_id", pa.string()),
-            ("taxi_id", pa.string()),
-            ("lease_started_on", pa.date32()),
-            # 진행 중이면 결측입니다. 전량 결측이어도 날짜여야 합니다.
-            ("lease_ended_on", pa.date32()),
-            ("snapshot_date", pa.date32()),
-        ]
-    ),
-}
+#  - 내용이 이 날짜에 의존합니다 — 리스 시작일이 `[lease_start_min, snapshot_date]`
+#    범위에서 뽑힙니다. 실행일이 기본이면 팀원마다 다른 데이터가 나와 결과를
+#    비교할 수 없습니다.
+#  - `seed` 를 고정해 둔 의도와 모순됩니다. 시드로 재현성을 확보하면서 날짜를
+#    움직이면 그 의도가 깨집니다.
+#  - 안내 문서와 DAG 실행 예시가 이 경로를 참조합니다.
+#
+# 값은 임의로 고른 상수입니다. 실제 사건이 아니라 **우리가 정한 값**으로 읽히도록
+# 딱 떨어지는 날짜를 씁니다. 바꿀 때는 여기만 고치면 되고, 테스트도 이 상수를
+# 참조하므로 리터럴을 따라다닐 필요가 없습니다.
+DEFAULT_SNAPSHOT_DATE = date(2026, 1, 1)
+DEFAULT_LEASE_START_MIN = date(2023, 1, 1)
 
+# 회사 원천 스냅샷 저장 스키마는 `schema/source` 가 소유합니다.
+SCHEMAS = COMPANY_SNAPSHOT_SCHEMAS
+
+
+DRIVER_COUNT = 2_000
 DRIVER_ID_PREFIX = "SD"
-# 초기 기사단의 차량 자격 구성. 총원은 `config/generation.json` 의
-# `driver.initial_count` 가 소유하고, 여기는 **구성비**만 소유합니다.
 GROUP_COUNTS = {"BOTH": 400, "STANDARD": 1_200, "SINGLE": 400}
-# 총원으로 나누지 않고 자기 합으로 정규화합니다. 총원과 비율을 분리해 두면 활성
-# 기사 수가 달마다 변동하게 되는 후속 lifecycle 작업에서 이 코드를 다시 건드릴
-# 필요가 없습니다 — 신규 기사의 그룹 추첨은 언제나 이 비율을 씁니다.
-_GROUP_TOTAL = sum(GROUP_COUNTS.values())
-GROUP_WEIGHTS = {group: count / _GROUP_TOTAL for group, count in GROUP_COUNTS.items()}
+GROUP_WEIGHTS = {group: count / DRIVER_COUNT for group, count in GROUP_COUNTS.items()}
 MIN_MONTHLY_CHANGE_RATE = 0.005
 MAX_MONTHLY_CHANGE_RATE = 0.01
 ID_NAMESPACE = uuid.UUID("f795ec33-9231-5f39-aade-fdf81c34bf62")
@@ -91,7 +54,7 @@ class SnapshotTables:
     lease_contract: pd.DataFrame
 
 
-def build_driver_ids(driver_count: int) -> list[str]:
+def build_driver_ids(driver_count: int = DRIVER_COUNT) -> list[str]:
     """가상 기사 ID 목록. 자리수 고정이라 정렬 순서와 생성 순서가 같습니다."""
     if driver_count < 1:
         raise ValueError(f"가상 기사는 1명 이상이어야 합니다: {driver_count:,}명")
@@ -101,11 +64,11 @@ def build_driver_ids(driver_count: int) -> list[str]:
 
 def build_vehicle_pool(
     vehicle_master: pd.DataFrame,
-    model_year: int,
+    model_year: int = 2023,
 ) -> pd.DataFrame:
     """리스 업체 차량 마스터(플랫폼·상품 한 행씩)를 차종 한 행으로 접습니다."""
     key = ["make_key", "model_key"]
-    required = {*key, "vendor", "platform", "product", "min_year", "weekly_price_usd"}
+    required = {*key, "vendor", "platform", "product", "min_year", "weekly_lease_fee"}
     missing = required - set(vehicle_master.columns)
     if missing:
         raise ValueError(f"vehicle master 필수 컬럼 누락: {sorted(missing)}")
@@ -127,7 +90,7 @@ def build_vehicle_pool(
     uber_comfort = _keys_for("uber", "Comfort")
     lyft_extra_comfort = _keys_for("lyft", "Extra Comfort")
 
-    pool = vehicle_master[[*key, "weekly_price_usd"]].drop_duplicates(key).copy()
+    pool = vehicle_master[[*key, "weekly_lease_fee"]].drop_duplicates(key).copy()
     identities = list(map(tuple, pool[key].values))
     pool["uber_comfort_eligible"] = [identity in uber_comfort for identity in identities]
     pool["lyft_extra_comfort_eligible"] = [identity in lyft_extra_comfort for identity in identities]
@@ -155,22 +118,12 @@ def build_company_snapshot(
     driver_ids: list[str],
     vehicle_pool: pd.DataFrame,
     *,
-    seed: int,
-    snapshot_date: date,
-    lease_start_min: date,
+    seed: int = 42,
+    snapshot_date: date = DEFAULT_SNAPSHOT_DATE,
+    lease_start_min: date = DEFAULT_LEASE_START_MIN,
 ) -> SnapshotTables:
-    if not driver_ids or len(set(driver_ids)) != len(driver_ids):
-        raise ValueError(f"중복 없는 가상 기사 1명 이상이 필요합니다: {len(driver_ids)}명")
-    # 총원은 config(`driver.initial_count`), 구성비는 `GROUP_COUNTS` 가 소유합니다.
-    # 소유자가 둘이라 둘이 어긋날 수 있고, 어긋나면 아래 `zip(strict=True)` 가
-    # 원인을 알기 어려운 메시지로 죽습니다. 두 출처를 함께 지목하고 먼저 멈춥니다.
-    if len(driver_ids) != _GROUP_TOTAL:
-        raise ValueError(
-            f"기사 수와 그룹 구성이 어긋납니다: driver.initial_count={len(driver_ids)}, "
-            f"GROUP_COUNTS 합={_GROUP_TOTAL} ({GROUP_COUNTS}). "
-            "config/generation.json 의 driver.initial_count 또는 snapshot.py 의 "
-            "GROUP_COUNTS 를 맞추세요."
-        )
+    if len(driver_ids) != DRIVER_COUNT or len(set(driver_ids)) != DRIVER_COUNT:
+        raise ValueError(f"중복 없는 가상 기사 {DRIVER_COUNT}명이 필요합니다")
     if lease_start_min > snapshot_date:
         raise ValueError("lease_start_min은 snapshot_date보다 늦을 수 없습니다")
 
@@ -206,7 +159,7 @@ def build_company_snapshot(
             "make_key": vehicle["make_key"],
             "model_key": vehicle["model_key"],
             "model_year": int(vehicle["model_year"]),
-            "weekly_price_usd": float(vehicle["weekly_price_usd"]),
+            "weekly_lease_fee": float(vehicle["weekly_lease_fee"]),
             "uber_comfort_eligible": bool(vehicle["uber_comfort_eligible"]),
             "lyft_extra_comfort_eligible": bool(vehicle["lyft_extra_comfort_eligible"]),
             "vehicle_group": group,
@@ -260,7 +213,7 @@ def evolve_company_snapshot(
     vehicle_pool: pd.DataFrame,
     *,
     snapshot_date: date,
-    seed: int,
+    seed: int = 42,
     change_rate: float | None = None,
 ) -> SnapshotTables:
     """전월 스냅샷에서 소수 계약을 종료하고 같은 수의 신규 계약을 만듭니다."""
@@ -317,7 +270,7 @@ def evolve_company_snapshot(
             "make_key": vehicle["make_key"],
             "model_key": vehicle["model_key"],
             "model_year": int(vehicle["model_year"]),
-            "weekly_price_usd": float(vehicle["weekly_price_usd"]),
+            "weekly_lease_fee": float(vehicle["weekly_lease_fee"]),
             "uber_comfort_eligible": bool(vehicle["uber_comfort_eligible"]),
             "lyft_extra_comfort_eligible": bool(vehicle["lyft_extra_comfort_eligible"]),
             "vehicle_group": group,

@@ -114,12 +114,41 @@ jobs:
   # Python 경로가 바뀌면 전체 테스트로 승격해 선택 누락을 조용히 통과시키지 않습니다.
   # tesseract 바이너리는 필요 없습니다 — 테스트가 OCR 경로를 타지 않습니다.
   #
-  # 런타임별로 쪼개지 않습니다. 전체가 1분 안쪽이라 쪼개도 가장 느린 하나가 남고,
-  # libs/pipeline_core 는 세 런타임 공용이며 DAG 는 lambda/functions 핸들러를 직접
-  # 부릅니다 — 조건을 좁히면 아끼는 시간보다 놓치는 회귀가 비쌉니다.
-  test:
-    name: 영향받는 테스트
+  # 프로젝트별로 러너를 나눕니다. 전에는 한 job 에서 순차로 돌렸는데, spark 두 개가
+  # 각각 4분이라 그 둘만으로 8분이었습니다(실측 2026-08-18: main/spark 246초,
+  # sub/spark 239초, 나머지 8개 합 92초). 서로 의존이 없어 벽시계가 합이 아니라 가장
+  # 느린 하나로 줄어듭니다.
+  select-tests:
+    name: 테스트 대상 판정
     runs-on: ubuntu-latest
+    outputs:
+      projects: ${{ steps.select.outputs.projects }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 대상 판정
+        id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python .github/scripts/select_tests.py --base "$BASE_SHA" --head "$HEAD_SHA"
+          projects=$(python .github/scripts/select_tests.py --base "$BASE_SHA" --head "$HEAD_SHA" --matrix)
+          echo "projects=$projects" >> "$GITHUB_OUTPUT"
+
+  test:
+    name: 테스트
+    needs: select-tests
+    # 대상이 하나도 없으면 job 자체가 뜨지 않습니다 (빈 matrix 는 에러라 먼저 거릅니다).
+    if: needs.select-tests.outputs.projects != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      # 한 프로젝트가 깨져도 나머지 결과를 봐야 어디까지 성한지 압니다.
+      fail-fast: false
+      matrix:
+        project: ${{ fromJSON(needs.select-tests.outputs.projects) }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -135,7 +164,9 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
-        run: python .github/scripts/select_tests.py --base "$BASE_SHA" --head "$HEAD_SHA" --run
+        run: |
+          python .github/scripts/select_tests.py \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --run --only "${{ matrix.project }}"
 
   # 푸시하지 않고 빌드만 합니다. Dockerfile 이 깨진 PR 을 여기서 막는 게 목적입니다.
   # 세 빌드는 서로 의존이 없어서 런타임별로 러너를 나눠 씁니다 — 벽시계 시간이

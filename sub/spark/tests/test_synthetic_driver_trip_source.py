@@ -1,14 +1,12 @@
 """월별 가짜 기사-운행 원천 생성 시나리오. 이슈 #452.
 
 1. 월별 상태 갱신 → 월초에 기존 기사 0.5~1% 이탈·동일 수 신규 유입
-2. 배정 결과 분리 → HVFHV+taxi_id 데이터와 기사 데이터
+2. 배정 결과 분리 → HVFHV+taxi_id, 기사 리스, 보유 차량 데이터
 3. 릴리스 재실행 → 완결된 기존 결과를 중복 생성하지 않음
-4. 정제 코드 소유권 → source job은 중앙 Silver 스키마만 공유
+4. 정제 코드 소유권 → source job의 HVFHV 정제는 shared/ 를 그대로 쓰고, sub/ 자체
+   스키마(schema/source)는 shared/ 가 쓰는 main 쪽 스키마와 구조가 같아야 함
 """
 
-import json
-import pathlib
-from dataclasses import replace
 from datetime import date, datetime
 
 import numpy as np
@@ -16,38 +14,42 @@ import pandas as pd
 import pytest
 from pyspark.sql.functions import lit
 
+from schema.source.hvfhv import FINAL_SCHEMA
+from schema.source import (
+    DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA,
+    LEASE_VEHICLE_INVENTORY_SCHEMA,
+    MONTHLY_TAXI_TRIP_SCHEMA,
+)
 from shared.spark.common.session import get_or_create_spark_session
-from sub.spark.jobs.driver_assignment.source_job import (
-    LEASE_SOURCE_COLUMNS,
-    _apply_test_row_limit,
-    _existing_release,
-    _test_scoped_root,
-    add_trip_keys,
-    build_driver_vehicle_leases,
-    build_trip_source,
-    write_source_release,
-)
-from shared.spark.hvfhv_clean_transformer import (
-    FINAL_SCHEMA as SOURCE_FINAL_SCHEMA,
-    HVFHVCleanTransformer,
-)
-from sub.spark.jobs.driver_master.preference import build_driver_preferences
-from schema.silver.hvfhv import FINAL_SCHEMA
-from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
+from shared.spark.hvfhv_clean_transformer import FINAL_SCHEMA as SOURCE_FINAL_SCHEMA
 from sub.generators.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
     build_vehicle_pool,
     read_snapshot,
     write_snapshot,
 )
-from conftest import TEST_CONFIG, TEST_MODEL_YEAR, TEST_SEED
 from sub.generators.synthetic_driver_trip_source import monthly
-from sub.run_context import RunContext
+from sub.spark.jobs.driver_assignment.source_job import (
+    INVENTORY_COLUMNS,
+    PRIOR_EXPERIENCE_MAX_YEARS,
+    SNAPSHOT_SOURCE_COLUMNS,
+    TRIP_SOURCE_COLUMNS,
+    _apply_test_row_limit,
+    _test_scoped_root,
+    add_trip_keys,
+    build_driver_vehicle_monthly_snapshot,
+    build_lease_vehicle_inventory,
+    build_trip_source,
+    write_source_release,
+)
+from sub.spark.jobs.driver_master.preference import build_driver_preferences
 
 
-def test_가짜원천_정제는_중앙_Silver_스키마만_공유한다():
-    assert SOURCE_FINAL_SCHEMA is FINAL_SCHEMA
-    assert LEASE_SOURCE_COLUMNS == DRIVER_VEHICLE_LEASE_SCHEMA.names
+def test_가짜원천_정제는_중앙_Silver_스키마와_구조가_같다():
+    assert SOURCE_FINAL_SCHEMA == FINAL_SCHEMA
+    assert SNAPSHOT_SOURCE_COLUMNS == DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names
+    assert TRIP_SOURCE_COLUMNS == MONTHLY_TAXI_TRIP_SCHEMA.names
+    assert INVENTORY_COLUMNS == LEASE_VEHICLE_INVENTORY_SCHEMA.names
 
 
 def test_임시행제한은_입력과_출력경로를_프로덕션에서_분리한다(tmp_path):
@@ -70,62 +72,6 @@ def test_임시행제한은_입력과_출력경로를_프로덕션에서_분리�
 
     with pytest.raises(ValueError, match="0 이상"):
         _apply_test_row_limit(frame, -1)
-
-
-def _manifest(tmp_path, run, **overrides) -> pathlib.Path:
-    release = tmp_path / f"year_month={run.target_month}"
-    release.mkdir(parents=True)
-    manifest = {
-        "release_id": f"{run.target_month}-seed-{run.config.global_seed}",
-        "year_month": run.target_month,
-        "seed": run.config.global_seed,
-        "run_id": run.run_id,
-        "config_hash": run.config_hash,
-        "datasets": {
-            "hvfhv_taxi_trips": {"file": "hvfhv_taxi_trips.parquet"},
-            "driver_vehicle_leases": {"file": "driver_vehicle_leases.parquet"},
-        },
-        **overrides,
-    }
-    for name in ("hvfhv_taxi_trips", "driver_vehicle_leases"):
-        (release / f"{name}.parquet").touch()
-    (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-    return release
-
-
-def test_같은_run_id의_완결된_릴리스는_재사용한다(tmp_path):
-    run = RunContext.create("2026-01", TEST_CONFIG)
-    assert _existing_release(_manifest(tmp_path, run), run) is True
-
-
-def test_계보필드가_없는_옛_릴리스는_복구명령과_함께_실패한다(tmp_path):
-    """seed 만 보던 시절의 manifest 는 어느 설정으로 만들었는지 알 수 없습니다."""
-    run = RunContext.create("2026-01", TEST_CONFIG)
-    release = _manifest(tmp_path, run)
-    manifest = json.loads((release / "manifest.json").read_text())
-    del manifest["run_id"]
-    (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
-
-    with pytest.raises(ValueError) as error:
-        _existing_release(release, run)
-    message = str(error.value)
-    assert "run_id" in message
-    # 메시지만으로 다음 사람이 복구할 수 있어야 합니다.
-    assert "rm -rf" in message
-    assert "make bootstrap FORCE=1" in message
-
-
-def test_설정이_다르면_기존_릴리스를_재사용하지_않고_실패한다(tmp_path):
-    """seed 를 키로 쓰던 때는 설정을 바꿔도 낡은 릴리스를 조용히 재사용했습니다."""
-    run = RunContext.create("2026-01", TEST_CONFIG)
-    release = _manifest(tmp_path, run)
-    changed = RunContext.create(
-        "2026-01",
-        replace(TEST_CONFIG, allocation=replace(TEST_CONFIG.allocation, bucket_size=9)),
-    )
-
-    with pytest.raises(ValueError, match="기존 릴리스 계보가 요청과 다릅니다"):
-        _existing_release(release, changed)
 
 
 @pytest.fixture(scope="module")
@@ -153,7 +99,7 @@ def _vehicle_master() -> pd.DataFrame:
             **row,
             "vendor": "fasttrack",
             "min_year": 2020,
-            "weekly_price_usd": prices[row["model_key"]],
+            "weekly_lease_fee": prices[row["model_key"]],
         }
         for row in rows
     ])
@@ -172,19 +118,15 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
     previous_date = date(2026, 8, 1)
     target_date = date(2026, 9, 1)
     vehicle_master = _vehicle_master()
-    pool = build_vehicle_pool(vehicle_master, model_year=TEST_MODEL_YEAR)
+    pool = build_vehicle_pool(vehicle_master)
     previous = build_company_snapshot(
-        _driver_ids(),
-        pool,
-        seed=TEST_SEED,
-        snapshot_date=previous_date,
-        lease_start_min=date(2023, 1, 1),
+        _driver_ids(), pool, snapshot_date=previous_date
     )
     previous_root = tmp_path / "previous"
     previous_dir = previous_root / f"snapshot_date={previous_date}"
     write_snapshot(previous, previous_root, previous_date)
     preferences = build_driver_preferences(
-        _driver_ids(), _bootstrap_pools(), as_of_date=np.datetime64(previous_date), seed=TEST_SEED
+        _driver_ids(), _bootstrap_pools(), as_of_date=np.datetime64(previous_date)
     )
     previous_preferences = previous_dir / "driver_preferences.parquet"
     preferences.to_parquet(previous_preferences, index=False)
@@ -196,8 +138,7 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
         snapshot_date=target_date,
-        seed=TEST_SEED,
-        sample_per_month=TEST_CONFIG.bootstrap.sample_per_month,
+        seed=42,
         change_rate=0.005,
     )
     rerun = monthly.prepare_monthly_state(
@@ -206,8 +147,7 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
         snapshot_date=target_date,
-        seed=TEST_SEED,
-        sample_per_month=TEST_CONFIG.bootstrap.sample_per_month,
+        seed=42,
         change_rate=0.005,
     )
 
@@ -239,12 +179,28 @@ def _raw_trip(pickup: datetime, **overrides) -> dict:
         "trip_time": 600,
         "base_passenger_fare": 12.0,
         "driver_pay": 9.0,
+        "tips": 1.5,
     }
     row.update(overrides)
     return row
 
 
-def test_배정결과를_HVFHV와_기사차량리스_두_원천으로_분리한다(spark):
+def _clean_trips(spark, keyed):
+    """정제 결과 중 공개 계약에 필요한 컬럼만 흉내 냅니다.
+
+    zone·등급·platform_name 은 원본에 없고 `HVFHVCleanTransformer` 가 만듭니다.
+    """
+    return keyed.select("trip_key").withColumns(
+        {
+            "pickup_zone": lit("Midtown"),
+            "dropoff_zone": lit("JFK"),
+            "estimated_service_tier": lit("Comfort"),
+            "platform_name": lit("Uber"),
+        }
+    )
+
+
+def test_배정결과를_공개_계약_두_데이터셋으로_분리한다(spark):
     raw = spark.createDataFrame([
         _raw_trip(datetime(2026, 1, 2, 9)),
         _raw_trip(datetime(2026, 1, 2, 10)),
@@ -260,42 +216,236 @@ def test_배정결과를_HVFHV와_기사차량리스_두_원천으로_분리한�
     }])
     leases = spark.createDataFrame([{
         "lease_id": "lease-1", "customer_id": "customer-1", "taxi_id": "taxi-1",
-        "lease_started_on": snapshot_date, "lease_ended_on": date(2026, 2, 1),
+        "lease_started_on": date(2024, 3, 1), "lease_ended_on": None,
         "snapshot_date": snapshot_date,
-    }])
+    }], "lease_id string, customer_id string, taxi_id string, "
+        "lease_started_on date, lease_ended_on date, snapshot_date date")
     taxis = spark.createDataFrame([{
         "taxi_id": "taxi-1", "make_key": "Toyota", "model_key": "Camry",
-        "model_year": 2023, "snapshot_date": snapshot_date,
+        "model_year": 2023, "weekly_lease_fee": 500.0,
+        "uber_comfort_eligible": True, "lyft_extra_comfort_eligible": False,
+        "snapshot_date": snapshot_date,
     }])
+    vehicle_master = spark.createDataFrame(
+        [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
+    )
 
-    trips = build_trip_source(raw, assignment)
-    driver_leases = build_driver_vehicle_leases(
-        customers, leases, taxis, snapshot_date=snapshot_date
+    trips = build_trip_source(raw, _clean_trips(spark, keyed), assignment)
+    snapshots = build_driver_vehicle_monthly_snapshot(
+        customers, leases, taxis, vehicle_master,
+        snapshot_date=snapshot_date, year_month="2026-01", seed=42,
     )
 
     trip = trips.first()
-    lease = driver_leases.first()
-    assert trip.taxi_id == "taxi-1" and "trip_key" not in trips.columns
-    assert trip.request_datetime == datetime(2026, 1, 2, 9)
-    assert (lease.driver_id, lease.taxi_id) == ("driver-1", "taxi-1")
-    assert (lease.make_key, lease.model_key, lease.model_year) == ("Toyota", "Camry", 2023)
+    row = snapshots.first()
+    assert trips.columns == TRIP_SOURCE_COLUMNS
+    assert snapshots.columns == SNAPSHOT_SOURCE_COLUMNS
+    assert trip.taxi_id == "taxi-1"
+    assert (trip.pickup_zone, trip.dropoff_zone) == ("Midtown", "JFK")
+    assert trip.estimated_service_tier == "Comfort"
+    # platform_name 을 원본 라이선스 번호로 되돌립니다.
+    assert trip.hvfhs_license_num == "HV0003"
+    assert (row.driver_id, row.taxi_id) == ("driver-1", "taxi-1")
+    assert (row.manufacturer, row.model_name, row.fuel_type) == ("Toyota", "Camry", "GAS")
+    assert row.snapshot_month == "2026-01"
+    # 진행 중 계약이라 퇴사일은 비어야 합니다.
+    assert row.exit_date is None
+    assert row.join_date == date(2024, 3, 1) == row.vehicle_since
+
+
+def test_운행_기록은_원본_컬럼을_그대로_흘려보내지_않는다(spark):
+    """예전에는 TLC 원본 26컬럼을 그대로 공개했습니다.
+
+    원본이 컬럼을 추가하면 공개 계약이 조용히 따라 늘어납니다.
+    """
+    raw = spark.createDataFrame([_raw_trip(datetime(2026, 1, 2, 9))])
+    keyed = add_trip_keys(raw)
+    assignment = keyed.select("trip_key").withColumn("taxi_id", lit("taxi-1"))
+
+    trips = build_trip_source(raw, _clean_trips(spark, keyed), assignment)
+
+    assert "dispatching_base_num" not in trips.columns
+    assert "base_passenger_fare" not in trips.columns
+    assert "trip_key" not in trips.columns
+
+
+def test_기사당_계약이_여러_건이면_최초_가입일과_현재_차량을_고른다(spark):
+    """`evolve_company_snapshot` 이 계약을 종료시키면 기사당 여러 행이 됩니다."""
+    snapshot_date = date(2026, 1, 1)
+    customers = spark.createDataFrame([{
+        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
+        "snapshot_date": snapshot_date,
+    }])
+    leases = spark.createDataFrame([
+        ("lease-1", "customer-1", "taxi-1", date(2023, 1, 1), date(2025, 6, 1), snapshot_date),
+        ("lease-2", "customer-1", "taxi-2", date(2025, 6, 1), None, snapshot_date),
+    ], "lease_id string, customer_id string, taxi_id string, "
+       "lease_started_on date, lease_ended_on date, snapshot_date date")
+    taxis = spark.createDataFrame([
+        (t, "Toyota", "Camry", 2023, 500.0, True, False, snapshot_date)
+        for t in ("taxi-1", "taxi-2")
+    ], "taxi_id string, make_key string, model_key string, model_year int, "
+       "weekly_lease_fee double, uber_comfort_eligible boolean, "
+       "lyft_extra_comfort_eligible boolean, snapshot_date date")
+    vehicle_master = spark.createDataFrame(
+        [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
+    )
+
+    snapshots = build_driver_vehicle_monthly_snapshot(
+        customers, leases, taxis, vehicle_master,
+        snapshot_date=snapshot_date, year_month="2026-01", seed=42,
+    )
+
+    assert snapshots.count() == 1
+    row = snapshots.first()
+    assert row.taxi_id == "taxi-2"                 # 진행 중 계약
+    assert row.join_date == date(2023, 1, 1)       # 최초 계약
+    assert row.vehicle_since == date(2025, 6, 1)   # 현재 차량
+    assert row.exit_date is None                   # 진행 중 계약이 있음
+
+
+def test_모든_계약이_끝난_기사는_퇴사일이_찍힌다(spark):
+    snapshot_date = date(2026, 1, 1)
+    customers = spark.createDataFrame([{
+        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
+        "snapshot_date": snapshot_date,
+    }])
+    leases = spark.createDataFrame([
+        ("lease-1", "customer-1", "taxi-1", date(2023, 1, 1), date(2025, 12, 1), snapshot_date),
+    ], "lease_id string, customer_id string, taxi_id string, "
+       "lease_started_on date, lease_ended_on date, snapshot_date date")
+    taxis = spark.createDataFrame([
+        ("taxi-1", "Toyota", "Camry", 2023, 500.0, True, False, snapshot_date),
+    ], "taxi_id string, make_key string, model_key string, model_year int, "
+       "weekly_lease_fee double, uber_comfort_eligible boolean, "
+       "lyft_extra_comfort_eligible boolean, snapshot_date date")
+    vehicle_master = spark.createDataFrame(
+        [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
+    )
+
+    row = build_driver_vehicle_monthly_snapshot(
+        customers, leases, taxis, vehicle_master,
+        snapshot_date=snapshot_date, year_month="2026-01", seed=42,
+    ).first()
+
+    assert row.exit_date == date(2025, 12, 1)
+
+
+def test_경력은_근속보다_짧을_수_없고_시드마다_재현된다(spark):
+    """독립 난수로 두면 "근속 5년인데 경력 1년" 이 나옵니다."""
+    snapshot_date = date(2026, 1, 1)
+    customers = spark.createDataFrame([{
+        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
+        "snapshot_date": snapshot_date,
+    }])
+    # 근속 16년. 입사 전 경력 상한(10년)보다 커야 "근속을 뺐다"를 잡을 수 있습니다 —
+    # 근속이 상한보다 작으면 난수만으로도 우연히 기준을 넘습니다.
+    leases = spark.createDataFrame([
+        ("lease-1", "customer-1", "taxi-1", date(2010, 1, 1), None, snapshot_date),
+    ], "lease_id string, customer_id string, taxi_id string, "
+       "lease_started_on date, lease_ended_on date, snapshot_date date")
+    taxis = spark.createDataFrame([
+        ("taxi-1", "Toyota", "Camry", 2023, 500.0, True, False, snapshot_date),
+    ], "taxi_id string, make_key string, model_key string, model_year int, "
+       "weekly_lease_fee double, uber_comfort_eligible boolean, "
+       "lyft_extra_comfort_eligible boolean, snapshot_date date")
+    vehicle_master = spark.createDataFrame(
+        [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
+    )
+
+    def run(seed):
+        return build_driver_vehicle_monthly_snapshot(
+            customers, leases, taxis, vehicle_master,
+            snapshot_date=snapshot_date, year_month="2026-01", seed=seed,
+        ).first().experience_years
+
+    tenure = 16                            # 2010-01 ~ 2026-01
+    assert run(42) >= tenure               # 근속을 빼면 상한 10 이라 도달 불가
+    assert run(42) <= tenure + PRIOR_EXPERIENCE_MAX_YEARS
+    assert run(42) == run(42)              # 같은 시드면 재현
+
+
+def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집계한다(spark):
+    snapshot_date = date(2026, 1, 1)
+    taxis = spark.createDataFrame(
+        [
+            (taxi_id, "KIA", "SPORTAGE", 2023, 574.0, True, False, snapshot_date)
+            for taxi_id in ("taxi-1", "taxi-2")
+        ],
+        "taxi_id string, make_key string, model_key string, model_year int, "
+        "weekly_lease_fee double, uber_comfort_eligible boolean, "
+        "lyft_extra_comfort_eligible boolean, snapshot_date date",
+    )
+    vehicle_master = spark.createDataFrame(
+        [
+            (
+                "KIA",
+                "SPORTAGE",
+                "GAS",
+                24.0,
+                28.0,
+                "https://example.com/sportage.png",
+                product,
+            )
+            for product in ("UberX", "Comfort")
+        ],
+        "make_key string, model_key string, fuel_type string, combined_mpg_min double, "
+        "combined_mpg_max double, image_url string, product string",
+    )
+
+    inventory = build_lease_vehicle_inventory(
+        taxis, vehicle_master, snapshot_date=snapshot_date
+    )
+    row = inventory.first()
+
+    assert inventory.columns == LEASE_VEHICLE_INVENTORY_SCHEMA.names
+    assert inventory.count() == 1
+    assert row.stock == 2
+    assert row.fuel_efficiency == 26.0
+    assert row.manufacturer == "KIA" and row.model_name == "SPORTAGE"
+    assert row.comfort_eligible is True and row.extra_comfort_eligible is False
+    assert row.weekly_lease_fee == 574.0
+    assert row.image_url == "https://example.com/sportage.png"
+    assert row.vehicle_model_id
 
 
 def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_않는다(spark, tmp_path):
     trips = spark.createDataFrame([{
         "pickup_datetime": datetime(2026, 1, 2, 9), "taxi_id": "taxi-1"
     }])
-    leases = spark.createDataFrame([{
-        "lease_id": "lease-1", "driver_id": "driver-1", "taxi_id": "taxi-1",
-        "lease_started_on": date(2026, 1, 1), "lease_ended_on": date(2026, 2, 1),
-    }])
+    snapshots = spark.createDataFrame([{
+        "driver_id": "driver-1", "taxi_id": "taxi-1",
+        "vehicle_since": date(2026, 1, 1), "exit_date": None,
+    }], "driver_id string, taxi_id string, vehicle_since date, exit_date date")
+    inventory = spark.createDataFrame(
+        [
+            (
+                "vehicle-model-1",
+                "KIA",
+                "SPORTAGE",
+                2023,
+                "GAS",
+                26.0,
+                True,
+                False,
+                574.0,
+                "https://example.com/sportage.png",
+                1,
+            )
+        ],
+        INVENTORY_COLUMNS,
+    )
 
-    run = RunContext.create("2026-01", TEST_CONFIG)
-    first = write_source_release(trips, leases, output_dir=tmp_path, run=run)
-    second = write_source_release(trips, leases, output_dir=tmp_path, run=run)
+    first = write_source_release(
+        trips, snapshots, inventory, output_dir=tmp_path, year_month="2026-01", seed=42
+    )
+    second = write_source_release(
+        trips, snapshots, inventory, output_dir=tmp_path, year_month="2026-01", seed=42
+    )
 
     assert first == second
     assert len(list(tmp_path.glob("year_month=2026-01"))) == 1
     assert spark.read.parquet(str(first / "hvfhv_taxi_trips.parquet")).count() == 1
-    assert spark.read.parquet(str(first / "driver_vehicle_leases.parquet")).count() == 1
+    assert spark.read.parquet(str(first / "driver_vehicle_monthly_snapshot.parquet")).count() == 1
+    assert spark.read.parquet(str(first / "lease_vehicle_inventory.parquet")).count() == 1
     assert (first / "manifest.json").is_file()

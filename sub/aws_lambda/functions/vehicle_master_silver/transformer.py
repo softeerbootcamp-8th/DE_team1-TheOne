@@ -29,6 +29,8 @@ from typing import Optional
 
 from pipeline_core.transformer import Transformer
 
+from schema.source import VEHICLE_MASTER_REQUIRED_NON_NULL
+
 from .extractor import SourceTables
 
 logger = logging.getLogger(__name__)
@@ -126,6 +128,8 @@ class VehicleMasterSilverTransformer(Transformer):
         if not rows:
             raise ValueError("차량 마스터로 만들 행이 없습니다.")
 
+        self._require_non_null(rows)
+
         logger.info(
             "vehicle_master_transform done cities=%d vehicles=%d rows=%d spec_unmatched=%d",
             len(cities),
@@ -134,6 +138,25 @@ class VehicleMasterSilverTransformer(Transformer):
             unmatched_specs,
         )
         return rows
+
+    @staticmethod
+    def _require_non_null(rows: list[dict]) -> None:
+        """계약상 항상 값이 있어야 할 컬럼이 비지 않았는지 봅니다.
+
+        상류 Silver 의 컬럼명이 바뀌면 `_row` 의 `.get()` 이 예외 없이 None 을 돌려주고,
+        그 컬럼만 통째로 빈 채 적재까지 성공합니다. Airflow 검증도 스키마 이름·타입만
+        보므로 nullable 컬럼은 전 행이 NULL 이어도 통과합니다 (#567).
+
+        Lambda 단독 실행 경로라 GX 로는 못 막습니다 — `great-expectations` 는
+        `main/airflow` 에만 선언돼 있습니다.
+        """
+        for column in sorted(VEHICLE_MASTER_REQUIRED_NON_NULL):
+            missing = sum(1 for row in rows if row.get(column) is None)
+            if missing:
+                raise ValueError(
+                    f"{column} 이 {missing}/{len(rows)} 행에서 비었습니다. "
+                    "상류 Silver 의 컬럼명이 바뀌지 않았는지 확인하세요."
+                )
 
     @staticmethod
     def _catalog_rows(catalog: list[dict]) -> list[dict]:
@@ -286,7 +309,8 @@ class VehicleMasterSilverTransformer(Transformer):
             "platform": product.get("platform"),
             "product": product.get("product"),
             "min_year": product.get("min_year"),
-            "weekly_price_usd": vehicle.get("weekly_price_usd"),
+            "weekly_lease_fee": vehicle.get("weekly_lease_fee"),
+            "image_url": vehicle.get("image_url"),
             "spec_match_level": match_level,
             # 후보 트림 수. 1 이면 값이 확정이고, 여러 개면 아래 범위만큼 불확실합니다.
             "spec_trim_count": len(specs),

@@ -1,48 +1,49 @@
-"""[HVFHV+taxi_id 데이터] Silver 스키마."""
+"""[월별 택시 운행 기록] Spark Silver 스키마."""
 
 from pyspark.sql.types import (
-    DoubleType, IntegerType, LongType, StringType, StructField, StructType, TimestampType
+    DoubleType,
+    IntegerType,
+    LongType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
 )
 
-FINAL_SCHEMA = StructType([
-    StructField("trip_key", StringType(), False),
-    StructField("pickup_datetime", TimestampType(), True),
-    StructField("dropoff_datetime", TimestampType(), True),
-    StructField("PULocationID", IntegerType(), True),
-    StructField("DOLocationID", IntegerType(), True),
-    StructField("trip_miles", DoubleType(), True),
-    StructField("trip_time", LongType(), True),
-    StructField("base_passenger_fare", DoubleType(), True),
-    StructField("tolls", DoubleType(), True),
-    StructField("bcf", DoubleType(), True),
-    StructField("sales_tax", DoubleType(), True),
-    StructField("congestion_surcharge", DoubleType(), True),
-    StructField("airport_fee", DoubleType(), True),
-    StructField("tips", DoubleType(), True),
-    StructField("driver_pay", DoubleType(), True),
-    StructField("platform_name", StringType(), False),
-    StructField("estimated_service_tier", StringType(), False),
-    StructField("taxi_id", StringType(), False),
-    StructField("driver_id", StringType(), True),
-    StructField("taxi_model_id", StringType(), True),
-    StructField("year_month", StringType(), True),
-    StructField("pickup_borough", StringType(), True),
-    StructField("pickup_zone", StringType(), True),
-    StructField("pickup_service_zone", StringType(), True),
-    StructField("dropoff_borough", StringType(), True),
-    StructField("dropoff_zone", StringType(), True),
-    StructField("dropoff_service_zone", StringType(), True)
-])
+
+FINAL_SCHEMA = StructType(
+    [
+        StructField("taxi_id", StringType(), False),
+        StructField("hvfhs_license_num", StringType(), False),
+        StructField("on_scene_datetime", TimestampType(), True),
+        StructField("pickup_datetime", TimestampType(), True),
+        StructField("dropoff_datetime", TimestampType(), True),
+        StructField("PULocationID", IntegerType(), True),
+        StructField("DOLocationID", IntegerType(), True),
+        StructField("pickup_zone", StringType(), True),
+        StructField("dropoff_zone", StringType(), True),
+        StructField("trip_miles", DoubleType(), True),
+        StructField("trip_time", LongType(), True),
+        StructField("driver_pay", DoubleType(), True),
+        StructField("tips", DoubleType(), True),
+        StructField("estimated_service_tier", StringType(), False),
+        StructField("year_month", StringType(), True),
+    ]
+)
 
 REQUIRED_COLUMNS = [
+    "taxi_id",
+    "hvfhs_license_num",
+    "on_scene_datetime",
     "pickup_datetime",
     "dropoff_datetime",
     "PULocationID",
     "DOLocationID",
+    "pickup_zone",
+    "dropoff_zone",
     "trip_miles",
     "trip_time",
-    "base_passenger_fare",
     "driver_pay",
-    "hvfhs_license_num",
-    "taxi_id",
+    "tips",
+    "estimated_service_tier",
 ]
