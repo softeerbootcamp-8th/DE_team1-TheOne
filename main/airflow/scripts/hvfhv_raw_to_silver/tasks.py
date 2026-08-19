@@ -20,7 +20,7 @@ from shared.airflow.common.validation import (
     parse_year_month,
     run_gx_validation,
 )
-from schema.bronze.hvfhv import LEGACY_SCHEMA, SCHEMA
+from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 
 
 logger = logging.getLogger(__name__)
@@ -80,21 +80,16 @@ def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
             frame = batch.to_pandas()
             trip_miles = pd.to_numeric(frame["trip_miles"], errors="coerce")
             trip_time = pd.to_numeric(frame["trip_time"], errors="coerce")
-            fare = pd.to_numeric(frame["base_passenger_fare"], errors="coerce")
             driver_pay = pd.to_numeric(frame["driver_pay"], errors="coerce")
             valid = (
                 pd.to_datetime(frame["pickup_datetime"], errors="coerce").notna()
                 & pd.to_datetime(
                     frame["dropoff_datetime"], errors="coerce"
                 ).notna()
-                & frame["PULocationID"].notna()
-                & frame["DOLocationID"].notna()
                 & trip_miles.gt(0)
                 & trip_miles.le(1000)
                 & trip_time.gt(0)
                 & trip_time.le(86400)
-                & fare.ge(0)
-                & fare.le(5000)
                 & driver_pay.ge(0)
                 & driver_pay.le(5000)
                 & frame["taxi_id"].notna()
@@ -195,16 +190,13 @@ def _collect_bronze(params: dict) -> dict:
 def validate_bronze_task(result: dict, **context) -> dict:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
     params = context.get("params", {})
-    transformer = importlib.import_module(
-        "jobs.bronze_to_silver.hvfhv.transformer"
-    )
-    summary = _bronze_quality_result(result, params, transformer.REQUIRED_COLUMNS)
+    summary = _bronze_quality_result(result, params, list(SCHEMA.names))
     missing = summary.at[0, "missing_required_columns"]
     if missing:
         logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
         result = _collect_bronze(params)
         summary = _bronze_quality_result(
-            result, params, transformer.REQUIRED_COLUMNS
+            result, params, list(SCHEMA.names)
         )
 
     import great_expectations as gx
@@ -217,7 +209,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
             column="schema_signature",
             value_set=[
                 _schema_signature(SCHEMA),
-                _schema_signature(LEGACY_SCHEMA),
             ],
         ),
         gx.expectations.ExpectColumnValuesToBeInSet(
@@ -263,7 +254,7 @@ def _bronze_quality_result(
 
     summary = _bronze_quality_summary(
         parquet_file,
-        (SCHEMA, LEGACY_SCHEMA),
+        (SCHEMA,),
         required_columns,
     )
     return summary

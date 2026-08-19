@@ -17,7 +17,7 @@ import pytest
 
 from main.aws_lambda.common import monthly_dataset
 from functions.hvfhv_raw_to_bronze.handler import lambda_handler
-from schema.bronze.hvfhv import SCHEMA
+from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 
 
 YEAR_MONTH = "2026-08"
