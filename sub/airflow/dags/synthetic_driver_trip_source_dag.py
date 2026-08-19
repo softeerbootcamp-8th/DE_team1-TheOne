@@ -37,8 +37,8 @@ default_args = {
     max_active_runs=1,
     tags=["hvfhv", "driver", "synthetic", "source", "spark"],
     params={
-        "year": Param(None, type=["string", "null"]),
-        "month": Param(None, type=["string", "null"]),
+        "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
+        "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         "seed": Param(42, type="integer"),
         # TEMPORARY(#452): 로컬 DAG smoke test용. 0이면 전체 월을 처리합니다.
         #
