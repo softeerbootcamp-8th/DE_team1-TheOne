@@ -463,6 +463,18 @@ def build_monthly_vehicle_recommendation(
             F.col("recommended_monthly_lease_fee") - F.col("monthly_lease_fee"),
         )
     )
+    eligible_tiers = F.concat_ws(
+        ", ",
+        F.when(
+            ~F.col("comfort_eligible") & F.col("_candidate_comfort_eligible"),
+            F.lit("Comfort(Uber)"),
+        ),
+        F.when(
+            ~F.col("extra_comfort_eligible")
+            & F.col("_candidate_extra_comfort_eligible"),
+            F.lit("Extra Comfort(Lyft)"),
+        ),
+    )
     reasons = F.concat_ws(
         ", ",
         F.when(
@@ -474,13 +486,8 @@ def build_monthly_vehicle_recommendation(
             F.lit("연료비 절감"),
         ),
         F.when(
-            ~F.col("comfort_eligible") & F.col("_candidate_comfort_eligible"),
-            F.lit("Comfort 등급 가능"),
-        ),
-        F.when(
-            ~F.col("extra_comfort_eligible")
-            & F.col("_candidate_extra_comfort_eligible"),
-            F.lit("Extra Comfort 등급 가능"),
+            F.length(eligible_tiers) > 0,
+            F.concat(eligible_tiers, F.lit(" 등급 가능")),
         ),
     )
     candidates = candidates.withColumn("_reasons", reasons).withColumn(
@@ -518,7 +525,7 @@ def build_monthly_report(
     """기사·회사 기준을 함께 통과한 추천을 월 1행으로 요약합니다."""
     eligible = recommendation.filter(
         (F.col("expected_net_profit_increase") >= threshold_profit_increase)
-        & (F.col("expected_revenue_increase") >= 0)
+        & (F.col("expected_revenue_increase") > 0)
     )
     return (
         eligible.agg(
