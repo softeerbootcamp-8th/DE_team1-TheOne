@@ -6,8 +6,8 @@ from pipeline_core.pipeline import Pipeline
 from pipeline_core.transformer import Transformer
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
-from .extractor import EiaElectricityPriceBronzeExtractor
-from .loader import EiaElectricityPriceSilverLoader
+from .extractor import build_bronze_extractor
+from .loader import build_silver_loader
 from .transformer import PUBLIC_CHARGING_MARKUP, build_daily_prices
 
 configure_lambda_logging()
@@ -33,13 +33,15 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not year_month:
         raise ValueError("year_month 또는 YEAR_MONTH가 필요합니다 (YYYY-MM).")
 
+    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
     markup = float(event.get("markup") or os.getenv("MARKUP") or PUBLIC_CHARGING_MARKUP)
 
     result = Pipeline(
-        EiaElectricityPriceBronzeExtractor(bronze_dir, year_month),
-        EiaElectricityPriceSilverLoader(silver_dir, year_month),
+        build_bronze_extractor(storage, bronze_dir, bucket, year_month),
+        build_silver_loader(storage, silver_dir, bucket, year_month),
         EiaElectricityPriceTransformer(year_month, markup),
     ).run()
 
