@@ -1,13 +1,4 @@
-"""월별 Gold 3종(기사 집계·차량 추천·월간 리포트) 파이프라인을 선언합니다.
-
-Asset 스케줄을 쓰지 않는 이유
------------------------------
-상류 세 개의 주기가 다릅니다 — 배정 월 1회, `vehicle_master` 주 1회, 가격 월 1회.
-Asset 스케줄은 "마지막 실행 이후 **모든** Asset 이 갱신되면" 실행이라, 주기가 어긋나면
-영영 안 도는 조합이 생깁니다(`vehicle_master_silver_dag` 가 제원을 AND 에서 뺀 것과
-같은 이유). 대신 **입력 검증을 Spark 잡 앞에 두어** 상류 누락을 즉시 드러냅니다.
-Spark 잡 안에서 실패하면 어느 상류가 문제인지 로그를 파야 알 수 있습니다.
-"""
+"""Silver 4종으로 월별 Gold 3종을 만드는 파이프라인입니다."""
 
 import os
 from datetime import datetime, timedelta
@@ -65,11 +56,13 @@ def hvfhv_silver_to_gold_pipeline():
         task_id="build_gold",
         bash_command=(
             f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py "
-            + "--trips_path {{ task_instance.xcom_pull(task_ids='validate_inputs')['trips_path'] }} "
-            + "--vehicle_master_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['vehicle_master_path'] }} "
-            + "--gas_ev_price_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['gas_ev_price_path'] }} "
+            + "--hvfhv_path {{ task_instance.xcom_pull(task_ids='validate_inputs')['hvfhv_path'] }} "
+            + "--driver_snapshot_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_snapshot_path'] }} "
+            + "--inventory_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['inventory_path'] }} "
+            + "--fuel_price_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }} "
             + "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
             + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
             + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
