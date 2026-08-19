@@ -29,5 +29,13 @@
 
 ### 8/12 ([상세 정리 문서 링크](/docs/decision_making/0812.md))
 1. Airflow 인프라(EC2 v.s. ECS Fargate) : EC2 사용
-2. Iceberg 도입 여부 : 도입 찬성
-3. Hive Style Partitioning 도입 : S3 기준 모든 데이터에 도입 / Iceberg 파티셔닝은 HVFHV에만
+2. Iceberg 도입 여부 : 도입 찬성 (→ 8/19에 재검토, 미사용으로 변경)
+3. Hive Style Partitioning 도입 : S3 기준 모든 데이터에 도입 / Iceberg 파티셔닝은 HVFHV에만 (→ 8/19에 Iceberg 부분 무효화)
+
+### 8/19 ([상세 정리 문서 링크](/docs/decision_making/0819.md))
+1. Glue·Iceberg 도입 여부(8/12 재검토) : `둘 다 미사용`, Hive Style Partitioning만 사용
+2. AWS 서비스별 파이프라인 매핑 : Airflow(EC2) / Lambda / EMR / S3 / RDS로 매핑
+3. VPC 네트워크 구성 : `1 VPC, 2 AZ, 3계층 서브넷(Public/Private-App/Private-Data)`
+4. NAT Gateway v.s. NAT Instance : `NAT Instance 사용` (비용 절감)
+5. Lambda VPC 연결 정책 : `RDS 적재용만 VPC 연결`, 나머지는 VPC 밖
+6. Private 서브넷의 S3 접근 : `S3 Gateway VPC 엔드포인트 사용`
