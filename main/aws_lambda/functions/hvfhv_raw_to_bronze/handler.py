@@ -33,10 +33,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "month": payload["year_month"][5:],
         "row_count": result.write_result.row_count,
         "locations": [str(path)],
-        "marker_location": str(loader.marker_path),
-        "sha256": payload["metadata"]["sha256"],
         "file_size_bytes": path.stat().st_size,
-        "already_collected": loader.already_collected,
     }
 
 

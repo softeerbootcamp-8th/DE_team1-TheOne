@@ -15,8 +15,8 @@ DATASETS = {
     "driver_vehicle_leases",
     "lease_vehicle_inventory",
 }
-DATA_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})$")
 DATASET_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$")
+LATEST_DATASET_PATTERN = re.compile(r"^/v1/data/latest/datasets/([a-z_]+)$")
 
 
 class ReleaseRequestHandler(BaseHTTPRequestHandler):
@@ -33,18 +33,17 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
         if path == "/health":
             self._send_json({"status": "ok"}, head_only=head_only)
             return
-        if path == "/v1/data/latest":
+        if match := LATEST_DATASET_PATTERN.fullmatch(path):
             releases = sorted(self.release_root.glob("year_month=????-??"))
             if not releases:
                 self.send_error(404, "data not found")
                 return
-            self._send_manifest(releases[-1], head_only=head_only)
-            return
-        if match := DATA_PATTERN.fullmatch(path):
-            self._send_manifest(
-                self.release_root / f"year_month={match.group(1)}",
-                head_only=head_only,
+            year_month = releases[-1].name.removeprefix("year_month=")
+            self.send_response(307)
+            self.send_header(
+                "Location", f"/v1/data/{year_month}/datasets/{match.group(1)}"
             )
+            self.end_headers()
             return
         if match := DATASET_PATTERN.fullmatch(path):
             self._send_dataset(match.group(1), match.group(2), head_only=head_only)
@@ -61,25 +60,6 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
         except (OSError, json.JSONDecodeError):
             self.send_error(500, "invalid release manifest")
             return None
-
-    def _send_manifest(self, release: Path, *, head_only: bool) -> None:
-        manifest = self._manifest(release)
-        if manifest is None:
-            return
-        year_month = manifest.get("year_month")
-        response = {
-            key: value
-            for key, value in manifest.items()
-            if key != "release_id"
-        }
-        response["datasets"] = {
-            name: {
-                **metadata,
-                "download_url": f"/v1/data/{year_month}/datasets/{name}",
-            }
-            for name, metadata in manifest.get("datasets", {}).items()
-        }
-        self._send_json(response, head_only=head_only)
 
     def _send_dataset(self, year_month: str, dataset: str, *, head_only: bool) -> None:
         if dataset not in DATASETS:

@@ -55,9 +55,7 @@ Spark 쓰기는 `partitionOverwriteMode=dynamic` 을 씁니다 —
 이 옵션이 없으면 `mode("overwrite")` 가 데이터셋 디렉터리 전체를 지우고 다시 씁니다.
 **월 배치가 재시도될 때 지난달이 통째로 사라지는 사고가 여기서 납니다.**
 
-월별 Bronze 원천은 같은 `year_month`에 새 내용이 제공되면 `data.parquet`을 원자적으로
-교체합니다. 현재 checksum과 행 수는 marker에 기록하고, 교체 시 직전
-`previous_sha256`·`previous_row_count`도 남겨 변경 이력을 확인할 수 있게 합니다.
+월별 Bronze 원천은 같은 `year_month`에 새 내용이 제공되면 `data.parquet`을 원자적으로 교체합니다. 원천의 행 수·checksum은 Main 계약으로 전달하지 않습니다.
 
 ---
 
