@@ -119,6 +119,17 @@ def test_정상_적재는_통과한다(tmp_path):
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
+def test_필수컬럼보다_컬럼이_많아도_통과한다(tmp_path):
+    """원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다 컬럼이 많아도(TLC 원본처럼) 막지 않습니다.
+
+    물리 스키마 전체 일치는 더 이상 보지 않습니다(#529) — 필수 컬럼만 있으면 통과합니다.
+    """
+    extra_schema = pa.schema([*task_module.SCHEMA, pa.field("PULocationID", pa.int32())])
+    path = write_bronze(tmp_path, schema=extra_schema)
+
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
 def test_파일이_없으면_막는다(tmp_path):
     missing = tmp_path / "hvfhv" / f"year_month={YEAR_MONTH}" / "missing.parquet"
     result = {
@@ -155,13 +166,14 @@ def test_Bronze_경로가_base_dir_layout과_다르면_막는다(tmp_path):
         validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
-def test_스키마가_다르면_재수집후에도_막는다(tmp_path, monkeypatch):
+def test_필수컬럼이_전부빠지면_재수집후에도_막는다(tmp_path, monkeypatch):
     broken_schema = pa.schema([("hvfhs_license_num", pa.string())])
     path = write_bronze(tmp_path, schema=broken_schema)
     result = result_for(path)
     monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
     with pytest.raises(
-        ValueError, match=r"expect_column_values_to_be_in_set\[schema_signature\]"
+        ValueError,
+        match=r"expect_column_values_to_be_in_set\[missing_required_columns\]",
     ):
         validate_bronze(result, params=bronze_params(tmp_path))
 

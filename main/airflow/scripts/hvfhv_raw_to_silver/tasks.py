@@ -65,8 +65,12 @@ def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> 
     return "|".join(fields)
 
 
-def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
-    """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다."""
+def _bronze_quality_summary(parquet_file, required_columns):
+    """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다.
+
+    물리 스키마 전체 일치는 확인하지 않습니다 — 원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다
+    많은 컬럼을 보내도(#529 진행 중) required_columns 만 있으면 검증을 계속합니다.
+    """
     import pandas as pd
 
     schema = parquet_file.schema_arrow
@@ -74,8 +78,7 @@ def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
     missing_columns = [name for name in required_columns if name not in schema.names]
     invalid_rows = 0
 
-    schema_allowed = schema in expected_schemas
-    if row_count and not missing_columns and schema_allowed:
+    if row_count and not missing_columns:
         for batch in parquet_file.iter_batches(columns=required_columns):
             frame = batch.to_pandas()
             trip_miles = pd.to_numeric(frame["trip_miles"], errors="coerce")
@@ -105,7 +108,7 @@ def _bronze_quality_summary(parquet_file, expected_schemas, required_columns):
                 "missing_required_columns": ",".join(missing_columns),
                 "invalid_required_row_ratio": (
                     invalid_rows / row_count
-                    if row_count and not missing_columns and schema_allowed
+                    if row_count and not missing_columns
                     else None
                 ),
             }
@@ -206,12 +209,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
             column="row_count", min_value=1
         ),
         gx.expectations.ExpectColumnValuesToBeInSet(
-            column="schema_signature",
-            value_set=[
-                _schema_signature(SCHEMA),
-            ],
-        ),
-        gx.expectations.ExpectColumnValuesToBeInSet(
             column="missing_required_columns", value_set=[""]
         ),
     ]
@@ -252,11 +249,7 @@ def _bronze_quality_result(
             f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
         ) from exc
 
-    summary = _bronze_quality_summary(
-        parquet_file,
-        (SCHEMA,),
-        required_columns,
-    )
+    summary = _bronze_quality_summary(parquet_file, required_columns)
     return summary
 
 
