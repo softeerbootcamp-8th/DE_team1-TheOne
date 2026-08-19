@@ -214,3 +214,46 @@ LEASE_VEHICLE_INVENTORY_SCHEMA = pa.schema(
 )
 
 LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL = frozenset(LEASE_VEHICLE_INVENTORY_SCHEMA.names)
+
+# 회사 원천 스냅샷의 저장 스키마.
+#
+# pandas 가 추론하게 두면 안 됩니다. 초기 스냅샷은 모든 계약이 진행 중이라
+# `lease_ended_on` 이 전량 결측이고, 그러면 Parquet 타입이 `null` 로 굳어
+# Spark 가 날짜로 못 읽습니다 — 기사 배정이 분석 단계에서 죽습니다(#353).
+#
+# 더 나쁜 건 타입이 스냅샷마다 달라진다는 점입니다. `evolve_company_snapshot` 이
+# 일부 계약을 종료시키면 그때는 값이 생겨 날짜로 추론됩니다. 소비하는 쪽은
+# 어느 달 스냅샷을 읽느냐에 따라 되기도 하고 안 되기도 합니다.
+COMPANY_SNAPSHOT_SCHEMAS = {
+    "customer": pa.schema(
+        [
+            ("customer_id", pa.string()),
+            ("synthetic_driver_id", pa.string()),
+            ("snapshot_date", pa.date32()),
+        ]
+    ),
+    "taxi": pa.schema(
+        [
+            ("taxi_id", pa.string()),
+            ("make_key", pa.string()),
+            ("model_key", pa.string()),
+            ("model_year", pa.int64()),
+            ("weekly_lease_fee", pa.float64()),
+            ("uber_comfort_eligible", pa.bool_()),
+            ("lyft_extra_comfort_eligible", pa.bool_()),
+            ("vehicle_group", pa.string()),
+            ("snapshot_date", pa.date32()),
+        ]
+    ),
+    "lease_contract": pa.schema(
+        [
+            ("lease_id", pa.string()),
+            ("customer_id", pa.string()),
+            ("taxi_id", pa.string()),
+            ("lease_started_on", pa.date32()),
+            # 진행 중이면 결측입니다. 전량 결측이어도 날짜여야 합니다.
+            ("lease_ended_on", pa.date32()),
+            ("snapshot_date", pa.date32()),
+        ]
+    ),
+}
