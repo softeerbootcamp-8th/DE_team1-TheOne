@@ -22,8 +22,10 @@ import pytest
 from main.aws_lambda.functions.eia_fuel_price_silver.extractor import (
     EiaFuelPriceCleanExtractor,
     clean_silver_file,
+    clean_silver_key,
 )
 from main.aws_lambda.functions.eia_fuel_price_silver.handler import lambda_handler
+from main.aws_lambda.functions.eia_fuel_price_silver.loader import silver_key
 from main.aws_lambda.functions.eia_fuel_price_silver.transformer import combine_daily_prices
 from schema.silver import (
     CLEAN_EV_CHARGING_PRICE_SCHEMA as EV_SCHEMA,
@@ -135,3 +137,21 @@ def test_산출물_경로는_데이터의_달을_쓴다(tmp_path):
     result = lambda_handler({"year_month": "2025-05", "silver_dir": str(tmp_path)})
 
     assert "gas_ev_price/year_month=2025-05/gas_ev_price.parquet" in result["locations"][0]
+
+
+# --- S3 배포 (#577) — 키 포맷 --------------------------------------------
+# 이 단계는 gas(#557)·electricity(#558) 처럼 최신 파티션을 찾지 않습니다. 대상 월이
+# 정해지면 CLEAN 위치가 고정되므로, 키 포맷만 로컬 파일 경로 규칙과 대응되는지 봅니다.
+
+
+def test_CLEAN_S3_키가_로컬_경로_규칙과_대응된다():
+    assert clean_silver_key("eia_gas_price", "2025-05") == (
+        "silver/eia_gas_price/year_month=2025-05/eia_gas_price.parquet"
+    )
+    assert clean_silver_key("eia_electricity_price", "2025-05") == (
+        "silver/eia_electricity_price/year_month=2025-05/eia_electricity_price.parquet"
+    )
+
+
+def test_산출물_S3_키도_데이터의_달을_쓴다():
+    assert silver_key("2025-05") == "silver/gas_ev_price/year_month=2025-05/gas_ev_price.parquet"
