@@ -33,7 +33,7 @@
 3. Hive Style Partitioning 도입 : S3 기준 모든 데이터에 도입 / Iceberg 파티셔닝은 HVFHV에만 (→ 8/19에 Iceberg 부분 무효화)
 
 ### 8/19 ([상세 정리 문서 링크](/docs/decision_making/0819.md))
-1. Glue·Iceberg 도입 여부(8/12 재검토) : `둘 다 미사용`, Hive Style Partitioning만 사용
+1. Glue·Iceberg 도입 여부(8/12 재검토) : `둘 다 미사용` (부트캠프 정책상 사용 불가)
 2. AWS 서비스별 파이프라인 매핑 : Airflow(EC2) / Lambda / EMR / S3 / RDS로 매핑
 3. VPC 네트워크 구성 : `1 VPC, 2 AZ, 3계층 서브넷(Public/Private-App/Private-Data)`
 4. NAT Gateway v.s. NAT Instance : `NAT Instance 사용` (비용 절감)
