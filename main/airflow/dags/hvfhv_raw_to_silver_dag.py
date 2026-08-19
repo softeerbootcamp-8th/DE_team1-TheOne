@@ -46,11 +46,13 @@ default_args = {
         "year": Param(
             None,
             type=["string", "null"],
+            pattern=r"^\d{4}$",
             description="수동 수집 연도 (예: '2024'). 비워두면 실행일 기준 직전 달 자동 계산",
         ),
         "month": Param(
             None,
             type=["string", "null"],
+            pattern=r"^(0?[1-9]|1[0-2])$",
             description="수동 수집 월 (예: '03' 또는 '3'). 비워두면 실행일 기준 직전 달 자동 계산",
         ),
         "base_dir": Param(
