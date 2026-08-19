@@ -5,6 +5,9 @@
 3. Slack provider가 없어도 로깅 fallback으로 DAG import 유지
 4. 그 fallback 이 지금 쓰이고 있으면 실패 — 알림이 죽은 채로 초록불이면
    모든 검증 가드의 실패가 아무한테도 안 감 (#546)
+5. 렌더한 결과의 시도 표기가 분자·분모 같은 축을 씀 — clear 후 재실행에서
+   `2 / 1` 이 나가던 문제 (#550)
+6. 실패 사유를 싣되 길면 자름. 없으면 `None` 이 아니라 `(사유 없음)`
 """
 
 import importlib
@@ -14,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from shared.airflow.common.slack_failure_callback import (
+    REASON_MAX_CHARS,
     SLACK_FAILURE_TEXT,
     SLACK_RETRY_ALERT_TEXT,
     SLACK_WEBHOOK_CONN_ID,
@@ -71,7 +75,7 @@ def test_Slack_알림은_상태와_실행_정보를_표시한다(text, heading):
         "{{ ti.task_id }}",
         "{{ run_id }}",
         "{{ ti.try_number }}",
-        "{{ task.retries + 1 }}",
+        "{{ ti.max_tries + 1 }}",
         "{{ ti.log_url }}",
     ):
         assert expected in text
@@ -135,3 +139,70 @@ def test_provider가_없으면_fallback_콜백이_로그로_대체한다(caplog,
 
     assert "Task 재시도 예정: smoke" in caplog.text
     assert "Task 최종 실패: smoke" in caplog.text
+
+
+# --- 실제 렌더 결과 (#550) ----------------------------------------------------
+# 위 자리표시자 테스트는 이름이 있는지만 봅니다. `task.retries` 를 쓰던 시절에도
+# 통과했고, 실제로는 `2 / 1` 이 나갔습니다. 여기서는 값을 넣어 렌더한 문자열을 봅니다.
+
+ALERT_TEXTS = [SLACK_RETRY_ALERT_TEXT, SLACK_FAILURE_TEXT]
+
+
+def _ti(try_number: int = 1, max_tries: int = 0):
+    return type(
+        "TI", (),
+        {"task_id": "validate_inputs", "try_number": try_number,
+         "max_tries": max_tries, "log_url": "http://airflow/log"},
+    )
+
+
+def _render(text: str, **overrides) -> str:
+    from jinja2 import Template
+
+    context = {
+        "dag": type("DAG", (), {"dag_id": "hvfhv_driver_trip_silver_pipeline"}),
+        "ti": _ti(),
+        "run_id": "manual__2026-08-19T05:17:03",
+        "exception": None,
+    }
+    context.update(overrides)
+    return Template(text).render(**context)
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_clear_후_재실행해도_시도_표기가_어긋나지_않는다(text):
+    """`retries=0` 태스크를 clear 하고 다시 돌린 상황.
+
+    `task.retries` 는 정적 0 이라 분모가 1 로 고정되는데 분자만 2 로 올라가
+    `2 / 1` 이 나갔습니다. `ti.max_tries` 는 clear 때 `try_number + retries` 로
+    누적되므로 분자와 같은 축에 있습니다.
+    """
+    rendered = _render(text, ti=_ti(try_number=2, max_tries=1))
+
+    assert "`2 / 2`" in rendered
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_실패_사유가_본문에_실린다(text):
+    rendered = _render(text, exception=ValueError("배정 행 수가 보존되지 않았습니다"))
+
+    assert "배정 행 수가 보존되지 않았습니다" in rendered
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_긴_예외는_잘라서_싣는다(text):
+    """Spark `Py4JJavaError` 는 수백 줄입니다. 그대로 실으면 Slack 이 거부합니다."""
+    rendered = _render(text, exception=RuntimeError("스택" * 1000))
+
+    reason = next(line for line in rendered.splitlines() if line.startswith("*사유*"))
+    assert len(reason) < REASON_MAX_CHARS + 50
+    assert reason.endswith("...`")
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_예외가_없으면_None_이_아니라_사유_없음으로_찍는다(text):
+    """`exception` 은 None 일 수 있고, `| string` 을 먼저 태우면 "None" 이 찍힙니다."""
+    rendered = _render(text, exception=None)
+
+    assert "(사유 없음)" in rendered
+    assert "None" not in rendered
