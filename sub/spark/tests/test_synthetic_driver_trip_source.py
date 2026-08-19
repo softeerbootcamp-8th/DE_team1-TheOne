@@ -3,7 +3,8 @@
 1. 월별 상태 갱신 → 월초에 기존 기사 0.5~1% 이탈·동일 수 신규 유입
 2. 배정 결과 분리 → HVFHV+taxi_id, 기사 리스, 보유 차량 데이터
 3. 릴리스 재실행 → 완결된 기존 결과를 중복 생성하지 않음
-4. 정제 코드 소유권 → source job은 중앙 Silver 스키마만 공유
+4. 정제 코드 소유권 → source job의 HVFHV 정제는 shared/ 를 그대로 쓰고, sub/ 자체
+   스키마(schema/source)는 shared/ 가 쓰는 main 쪽 스키마와 구조가 같아야 함
 """
 
 from datetime import date, datetime
@@ -13,10 +14,10 @@ import pandas as pd
 import pytest
 from pyspark.sql.functions import lit
 
-from schema.silver.driver_vehicle_leases import SCHEMA as DRIVER_VEHICLE_LEASE_SCHEMA
-from schema.silver.hvfhv import FINAL_SCHEMA
-from schema.silver.lease_vehicle_inventory import (
-    SCHEMA as LEASE_VEHICLE_INVENTORY_SCHEMA,
+from schema.source.hvfhv import FINAL_SCHEMA
+from schema.source import (
+    DRIVER_VEHICLE_LEASE_SCHEMA,
+    LEASE_VEHICLE_INVENTORY_SCHEMA,
 )
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import FINAL_SCHEMA as SOURCE_FINAL_SCHEMA
@@ -41,8 +42,8 @@ from sub.spark.jobs.driver_assignment.source_job import (
 from sub.spark.jobs.driver_master.preference import build_driver_preferences
 
 
-def test_가짜원천_정제는_중앙_Silver_스키마만_공유한다():
-    assert SOURCE_FINAL_SCHEMA is FINAL_SCHEMA
+def test_가짜원천_정제는_중앙_Silver_스키마와_구조가_같다():
+    assert SOURCE_FINAL_SCHEMA == FINAL_SCHEMA
     assert LEASE_SOURCE_COLUMNS == DRIVER_VEHICLE_LEASE_SCHEMA.names
     assert INVENTORY_COLUMNS == LEASE_VEHICLE_INVENTORY_SCHEMA.names
 
