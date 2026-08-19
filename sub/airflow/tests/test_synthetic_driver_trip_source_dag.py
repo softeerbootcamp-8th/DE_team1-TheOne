@@ -3,8 +3,8 @@
 1. 월별 TLC 입력 수집 → 상태 검증 → 세 원천 생성 → 공개 검증
 2. 네트워크 수집만 짧은 지수 백오프로 재시도
 3. 생성 Spark 명령은 source 입력과 상태·릴리스 경로만 사용
-4. manifest 행 수·checksum·필수 컬럼 검증
-5. API manifest 조회와 세 Parquet 다운로드
+4. 내부 manifest 행 수·checksum·필수 컬럼 검증
+5. API는 manifest를 공개하지 않고 세 Parquet만 다운로드
 """
 
 import hashlib
@@ -12,6 +12,7 @@ import io
 import json
 import sys
 import threading
+import urllib.error
 import urllib.request
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -243,23 +244,32 @@ def test_릴리스행수가_manifest와_다르면_실패한다(tmp_path):
         task_module.validate_release(tmp_path, "2026-09", 42)
 
 
-def test_API는_manifest와_세_Parquet을_다운로드한다(tmp_path):
+def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다(tmp_path):
     release, manifest = _write_release(tmp_path)
     server = create_server(tmp_path, port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
     try:
-        with urllib.request.urlopen(f"{base_url}/v1/data/latest") as response:
-            public_body = json.load(response)
-        assert "release_id" not in public_body
+        for path in ("/v1/data/latest", "/v1/data/2026-09"):
+            with pytest.raises(urllib.error.HTTPError) as exc_info:
+                urllib.request.urlopen(f"{base_url}{path}")
+            assert exc_info.value.code == 404
+
         for dataset in manifest["datasets"]:
-            assert public_body["datasets"][dataset]["download_url"] == (
-                f"/v1/data/2026-09/datasets/{dataset}"
-            )
+            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{dataset}"
+            with urllib.request.urlopen(dataset_url) as response:
+                assert response.headers["Content-Type"] == (
+                    "application/vnd.apache.parquet"
+                )
+                assert response.read() == (
+                    release / manifest["datasets"][dataset]["file"]
+                ).read_bytes()
+
             with urllib.request.urlopen(
-                f"{base_url}/v1/data/2026-09/datasets/{dataset}"
+                f"{base_url}/v1/data/latest/datasets/{dataset}"
             ) as response:
+                assert response.geturl() == dataset_url
                 assert response.read() == (
                     release / manifest["datasets"][dataset]["file"]
                 ).read_bytes()

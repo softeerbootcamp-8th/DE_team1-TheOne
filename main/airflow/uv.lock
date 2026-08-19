@@ -343,6 +343,23 @@ wheels = [
 ]
 
 [[package]]
+name = "apache-airflow-providers-slack"
+version = "9.10.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+    { name = "apache-airflow" },
+    { name = "apache-airflow-providers-common-compat" },
+    { name = "apache-airflow-providers-common-sql" },
+    { name = "asgiref" },
+    { name = "slack-sdk" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/73/4b/6ce32d797252ac8a15634447445ea5d5434341512ed1d10b237a98a1f381/apache_airflow_providers_slack-9.10.2.tar.gz", hash = "sha256:1679226c0064810e9d31f3650e8488b4ba44348d52ab38cf4bc8e212ea6a6c9b", size = 67190, upload-time = "2026-06-22T19:59:59.119Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ed/8d/84ae235db2be07774c12b8cd763fe2312c626be6ffccac2c86fe93c84c93/apache_airflow_providers_slack-9.10.2-py3-none-any.whl", hash = "sha256:458c9acae9bf1b26c995a4b760a61c8a2e9da9a7b41bb014d2211e636e31ab83", size = 44045, upload-time = "2026-06-22T19:59:21.592Z" },
+]
+
+[[package]]
 name = "apache-airflow-providers-smtp"
 version = "3.0.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2224,6 +2241,15 @@ wheels = [
 ]
 
 [[package]]
+name = "slack-sdk"
+version = "3.43.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/13/75/a4964eb771a0c74d79ee7a3bee6fb5d9718909dd1b675e80d62a6a0ad90a/slack_sdk-3.43.0.tar.gz", hash = "sha256:0553152e46c4259eb69f7464cdadc35ba4802ca10f9f5a849c92cf03d6c2ba07", size = 252769, upload-time = "2026-06-30T18:04:41.59Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e4/55/42141b8338d46323d5b3c6095201b044c670c20f898643b322ea9b1543a1/slack_sdk-3.43.0-py2.py3-none-any.whl", hash = "sha256:4b6557c65577fc172f685af218b811f9f3b4909e24cddd839ada09565f10c585", size = 315866, upload-time = "2026-06-30T18:04:39.636Z" },
+]
+
+[[package]]
 name = "sniffio"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -2354,6 +2380,7 @@ dependencies = [
     { name = "apache-airflow-providers-amazon" },
     { name = "apache-airflow-providers-http" },
     { name = "apache-airflow-providers-postgres" },
+    { name = "apache-airflow-providers-slack" },
     { name = "apache-airflow-providers-standard" },
     { name = "beautifulsoup4" },
     { name = "boto3" },
@@ -2379,6 +2406,7 @@ requires-dist = [
     { name = "apache-airflow-providers-amazon", specifier = "==9.31.0" },
     { name = "apache-airflow-providers-http", specifier = "==6.0.4" },
     { name = "apache-airflow-providers-postgres", specifier = "==6.8.0" },
+    { name = "apache-airflow-providers-slack", specifier = "==9.10.2" },
     { name = "apache-airflow-providers-standard", specifier = "==1.15.0" },
     { name = "beautifulsoup4", specifier = "==4.15.0" },
     { name = "boto3", specifier = "==1.43.65" },

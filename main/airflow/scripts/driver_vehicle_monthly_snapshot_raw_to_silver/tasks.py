@@ -87,7 +87,6 @@ def _validate_bronze_result(
 ) -> tuple[Path, list[str]]:
     path, _ = validate_synthetic_bronze(
         result,
-        dataset=DATASET,
         dataset_dir=DATASET,
         base_dir=base_dir,
     )

@@ -1,13 +1,12 @@
 """HVFHV+taxi_id 데이터 Raw→Bronze 수집 시나리오.
 
-1. 요청한 HVFHV 한 파일만 원본 bytes 그대로 월 파티션에 저장
-2. 같은 월 재실행은 파일을 추가하지 않고 기존 결과 재사용
-3. 같은 월 원천 내용이 바뀌면 파일을 교체하고 직전 checksum 기록
-4. checksum/manifest 계약 위반은 완료 파일을 공개하지 않음
+1. 월별 Parquet URL 한 번만 호출해 원본 bytes와 footer 행 수를 저장
+2. 같은 월 재실행은 같은 파일을 원자적으로 교체
+3. 빈 응답과 잘못된 Parquet은 완료 파일을 공개하지 않음
+4. latest 응답의 최종 URL에서 실제 월을 확인
+5. 다른 host로 이동한 응답은 저장 전에 거부
 """
 
-import hashlib
-import json
 from datetime import datetime
 from pathlib import Path
 
@@ -22,6 +21,8 @@ from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
+DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips"
+LATEST_URL = f"{API_URL}/v1/data/latest/datasets/hvfhv_taxi_trips"
 
 
 def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
@@ -47,31 +48,10 @@ def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
 CONTENT = _parquet_bytes()
 
 
-def _manifest(content: bytes = CONTENT) -> dict:
-    return {
-        "year_month": YEAR_MONTH,
-        "datasets": {
-            "hvfhv_taxi_trips": {
-                "row_count": 1,
-                "sha256": hashlib.sha256(content).hexdigest(),
-                "download_url": f"/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips",
-            },
-            "driver_vehicle_leases": {
-                "row_count": 1,
-                "sha256": "0" * 64,
-                "download_url": f"/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_leases",
-            },
-        },
-    }
-
-
 class Response:
-    def __init__(self, *, payload=None, content=b""):
-        self._payload = payload
+    def __init__(self, *, url=DATASET_URL, content=CONTENT):
+        self.url = url
         self.content = content
-
-    def json(self):
-        return self._payload
 
     def raise_for_status(self):
         return None
@@ -79,22 +59,15 @@ class Response:
 
 def _api(
     monkeypatch,
-    manifest: dict,
     requested: list[str] | None = None,
+    *,
     content: bytes = CONTENT,
+    response_url: str = DATASET_URL,
 ) -> None:
-    responses = {
-        f"{API_URL}/v1/data/{YEAR_MONTH}": Response(payload=manifest),
-        f"{API_URL}/v1/data/latest": Response(payload=manifest),
-        f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips": Response(
-            content=content
-        ),
-    }
-
     def get(url, **kwargs):
         if requested is not None:
             requested.append(url)
-        return responses[url]
+        return Response(url=response_url, content=content)
 
     monkeypatch.setattr(monthly_dataset.requests, "get", get)
 
@@ -108,73 +81,83 @@ def _event(tmp_path) -> dict:
     }
 
 
-def test_HVFHV한파일만_원본bytes그대로_Bronze에_저장한다(tmp_path, monkeypatch):
+def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
+    tmp_path, monkeypatch
+):
     requested = []
-    _api(monkeypatch, _manifest(), requested)
+    _api(monkeypatch, requested)
 
     result = lambda_handler(_event(tmp_path))
 
     path = Path(result["locations"][0])
+    assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
-    assert path.name == "data.parquet"
     assert path.parent.name == f"year_month={YEAR_MONTH}"
     assert path.parent.parent.name == "hvfhv"
-    marker = json.loads(Path(result["marker_location"]).read_text(encoding="utf-8"))
-    assert set(marker) == {"dataset", "row_count", "sha256", "year_month"}
-    assert all("driver_vehicle_leases" not in url for url in requested)
+    assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
+    assert set(result) == {
+        "file_size_bytes",
+        "locations",
+        "month",
+        "row_count",
+        "year",
+        "year_month",
+    }
 
 
-def test_같은월을_다시수집해도_파일이_추가되지_않는다(tmp_path, monkeypatch):
-    _api(monkeypatch, _manifest())
-    first = lambda_handler(_event(tmp_path))
-    _api(monkeypatch, _manifest())
-    second = lambda_handler(_event(tmp_path))
-
-    assert first["locations"] == second["locations"]
-    assert second["already_collected"] is True
-    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
-
-
-def test_같은월의_원천내용이_바뀌면_교체하고_직전_checksum을_남긴다(
+def test_같은월을_다시수집하면_같은파일을_원자적으로_교체한다(
     tmp_path, monkeypatch
 ):
-    _api(monkeypatch, _manifest())
+    _api(monkeypatch)
     first = lambda_handler(_event(tmp_path))
-    previous_sha256 = first["sha256"]
 
     corrected = _parquet_bytes(taxi_id="taxi-2")
-    _api(monkeypatch, _manifest(corrected), content=corrected)
+    _api(monkeypatch, content=corrected)
     second = lambda_handler(_event(tmp_path))
 
     path = Path(second["locations"][0])
-    marker = json.loads(Path(second["marker_location"]).read_text(encoding="utf-8"))
+    assert first["locations"] == second["locations"]
     assert path.read_bytes() == corrected
-    assert second["already_collected"] is False
-    assert marker["sha256"] == hashlib.sha256(corrected).hexdigest()
-    assert marker["previous_sha256"] == previous_sha256
-    assert marker["previous_row_count"] == 1
+    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
+    assert not list((tmp_path / "hvfhv").rglob("*.json"))
 
 
-def test_checksum이_다르면_Bronze파일과_marker를_공개하지_않는다(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("content", [b"", b"not parquet"], ids=["empty", "invalid"])
+def test_읽을수없는_응답은_Bronze파일을_공개하지않는다(
+    content, tmp_path, monkeypatch
 ):
-    manifest = _manifest()
-    manifest["datasets"]["hvfhv_taxi_trips"]["sha256"] = "0" * 64
-    _api(monkeypatch, manifest)
+    _api(monkeypatch, content=content)
 
-    with pytest.raises(ValueError, match="checksum"):
+    with pytest.raises(ValueError, match="비어 있습니다|Parquet이 아닙니다"):
         lambda_handler(_event(tmp_path))
 
     assert not list(tmp_path.rglob("*.parquet"))
-    assert not list(tmp_path.rglob("*.json"))
 
 
-def test_월을_지정하지_않으면_latest_데이터를_수집한다(tmp_path, monkeypatch):
-    _api(monkeypatch, _manifest())
+def test_월을_지정하지않으면_latest의_최종URL에서_실제월을_확인한다(
+    tmp_path, monkeypatch
+):
+    requested = []
+    _api(monkeypatch, requested)
 
     result = lambda_handler({"api_base_url": API_URL, "base_dir": str(tmp_path)})
 
+    assert requested == [LATEST_URL]
     assert result["year_month"] == YEAR_MONTH
+
+
+def test_다른host로_이동한_응답은_저장하지않는다(tmp_path, monkeypatch):
+    _api(
+        monkeypatch,
+        response_url=(
+            f"http://other.example/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips"
+        ),
+    )
+
+    with pytest.raises(ValueError, match="같은 host"):
+        lambda_handler(_event(tmp_path))
+
+    assert not list(tmp_path.rglob("*.parquet"))
 
 
 @pytest.mark.parametrize("event", [{"year": "2026"}, {"month": "08"}])
