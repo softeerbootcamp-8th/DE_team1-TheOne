@@ -24,8 +24,8 @@ from sub.aws_lambda.common import uber_eligible_vehicles_layout as uber_layout
 from sub.aws_lambda.common import vehicle_catalog_layout as catalog_layout
 from sub.aws_lambda.common import vehicle_master_layout as layout
 from sub.aws_lambda.common import vehicle_specs_layout as specs_layout
-from sub.aws_lambda.common.env import load_local_env
-from sub.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
+from shared.aws_lambda.common.env import load_local_env
+from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
 from sub.aws_lambda.common.s3_reader import get_object_bytes, list_keys
 
 logger = logging.getLogger(__name__)

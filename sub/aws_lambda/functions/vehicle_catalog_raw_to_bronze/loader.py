@@ -15,7 +15,7 @@ from schema.bronze.vehicle_catalog import SCHEMA
 
 from sub.aws_lambda.common import vehicle_catalog_layout as layout
 from shared.aws_lambda.common.atomic_write import atomic_write
-from sub.aws_lambda.common.s3_loader import S3Loader, S3Object
+from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
 
