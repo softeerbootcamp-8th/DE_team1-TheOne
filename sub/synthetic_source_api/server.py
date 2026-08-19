@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 
 DATASETS = {
     "hvfhv_taxi_trips",
-    "driver_vehicle_leases",
+    "driver_vehicle_monthly_snapshot",
     "lease_vehicle_inventory",
 }
 DATASET_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$")

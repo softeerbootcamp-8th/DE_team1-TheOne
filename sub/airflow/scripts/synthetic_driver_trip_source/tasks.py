@@ -15,7 +15,7 @@ from airflow.sdk import task
 from airflow.sdk.exceptions import AirflowSkipException
 
 from schema.source import (
-    DRIVER_VEHICLE_LEASE_REQUIRED_NON_NULL as LEASE_REQUIRED_COLUMNS,
+    DRIVER_VEHICLE_MONTHLY_SNAPSHOT_REQUIRED_NON_NULL as SNAPSHOT_REQUIRED_COLUMNS,
     LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as INVENTORY_REQUIRED_COLUMNS,
 )
 from shared.airflow.common.project_paths import PROJECT_ROOT
@@ -39,7 +39,7 @@ HVFHV_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_{yea
 MAX_MONTH_LOOKBACK = 6
 RELEASE_DATASETS = {
     "hvfhv_taxi_trips": {"pickup_datetime", "taxi_id"},
-    "driver_vehicle_leases": LEASE_REQUIRED_COLUMNS,
+    "driver_vehicle_monthly_snapshot": SNAPSHOT_REQUIRED_COLUMNS,
     "lease_vehicle_inventory": INVENTORY_REQUIRED_COLUMNS,
 }
 
