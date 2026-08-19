@@ -21,19 +21,25 @@ AIRFLOW_GLOBAL_TESTS = {
     "test_dag_spark_pythonpath.py",
     "test_slack_callbacks.py",
 }
+# 규약(`test_{pipeline}_dag.py`)으로 못 찾는 것만 적습니다. 이름이 규약과 다르거나,
+# 한 테스트가 여러 파이프라인을 함께 보는 경우입니다.
+# 여기 적은 이름이 실재하는지는 `test_select_tests.py` 가 확인합니다 — 예전에 EIA 가
+# main 으로 옮겨간 뒤(#518) `sub` 쪽 항목이 죽은 참조로 남아, EIA 를 고쳐도 전용
+# 테스트가 하나도 안 돌았습니다(#538).
 AIRFLOW_OVERRIDES = {
     "main": {
+        # 가스·전력 원본 적재를 한 파일에서 함께 검증합니다.
+        "eia_electricity_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
+        "eia_gas_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
         "hvfhv_driver_trip_silver": {"test_driver_trip_silver_dag.py"},
         "hvfhv_raw_to_silver": {
             "test_hvfhv_raw_to_silver_dag.py",
             "test_hvfhv_validation.py",
         },
         "hvfhv_silver_to_gold": {"test_silver_to_gold_dag.py"},
+        "lease_vehicle_inventory_raw_to_silver": {"test_lease_vehicle_inventory_dag.py"},
     },
     "sub": {
-        "eia_electricity_price_raw_to_bronze": {"test_eia_fuel_price_dag.py"},
-        "eia_fuel_price_bronze_to_silver": {"test_eia_fuel_price_dag.py"},
-        "eia_gas_price_raw_to_bronze": {"test_eia_fuel_price_dag.py"},
         "fueleconomy_vehicle_specs_raw_to_silver": {
             "test_fueleconomy_vehicle_specs_raw_to_silver_dag.py",
             "test_vehicle_specs_validation.py",
