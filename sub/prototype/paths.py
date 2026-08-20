@@ -11,19 +11,23 @@ DATA = ROOT / "data"
 # blue_print.md 는 이 계층을 raw / curated 로 부르지만(D1), 저장소의 물리 경로는
 # 아직 bronze / silver 입니다. 이름 이관은 작업 9 이고 이 프로토타입 범위가
 # 아닙니다 — 여기서는 경로만 한 곳에 모아 두고 의미 이름으로 부릅니다.
-CURATED_TRIP_DIR = DATA / "silver" / "hvfhv"                       # curated_hvfhv_trip
+#
+# HVFHV 는 main 의 Silver 가 아니라 sub 가 자체 수집·정제한 것을 씁니다 (#620) —
+# 합성 원천 시스템이 main 파이프라인 산출물에 의존하면 안 됩니다.
+RAW_HVFHV_DIR = DATA / "source" / "synthetic_driver_trip_inputs" / "hvfhv"
+CURATED_TRIP_DIR = DATA / "source" / "synthetic_driver_trip_curated" / "hvfhv"  # curated_hvfhv_trip
+ZONE_LOOKUP = DATA / "source" / "synthetic_driver_trip_inputs" / "taxi_zone_lookup.csv"
 CURATED_TRAVEL_TIMES = DATA / "silver" / "taxi_zone_travel_times"  # 구역쌍 이동시간
 CURATED_CATALOG_DIR = DATA / "silver" / "vehicle_catalog"          # 렌탈사 리스팅
 CURATED_UBER_DIR = DATA / "silver" / "uber_eligible_vehicles"
 CURATED_LYFT_DIR = DATA / "silver" / "lyft_eligible_vehicles"
 CURATED_SPECS_DIR = DATA / "silver" / "fueleconomy_vehicle_specs"
-ZONE_LOOKUP = DATA / "bronze" / "taxi_zone_lookup.csv"
 
 # --- 입력: silver 가 버린 컬럼만 원천에서 직접 봅니다 ----------------------
 # 정제 산출물을 대체하는 것이 아니라, 산출물 계약이 요구하는데 silver 화이트리스트
 # (`schema/silver/vehicle_catalog.py`)에서 빠진 컬럼만 가져옵니다 — `image_url`.
-# (`on_scene_datetime` 은 `schema/silver/hvfhv.py` 가 그대로 실어 오므로 여기서
-# 원천을 따로 볼 필요가 없습니다.)
+# (`on_scene_datetime` 은 `RAW_HVFHV_DIR` 원천이 그대로 갖고 있어 여기서 따로
+# 볼 필요가 없습니다.)
 RAW_CATALOG_DIR = DATA / "bronze" / "vehicle_catalog"
 
 # --- 출력: 프로토타입 전용 트리 -------------------------------------------

@@ -210,7 +210,8 @@ def load_curated_trips(target_month: str, *, part_limit: int | None) -> pd.DataF
     if not files:
         raise FileNotFoundError(
             f"curated 트립 파티션이 없습니다: {partition}\n"
-            "hvfhv_raw_to_silver DAG 를 먼저 돌리세요."
+            "sub 가 자체 수집한 원천을 먼저 정제하세요:\n"
+            f"  python -m sub.prototype.hvfhv_curate --target_month {target_month}"
         )
     if part_limit is not None:
         files = files[:part_limit]
@@ -231,7 +232,8 @@ def trip_part_files(target_month: str, *, part_limit: int | None) -> list[str]:
     if not files:
         raise FileNotFoundError(
             f"curated 트립 파티션이 없습니다: {partition}\n"
-            "hvfhv_raw_to_silver DAG 를 먼저 돌리세요."
+            "sub 가 자체 수집한 원천을 먼저 정제하세요:\n"
+            f"  python -m sub.prototype.hvfhv_curate --target_month {target_month}"
         )
     return files if part_limit is None else files[:part_limit]
 
