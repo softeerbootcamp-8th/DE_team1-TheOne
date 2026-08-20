@@ -191,7 +191,7 @@ uv sync --reinstall-package pipeline-core
 
 `uv.lock` 은 파이썬 패키지만 고정합니다. **시스템 바이너리는 못 잠급니다.**
 
-`sub/aws_lambda/functions/vehicle_catalog_raw_to_bronze` 은 렌탈 업체 사이트의 가격이
+`sub/aws_lambda/functions/vehicle_catalog_source_to_raw` 은 렌탈 업체 사이트의 가격이
 이미지 안에만 있어서 OCR(tesseract)로 읽습니다. `pytesseract` 는 이 바이너리를
 호출하는 래퍼일 뿐이라, 바이너리가 없으면 실행 시점에 실패합니다.
 
@@ -225,13 +225,13 @@ brew/apt 기본 패키지에 포함되어 있습니다.
 
 ### 차량 대장 원문 재처리
 
-이 수집기는 네트워크 응답을 OCR 하기 전에 `data/bronze` 아래의 불변 스냅샷으로
+이 수집기는 네트워크 응답을 OCR 하기 전에 `data/source/raw` 아래의 불변 스냅샷으로
 저장합니다. 파싱이 실패해도 원문은 남고, 같은 수집시각의 파일은 덮어쓰지 않습니다.
 
 ```text
-data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html
-data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/images/<URL-SHA256>.bin
-data/bronze/vehicle_catalog/collected_date=YYYY-MM-DD/vendor=fasttrack/<수집시각>.parquet
+data/source/raw/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html
+data/source/raw/vehicle_catalog/raw/collected_at=<UTC 수집시각>/images/<URL-SHA256>.bin
+data/source/raw/vehicle_catalog/collected_date=YYYY-MM-DD/vendor=fasttrack/<수집시각>.parquet
 ```
 
 차량 대장은 저장 HTML에서 카드 URL을 복원하고 URL 해시로 저장 이미지를 찾은 뒤 OCR 합니다.
@@ -240,23 +240,23 @@ data/bronze/vehicle_catalog/collected_date=YYYY-MM-DD/vendor=fasttrack/<수집�
 from datetime import datetime, timezone
 from pathlib import Path
 
-from functions.common import vehicle_catalog_layout as layout
-from sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.extractor import VehicleCatalogCardsExtractor, row_from_snapshot
-from sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.loader import VehicleCatalogBronzeLoader
+from sub.aws_lambda.common import vehicle_catalog_layout as layout
+from sub.aws_lambda.functions.vehicle_catalog_source_to_raw.extractor import VehicleCatalogCardsExtractor, row_from_snapshot
+from sub.aws_lambda.functions.vehicle_catalog_source_to_raw.loader import VehicleCatalogRawLoader
 
-snapshot = Path("data/bronze/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html")
+snapshot = Path("data/source/raw/vehicle_catalog/raw/collected_at=<UTC 수집시각>/source.html")
 timestamp = snapshot.parent.name.removeprefix("collected_at=")
 collected_at = datetime.strptime(timestamp, "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
 rows = []
 for card in VehicleCatalogCardsExtractor(str(snapshot)).extract():
-    image = layout.image_snapshot_file("data/bronze", collected_at, card["image_url"])
+    image = layout.image_snapshot_file("data/source/raw", collected_at, card["image_url"])
     rows.append(row_from_snapshot(card, str(snapshot), str(image), collected_at))
-print(VehicleCatalogBronzeLoader("data/bronze", collected_at).write(rows))
+print(VehicleCatalogRawLoader("data/source/raw", collected_at).write(rows))
 ```
 
 위 코드는 `lambda` 디렉터리에서 `uv run --frozen python`으로 실행합니다. 재처리는 원문
-스냅샷을 바꾸지 않고 같은 수집일의 파생 Bronze JSON 또는 같은 수집시각의 Parquet만
-다시 생성합니다. 이후 기존 Bronze → Silver 명령을 실행하면 됩니다.
+스냅샷을 바꾸지 않고 같은 수집일의 파생 Raw JSON 또는 같은 수집시각의 Parquet만
+다시 생성합니다. 이후 기존 Raw → Curated 명령을 실행하면 됩니다.
 
 ---
 
