@@ -31,6 +31,12 @@ AIRFLOW_OVERRIDES = {
         # 가스·전력 원본 적재를 한 파일에서 함께 검증합니다.
         "eia_electricity_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
         "eia_gas_price_raw_to_bronze": {"test_eia_raw_to_bronze_validation.py"},
+        "eia_electricity_price_bronze_to_silver": {
+            "test_eia_electricity_price_raw_to_silver_dag.py"
+        },
+        "eia_gas_price_bronze_to_silver": {
+            "test_eia_gas_price_raw_to_silver_dag.py"
+        },
         "hvfhv_raw_to_silver": {
             "test_hvfhv_raw_to_silver_dag.py",
             "test_hvfhv_validation.py",
@@ -150,7 +156,8 @@ def select_tests(changed_files: list[str]) -> Selection:
             product = parts[0]
             project = f"{product}/airflow"
             if parts[2] == "tests" and len(parts) == 4 and parts[3].startswith("test_"):
-                selection.add(project, f"tests/{parts[3]}")
+                if (ROOT / path).is_file():
+                    selection.add(project, f"tests/{parts[3]}")
             elif parts[2] == "dags" and path.endswith("_dag.py"):
                 pipeline = Path(path).stem.removesuffix("_dag")
                 selection.add(project, *_airflow_tests_for(product, pipeline))
