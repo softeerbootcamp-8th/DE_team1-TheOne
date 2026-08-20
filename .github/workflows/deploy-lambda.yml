@@ -86,8 +86,16 @@ jobs:
 
       # 로컬과 같은 명령을 씁니다. CI 만 통하는 빌드가 되지 않도록,
       # 그리고 PLATFORM=linux/amd64 고정이 자동으로 따라오도록.
+      #
+      # IMAGE_NAME 에 ECR 리포지토리 이름을 그대로 넘깁니다. Makefile 이 이름을 스스로
+      # 만들게 두면(theone-lambda) 실제 리포지토리 이름(theone-main-lambda)과 어긋나
+      # 푸시가 실패합니다. 리포지토리 이름을 단일 원천으로 둡니다.
       - name: 이미지 빌드
-        run: make build RUNTIMES=main/aws_lambda REGISTRY="${{ steps.ecr.outputs.registry }}/"
+        run: |
+          make build \
+            RUNTIMES=main/aws_lambda \
+            REGISTRY="${{ steps.ecr.outputs.registry }}/" \
+            IMAGE_NAME="${{ vars.ECR_REPOSITORY }}"
 
       - name: 이미지 푸시
         run: docker push "${{ steps.image.outputs.uri }}"

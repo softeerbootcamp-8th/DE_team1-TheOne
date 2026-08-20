@@ -15,6 +15,11 @@ REGISTRY ?=
 # 실제 ECR 은 `theone-airflow` 라서, 배포할 때마다 사람이 손으로 다시 태그해야 했습니다.
 # 자동 배포에서는 그 한 단계가 들어갈 자리가 없어 이름을 맞춥니다.
 IMAGE_PREFIX ?= theone-
+# 이름을 통째로 지정할 때 씁니다. ECR 리포지토리 이름이 접두사+런타임 규칙과 다를 때
+# (예: aws_lambda 는 `theone-main-lambda`) 규칙을 비틀지 않고 그 이름을 그대로 넘깁니다.
+# 배포 워크플로가 ECR_REPOSITORY 변수를 여기에 넘겨서, 리포지토리 이름이 단일 원천이
+# 됩니다 — 이름이 바뀌어도 Makefile 을 고칠 필요가 없습니다. 런타임 하나에만 씁니다.
+IMAGE_NAME ?=
 # Lambda/EMR 기본 아키텍처. 고정하지 않으면 Apple Silicon 팀원은 arm64 이미지를 만들고,
 # 그건 x86_64 Lambda 에서 "exec format error" 로 죽습니다. Graviton 으로 갈 때만 바꾸세요.
 PLATFORM ?= linux/amd64
@@ -108,12 +113,18 @@ tesseract:
 # 도커는 컨텍스트 밖을 참조할 수 없어서입니다. 전송량은 .dockerignore 가 잡습니다.
 .PHONY: build
 build:
+	@if [ -n "$(IMAGE_NAME)" ] && [ $$(echo $(RUNTIMES) | wc -w) -ne 1 ]; then \
+		echo "IMAGE_NAME 은 런타임 하나를 지정할 때만 씁니다: RUNTIMES=$(RUNTIMES)" >&2; \
+		exit 1; \
+	fi
 	@for r in $(RUNTIMES); do \
 		name=$$(basename $$r); \
 		if [ "$$name" = "aws_lambda" ]; then name="lambda"; fi; \
-		echo "==> building $(REGISTRY)$(IMAGE_PREFIX)$$name:$(GIT_SHA)"; \
+		image="$(IMAGE_PREFIX)$$name"; \
+		if [ -n "$(IMAGE_NAME)" ]; then image="$(IMAGE_NAME)"; fi; \
+		echo "==> building $(REGISTRY)$$image:$(GIT_SHA)"; \
 		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f $$r/Dockerfile \
-			-t $(REGISTRY)$(IMAGE_PREFIX)$$name:$(GIT_SHA) . || exit 1; \
+			-t $(REGISTRY)$$image:$(GIT_SHA) . || exit 1; \
 	done
 
 .PHONY: setup-hooks
