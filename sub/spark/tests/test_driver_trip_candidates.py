@@ -16,7 +16,13 @@ from pyspark.sql.functions import concat, lit, slice
 
 from shared.spark.common.session import get_or_create_spark_session
 from conftest import TEST_SCORE_WEIGHTS as SCORE_WEIGHTS, TEST_SEED
-from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
+from sub.spark.jobs.driver_assignment.candidates import (
+    C1_ROSTER,
+    C2_TIER,
+    C6_PROFILE,
+    C_NO_CANDIDATE,
+    build_trip_candidates,
+)
 
 
 def _injected(**overrides) -> dict:
@@ -72,14 +78,20 @@ def _with_drivers(frames, count):
 @pytest.mark.parametrize("change", ["contract", "weekday", "time_block"])
 def test_계약_요일_시간대가_맞지_않으면_후보에서_제외한다(spark, change):
     frames = list(_frames(spark))
+    counter = C1_ROSTER
     if change == "contract":
         frames[2] = frames[2].withColumn("lease_ended_on", frames[2].lease_started_on)
     elif change == "weekday":
         frames[1] = frames[1].withColumn("weekday_mask", lit(1 << 1))  # 화요일만
+        counter = C6_PROFILE
     else:
         frames[1] = frames[1].withColumn("time_block_mask", lit(1 << 4))  # 12-15만
+        counter = C6_PROFILE
 
-    assert build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected()).count() == 0
+    result, rejected = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
+    assert result.count() == 0
+    assert rejected[counter] == 1
+    assert rejected[C_NO_CANDIDATE] == 0
 
 
 @pytest.mark.parametrize(
@@ -90,11 +102,14 @@ def test_프리미엄_운행은_해당_자격_차량만_후보다(spark, tier, e
     frames = list(_frames(spark, tier=tier))
     frames[2] = frames[2].withColumn(eligibility, ~frames[2][eligibility])
 
-    assert build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected()).count() == 0
+    result, rejected = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
+    assert result.count() == 0
+    assert rejected[C2_TIER] == 1
 
 
 def test_시간_거리_지역_등급_선호가_점수에_반영된다(spark):
-    result = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1, **_injected()).first()
+    result, _ = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1, **_injected())
+    result = result.first()
 
     assert result.time_score == pytest.approx(1.0)
     assert result.distance_score == pytest.approx(1.0)
@@ -115,8 +130,10 @@ def test_시간_거리_지역_등급_선호가_점수에_반영된다(spark):
 )
 def test_자격되는_프리미엄_운행은_Standard_보다_등급점수가_높다(spark, tier, eligibility):
     """같은 기사·같은 조건이면 프리미엄 쪽 점수가 더 높아야 배정에서 우선됩니다."""
-    standard = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1, **_injected()).first()
-    premium = build_trip_candidates(*_frames(spark, tier=tier)[:-1], bucket_size=1, **_injected()).first()
+    standard_result, _ = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1, **_injected())
+    premium_result, _ = build_trip_candidates(*_frames(spark, tier=tier)[:-1], bucket_size=1, **_injected())
+    standard = standard_result.first()
+    premium = premium_result.first()
 
     assert standard.tier_score == pytest.approx(0.3)   # 1 - 0.7
     assert premium.tier_score == pytest.approx(0.7)    # tier_preference 그대로
@@ -126,8 +143,11 @@ def test_자격되는_프리미엄_운행은_Standard_보다_등급점수가_높
 def test_같은_seed는_입력_순서와_무관하게_같은_후보를_만든다(spark):
     frames = list(_frames(spark))
     frames = _with_drivers(frames, 2)
-    first = build_trip_candidates(*frames[:-1], bucket_size=2, **_injected(seed=7))
-    second = build_trip_candidates(frames[0], frames[1].orderBy("driver_id", ascending=False), *frames[2:-1], bucket_size=2, **_injected(seed=7))
+    first, _ = build_trip_candidates(*frames[:-1], bucket_size=2, **_injected(seed=7))
+    second, _ = build_trip_candidates(
+        frames[0], frames[1].orderBy("driver_id", ascending=False), *frames[2:-1],
+        bucket_size=2, **_injected(seed=7),
+    )
 
     assert sorted(first.select("driver_id", "tie_break").collect()) == sorted(
         second.select("driver_id", "tie_break").collect()
@@ -138,7 +158,8 @@ def test_운행별_후보수는_버킷_인원수를_넘지_않는다(spark):
     frames = list(_frames(spark))
     frames = _with_drivers(frames, 7)
 
-    assert build_trip_candidates(*frames[:-1], bucket_size=3, **_injected()).count() <= 3
+    result, _ = build_trip_candidates(*frames[:-1], bucket_size=3, **_injected())
+    assert result.count() <= 3
 
 
 def test_한_운행에_같은_기사가_두_번_후보로_들어가지_않는다(spark):
@@ -150,11 +171,10 @@ def test_한_운행에_같은_기사가_두_번_후보로_들어가지_않는다
     # 기사 7명, bucket_size 64 -> 버킷 수 max(1, 7//64) = 1. 전원이 한 버킷입니다.
     frames = _with_drivers(list(_frames(spark, bucket_size=64)), 7)
 
+    result, _ = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
     pairs = [
         (row.trip_key, row.driver_id)
-        for row in build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
-        .select("trip_key", "driver_id")
-        .collect()
+        for row in result.select("trip_key", "driver_id").collect()
     ]
 
     assert len(pairs) == len(set(pairs))
@@ -166,12 +186,8 @@ def test_운행은_버킷_하나에만_들어간다(spark):
     """두 버킷이 같은 운행을 다투면 중복 배정이 생깁니다."""
     frames = _with_drivers(list(_frames(spark, bucket_size=2)), 6)
 
-    rows = (
-        build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
-        .select("trip_key", "_bucket")
-        .distinct()
-        .collect()
-    )
+    result, _ = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
+    rows = result.select("trip_key", "_bucket").distinct().collect()
 
     buckets_per_trip = {}
     for row in rows:
@@ -205,7 +221,8 @@ def test_후보에_같은_이름의_컬럼이_두_번_들어가지_않는다(spa
     """중복 컬럼은 실패하지 않고 다음 단계로 흘러가 거기서 터집니다."""
     frames = _frames(spark)
 
-    columns = build_trip_candidates(*frames[:3], bucket_size=frames[3], **_injected()).columns
+    result, _ = build_trip_candidates(*frames[:3], bucket_size=frames[3], **_injected())
+    columns = result.columns
 
     duplicated = sorted({name for name in columns if columns.count(name) > 1})
     assert not duplicated, f"중복 컬럼: {duplicated}"

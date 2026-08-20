@@ -5,6 +5,7 @@
 3. 운행별 단일 기사와 점수·tie-break 우선순위 보장
 4. 날짜별 상태 분리와 입력 순서 무관 결정성
 5. 이동시간 결측·입력 계약 위반·빈 후보 처리
+6. 제약별 탈락 건수 계측 (#644)
 """
 
 from datetime import datetime
@@ -12,7 +13,17 @@ from datetime import datetime
 import pytest
 
 from shared.spark.common.session import get_or_create_spark_session
-from sub.spark.jobs.driver_assignment.allocator import ASSIGNMENT_SCHEMA, allocate_trips
+from sub.spark.jobs.driver_assignment.allocator import (
+    ASSIGNMENT_SCHEMA,
+    C3_DRIVE_MINUTES,
+    C3_WORK_MINUTES,
+    C4_NO_ROUTE,
+    C4_OVERLAP,
+    C4_TOO_FAR,
+    C4_TOO_LATE,
+    C5_VEHICLE_CONFLICT,
+    allocate_trips,
+)
 
 
 @pytest.fixture(scope="module")
@@ -45,10 +56,13 @@ def test_겹치거나_공차시간_안에_도착할_수_없는_운행은_배정�
         _candidate("reachable", "d1", datetime(2024, 3, 4, 9, 40), datetime(2024, 3, 4, 10)),
     ]
 
-    result = allocate_trips(spark.createDataFrame(rows), _travel(spark))
+    result, rejected = allocate_trips(spark.createDataFrame(rows), _travel(spark))
 
     assert [row.trip_key for row in result.orderBy("trip_sequence").collect()] == ["t1", "reachable"]
     assert result.orderBy("trip_sequence").collect()[1].deadhead_minutes == pytest.approx(10.0)
+    # overlap·too-soon 둘 다 "도착 전에 이미 출발" 사유로 떨어집니다.
+    assert rejected[C4_OVERLAP] == 2
+    assert rejected[C4_TOO_LATE] == 2
 
 
 @pytest.mark.parametrize("limit", ["drive_minutes", "work_minutes"])
@@ -64,9 +78,10 @@ def test_운행분_예산과_근무시간_상한을_넘지_않는다(spark, limi
     else:
         first["target_work_minutes"] = second["target_work_minutes"] = 50
 
-    result = allocate_trips(spark.createDataFrame([first, second]), _travel(spark))
+    result, rejected = allocate_trips(spark.createDataFrame([first, second]), _travel(spark))
 
     assert result.count() == 1
+    assert rejected[C3_DRIVE_MINUTES if limit == "drive_minutes" else C3_WORK_MINUTES] == 1
 
 
 def test_한_운행은_점수가_높은_기사_한_명에게만_배정된다(spark):
@@ -76,7 +91,7 @@ def test_한_운행은_점수가_높은_기사_한_명에게만_배정된다(spa
         _candidate("t1", "d2", pickup, dropoff, score=0.9),
     ]
 
-    result = allocate_trips(spark.createDataFrame(rows), _travel(spark))
+    result, _ = allocate_trips(spark.createDataFrame(rows), _travel(spark))
 
     assert [(row.trip_key, row.driver_id) for row in result.collect()] == [("t1", "d2")]
 
@@ -88,7 +103,8 @@ def test_점수가_같으면_tie_break가_작은_기사를_선택한다(spark):
         _candidate("t1", "d2", pickup, dropoff, tie="a"),
     ]
 
-    assert allocate_trips(spark.createDataFrame(rows), _travel(spark)).first().driver_id == "d2"
+    result, _ = allocate_trips(spark.createDataFrame(rows), _travel(spark))
+    assert result.first().driver_id == "d2"
 
 
 def test_날짜별_상태는_분리되고_입력_순서와_무관하다(spark):
@@ -96,8 +112,10 @@ def test_날짜별_상태는_분리되고_입력_순서와_무관하다(spark):
         _candidate("day1", "d1", datetime(2024, 3, 4, 23), datetime(2024, 3, 4, 23, 50)),
         _candidate("day2", "d1", datetime(2024, 3, 5, 0), datetime(2024, 3, 5, 0, 20)),
     ]
-    first = allocate_trips(spark.createDataFrame(rows), _travel(spark)).orderBy("trip_key").collect()
-    second = allocate_trips(spark.createDataFrame(list(reversed(rows))), _travel(spark)).orderBy("trip_key").collect()
+    first, _ = allocate_trips(spark.createDataFrame(rows), _travel(spark))
+    second, _ = allocate_trips(spark.createDataFrame(list(reversed(rows))), _travel(spark))
+    first = first.orderBy("trip_key").collect()
+    second = second.orderBy("trip_key").collect()
 
     assert first == second
     assert [row.trip_sequence for row in first] == [1, 1]
@@ -109,7 +127,39 @@ def test_이동시간이_없는_서로_다른_구역은_연결하지_않는다(s
         _candidate("t2", "d1", datetime(2024, 3, 4, 10), datetime(2024, 3, 4, 10, 20), pu=8),
     ]
 
-    assert allocate_trips(spark.createDataFrame(rows), _travel(spark)).count() == 1
+    result, rejected = allocate_trips(spark.createDataFrame(rows), _travel(spark))
+    assert result.count() == 1
+    assert rejected[C4_OVERLAP] == 1
+    assert rejected[C4_NO_ROUTE] == 1
+
+
+def test_공차가_기사_한도를_넘으면_c4b로_떨어진다(spark):
+    # t1 하차 구역(2) -> t2 승차 구역(1, 기본값) 이동시간은 10분(_travel 기본).
+    # 한도를 5분으로 낮춰 그 10분을 넘게 만듭니다.
+    rows = [
+        _candidate("t1", "d1", datetime(2024, 3, 4, 9), datetime(2024, 3, 4, 9, 20)),
+        _candidate("t2", "d1", datetime(2024, 3, 4, 10), datetime(2024, 3, 4, 10, 20)),
+    ]
+    rows[1]["max_deadhead_minutes"] = 5
+
+    result, rejected = allocate_trips(spark.createDataFrame(rows), _travel(spark))
+    assert result.count() == 1
+    assert rejected[C4_OVERLAP] == 1
+    assert rejected[C4_TOO_FAR] == 1
+
+
+def test_같은_차량이_겹치면_c5로_떨어진다(spark):
+    """기사:차량이 1:1 이라 시간 겹침이 없으면 원래 안 생기는 경우지만, 계측
+    자체는 taxi_id 가 겹치는 두 후보를 직접 만들어 검증합니다."""
+    pickup, dropoff = datetime(2024, 3, 4, 9), datetime(2024, 3, 4, 9, 20)
+    same_taxi = _candidate("t1", "d1", pickup, dropoff)
+    same_taxi["taxi_id"] = "shared-taxi"
+    other = _candidate("t2", "d2", pickup, dropoff)
+    other["taxi_id"] = "shared-taxi"
+
+    result, rejected = allocate_trips(spark.createDataFrame([same_taxi, other]), _travel(spark))
+    assert result.count() == 1
+    assert rejected[C5_VEHICLE_CONFLICT] == 1
 
 
 @pytest.mark.parametrize("violation", ["duplicate_candidate", "negative_travel", "bad_time"])
@@ -127,10 +177,11 @@ def test_입력_계약_위반은_ValueError다(spark, violation):
 def test_빈_후보는_고정_스키마의_빈_결과다(spark):
     schema = "trip_key string, driver_id string, taxi_id string, pickup_datetime timestamp, dropoff_datetime timestamp, PULocationID int, DOLocationID int, preference_score double, tie_break string, target_drive_minutes int, target_work_minutes int, max_deadhead_minutes int"
 
-    result = allocate_trips(spark.createDataFrame([], schema), _travel(spark))
+    result, rejected = allocate_trips(spark.createDataFrame([], schema), _travel(spark))
 
     assert result.count() == 0
     assert result.schema == ASSIGNMENT_SCHEMA
+    assert all(count == 0 for count in rejected.values())
 
 
 # --- 재계산 방지 (#360) ----------------------------------------------------
