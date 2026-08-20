@@ -281,6 +281,9 @@ def _write_release(root, *, manifest_rows=1):
         },
     }
     (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (release / "quality_report.json").write_text(
+        json.dumps({"target_month": "2026-09", "clip_rate": 0.0}), encoding="utf-8"
+    )
     return release, manifest
 
 
@@ -322,6 +325,14 @@ def test_릴리스행수가_manifest와_다르면_실패한다(tmp_path):
     _write_release(tmp_path, manifest_rows=2)
 
     with pytest.raises(ValueError, match="행 수가 manifest와 다릅니다"):
+        task_module.validate_release(tmp_path, "2026-09", 42)
+
+
+def test_품질리포트가_없으면_실패한다(tmp_path):
+    release, _ = _write_release(tmp_path)
+    (release / "quality_report.json").unlink()
+
+    with pytest.raises(ValueError, match="품질 리포트가 없습니다"):
         task_module.validate_release(tmp_path, "2026-09", 42)
 
 

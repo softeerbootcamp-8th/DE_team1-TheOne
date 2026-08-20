@@ -305,6 +305,13 @@ def validate_release(output_dir: str | Path, year_month: str, seed: int | None) 
         if missing:
             raise ValueError(f"{dataset} 필수 컬럼 누락: {sorted(missing)}")
 
+    # coverage/ceiling/saturation/탈락 사유/클리핑 — 진단용이라 manifest 계보와
+    # 분리돼 있습니다(#608). 존재만 확인하고 내용은 로그로 남겨 운영자가 봅니다.
+    quality_report_path = release / "quality_report.json"
+    if not quality_report_path.is_file():
+        raise ValueError(f"원천 릴리스 품질 리포트가 없습니다: {quality_report_path}")
+    logger.info("원천 릴리스 품질 리포트: %s", quality_report_path.read_text(encoding="utf-8"))
+
 
 @task(task_id="validate_release")
 def validate_release_task(**context) -> None:

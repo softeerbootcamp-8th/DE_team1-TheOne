@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import uuid
+from collections import Counter
 from dataclasses import replace
 from datetime import date
 from pathlib import Path
@@ -30,9 +31,11 @@ from pyspark.sql.functions import (
     row_number,
     sha2,
     struct,
+    sum as spark_sum,
     to_date,
     to_json,
     to_timestamp,
+    unix_timestamp,
     when,
 )
 
@@ -55,6 +58,20 @@ from sub.spark.jobs.travel_times.transformer import build_travel_times
 
 SNAPSHOT_SOURCE_COLUMNS = DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names
 TRIP_SOURCE_COLUMNS = MONTHLY_TAXI_TRIP_SCHEMA.names
+
+# manifest 계약 버전. `run_id`/`config_hash`는 "어느 설정으로" 를 답하는데, 이 값은
+# "manifest·산출물 구조 자체가 바뀌었는가" 를 답합니다 — 설정을 안 바꿔도 계약이
+# 바뀌면 낡은 릴리스를 재사용하면 안 되므로 별도 필드로 둡니다(#608).
+SCHEMA_VERSION = "1"
+# 데이터셋별 실측 대 합성 비중. hvfhv_taxi_trips는 실측 TLC 운행에 합성 신원만
+# 얹은 것이고, driver_vehicle_monthly_snapshot은 기사·차량 자체가 합성이며,
+# lease_vehicle_inventory는 실측 렌탈 카탈로그에 보유 대수(stock)만 가정값입니다 —
+# 소비자가 "이 숫자가 실측인가" 를 API 응답만 보고 오판하지 않도록 명시합니다.
+PROVENANCE = {
+    "hvfhv_taxi_trips": "real_facts+synthetic_identity",
+    "driver_vehicle_monthly_snapshot": "synthetic",
+    "lease_vehicle_inventory": "real_catalog+assumed_stock",
+}
 
 # 입사 전 경력의 상한(년). `experience_years` 는 회사 근속에 이 값을 더해 만듭니다 —
 # 독립 난수로 두면 "근속 5년인데 경력 1년" 같은 모순이 생깁니다.
@@ -421,7 +438,7 @@ def _validate_temporal_links(trips: DataFrame, snapshots: DataFrame) -> None:
         raise ValueError("모든 HVFHV 행은 운행 시점의 기사 스냅샷 한 건과 연결돼야 합니다")
 
 
-def _existing_release(path: Path, run: RunContext) -> bool:
+def _existing_release(path: Path, run: RunContext, *, input_scope: str) -> bool:
     manifest_path = path / "manifest.json"
     if not path.exists():
         return False
@@ -442,6 +459,17 @@ def _existing_release(path: Path, run: RunContext) -> bool:
             f"기존={{'year_month': {manifest.get('year_month')!r}, 'run_id': {manifest.get('run_id')!r}}}, "
             f"요청={{'year_month': {run.target_month!r}, 'run_id': {run.run_id!r}}}. "
             f"설정을 바꿔 다시 발행하려면 {path} 를 지우고 실행하세요."
+        )
+    # run_id 가 같아도 manifest·산출물 계약(schema_version) 이나 입력 범위
+    # (input_scope, 예: 표본 vs 전체 달) 가 다르면 재사용하지 않습니다(#608) —
+    # 설정은 안 바뀌었는데 계약만 바뀐 낡은 릴리스를 그대로 쓰게 되는 사고를 막습니다.
+    if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("input_scope") != input_scope:
+        raise ValueError(
+            f"기존 릴리스의 계약 버전·입력 범위가 다릅니다: "
+            f"기존={{'schema_version': {manifest.get('schema_version')!r}, "
+            f"'input_scope': {manifest.get('input_scope')!r}}}, "
+            f"요청={{'schema_version': {SCHEMA_VERSION!r}, 'input_scope': {input_scope!r}}}. "
+            f"다시 발행하려면 {path} 를 지우고 실행하세요."
         )
     for name in (
         "hvfhv_taxi_trips",
@@ -481,11 +509,12 @@ def write_source_release(
     *,
     output_dir: str | Path,
     run: RunContext,
+    input_scope: str,
 ) -> Path:
     """세 데이터셋과 manifest를 staging에 쓴 뒤 디렉터리 rename으로 공개합니다."""
     year_month = run.target_month
     final = Path(output_dir) / f"year_month={year_month}"
-    if _existing_release(final, run):
+    if _existing_release(final, run, input_scope=input_scope):
         return final
 
     _validate_temporal_links(trips, snapshots)
@@ -507,6 +536,9 @@ def write_source_release(
             "run_id": run.run_id,
             "config_hash": run.config_hash,
             "created_at": run.created_at,
+            "schema_version": SCHEMA_VERSION,
+            "input_scope": input_scope,
+            "provenance": PROVENANCE,
             "datasets": {
                 "hvfhv_taxi_trips": {
                     "file": trip_file.name,
@@ -535,6 +567,72 @@ def write_source_release(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _capacity_drive_minutes(preferences: DataFrame, service_dates: list[date]) -> int:
+    """기사 정원의 운행분 예산 합계(`sub/prototype/metrics.py::capacity_ceiling` 축소판).
+
+    요일 선호(`weekday_mask`)가 있어 그 달의 요일 분포에 따라 값이 달라집니다.
+    """
+    weekday_counts = Counter(d.weekday() for d in service_dates)
+    prefs = preferences.select("target_drive_minutes", "weekday_mask").toPandas()
+    return int(
+        sum(
+            int(row.target_drive_minutes)
+            * sum(
+                days
+                for weekday, days in weekday_counts.items()
+                if int(row.weekday_mask) & (1 << weekday)
+            )
+            for row in prefs.itertuples()
+        )
+    )
+
+
+def _quality_report(
+    *,
+    run: RunContext,
+    trips: DataFrame,
+    preferences: DataFrame,
+    assignments: DataFrame,
+    assignment_count: int,
+    rejected: dict[str, int],
+    clip_rate: float,
+) -> dict:
+    """coverage/ceiling/saturation/탈락 사유/클리핑. 릴리스 계보가 아니라 진단용이라
+    manifest 와 분리된 quality_report.json 에 씁니다(#608)."""
+    trips_offered = trips.count()
+    service_dates = [
+        row[0] for row in trips.select(to_date("pickup_datetime").alias("d")).distinct().collect()
+    ]
+    capacity_drive_minutes = _capacity_drive_minutes(preferences, service_dates)
+    budget_minutes = max(1, capacity_drive_minutes)
+    drive_minutes = float(
+        assignments.select(
+            spark_sum(
+                (unix_timestamp("dropoff_datetime") - unix_timestamp("pickup_datetime")) / 60.0
+                + col("deadhead_minutes")
+            ).alias("drive_minutes")
+        ).first()["drive_minutes"]
+        or 0.0
+    )
+    minutes_per_trip = drive_minutes / assignment_count if assignment_count else 0.0
+    return {
+        "target_month": run.target_month,
+        "run_id": run.run_id,
+        "trips_offered": trips_offered,
+        "trips_attributed": assignment_count,
+        "coverage_pct": round(100.0 * assignment_count / max(1, trips_offered), 2),
+        "capacity_drive_minutes": capacity_drive_minutes,
+        "ceiling_pct": (
+            round(100.0 * (budget_minutes / minutes_per_trip) / max(1, trips_offered), 2)
+            if minutes_per_trip
+            else 0.0
+        ),
+        "saturation_pct": round(100.0 * drive_minutes / budget_minutes, 2),
+        "rejection_counts": rejected,
+        "clip_rate": round(clip_rate, 4),
+    }
+
+
 def main(args_list: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="월별 가짜 기사-운행 원천 릴리스 생성")
     parser.add_argument("--hvfhv_input_path", required=True)
@@ -553,6 +651,7 @@ def main(args_list: list[str] | None = None) -> Path:
     # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).
     config = replace(load_config(), global_seed=args.seed)
     run = RunContext.create(args.year_month, config)
+    input_scope = "full" if args.test_row_limit == 0 else f"test_row_limit={args.test_row_limit}"
 
     snapshot_date = date.fromisoformat(f"{args.year_month}-01")
     state_output_dir = _test_scoped_root(
@@ -610,6 +709,15 @@ def main(args_list: list[str] | None = None) -> Path:
     candidates.unpersist(blocking=True)
     # 릴리스 계보가 아니라 진단용입니다 — manifest 에는 싣지 않습니다(#644).
     print(f"배정 탈락 사유: {dict(candidate_rejects, **allocation_rejects)}")
+    quality_report = _quality_report(
+        run=run,
+        trips=trips,
+        preferences=preferences,
+        assignments=assignments,
+        assignment_count=assignment_count,
+        rejected=dict(candidate_rejects, **allocation_rejects),
+        clip_rate=state.clip_rate,
+    )
     trip_source = build_trip_source(
         raw_trips,
         trips,
@@ -630,13 +738,18 @@ def main(args_list: list[str] | None = None) -> Path:
         taxis, vehicle_master, snapshot_date=snapshot_date
     ).persist(StorageLevel.DISK_ONLY)
     try:
-        return write_source_release(
+        final = write_source_release(
             trip_source,
             snapshot_source,
             inventory_source,
             output_dir=release_output_dir,
             run=run,
+            input_scope=input_scope,
         )
+        (final / "quality_report.json").write_text(
+            json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return final
     finally:
         for frame in (
             inventory_source,

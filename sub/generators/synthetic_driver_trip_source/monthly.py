@@ -36,6 +36,7 @@ class MonthlyStatePaths:
     snapshot_dir: Path
     preferences_path: Path
     current_driver_vehicle_path: Path
+    clip_rate: float
 
 
 def _data_month_partition(root: Path, value: date) -> Path:
@@ -50,7 +51,7 @@ def _active_driver_ids(snapshot_dir: Path) -> list[str]:
     return sorted(active["driver_id"].astype(str))
 
 
-def _validate_state(snapshot_dir: Path) -> MonthlyStatePaths:
+def _validate_state(snapshot_dir: Path, checkpoint_dir: Path) -> MonthlyStatePaths:
     preferences_path = snapshot_dir / PREFERENCES_FILE
     current_driver_vehicle_path = snapshot_dir / CURRENT_DRIVER_VEHICLE_FILE
     if not preferences_path.is_file():
@@ -63,7 +64,13 @@ def _validate_state(snapshot_dir: Path) -> MonthlyStatePaths:
     missing = set(_active_driver_ids(snapshot_dir)) - set(preferences["driver_id"].astype(str))
     if missing:
         raise ValueError(f"활성 기사 선호가 없습니다: {sorted(missing)[:5]}")
-    return MonthlyStatePaths(snapshot_dir, preferences_path, current_driver_vehicle_path)
+    target_month = snapshot_dir.name.removeprefix("data_month=")
+    manifest = checkpoint.read_manifest(checkpoint_dir, target_month)
+    if manifest is None:
+        raise FileNotFoundError(f"체크포인트가 없습니다: {checkpoint_dir}")
+    return MonthlyStatePaths(
+        snapshot_dir, preferences_path, current_driver_vehicle_path, manifest["clip_rate"]
+    )
 
 
 def prepare_monthly_state(
@@ -79,13 +86,13 @@ def prepare_monthly_state(
         raise ValueError("월별 snapshot_date는 매월 1일이어야 합니다")
 
     output_root = Path(output_dir)
+    checkpoint_dir = output_root / CHECKPOINT_DIR_NAME
     target = _data_month_partition(output_root, snapshot_date)
     if target.exists():
-        return _validate_state(target)
+        return _validate_state(target, checkpoint_dir)
 
     target_month = snapshot_date.strftime("%Y-%m")
     run = RunContext.create(target_month, config)
-    checkpoint_dir = output_root / CHECKPOINT_DIR_NAME
 
     prev_current, prev_events, prev_noise, prev_month, prev_run_id = (
         checkpoint.resolve_previous_checkpoint(checkpoint_dir, run)
@@ -123,6 +130,7 @@ def prepare_monthly_state(
         noise=result.noise_state,
         previous_month_value=prev_month,
         previous_run_id=prev_run_id,
+        clip_rate=result.clip_rate,
     )
 
     tables = adapters.to_snapshot_tables(result.current, vehicle_pool, snapshot_date=snapshot_date)
@@ -140,8 +148,8 @@ def prepare_monthly_state(
         current_driver_vehicle.to_parquet(
             staged_partition / CURRENT_DRIVER_VEHICLE_FILE, index=False
         )
-        _validate_state(staged_partition)
+        _validate_state(staged_partition, checkpoint_dir)
         staged_partition.rename(target)
-        return _validate_state(target)
+        return _validate_state(target, checkpoint_dir)
     finally:
         shutil.rmtree(staging_root, ignore_errors=True)
