@@ -38,7 +38,12 @@ default_args = {
     max_active_runs=1,
     tags=["fuel", "eia", "gas", "silver"],
     params={
-        "year_month": Param(None, type=["string", "null"]),
+        "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
+        "month": Param(
+            None,
+            type=["string", "null"],
+            pattern=r"^(0?[1-9]|1[0-2])$",
+        ),
         "bronze_dir": Param(BRONZE_DIR, type="string"),
         "silver_dir": Param(SILVER_DIR, type="string"),
     },

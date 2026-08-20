@@ -73,8 +73,22 @@ def test_지정이_없으면_전력_공개지연만큼_물러선_달을_고른�
     assert task_module.default_year_month(reference) == expected
 
 
-def test_지정한_달이_있으면_그대로_쓴다():
-    assert task_module.resolve_year_month({"params": {"year_month": "2024-03"}}) == "2024-03"
+def test_지정한_연도와_월은_year_month로_정규화한다():
+    assert task_module.resolve_year_month(
+        {"params": {"year": "2024", "month": "3"}}
+    ) == "2024-03"
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"year": "2024", "month": None},
+        {"year": None, "month": "3"},
+    ],
+)
+def test_연도와_월중_하나만_지정하면_실패한다(params):
+    with pytest.raises(ValueError, match="year와 month는 함께"):
+        task_module.resolve_year_month({"params": params})
 
 
 def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):

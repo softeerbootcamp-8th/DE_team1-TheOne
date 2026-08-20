@@ -45,9 +45,13 @@ def default_year_month(reference: datetime) -> str:
 
 
 def resolve_year_month(context: dict) -> str:
-    configured = (context.get("params") or {}).get("year_month")
-    if configured:
-        year_month = str(configured).strip()
+    params = context.get("params") or {}
+    year = str(params.get("year") or "").strip()
+    month = str(params.get("month") or "").strip()
+    if bool(year) != bool(month):
+        raise ValueError("year와 month는 함께 지정해야 합니다")
+    if year:
+        year_month = f"{year}-{month.zfill(2)}"
         datetime.strptime(year_month, "%Y-%m")
         return year_month
     reference = context.get("data_interval_end") or datetime.now(timezone.utc)
