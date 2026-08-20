@@ -70,6 +70,10 @@ def test_created_at은_run_id에_영향을_주지_않는다():
         ("bootstrap.snapshot_date", "2026-02-01"),
         ("bootstrap.sample_per_month", 999),
         ("allocation.bucket_size", 6),
+        ("synthesize.rationality", 0.5),
+        ("synthesize.traits_volatility", 1.2),
+        ("synthesize.noise_phi", 0.65),
+        ("synthesize.seasonal_amplitude", 0.08),
     ],
 )
 def test_config_값_하나만_바꿔도_run_id가_바뀐다(path, value):
@@ -113,6 +117,10 @@ def test_대상_월이_다르면_run_id가_다르고_config_hash는_같다():
         (_data(**{"driver.initial_count": 0}), "1 이상"),
         (_data(**{"global_seed": 42.5}), "정수"),
         (_data(**{"allocation.bucket_size": True}), "정수"),
+        (_data(**{"synthesize.rationality": 1.5}), "0 이상 1 이하"),
+        (_data(**{"synthesize.noise_phi": -0.1}), "0 이상 1 이하"),
+        (_data(**{"synthesize.traits_volatility": -1.0}), "0 이상"),
+        (_data(**{"synthesize.seasonal_amplitude": -0.05}), "0 이상"),
     ],
 )
 def test_잘못된_값은_로드_실패(raw, expected):
