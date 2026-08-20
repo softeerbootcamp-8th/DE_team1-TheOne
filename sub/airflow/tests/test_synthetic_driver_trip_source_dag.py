@@ -69,11 +69,50 @@ def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다()
         "--release_output_dir",
         "--year_month",
         "--seed",
+        "--bucket_size",
         "--test_row_limit",
     ):
         assert option in command
     assert "bronze_trips" not in command
     assert "trips_path" not in command
+
+
+class _StubTaskInstance:
+    """템플릿이 부르는 xcom_pull 만 흉내냅니다."""
+
+    @staticmethod
+    def xcom_pull(**_):
+        return {
+            "hvfhv_input_path": "h",
+            "zone_lookup_path": "z",
+            "previous_snapshot_dir": "p",
+            "previous_preferences_path": "pp",
+            "vehicle_master_path": "vm",
+            "year_month": "2026-08",
+        }
+
+
+def _render_build_command(bucket_size) -> str:
+    task = DAG.get_task("build_source_release")
+    return DAG.get_template_env().from_string(task.bash_command).render(
+        params={
+            "seed": 42,
+            "bucket_size": bucket_size,
+            "state_output_dir": "S",
+            "release_output_dir": "R",
+            "test_row_limit": 0,
+        },
+        task_instance=_StubTaskInstance(),
+    )
+
+
+def test_bucket_size_Param을_비우면_플래그가_렌더링되지_않는다():
+    """Param 에 기본값을 두면 항상 CLI 로 실려서 config 의 allocation.bucket_size 가 가려집니다."""
+    assert "--bucket_size" not in _render_build_command(None)
+
+
+def test_bucket_size_Param을_주면_CLI로_전달된다():
+    assert "--bucket_size 20" in _render_build_command(20)
 
 
 def test_임시행제한은_프로덕션과_분리된_경로를_사용한다(tmp_path):
