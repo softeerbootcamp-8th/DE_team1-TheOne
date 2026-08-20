@@ -88,6 +88,7 @@ class _StubTaskInstance:
             "zone_lookup_path": "z",
             "previous_snapshot_dir": "p",
             "previous_preferences_path": "pp",
+            "vehicle_master_path": "v",
             "year_month": "2026-08",
         }
 
