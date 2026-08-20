@@ -7,6 +7,7 @@ import hashlib
 import json
 import shutil
 import uuid
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -47,6 +48,7 @@ from shared.spark.hvfhv_clean_transformer import (
 )
 from sub.config import load_config
 from sub.generators.synthetic_driver_trip_source.monthly import prepare_monthly_state
+from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.allocator import allocate_trips
 from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
 from sub.spark.jobs.travel_times.transformer import build_travel_times
@@ -419,15 +421,28 @@ def _validate_temporal_links(trips: DataFrame, snapshots: DataFrame) -> None:
         raise ValueError("모든 HVFHV 행은 운행 시점의 기사 스냅샷 한 건과 연결돼야 합니다")
 
 
-def _existing_release(path: Path, year_month: str, seed: int) -> bool:
+def _existing_release(path: Path, run: RunContext) -> bool:
     manifest_path = path / "manifest.json"
     if not path.exists():
         return False
     if not manifest_path.is_file():
         raise ValueError(f"완료되지 않은 릴리스 경로가 남아 있습니다: {path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("year_month") != year_month or manifest.get("seed") != seed:
-        raise ValueError(f"기존 릴리스 계보가 요청과 다릅니다: {manifest}")
+    # `seed` 가 아니라 `run_id` 로 판정합니다. seed 만 보면 설정을 바꿔도 낡은
+    # 릴리스를 그대로 재사용해서 "설정을 바꿨는데 결과가 안 바뀐다" 가 됩니다.
+    if "run_id" not in manifest:
+        raise ValueError(
+            f"설정 통합 이전에 만든 릴리스입니다 (manifest 에 run_id 가 없습니다): {manifest_path}\n"
+            f"이 릴리스는 어느 설정으로 만들었는지 확인할 수 없어 재사용할 수 없습니다. "
+            f"해당 파티션을 지우고 다시 발행하세요: rm -rf {path}"
+        )
+    if manifest.get("year_month") != run.target_month or manifest.get("run_id") != run.run_id:
+        raise ValueError(
+            f"기존 릴리스 계보가 요청과 다릅니다: "
+            f"기존={{'year_month': {manifest.get('year_month')!r}, 'run_id': {manifest.get('run_id')!r}}}, "
+            f"요청={{'year_month': {run.target_month!r}, 'run_id': {run.run_id!r}}}. "
+            f"설정을 바꿔 다시 발행하려면 {path} 를 지우고 실행하세요."
+        )
     for name in (
         "hvfhv_taxi_trips",
         "driver_vehicle_monthly_snapshot",
@@ -465,12 +480,12 @@ def write_source_release(
     inventory: DataFrame,
     *,
     output_dir: str | Path,
-    year_month: str,
-    seed: int,
+    run: RunContext,
 ) -> Path:
     """세 데이터셋과 manifest를 staging에 쓴 뒤 디렉터리 rename으로 공개합니다."""
+    year_month = run.target_month
     final = Path(output_dir) / f"year_month={year_month}"
-    if _existing_release(final, year_month, seed):
+    if _existing_release(final, run):
         return final
 
     _validate_temporal_links(trips, snapshots)
@@ -486,9 +501,12 @@ def write_source_release(
         _write_one_parquet(snapshots, snapshot_file)
         _write_one_parquet(inventory, inventory_file)
         manifest = {
-            "release_id": f"{year_month}-seed-{seed}",
+            "release_id": f"{year_month}-seed-{run.config.global_seed}",
             "year_month": year_month,
-            "seed": seed,
+            "seed": run.config.global_seed,
+            "run_id": run.run_id,
+            "config_hash": run.config_hash,
+            "created_at": run.created_at,
             "datasets": {
                 "hvfhv_taxi_trips": {
                     "file": trip_file.name,
@@ -528,13 +546,16 @@ def main(args_list: list[str] | None = None) -> Path:
     parser.add_argument("--release_output_dir", required=True)
     parser.add_argument("--year_month", required=True)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--change_rate", type=float, default=None)
     parser.add_argument("--bucket_size", type=int, default=5)
     parser.add_argument("--spark_memory", default="4g")
     parser.add_argument("--test_row_limit", type=int, default=0)
     args = parser.parse_args(args_list)
 
-    config = load_config()
+    # lifecycle(join/exit/vehicle_change) 비율은 이제 `--change_rate` 가 아니라
+    # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).
+    config = replace(load_config(), global_seed=args.seed)
+    run = RunContext.create(args.year_month, config)
+
     snapshot_date = date.fromisoformat(f"{args.year_month}-01")
     state_output_dir = _test_scoped_root(
         args.state_output_dir, args.test_row_limit
@@ -553,9 +574,8 @@ def main(args_list: list[str] | None = None) -> Path:
         hvfhv_input_dir=Path(args.hvfhv_input_path).parent.parent,
         output_dir=state_output_dir,
         snapshot_date=snapshot_date,
-        seed=args.seed,
-        sample_per_month=config.bootstrap.sample_per_month,
-        change_rate=args.change_rate,
+        config=config,
+        vehicle_master_path=args.vehicle_master_path,
     )
 
     spark = get_or_create_spark_session(
@@ -587,6 +607,7 @@ def main(args_list: list[str] | None = None) -> Path:
         taxis,
         seed=args.seed,
         bucket_size=args.bucket_size,
+        score_weights=config.allocation.score_weights,
     ).persist(StorageLevel.DISK_ONLY)
     assignments = allocate_trips(
         candidates, build_travel_times(trips)
@@ -618,8 +639,7 @@ def main(args_list: list[str] | None = None) -> Path:
             snapshot_source,
             inventory_source,
             output_dir=release_output_dir,
-            year_month=args.year_month,
-            seed=args.seed,
+            run=run,
         )
     finally:
         for frame in (

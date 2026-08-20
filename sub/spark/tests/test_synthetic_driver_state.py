@@ -18,7 +18,7 @@ import pytest
 from conftest import TEST_CONFIG_DATA
 
 from sub.config import build_config
-from sub.generators.synthetic_driver_state import adapters, checkpoint
+from sub.generators.synthetic_driver_state import adapters, checkpoint, fleet
 from sub.generators.synthetic_driver_state.lifecycle import synthesize_month
 from sub.prototype import synthesize as prototype_synthesize
 from sub.run_context import RunContext
@@ -313,3 +313,58 @@ def test_preferences_뷰가_candidates_필수컬럼을_전부_채운다():
     # 요일·시간대는 문자열 라벨로 바뀌어야 합니다 (bitmask 인코딩이 라벨 문자열을 봄).
     assert preferences["active_weekdays"].iloc[0][0] in WEEKDAY_LABELS
     assert preferences["preferred_time_blocks"].iloc[0][0] in TIME_BLOCK_LABELS
+
+
+# ── 4. 실측 Silver 변환 (#628) ──────────────────────────────────────────
+
+
+def _silver_vehicle_master() -> pd.DataFrame:
+    """`schema.source.VEHICLE_MASTER_SCHEMA` 모양의 축소 픽스처. 같은 차종이
+    플랫폼별로 여러 행일 수 있습니다(vendor/platform/product 조합)."""
+    return pd.DataFrame([
+        {"make_key": "MAKE0", "model_key": "MODEL0", "vendor": "V1", "platform": None,
+         "product": None, "min_year": None, "weekly_lease_fee": 500.0,
+         "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
+         "combined_kwh_per_100mi_min": 0.0, "combined_kwh_per_100mi_max": 0.0},
+        {"make_key": "MAKE1", "model_key": "MODEL1", "vendor": "V1", "platform": "uber",
+         "product": "Comfort", "min_year": 2020, "weekly_lease_fee": 600.0,
+         "combined_mpg_min": 24.0, "combined_mpg_max": 26.0,
+         "combined_kwh_per_100mi_min": 0.0, "combined_kwh_per_100mi_max": 0.0},
+        {"make_key": "MAKE2", "model_key": "MODEL2", "vendor": "V1", "platform": "uber",
+         "product": "Comfort", "min_year": 2020, "weekly_lease_fee": 700.0,
+         "combined_mpg_min": 0.0, "combined_mpg_max": 0.0,
+         "combined_kwh_per_100mi_min": 28.0, "combined_kwh_per_100mi_max": 30.0},
+        {"make_key": "MAKE2", "model_key": "MODEL2", "vendor": "V1", "platform": "lyft",
+         "product": "Extra Comfort", "min_year": 2020, "weekly_lease_fee": 700.0,
+         "combined_mpg_min": 0.0, "combined_mpg_max": 0.0,
+         "combined_kwh_per_100mi_min": 28.0, "combined_kwh_per_100mi_max": 30.0},
+    ])
+
+
+def test_실측_vehicle_master의_min_max_제원을_중앙값_하나로_합친다():
+    pool = adapters.vehicle_pool_from_silver(_silver_vehicle_master())
+    assert set(pool.columns) >= {
+        "vehicle_model_id", "weekly_price_usd", "combined_mpg",
+        "combined_kwh_per_100mi", "vehicle_group",
+    }
+    row0 = pool.loc[pool["make_key"] == "MAKE0"].iloc[0]
+    assert row0["combined_mpg"] == 30.0  # (28+32)/2
+    assert row0["weekly_price_usd"] == 500.0
+    # MAKE2|MODEL2 는 uber Comfort + lyft Extra Comfort 자격이 둘 다 있음 -> BOTH.
+    row2 = pool.loc[pool["make_key"] == "MAKE2"].iloc[0]
+    assert row2["vehicle_group"] == "BOTH"
+    assert row2["combined_kwh_per_100mi"] == 29.0  # (28+30)/2
+    # 같은 차종이 여러 vendor/platform 행으로 왔어도 결과는 차종당 한 행.
+    assert len(pool) == pool["vehicle_model_id"].nunique()
+
+
+def test_실측_유가_전기요금을_평균낸다(tmp_path):
+    gas_dir = tmp_path / "silver" / "gas_price" / "collected_month=2026-08"
+    ev_dir = tmp_path / "silver" / "ev_charging_price" / "collected_month=2026-08"
+    gas_dir.mkdir(parents=True)
+    ev_dir.mkdir(parents=True)
+    pd.DataFrame({"price_usd_per_gallon": [4.0, 4.2]}).to_parquet(gas_dir / "p.parquet")
+    pd.DataFrame({"average_price_usd_per_kwh": [0.40, 0.42]}).to_parquet(ev_dir / "p.parquet")
+
+    prices = fleet.load_fuel_prices(data_dir=tmp_path)
+    assert prices == {"gallon_usd": pytest.approx(4.1), "kwh_usd": pytest.approx(0.41)}

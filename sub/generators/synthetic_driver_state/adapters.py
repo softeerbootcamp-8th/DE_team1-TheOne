@@ -10,12 +10,49 @@ from __future__ import annotations
 
 import pandas as pd
 
-from sub.generators.synthetic_company_snapshot.snapshot import SnapshotTables
+from sub.generators.synthetic_company_snapshot.snapshot import SnapshotTables, build_vehicle_pool
 from sub.spark.jobs.driver_master.preference import PREFERENCE_COLUMNS
 from sub.spark.jobs.driver_master.traits import TIME_BLOCK_LABELS, WEEKDAY_LABELS
 
 CUSTOMER_ID_PREFIX = "CUST"
 LEASE_ID_PREFIX = "LEASE"
+
+
+def vehicle_pool_from_silver(vehicle_master: pd.DataFrame) -> pd.DataFrame:
+    """실측 Silver `vehicle_master.parquet`(vendor·platform·product 행 여러 개)를
+    `synthesize_month`이 기대하는 차종 한 행짜리 풀로 바꿉니다.
+
+    `build_vehicle_pool()`이 자격·그룹 판정(같은 조인 키)을 이미 하므로 그대로
+    쓰고, 여기서는 그 결과에 빠진 두 값만 채웁니다 — `combined_mpg`/
+    `combined_kwh_per_100mi`. 실측은 트림 범위(min/max)인데
+    `fleet.py`/`assignment.py`는 단일 값을 기대합니다.
+
+    ponytail: min/max 중앙값. Gold의 트림 선택만큼 정밀하지 않지만, 이 값은
+    D5 "정답"(비용 순위)에만 쓰이고 산출물 계약엔 실리지 않습니다. 트림별
+    정밀도가 필요해지면 Gold와 같은 트림 선택 규칙을 가져오세요.
+    """
+    pool = build_vehicle_pool(vehicle_master)
+    economy = (
+        vehicle_master[[
+            "make_key", "model_key",
+            "combined_mpg_min", "combined_mpg_max",
+            "combined_kwh_per_100mi_min", "combined_kwh_per_100mi_max",
+        ]]
+        .drop_duplicates(["make_key", "model_key"])
+        .copy()
+    )
+    economy["combined_mpg"] = (economy["combined_mpg_min"] + economy["combined_mpg_max"]) / 2
+    economy["combined_kwh_per_100mi"] = (
+        (economy["combined_kwh_per_100mi_min"] + economy["combined_kwh_per_100mi_max"]) / 2
+    ).fillna(0.0)
+    economy = economy[["make_key", "model_key", "combined_mpg", "combined_kwh_per_100mi"]]
+
+    merged = pool.merge(economy, on=["make_key", "model_key"], how="left", validate="one_to_one")
+    missing = merged.loc[merged["combined_mpg"].isna(), ["make_key", "model_key"]]
+    if not missing.empty:
+        raise ValueError(f"제원(mpg)이 없는 차종입니다: {missing.to_dict('records')}")
+    merged = merged.rename(columns={"weekly_lease_fee": "weekly_price_usd"})
+    return vehicle_master_with_model_id(merged)
 
 
 def vehicle_master_with_model_id(vehicle_pool: pd.DataFrame) -> pd.DataFrame:
@@ -53,6 +90,11 @@ def to_snapshot_tables(
     if current.empty:
         raise ValueError("current 가 비어 있습니다")
     pool = vehicle_master_with_model_id(vehicle_pool)
+    # `fleet.py`/`assignment.py` 는 `weekly_price_usd` 를 쓰고(`vehicle_pool_from_silver`
+    # 가 그렇게 이름 붙임), legacy `taxi` 스키마는 `weekly_lease_fee` 를 씁니다.
+    # 어느 이름으로 들어오든 legacy 쪽으로 맞춥니다.
+    if "weekly_price_usd" in pool.columns and "weekly_lease_fee" not in pool.columns:
+        pool = pool.rename(columns={"weekly_price_usd": "weekly_lease_fee"})
     by_model = pool.drop_duplicates("vehicle_model_id").set_index("vehicle_model_id")
 
     rows = current.copy()
