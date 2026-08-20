@@ -24,7 +24,7 @@ import sys
 from pathlib import Path
 from typing import NamedTuple
 
-CACHE_REL = Path(".git/review-cache")
+CACHE_DIR_NAME = "review-cache"
 
 
 class Stage(NamedTuple):
@@ -97,13 +97,16 @@ def diff_hash(stage: str, *, refresh: bool = True) -> str | None:
 
 
 def cache_dir() -> Path:
-    """기록 위치는 저장소 루트 기준입니다.
+    """기록 위치는 저장소의 실제 git 디렉터리 기준입니다.
 
     훅이 어느 디렉터리에서 불릴지 보장되지 않아서, cwd 를 믿으면 서브디렉터리에서
-    커밋할 때 기록을 못 찾고 계속 막습니다.
+    커밋할 때 기록을 못 찾고 계속 막습니다. `--show-toplevel` + `.git` 은 worktree에서
+    깨집니다 — worktree의 `.git`은 디렉터리가 아니라 실제 git 디렉터리를 가리키는
+    포인터 파일이라 그 아래에 mkdir 할 수 없습니다. `--absolute-git-dir`은 일반
+    checkout과 worktree 모두에서 실제 git 디렉터리를 절대경로로 돌려줍니다.
     """
-    root = run(["git", "rev-parse", "--show-toplevel"]).strip()
-    return (Path(root) if root else Path(".")) / CACHE_REL
+    git_dir = run(["git", "rev-parse", "--absolute-git-dir"]).strip()
+    return (Path(git_dir) if git_dir else Path(".git")) / CACHE_DIR_NAME
 
 
 def marker(stage: str, digest: str) -> Path:
