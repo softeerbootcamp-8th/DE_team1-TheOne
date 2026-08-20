@@ -6,7 +6,7 @@ from main.aws_lambda.common.monthly_dataset import SyntheticDatasetExtractor
 DATASET = "monthly_taxi_trip"
 
 
-class HvfhvExtractor(SyntheticDatasetExtractor):
+class MonthlyTaxiTripExtractor(SyntheticDatasetExtractor):
     def __init__(
         self,
         api_base_url: str,

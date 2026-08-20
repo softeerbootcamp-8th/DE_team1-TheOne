@@ -15,7 +15,7 @@ import pyarrow.parquet as pq
 import pytest
 
 from main.aws_lambda.common import monthly_dataset
-from functions.hvfhv_raw_to_bronze.handler import lambda_handler
+from functions.monthly_taxi_trip_raw_to_bronze.handler import lambda_handler
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 
 
@@ -93,7 +93,7 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
     assert path.parent.name == f"year_month={YEAR_MONTH}"
-    assert path.parent.parent.name == "hvfhv"
+    assert path.parent.parent.name == "monthly_taxi_trip"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
     assert set(result) == {
         "file_size_bytes",
@@ -118,8 +118,8 @@ def test_같은월을_다시수집하면_같은파일을_원자적으로_교체�
     path = Path(second["locations"][0])
     assert first["locations"] == second["locations"]
     assert path.read_bytes() == corrected
-    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
-    assert not list((tmp_path / "hvfhv").rglob("*.json"))
+    assert len(list((tmp_path / "monthly_taxi_trip").rglob("*.parquet"))) == 1
+    assert not list((tmp_path / "monthly_taxi_trip").rglob("*.json"))
 
 
 @pytest.mark.parametrize("content", [b"", b"not parquet"], ids=["empty", "invalid"])
