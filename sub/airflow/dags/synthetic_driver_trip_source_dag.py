@@ -46,7 +46,7 @@ default_args = {
         # 아래로 갑니다. 가짜 데이터 API 는 그 위 디렉터리만 보므로, 하류 DAG 까지
         # 이어서 돌리려면 API 를 그 경로로 띄워야 합니다 — 안 그러면 404 입니다.
         #
-        #   python sub/synthetic_source_api/server.py --port 8091 \
+        #   python sub/source_api/server.py --port 8091 \
         #     --root "data/source/synthetic_driver_trip_api/_temporary/test_row_limit=1000"
         "test_row_limit": Param(
             0,

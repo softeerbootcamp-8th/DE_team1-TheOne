@@ -23,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from sub.synthetic_source_api.server import DATASETS, create_server
+from sub.source_api.server import DATASETS, create_server
 
 YEAR_MONTH = "2026-01"
 BODIES = {name: f"PAR1-{name}".encode() for name in sorted(DATASETS)}
