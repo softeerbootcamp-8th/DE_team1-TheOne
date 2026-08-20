@@ -10,6 +10,7 @@
 8. 수동 매핑표의 키가 실재하는 파이프라인인지 확인 (죽은 항목 차단)
 9. 수동 매핑표의 값이 실재하는 테스트 파일인지 확인
 10. 모든 파이프라인이 전용 테스트를 최소 1개 고르는지 확인
+11. 삭제된 테스트 파일은 실행 대상에서 제외
 """
 
 import importlib.util
@@ -62,6 +63,14 @@ def test_테스트_파일_변경은_그_테스트만_선택한다():
     assert result.tests == {
         "main/airflow": {"tests/test_driver_vehicle_monthly_snapshot_raw_to_silver_dag.py"}
     }
+
+
+def test_삭제된_테스트_파일은_실행_대상에서_제외한다():
+    result = select_tests.select_tests(
+        ["main/airflow/tests/test_removed_dag.py"]
+    )
+
+    assert select_tests.render(result) == "NONE"
 
 
 def test_분리된_제품_테스트는_저장소_루트를_import_경로로_사용한다(monkeypatch):
