@@ -182,18 +182,11 @@ def test_TLC_월별_Parquet은_전체응답을_메모리에_올리지_않고_저
     assert response.read_sizes and -1 not in response.read_sizes
 
 
-def _touch_snapshot(partition):
-    partition.mkdir(parents=True)
-    for name in ("customer", "lease_contract", "taxi", "current_driver_vehicle"):
-        (partition / f"{name}.parquet").touch()
-
-
-def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(tmp_path):
-    state = tmp_path / "state"
-    previous = state / "data_month=2026-08"
-    _touch_snapshot(previous)
-    preferences = previous / "driver_preferences.parquet"
-    preferences.touch()
+def test_입력검증은_기사_상태_스냅샷이_전혀_없어도_통과한다(tmp_path):
+    """event sourcing 이후 `prepare_monthly_state()`가 스스로 부트스트랩하거나
+    체크포인트를 이어받으므로(#605/#628), 사전에 기사·차량 상태 스냅샷이 있어야
+    한다는 전제 자체가 없다 — 예전(legacy) 검사를 없앤 회귀(실제 Airflow 컨테이너
+    첫 실행에서 `FileNotFoundError: 회사 스냅샷 파일이 없습니다`로 재현됨)."""
     hvfhv = tmp_path / "source" / "hvfhv.parquet"
     zone = tmp_path / "source" / "taxi_zone_lookup.csv"
     hvfhv.parent.mkdir()
@@ -201,9 +194,6 @@ def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(
     zone.touch()
     params = {
         **task_module.DEFAULT_PATHS,
-        "company_path": str(tmp_path / "company"),
-        "state_output_dir": str(state),
-        "release_output_dir": str(tmp_path / "release"),
         "vehicle_master_dir": str(tmp_path / "silver" / "vehicle_master"),
     }
     vehicle_master = (

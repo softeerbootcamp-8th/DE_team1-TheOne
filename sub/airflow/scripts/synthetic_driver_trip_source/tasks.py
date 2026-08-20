@@ -29,7 +29,6 @@ ROOT = PROJECT_ROOT
 SOURCE_ROOT = ROOT / "data" / "source"
 DEFAULT_PATHS = {
     "source_input_dir": str(SOURCE_ROOT / "synthetic_driver_trip_inputs"),
-    "company_path": str(SOURCE_ROOT / "company"),
     "vehicle_master_dir": str(ROOT / "data" / "silver" / "vehicle_master"),
     "state_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_state"),
     "release_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_api"),
@@ -44,19 +43,6 @@ RELEASE_DATASETS = {
 }
 
 
-def _previous_month_start(year_month: str) -> date:
-    target = date.fromisoformat(f"{year_month}-01")
-    return (target - timedelta(days=1)).replace(day=1)
-
-
-def _company_snapshot_partition(path: Path, snapshot_date: date) -> Path:
-    return path / f"snapshot_date={snapshot_date.isoformat()}"
-
-
-def _monthly_state_partition(path: Path, snapshot_date: date) -> Path:
-    return path / f"data_month={snapshot_date.strftime('%Y-%m')}"
-
-
 def _test_scoped_root(path: str | Path, test_row_limit: int) -> Path:
     if test_row_limit < 0:
         raise ValueError("test_row_limit는 0 이상이어야 합니다")
@@ -64,12 +50,6 @@ def _test_scoped_root(path: str | Path, test_row_limit: int) -> Path:
     if test_row_limit == 0:
         return root
     return root / "_temporary" / f"test_row_limit={test_row_limit}"
-
-
-def _require_snapshot(path: Path) -> None:
-    for name in ("customer", "lease_contract", "taxi", "current_driver_vehicle"):
-        if not (path / f"{name}.parquet").is_file():
-            raise FileNotFoundError(f"회사 스냅샷 파일이 없습니다: {path / f'{name}.parquet'}")
 
 
 def _manual_year_month(params: dict) -> str | None:
@@ -204,27 +184,16 @@ def collect_source_input_task(**context) -> dict:
 
 
 def validate_source_inputs(source_result: dict, params: dict) -> dict:
-    """대상 월을 만들 회사 상태와 수집한 HVFHV 파일을 확정합니다."""
+    """대상 월의 수집된 HVFHV 입력을 확정합니다.
+
+    기사·차량 상태는 여기서 확인하지 않습니다. event sourcing 이후
+    `prepare_monthly_state()`가 이전 체크포인트를 이어받거나(계속월) 스스로
+    부트스트랩하므로(첫 달), 사전에 어떤 스냅샷이 존재해야 한다는 전제 자체가
+    없습니다 — 예전(계약 기반 legacy) 아키텍처가 남긴 검사였습니다.
+    """
     year_month = str(source_result["year_month"])
     datetime.strptime(year_month, "%Y-%m")
     target_date = date.fromisoformat(f"{year_month}-01")
-    previous_date = _previous_month_start(year_month)
-    state_root = _test_scoped_root(
-        params["state_output_dir"], int(params.get("test_row_limit", 0))
-    )
-    company_root = Path(params["company_path"])
-    candidates = (
-        _monthly_state_partition(state_root, target_date),
-        _monthly_state_partition(state_root, previous_date),
-        _company_snapshot_partition(company_root, target_date),
-        _company_snapshot_partition(company_root, previous_date),
-    )
-    snapshot_dir = next((path for path in candidates if path.is_dir()), None)
-    if snapshot_dir is None:
-        raise FileNotFoundError(
-            f"대상 월 또는 직전 월 회사 스냅샷이 없습니다: {year_month}"
-        )
-    _require_snapshot(snapshot_dir)
 
     hvfhv_input = Path(source_result["hvfhv_input_path"])
     zone_lookup = Path(source_result["zone_lookup_path"])
