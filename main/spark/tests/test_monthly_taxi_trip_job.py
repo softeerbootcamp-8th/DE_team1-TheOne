@@ -1,4 +1,4 @@
-"""HVFHV bronze_to_silver `job.py`의 year_month range 파라미터 검증. 이슈 #297.
+"""Monthly Taxi Trip bronze_to_silver `job.py`의 year_month range 파라미터 검증. 이슈 #297.
 
 1. `year_month_range` 가 양끝을 포함해 순서대로 반환, 연도 경계도 처리
 2. `year_month_range` 는 start가 end보다 늦으면 ValueError
@@ -16,12 +16,12 @@ from pathlib import Path
 import pytest
 
 from shared.spark.common.session import get_or_create_spark_session
-from main.spark.jobs.bronze_to_silver.hvfhv import job
+from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver import job
 
 
 @pytest.fixture(scope="module")
 def spark():
-    session = get_or_create_spark_session("test_hvfhv_job")
+    session = get_or_create_spark_session("test_monthly_taxi_trip_job")
     yield session
     session.stop()
 

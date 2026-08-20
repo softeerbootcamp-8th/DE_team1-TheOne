@@ -6,12 +6,14 @@ from typing import Optional
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
 from pipeline_core.pipeline import Pipeline, PipelineResult
-from main.spark.jobs.bronze_to_silver.hvfhv.transformer import HVFHVCleanTransformer
+from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver.transformer import (
+    MonthlyTaxiTripCleanTransformer,
+)
 
 logger = logging.getLogger(__name__)
 
 CURRENT_FILE = Path(__file__).resolve()
-# spark/jobs/bronze_to_silver/hvfhv/job.py -> project root
+# spark/jobs/bronze_to_silver/monthly_taxi_trip_bronze_to_silver/job.py -> project root
 PROJECT_ROOT = CURRENT_FILE.parents[5]
 
 
@@ -52,9 +54,9 @@ def latest_partition_file(input_path: str, year_month: str) -> Optional[str]:
 
 
 def main(args_list: Optional[list[str]] = None) -> PipelineResult:
-    parser = argparse.ArgumentParser(description="HVFHV Bronze to Silver Pipeline Job")
-    parser.add_argument("--input_path", default="data/bronze/hvfhv", help="Path to bronze raw data")
-    parser.add_argument("--output_path", default="data/silver/hvfhv", help="Path to save silver clean data")
+    parser = argparse.ArgumentParser(description="Monthly Taxi Trip Bronze to Silver Pipeline Job")
+    parser.add_argument("--input_path", default="data/bronze/monthly_taxi_trip", help="Path to bronze raw data")
+    parser.add_argument("--output_path", default="data/silver/monthly_taxi_trip", help="Path to save silver clean data")
     parser.add_argument(
         "--error_threshold", type=float, default=0.05,
         help="불합격 행 허용 비율 (기본 0.05). DAG 는 HVFHV_ERROR_THRESHOLD 로 넘깁니다.",
@@ -88,15 +90,15 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     else:
         target_input_path = input_path
 
-    spark = get_or_create_spark_session("hvfhv_bronze_to_silver", driver_memory=args.spark_memory)
+    spark = get_or_create_spark_session("monthly_taxi_trip_bronze_to_silver", driver_memory=args.spark_memory)
     spark.sparkContext.setLogLevel("WARN")
 
     extractor = SparkParquetExtractor(spark, target_input_path)
     loader = SparkParquetLoader(output_path, partition_by=["year_month"])
-    transformer = HVFHVCleanTransformer(error_threshold=args.error_threshold)
+    transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
 
     result = Pipeline(extractor, loader, transformer=transformer).run()
-    logger.info("HVFHV Bronze to Silver Pipeline completed: %s", result)
+    logger.info("Monthly Taxi Trip Bronze to Silver Pipeline completed: %s", result)
     return result
 
 

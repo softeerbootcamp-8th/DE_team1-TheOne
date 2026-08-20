@@ -70,7 +70,7 @@ def hvfhv_raw_to_silver_pipeline():
     bronze_to_silver_task = BashOperator(
         task_id="bronze_to_silver",
         bash_command=(
-            f"python {PROJECT_ROOT}/main/spark/jobs/bronze_to_silver/hvfhv/job.py "
+            f"python {PROJECT_ROOT}/main/spark/jobs/bronze_to_silver/monthly_taxi_trip_bronze_to_silver/job.py "
             "--input_path \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
