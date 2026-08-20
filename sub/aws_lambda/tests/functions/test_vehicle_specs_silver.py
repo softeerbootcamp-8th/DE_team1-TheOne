@@ -1,4 +1,4 @@
-"""차종별 제원 Bronze -> Silver 배선 검증 (네트워크 없이 Loader부터 실행)."""
+"""차종별 제원 Raw -> Curated 배선 검증 (네트워크 없이 Loader부터 실행)."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -7,12 +7,12 @@ import pyarrow.parquet as pq
 import pytest
 
 from sub.aws_lambda.common import vehicle_specs_layout as layout
-from sub.aws_lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.handler import (
-    lambda_handler as to_silver,
+from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_curated.handler import (
+    lambda_handler as to_curated,
 )
-from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_bronze.extractor import parse
-from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_bronze.loader import (
-    VehicleSpecsBronzeLoader,
+from sub.aws_lambda.functions.fueleconomy_vehicle_specs_source_to_raw.extractor import parse
+from sub.aws_lambda.functions.fueleconomy_vehicle_specs_source_to_raw.loader import (
+    VehicleSpecsRawLoader,
 )
 
 COLLECTED_AT = datetime(2027, 1, 1, 4, 0, tzinfo=timezone.utc)
@@ -27,36 +27,36 @@ CSV = (
 )
 
 
-def write_bronze(bronze_dir: Path, csv: str = CSV, collected_at=COLLECTED_AT) -> str:
+def write_raw(raw_dir: Path, csv: str = CSV, collected_at=COLLECTED_AT) -> str:
     rows = parse(csv, collected_at)
-    return VehicleSpecsBronzeLoader(str(bronze_dir), collected_at).write(rows).location
+    return VehicleSpecsRawLoader(str(raw_dir), collected_at).write(rows).location
 
 
-def run_silver(bronze_dir: Path, silver_dir: Path, collected_date: str) -> dict:
-    return to_silver(
+def run_curated(raw_dir: Path, curated_dir: Path, collected_date: str) -> dict:
+    return to_curated(
         event={
             "collected_date": collected_date,
-            "bronze_dir": str(bronze_dir),
-            "silver_dir": str(silver_dir),
+            "raw_dir": str(raw_dir),
+            "curated_dir": str(curated_dir),
         }
     )
 
 
 def test_문자열_원본을_숫자와_조인_키로_정제한다(tmp_path):
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-    write_bronze(bronze_dir)
+    raw_dir, curated_dir = tmp_path / "raw", tmp_path / "curated"
+    write_raw(raw_dir)
 
-    result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
+    result = run_curated(raw_dir, curated_dir, COLLECTED_DATE)
 
     assert result["row_count"] == 2
     assert len(result["locations"]) == 1
 
-    silver_path = Path(result["locations"][0])
-    assert silver_path == layout.silver_file(
-        str(silver_dir), COLLECTED_AT.date(), SOURCE
+    curated_path = Path(result["locations"][0])
+    assert curated_path == layout.curated_file(
+        str(curated_dir), COLLECTED_AT.date(), SOURCE
     )
 
-    written = {row["source_id"]: row for row in pq.ParquetFile(silver_path).read().to_pylist()}
+    written = {row["source_id"]: row for row in pq.ParquetFile(curated_path).read().to_pylist()}
 
     gas = written["1"]
     assert gas["year"] == 2026
@@ -77,19 +77,19 @@ def test_대장과_붙일_조인_키가_만들어진다(tmp_path):
 
     model_key 로는 안 붙고 base_model_key 로 붙어야 합니다.
     """
-    from sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.transformer import (
-        VehicleCatalogSilverTransformer,
+    from sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.transformer import (
+        VehicleCatalogCuratedTransformer,
     )
 
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-    write_bronze(bronze_dir)
-    result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
+    raw_dir, curated_dir = tmp_path / "raw", tmp_path / "curated"
+    write_raw(raw_dir)
+    result = run_curated(raw_dir, curated_dir, COLLECTED_DATE)
     specs = {
         row["source_id"]: row
         for row in pq.ParquetFile(result["locations"][0]).read().to_pylist()
     }["1"]
 
-    catalog = VehicleCatalogSilverTransformer().transform(
+    catalog = VehicleCatalogCuratedTransformer().transform(
         [
             {
                 "vendor": "fasttrack",
@@ -112,62 +112,62 @@ def test_대장과_붙일_조인_키가_만들어진다(tmp_path):
 
 def test_조인_키를_못_만드는_행이_조금이면_건너뛴다(tmp_path):
     """공공 CSV 5만 행이라 결측이 섞입니다. 전량 실패시키면 그달 수집이 날아갑니다."""
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
+    raw_dir, curated_dir = tmp_path / "raw", tmp_path / "curated"
     rows = parse(CSV, COLLECTED_AT)
     # 200행 중 1행만 model 이 비어 있는 상황 (0.5% < 임계치 1%)
     padded = [
         {**rows[0], "id": str(index)} for index in range(100, 299)
     ] + [{**rows[0], "id": "999", "model": None}]
-    VehicleSpecsBronzeLoader(str(bronze_dir), COLLECTED_AT).write(padded)
+    VehicleSpecsRawLoader(str(raw_dir), COLLECTED_AT).write(padded)
 
-    result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
+    result = run_curated(raw_dir, curated_dir, COLLECTED_DATE)
 
     assert result["row_count"] == 199
 
 
 def test_조인_키를_못_만드는_행이_너무_많으면_실패한다(tmp_path):
     """원본 구조가 바뀌면 조용히 절반만 적재되지 않아야 합니다."""
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
+    raw_dir, curated_dir = tmp_path / "raw", tmp_path / "curated"
     rows = parse(CSV, COLLECTED_AT)
     broken = [{**rows[0], "id": str(index), "model": None} for index in range(10)]
     broken[0]["model"] = "Outlander Sport 4WD"
-    VehicleSpecsBronzeLoader(str(bronze_dir), COLLECTED_AT).write(broken)
+    VehicleSpecsRawLoader(str(raw_dir), COLLECTED_AT).write(broken)
 
     with pytest.raises(ValueError, match="건너뛴 행이 너무 많습니다"):
-        run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
+        run_curated(raw_dir, curated_dir, COLLECTED_DATE)
 
 
 def test_같은_수집일을_다시_변환하면_덮어쓴다(tmp_path):
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-    write_bronze(bronze_dir)
+    raw_dir, curated_dir = tmp_path / "raw", tmp_path / "curated"
+    write_raw(raw_dir)
 
-    first = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
-    second = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
+    first = run_curated(raw_dir, curated_dir, COLLECTED_DATE)
+    second = run_curated(raw_dir, curated_dir, COLLECTED_DATE)
 
     assert first["locations"] == second["locations"]
     partition = Path(first["locations"][0]).parent
     assert len(list(partition.glob("*.parquet"))) == 1
 
 
-def test_같은_날_여러_번_수집하면_최신_Bronze_를_읽는다(tmp_path):
-    """Bronze 는 덮어쓰지 않고 쌓입니다. Silver 는 마지막 것만 봐야 합니다."""
-    bronze_dir, silver_dir = tmp_path / "bronze", tmp_path / "silver"
-    write_bronze(bronze_dir)
+def test_같은_날_여러_번_수집하면_최신_Raw_를_읽는다(tmp_path):
+    """Raw 는 덮어쓰지 않고 쌓입니다. Curated 는 마지막 것만 봐야 합니다."""
+    raw_dir, curated_dir = tmp_path / "raw", tmp_path / "curated"
+    write_raw(raw_dir)
 
     later = COLLECTED_AT.replace(hour=6)
     extra = CSV + "3,2026,Kia,Niro,Niro,53,0,0,Hybrid,4\n"
-    write_bronze(bronze_dir, extra, later)
+    write_raw(raw_dir, extra, later)
 
-    result = run_silver(bronze_dir, silver_dir, COLLECTED_DATE)
+    result = run_curated(raw_dir, curated_dir, COLLECTED_DATE)
 
     assert result["row_count"] == 3
 
 
-def test_Bronze_파티션이_없으면_실패한다(tmp_path):
+def test_Raw_파티션이_없으면_실패한다(tmp_path):
     with pytest.raises(FileNotFoundError):
-        run_silver(tmp_path / "bronze", tmp_path / "silver", COLLECTED_DATE)
+        run_curated(tmp_path / "raw", tmp_path / "curated", COLLECTED_DATE)
 
 
 def test_collected_date_형식을_검증한다(tmp_path):
     with pytest.raises(ValueError, match="YYYY-MM-DD"):
-        run_silver(tmp_path / "bronze", tmp_path / "silver", "2027/01/01")
+        run_curated(tmp_path / "raw", tmp_path / "curated", "2027/01/01")

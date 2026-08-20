@@ -119,7 +119,7 @@ class VehicleMasterSilverExtractor(Extractor):
 
         rows: list[dict] = []
         for sub_dir in sub_dirs:
-            path = sub_dir / source_layout.SILVER_FILE_NAME
+            path = sub_dir / source_layout.CURATED_FILE_NAME
             if not path.is_file():
                 raise FileNotFoundError(f"Silver Parquet 파일이 없습니다: {path}")
             try:
@@ -173,7 +173,7 @@ class VehicleMasterSilverS3Extractor(Extractor):
     def _read_dataset(
         self, source_layout: ModuleType, sub_key: str
     ) -> tuple[date, list[dict]]:
-        prefix = f"silver/{source_layout.DATASET}/"
+        prefix = f"source/curated/{source_layout.DATASET}/"
         all_keys = list_keys(self._bucket, prefix)
         if not all_keys:
             raise FileNotFoundError(f"원천 Silver 데이터셋이 없습니다: s3://{self._bucket}/{prefix}")
@@ -184,7 +184,7 @@ class VehicleMasterSilverS3Extractor(Extractor):
         date_prefix = f"{prefix}{layout.DATE_PARTITION_KEY}={collected_date.isoformat()}/"
         date_keys = sorted(
             k for k in all_keys
-            if k.startswith(date_prefix) and k.endswith(f"/{source_layout.SILVER_FILE_NAME}")
+            if k.startswith(date_prefix) and k.endswith(f"/{source_layout.CURATED_FILE_NAME}")
         )
         if not date_keys:
             raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: s3://{self._bucket}/{date_prefix}")

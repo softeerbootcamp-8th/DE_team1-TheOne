@@ -9,8 +9,8 @@ from shared.airflow.common.slack_failure_callback import (
     slack_retry_alert_callback,
 )
 from sub.airflow.scripts.fueleconomy_vehicle_specs_raw_to_silver.tasks import (
-    DEFAULT_BRONZE_DIR,
-    DEFAULT_SILVER_DIR,
+    DEFAULT_RAW_DIR,
+    DEFAULT_CURATED_DIR,
     bronze_to_silver_task,
     raw_to_bronze_task,
     validate_bronze_task,
@@ -50,14 +50,14 @@ default_args = {
             ),
         ),
         "bronze_dir": Param(
-            DEFAULT_BRONZE_DIR,
+            DEFAULT_RAW_DIR,
             type="string",
-            description="Bronze 데이터 저장 기본 경로",
+            description="Raw 데이터 저장 기본 경로",
         ),
         "silver_dir": Param(
-            DEFAULT_SILVER_DIR,
+            DEFAULT_CURATED_DIR,
             type="string",
-            description="Silver 데이터 저장 기본 경로",
+            description="Curated 데이터 저장 기본 경로",
         ),
     },
 )

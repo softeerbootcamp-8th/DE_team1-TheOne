@@ -1,4 +1,4 @@
-"""차종별 제원 Raw -> Bronze 배선 검증 (네트워크 없이 parse/Loader만 실행)."""
+"""차종별 제원 Source -> Raw 배선 검증 (네트워크 없이 parse/Loader만 실행)."""
 
 from datetime import datetime, timezone
 from pathlib import Path
@@ -6,8 +6,8 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_bronze.extractor import parse
-from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_bronze.loader import VehicleSpecsBronzeLoader
+from sub.aws_lambda.functions.fueleconomy_vehicle_specs_source_to_raw.extractor import parse
+from sub.aws_lambda.functions.fueleconomy_vehicle_specs_source_to_raw.loader import VehicleSpecsRawLoader
 
 COLLECTED_AT = datetime(2027, 1, 1, 4, 0, tzinfo=timezone.utc)
 
@@ -21,7 +21,7 @@ CSV = (
 
 def test_원본_컬럼을_버리지_않고_그대로_싣는다(tmp_path):
     rows = parse(CSV, COLLECTED_AT)
-    location = VehicleSpecsBronzeLoader(str(tmp_path), COLLECTED_AT).write(rows).location
+    location = VehicleSpecsRawLoader(str(tmp_path), COLLECTED_AT).write(rows).location
 
     table = pq.ParquetFile(location).read()
     # source 는 파티션 키라 파일 안에 없고, 나머지 원본 컬럼 + collected_at 이 남습니다.
@@ -32,14 +32,14 @@ def test_원본_컬럼을_버리지_않고_그대로_싣는다(tmp_path):
     assert table.num_rows == 2
 
     written = table.to_pylist()
-    # 값은 전부 문자열, 빈 칸은 None (타입 변환은 Silver 단계에서).
+    # 값은 전부 문자열, 빈 칸은 None (타입 변환은 Curated 단계에서).
     assert written[0]["comb08"] == "30"
     assert written[0]["atvType"] is None
 
 
 def test_수집일과_출처로_파티션을_나눈다(tmp_path):
     rows = parse(CSV, COLLECTED_AT)
-    location = VehicleSpecsBronzeLoader(str(tmp_path), COLLECTED_AT).write(rows).location
+    location = VehicleSpecsRawLoader(str(tmp_path), COLLECTED_AT).write(rows).location
 
     path = Path(location)
     assert path.parent.name == "source=fueleconomy.gov"
@@ -49,10 +49,10 @@ def test_수집일과_출처로_파티션을_나눈다(tmp_path):
 def test_같은_해에_다시_돌려도_덮어쓰지_않는다(tmp_path):
     """매 실행이 전량 스냅샷이라 이전 것을 지우면 안 됩니다."""
     rows = parse(CSV, COLLECTED_AT)
-    first = VehicleSpecsBronzeLoader(str(tmp_path), COLLECTED_AT).write(rows).location
+    first = VehicleSpecsRawLoader(str(tmp_path), COLLECTED_AT).write(rows).location
 
     later = COLLECTED_AT.replace(hour=6)
-    second = VehicleSpecsBronzeLoader(str(tmp_path), later).write(rows).location
+    second = VehicleSpecsRawLoader(str(tmp_path), later).write(rows).location
 
     assert first != second
     assert len(list(Path(first).parent.glob("*.parquet"))) == 2

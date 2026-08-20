@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from sub.aws_lambda.common import vehicle_catalog_layout as layout
-from sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.snapshot import (
+from sub.aws_lambda.functions.vehicle_catalog_source_to_raw.snapshot import (
     VehicleCatalogHtmlSnapshotLoader,
     VehicleCatalogImageSnapshotLoader,
 )

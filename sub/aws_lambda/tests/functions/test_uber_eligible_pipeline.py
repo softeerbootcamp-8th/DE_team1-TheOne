@@ -1,12 +1,12 @@
-"""Uber Eligible Vehicles Raw -> Bronze 배선 검증 (네트워크 없이 fetch 만 대체)."""
+"""Uber Eligible Vehicles Source -> Raw 배선 검증 (네트워크 없이 fetch 만 대체)."""
 
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze import extractor
-from sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze.loader import UberEligibleVehiclesBronzeLoader
+from sub.aws_lambda.functions.uber_eligible_vehicles_source_to_raw import extractor
+from sub.aws_lambda.functions.uber_eligible_vehicles_source_to_raw.loader import UberEligibleVehiclesRawLoader
 
 COLLECTED_AT = datetime(2026, 8, 10, 3, 0, tzinfo=timezone.utc)
 CITY_SLUG = "new-york"
@@ -34,7 +34,7 @@ def test_loader가_수집일_도시_파티션에_쓴다(monkeypatch, tmp_path):
     monkeypatch.setattr(extractor, "fetch", lambda city_slug, timeout: PAYLOAD)
     rows = extractor.UberEligibleVehiclesExtractor(CITY_SLUG, COLLECTED_AT).extract()
 
-    loader = UberEligibleVehiclesBronzeLoader(str(tmp_path), CITY_SLUG, COLLECTED_AT)
+    loader = UberEligibleVehiclesRawLoader(str(tmp_path), CITY_SLUG, COLLECTED_AT)
     result = loader.write(rows)
 
     assert Path(result.location).parent == (

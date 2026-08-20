@@ -25,8 +25,8 @@ from sub.airflow.scripts.fueleconomy_vehicle_specs_raw_to_silver import tasks as
 
 DAG = dag_module.fueleconomy_vehicle_specs_dag
 DAG_ID = "fueleconomy_vehicle_specs_raw_to_silver_pipeline"
-BRONZE_FUNCTION = "fueleconomy_vehicle_specs_raw_to_bronze"
-SILVER_FUNCTION = "fueleconomy_vehicle_specs_bronze_to_silver"
+BRONZE_FUNCTION = "fueleconomy_vehicle_specs_source_to_raw"
+SILVER_FUNCTION = "fueleconomy_vehicle_specs_raw_to_curated"
 
 # Bronze 가 돌려줬다고 가정할 수집일. PARAM_DATE 와 반드시 달라야
 # "어느 쪽 값이 갔는지" 를 구분할 수 있습니다.
@@ -116,8 +116,8 @@ def test_Silver_event_는_세_키를_넘긴다(events):
 
     assert only_event(events, SILVER_FUNCTION) == {
         "collected_date": BRONZE_DATE,
-        "bronze_dir": "/tmp/b",
-        "silver_dir": "/tmp/s",
+        "raw_dir": "/tmp/b",
+        "curated_dir": "/tmp/s",
     }
 
 
@@ -149,8 +149,8 @@ def test_경로_파라미터가_비면_DAG_기본값을_쓴다(events):
     call_task("raw_to_bronze", params={})
     call_task("bronze_to_silver", raw_result=RAW_RESULT, params={})
 
-    assert only_event(events, BRONZE_FUNCTION)["base_dir"] == dag_module.DEFAULT_BRONZE_DIR
+    assert only_event(events, BRONZE_FUNCTION)["base_dir"] == dag_module.DEFAULT_RAW_DIR
 
     silver = only_event(events, SILVER_FUNCTION)
-    assert silver["bronze_dir"] == dag_module.DEFAULT_BRONZE_DIR
-    assert silver["silver_dir"] == dag_module.DEFAULT_SILVER_DIR
+    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR

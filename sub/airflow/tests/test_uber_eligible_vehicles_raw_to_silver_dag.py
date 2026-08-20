@@ -30,8 +30,8 @@ from sub.airflow.scripts.uber_eligible_vehicles_raw_to_silver import tasks as ta
 
 DAG = dag_module.uber_eligible_vehicles_dag
 DAG_ID = "uber_eligible_vehicles_raw_to_silver_pipeline"
-BRONZE_FUNCTION = "uber_eligible_vehicles_raw_to_bronze"
-SILVER_FUNCTION = "uber_eligible_vehicles_bronze_to_silver"
+BRONZE_FUNCTION = "uber_eligible_vehicles_source_to_raw"
+SILVER_FUNCTION = "uber_eligible_vehicles_raw_to_curated"
 
 # Bronze 가 돌려줬다고 가정할 수집일. PARAM_DATE 와 반드시 달라야
 # "어느 쪽 값이 갔는지" 를 구분할 수 있습니다.
@@ -116,8 +116,8 @@ def test_Silver_event_에는_city_slug_가_들어가지_않는다(events):
     assert "city_slug" not in event
     assert event == {
         "collected_date": BRONZE_DATE,
-        "bronze_dir": "/tmp/b",
-        "silver_dir": "/tmp/s",
+        "raw_dir": "/tmp/b",
+        "curated_dir": "/tmp/s",
     }
 
 
@@ -157,9 +157,9 @@ def test_파라미터가_비면_DAG_기본값을_쓴다(events):
     call_task("bronze_to_silver", raw_result=RAW_RESULT, params={})
 
     bronze = only_event(events, BRONZE_FUNCTION)
-    assert bronze["base_dir"] == dag_module.DEFAULT_BRONZE_DIR
+    assert bronze["base_dir"] == dag_module.DEFAULT_RAW_DIR
     assert bronze["city_slug"] == dag_module.DEFAULT_CITY_SLUG
 
     silver = only_event(events, SILVER_FUNCTION)
-    assert silver["bronze_dir"] == dag_module.DEFAULT_BRONZE_DIR
-    assert silver["silver_dir"] == dag_module.DEFAULT_SILVER_DIR
+    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR

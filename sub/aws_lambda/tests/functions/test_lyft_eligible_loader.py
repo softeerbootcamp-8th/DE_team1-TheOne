@@ -1,13 +1,13 @@
-"""Lyft Eligible Vehicles Raw -> Bronze 적재 계약 검증."""
+"""Lyft Eligible Vehicles Source -> Raw 적재 계약 검증."""
 
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow.parquet as pq
 
-from sub.aws_lambda.functions.lyft_eligible_vehicles_raw_to_bronze.loader import (
+from sub.aws_lambda.functions.lyft_eligible_vehicles_source_to_raw.loader import (
     SCHEMA,
-    LyftEligibleVehiclesBronzeLoader,
+    LyftEligibleVehiclesRawLoader,
 )
 
 COLLECTED_AT = datetime(2026, 8, 10, 3, 0, tzinfo=timezone.utc)
@@ -27,13 +27,13 @@ def row(model, min_year, products, raw_vehicle) -> dict:
     }
 
 
-def test_loader가_파싱_결과를_선별하지_않고_Bronze에_저장한다(tmp_path):
+def test_loader가_파싱_결과를_선별하지_않고_Raw에_저장한다(tmp_path):
     rows = [
         row("ESCALADE ESV", 2019, ["Black", "Black SUV"], "ESCALADE raw"),
         row("LYRIQ", 2024, ["Future Select"], "LYRIQ raw"),
     ]
 
-    result = LyftEligibleVehiclesBronzeLoader(
+    result = LyftEligibleVehiclesRawLoader(
         str(tmp_path),
         "new-york",
         COLLECTED_AT,
