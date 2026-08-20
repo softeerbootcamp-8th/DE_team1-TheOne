@@ -83,7 +83,7 @@ def require_clean_silver(base_dir: str, year_month: str) -> dict[str, str]:
     found = {}
     for dataset, dag_id in (
         (extractor.GAS_DATASET, "eia_gas_price_raw_to_silver_pipeline"),
-        (extractor.ELECTRICITY_DATASET, "eia_electricity_price_bronze_to_silver_pipeline"),
+        (extractor.ELECTRICITY_DATASET, "eia_electricity_price_raw_to_silver_pipeline"),
     ):
         path = extractor.clean_silver_file(base_dir, dataset, year_month)
         if not path.is_file():
