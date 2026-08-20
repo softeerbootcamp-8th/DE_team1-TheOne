@@ -48,7 +48,7 @@ default_args = {
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         "api_base_url": Param(
-            os.getenv("SYNTHETIC_SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
             type="string",
         ),
         "base_dir": Param(DEFAULT_BRONZE_DIR, type="string"),

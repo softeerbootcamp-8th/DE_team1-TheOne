@@ -17,7 +17,7 @@ configure_lambda_logging()
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
-    api_base_url = event.get("api_base_url") or os.getenv("SYNTHETIC_SOURCE_API_URL")
+    api_base_url = event.get("api_base_url") or os.getenv("SOURCE_API_URL")
     if not api_base_url:
         raise ValueError("api_base_url이 누락되었습니다")
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")

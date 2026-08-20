@@ -99,7 +99,7 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
                     self.wfile.write(chunk)
 
     def log_message(self, format: str, *args) -> None:
-        print(f"synthetic-source-api: {format % args}")
+        print(f"source-api: {format % args}")
 
 
 def create_server(
@@ -121,7 +121,7 @@ def main(args_list: list[str] | None = None) -> None:
     parser.add_argument(
         "--root",
         default=os.getenv(
-            "SYNTHETIC_SOURCE_RELEASE_DIR",
+            "SOURCE_RELEASE_DIR",
             "data/source/synthetic_driver_trip_api",
         ),
     )
@@ -129,7 +129,7 @@ def main(args_list: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=8091)
     args = parser.parse_args(args_list)
     server = create_server(args.root, args.host, args.port)
-    print(f"synthetic source API: http://{args.host}:{args.port}")
+    print(f"source API: http://{args.host}:{args.port}")
     server.serve_forever()
 
 

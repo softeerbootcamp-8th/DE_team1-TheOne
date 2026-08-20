@@ -30,7 +30,7 @@ from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module
 
 sys.path.append(str(PROJECT_ROOT))
-from sub.synthetic_source_api.server import create_server
+from sub.source_api.server import create_server
 
 DAG = dag_module.synthetic_driver_trip_source_dag
 

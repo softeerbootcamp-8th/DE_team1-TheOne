@@ -60,7 +60,7 @@ default_args = {
             description="Bronze 데이터 저장 기본 경로",
         ),
         "api_base_url": Param(
-            os.getenv("SYNTHETIC_SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
             type="string",
             description="HVFHV+taxi_id 데이터 제공 주소",
         ),

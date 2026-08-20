@@ -8,6 +8,6 @@
 - `aws_lambda/`: 요금·차량 원천 수집·정제와 S3 입출력·레이아웃 계약
 - `spark/`: Curated·Synthesize·Attribution·Published 처리
 - `generators/`: 합성 회사 스냅샷과 월별 운행 상태 생성
-- `synthetic_source_api/`: Published 데이터 제공 API
+- `source_api/`: Published 데이터 제공 API
 
 메인 데이터 프로덕트는 이 폴더의 내부 구현을 직접 읽지 않고 Published API를 통해 데이터를 소비합니다.
