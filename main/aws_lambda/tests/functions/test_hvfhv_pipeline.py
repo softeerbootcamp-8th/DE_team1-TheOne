@@ -21,8 +21,8 @@ from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
-DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips"
-LATEST_URL = f"{API_URL}/v1/data/latest/datasets/hvfhv_taxi_trips"
+DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+LATEST_URL = f"{API_URL}/v1/data/latest/datasets/monthly_taxi_trip"
 
 
 def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
@@ -150,7 +150,7 @@ def test_다른host로_이동한_응답은_저장하지않는다(tmp_path, monke
     _api(
         monkeypatch,
         response_url=(
-            f"http://other.example/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips"
+            f"http://other.example/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
         ),
     )
 
