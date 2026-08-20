@@ -53,6 +53,14 @@ def _ratio(value: object, where: str) -> float:
     return float(value)
 
 
+def _non_negative_float(value: object, where: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"{where}: 0 이상 실수여야 합니다 (받은 값: {value!r})")
+    if float(value) < 0.0:
+        raise ConfigError(f"{where}: 0 이상이어야 합니다 (받은 값: {value})")
+    return float(value)
+
+
 def _month_start(value: object, where: str) -> date:
     # 이미 `date` 인 경우를 받는 이유: `dataclasses.replace` 로 CLI 오버라이드를 얹으면
     # __post_init__ 이 다시 돌면서 한 번 변환해 둔 값을 또 봅니다. 문자열만 받으면
@@ -160,6 +168,39 @@ class AllocationConfig:
 
 
 @dataclass(frozen=True)
+class SynthesizeConfig:
+    """D6·D7 (`sub/prototype/synthesize.py`, `assign.py`)가 읽는 4A 단계 파라미터.
+
+    `rationality`: 초기 차량 선택이 비용 최적에 가까웠던 확률 (D6).
+    `traits_volatility`: 기사별 volatility(`traits.py` 의 uniform(.30,.40))에 곱하는
+    배율. 1.0 은 "추가 스케일 없음" 이다.
+    `noise_phi`: 월별 실현값 자기상관 계수(D7 B). `noise(m) = phi*noise(m-1) + ...`.
+    `seasonal_amplitude`: 전 기사 공통 계절 요인의 표준편차.
+    """
+
+    rationality: float
+    traits_volatility: float
+    noise_phi: float
+    seasonal_amplitude: float
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "rationality", _ratio(self.rationality, "synthesize.rationality"))
+        object.__setattr__(
+            self, "noise_phi", _ratio(self.noise_phi, "synthesize.noise_phi")
+        )
+        object.__setattr__(
+            self,
+            "traits_volatility",
+            _non_negative_float(self.traits_volatility, "synthesize.traits_volatility"),
+        )
+        object.__setattr__(
+            self,
+            "seasonal_amplitude",
+            _non_negative_float(self.seasonal_amplitude, "synthesize.seasonal_amplitude"),
+        )
+
+
+@dataclass(frozen=True)
 class GenerationConfig:
     """`target_month` 는 여기 없습니다.
 
@@ -172,12 +213,18 @@ class GenerationConfig:
     driver: DriverConfig
     bootstrap: BootstrapConfig
     allocation: AllocationConfig
+    synthesize: SynthesizeConfig
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "global_seed", _int(self.global_seed, "global_seed", minimum=0))
 
 
-_NESTED = {"driver": DriverConfig, "bootstrap": BootstrapConfig, "allocation": AllocationConfig}
+_NESTED = {
+    "driver": DriverConfig,
+    "bootstrap": BootstrapConfig,
+    "allocation": AllocationConfig,
+    "synthesize": SynthesizeConfig,
+}
 
 
 def build_config(raw: object) -> GenerationConfig:

@@ -43,6 +43,12 @@ TEST_CONFIG_DATA = {
         },
         "bucket_size": 5,
     },
+    "synthesize": {
+        "rationality": 0.6,
+        "traits_volatility": 1.0,
+        "noise_phi": 0.7,
+        "seasonal_amplitude": 0.05,
+    },
 }
 
 TEST_CONFIG = build_config(TEST_CONFIG_DATA)
