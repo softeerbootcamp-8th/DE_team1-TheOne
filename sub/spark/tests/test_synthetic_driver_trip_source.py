@@ -126,7 +126,7 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
     previous_dir = previous_root / f"snapshot_date={previous_date}"
     write_snapshot(previous, previous_root, previous_date)
     preferences = build_driver_preferences(
-        _driver_ids(), _bootstrap_pools(), as_of_date=np.datetime64(previous_date)
+        _driver_ids(), _bootstrap_pools(), as_of_date=np.datetime64(previous_date), seed=42
     )
     previous_preferences = previous_dir / "driver_preferences.parquet"
     preferences.to_parquet(previous_preferences, index=False)
@@ -139,6 +139,7 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
         output_dir=tmp_path / "state",
         snapshot_date=target_date,
         seed=42,
+        sample_per_month=1_000,
         change_rate=0.005,
     )
     rerun = monthly.prepare_monthly_state(
@@ -148,6 +149,7 @@ def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_�
         output_dir=tmp_path / "state",
         snapshot_date=target_date,
         seed=42,
+        sample_per_month=1_000,
         change_rate=0.005,
     )
 
