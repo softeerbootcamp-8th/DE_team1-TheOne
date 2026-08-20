@@ -248,7 +248,7 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     assert len(events_all) == len(first.events) + len(second.events)
 
 
-# ── 3. legacy 어댑터 (#606) ──────────────────────────────────────────────
+# ── 3. 기존 Spark 경로용 뷰 변환 (#606, #609) ──────────────────────────────
 
 
 def _vehicle_pool_no_model_id() -> pd.DataFrame:
@@ -284,33 +284,26 @@ def _synthesize_for_adapters(initial_count=50):
     return result, pool
 
 
-def test_snapshot_뷰가_이력기반_계산에_필요한_컬럼을_전부_채운다():
-    """이 3-테이블 뷰는 이제 candidates.py 가 아니라 `build_driver_vehicle_monthly_snapshot()`
-    (이력 기반 join_date/experience_years 계산) 전용입니다 — candidates.py 는
-    `to_current_driver_vehicle()` 한 테이블을 씁니다(#643)."""
-    result, pool = _synthesize_for_adapters()
-    tables = adapters.to_snapshot_tables(result.current, pool, snapshot_date=date(2024, 1, 1))
-
-    assert {"customer_id", "synthetic_driver_id"} <= set(tables.customer.columns)
-    assert {"lease_id", "customer_id", "taxi_id", "lease_started_on", "lease_ended_on"} <= set(
-        tables.lease_contract.columns
-    )
-    assert {"taxi_id", "uber_comfort_eligible", "lyft_extra_comfort_eligible"} <= set(
-        tables.taxi.columns
-    )
-    assert set(tables.customer["synthetic_driver_id"]) == set(result.current["driver_id"])
-    # 아직 아무도 퇴사하지 않은 초기 스냅샷 — lease_ended_on 이 전부 결측입니다.
-    assert tables.lease_contract["lease_ended_on"].isna().all()
-
-
-def test_current_driver_vehicle_뷰가_candidates_필수컬럼을_전부_채운다():
+def test_current_driver_vehicle_뷰가_candidates_필수컬럼과_발행용_차종스펙을_전부_채운다():
+    """#609 — candidates.py 의 필수 컬럼과, 발행 쪽(`build_driver_vehicle_monthly_snapshot`)
+    이 이력 계산에 쓰는 `joined_on`·차종 스펙을 한 뷰가 함께 채웁니다."""
     result, pool = _synthesize_for_adapters()
     current_driver_vehicle = adapters.to_current_driver_vehicle(result.current, pool)
 
     assert CANDIDATES_REQUIRED["current_driver_vehicle"] <= set(current_driver_vehicle.columns)
+    assert {
+        "joined_on", "make_key", "model_key", "model_year", "weekly_lease_fee",
+    } <= set(current_driver_vehicle.columns)
     assert set(current_driver_vehicle["driver_id"]) == set(result.current["driver_id"])
     # 아직 아무도 퇴사하지 않은 초기 스냅샷 — lease_ended_on 이 전부 결측입니다.
     assert current_driver_vehicle["lease_ended_on"].isna().all()
+    # joined_on 은 이 초기 스냅샷에서 vehicle_since(=최초 배정일)와 같아야 합니다 —
+    # 아직 차량을 바꾼 적이 없으므로.
+    pd.testing.assert_series_equal(
+        current_driver_vehicle["joined_on"],
+        current_driver_vehicle["lease_started_on"],
+        check_names=False,
+    )
 
 
 def test_current_driver_vehicle_뷰는_퇴사기사의_lease_ended_on을_채운다():
@@ -321,19 +314,6 @@ def test_current_driver_vehicle_뷰는_퇴사기사의_lease_ended_on을_채운�
 
     current_driver_vehicle = adapters.to_current_driver_vehicle(current, pool)
     row = current_driver_vehicle.loc[current_driver_vehicle["driver_id"] == exited_id].iloc[0]
-    assert row["lease_ended_on"] == date(2024, 2, 1)
-
-
-def test_snapshot_뷰는_퇴사기사의_lease_ended_on을_채운다():
-    result, pool = _synthesize_for_adapters()
-    current = result.current.copy()
-    exited_id = current.iloc[0]["driver_id"]
-    current.loc[current["driver_id"] == exited_id, "exited_on"] = pd.Timestamp("2024-02-01")
-
-    tables = adapters.to_snapshot_tables(current, pool, snapshot_date=date(2024, 2, 1))
-    row = tables.lease_contract.loc[
-        tables.lease_contract["customer_id"] == f"CUST_{exited_id}"
-    ].iloc[0]
     assert row["lease_ended_on"] == date(2024, 2, 1)
 
 

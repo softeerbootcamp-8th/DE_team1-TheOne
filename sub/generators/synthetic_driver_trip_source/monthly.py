@@ -1,11 +1,10 @@
-"""전월 상태에서 당월 기사·차량·리스와 기사 선호를 결정적으로 갱신합니다.
+"""전월 상태에서 당월 기사·차량과 기사 선호를 결정적으로 갱신합니다.
 
 lifecycle·성향·차량배정의 정본은 `sub/generators/synthetic_driver_state`
-(event sourcing, #605)입니다. 여기서 쓰는 `customer`/`taxi`/`lease_contract`/
-`driver_preferences`/`current_driver_vehicle`는 그 상태를 `adapters`로 비춘
-뷰일 뿐입니다 — `customer`/`taxi`/`lease_contract`는 이력 기반 계산(발행 계약의
-`join_date`/`experience_years`)에, `current_driver_vehicle`은 candidates.py의
-후보 생성에 씁니다(#643).
+(event sourcing, #605)입니다. 여기서 쓰는 `driver_preferences`/
+`current_driver_vehicle`는 그 상태를 `adapters`로 비춘 뷰일 뿐입니다 —
+candidates.py의 후보 생성과 source_job.py의 발행(기사 스냅샷·보유 차량 재고)
+이 함께 이 두 뷰를 읽습니다(#643, #609).
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ import pandas as pd
 from sub.config import GenerationConfig
 from sub.generators.synthetic_driver_state import adapters, checkpoint, fleet
 from sub.generators.synthetic_driver_state.lifecycle import synthesize_month
-from sub.generators.synthetic_company_snapshot.snapshot import write_snapshot
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_master.preference import write_driver_preferences
 from sub.spark.jobs.driver_master.traits import load_bootstrap_pools
@@ -133,17 +131,14 @@ def prepare_monthly_state(
         clip_rate=result.clip_rate,
     )
 
-    tables = adapters.to_snapshot_tables(result.current, vehicle_pool, snapshot_date=snapshot_date)
     preferences = adapters.to_driver_preferences(result.profiles)
     current_driver_vehicle = adapters.to_current_driver_vehicle(result.current, vehicle_pool)
 
     output_root.mkdir(parents=True, exist_ok=True)
     staging_root = output_root / f".snapshot-{snapshot_date}-{uuid.uuid4().hex}"
-    snapshot_partition = staging_root / f"snapshot_date={snapshot_date.isoformat()}"
     staged_partition = _data_month_partition(staging_root, snapshot_date)
     try:
-        write_snapshot(tables, staging_root, snapshot_date)
-        snapshot_partition.rename(staged_partition)
+        staged_partition.mkdir(parents=True)
         write_driver_preferences(preferences, staged_partition / PREFERENCES_FILE)
         current_driver_vehicle.to_parquet(
             staged_partition / CURRENT_DRIVER_VEHICLE_FILE, index=False
