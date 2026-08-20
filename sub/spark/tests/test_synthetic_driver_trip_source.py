@@ -11,6 +11,7 @@ from datetime import date, datetime
 
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 from pyspark.sql.functions import lit
 
@@ -166,6 +167,33 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
     assert len(new_drivers) >= 1, "join_rate 가 0이 아닌데 신규 유입이 없습니다"
     assert len(ended) >= 1, "exit_rate 가 0이 아닌데 유출이 없습니다"
     # D15: 유출 기사도 행이 남아 있습니다 — lease_ended_on 만 채워짐.
+
+
+def test_전원_재직중이면_퇴사일_컬럼이_date32로_쓰인다(tmp_path):
+    """`lease_ended_on`이 전부 NaT(아무도 퇴사 안 함)면 pandas의 dtype 추론이
+    datetime64[ns]로 남아 pyarrow가 timestamp[ns]로 쓴다 — Spark의 Parquet
+    리더는 그 물리 타입(`INT64 TIMESTAMP(NANOS)`)을 거부한다. 프로덕션 pandas
+    2.1.4(Airflow 컨테이너)에서 실제로 재현된 회귀."""
+    frame = pd.DataFrame({
+        "driver_id": ["d1", "d2"],
+        "taxi_id": ["t1", "t2"],
+        "joined_on": [date(2024, 1, 1), date(2024, 1, 1)],
+        "lease_started_on": [date(2024, 1, 1), date(2024, 1, 1)],
+        "lease_ended_on": [None, None],
+        "make_key": ["A", "A"],
+        "model_key": ["B", "B"],
+        "model_year": [2023, 2023],
+        "weekly_lease_fee": [500.0, 500.0],
+        "uber_comfort_eligible": [True, True],
+        "lyft_extra_comfort_eligible": [False, False],
+    })
+    path = tmp_path / "current_driver_vehicle.parquet"
+
+    monthly._write_current_driver_vehicle(frame, path)
+
+    schema = pq.read_schema(path)
+    for name in ("joined_on", "lease_started_on", "lease_ended_on"):
+        assert str(schema.field(name).type) == "date32[day]"
 
 
 def _raw_trip(pickup: datetime, **overrides) -> dict:

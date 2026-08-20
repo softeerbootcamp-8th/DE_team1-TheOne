@@ -16,6 +16,8 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from sub.config import GenerationConfig
 from sub.generators.synthetic_driver_state import adapters, checkpoint, fleet
@@ -27,6 +29,24 @@ from sub.spark.jobs.driver_master.traits import load_bootstrap_pools
 CHECKPOINT_DIR_NAME = "driver_state"
 PREFERENCES_FILE = "driver_preferences.parquet"
 CURRENT_DRIVER_VEHICLE_FILE = "current_driver_vehicle.parquet"
+_CURRENT_DRIVER_VEHICLE_DATE_COLUMNS = ("joined_on", "lease_started_on", "lease_ended_on")
+
+
+def _write_current_driver_vehicle(frame: pd.DataFrame, path: Path) -> None:
+    """`joined_on`/`lease_started_on`/`lease_ended_on` 을 명시적으로 date32 로 캐스팅해 씁니다.
+
+    이 셋 중 하나가 전부 같은 값(예: 아무도 퇴사하지 않아 `lease_ended_on` 이
+    전부 NaT)이면 pandas 의 dtype 추론이 datetime64[ns] 로 남고, pyarrow 는
+    그걸 timestamp[ns] 로 씁니다. Spark 의 Parquet 리더는 그 물리 타입을 아예
+    거부합니다(`Illegal Parquet type: INT64 (TIMESTAMP(NANOS,false))`) — 그래서
+    pandas 의 스키마 추론에 맡기지 않고 매번 date32 로 강제합니다.
+    """
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    for name in _CURRENT_DRIVER_VEHICLE_DATE_COLUMNS:
+        table = table.set_column(
+            table.schema.get_field_index(name), name, table.column(name).cast(pa.date32())
+        )
+    pq.write_table(table, path)
 
 
 @dataclass(frozen=True)
@@ -140,8 +160,8 @@ def prepare_monthly_state(
     try:
         staged_partition.mkdir(parents=True)
         write_driver_preferences(preferences, staged_partition / PREFERENCES_FILE)
-        current_driver_vehicle.to_parquet(
-            staged_partition / CURRENT_DRIVER_VEHICLE_FILE, index=False
+        _write_current_driver_vehicle(
+            current_driver_vehicle, staged_partition / CURRENT_DRIVER_VEHICLE_FILE
         )
         _validate_state(staged_partition, checkpoint_dir)
         staged_partition.rename(target)
