@@ -126,6 +126,7 @@ def test_체크포인트를_쓰고_그대로_읽는다(tmp_path):
         tmp_path, run,
         events=result.events, events_all=result.events, current=result.current,
         noise=result.noise_state, previous_month_value=None, previous_run_id=None,
+        clip_rate=result.clip_rate,
     )
     current, events_all, noise, manifest = checkpoint.read_checkpoint(tmp_path, "2024-01")
     pd.testing.assert_frame_equal(current, result.current)
@@ -147,6 +148,7 @@ def test_같은_run_id로_다시_쓰면_그대로_반환한다(tmp_path):
     kwargs = dict(
         events=result.events, events_all=result.events, current=result.current,
         noise=result.noise_state, previous_month_value=None, previous_run_id=None,
+        clip_rate=result.clip_rate,
     )
     first = checkpoint.write_checkpoint(tmp_path, run, **kwargs)
     second = checkpoint.write_checkpoint(tmp_path, run, **kwargs)
@@ -164,6 +166,7 @@ def test_다른_설정으로_같은_달을_다시_쓰면_거부한다(tmp_path):
         tmp_path, run,
         events=result.events, events_all=result.events, current=result.current,
         noise=result.noise_state, previous_month_value=None, previous_run_id=None,
+        clip_rate=result.clip_rate,
     )
     other_run = RunContext.create("2024-01", _config(51))
     with pytest.raises(checkpoint.CheckpointLineageError, match="이미 있습니다"):
@@ -171,6 +174,7 @@ def test_다른_설정으로_같은_달을_다시_쓰면_거부한다(tmp_path):
             tmp_path, other_run,
             events=result.events, events_all=result.events, current=result.current,
             noise=result.noise_state, previous_month_value=None, previous_run_id=None,
+            clip_rate=result.clip_rate,
         )
 
 
@@ -185,6 +189,7 @@ def test_config_hash가_다른_전월_체크포인트는_이어받지_않는다(
         tmp_path, first_run,
         events=result.events, events_all=result.events, current=result.current,
         noise=result.noise_state, previous_month_value=None, previous_run_id=None,
+        clip_rate=result.clip_rate,
     )
     changed_config = _config(51)
     second_run = RunContext.create("2024-02", changed_config)
@@ -212,6 +217,7 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     checkpoint.write_checkpoint(
         tmp_path, run1, events=first.events, events_all=first.events, current=first.current,
         noise=first.noise_state, previous_month_value=None, previous_run_id=None,
+        clip_rate=first.clip_rate,
     )
 
     second = synthesize_month(
@@ -226,6 +232,7 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     checkpoint.write_checkpoint(
         tmp_path, run2, events=second.events, events_all=second_events_all, current=second.current,
         noise=second.noise_state, previous_month_value="2024-01", previous_run_id=run1.run_id,
+        clip_rate=second.clip_rate,
     )
 
     run3 = RunContext.create("2024-03", config)

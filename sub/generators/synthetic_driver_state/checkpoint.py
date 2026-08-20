@@ -145,6 +145,7 @@ def write_checkpoint(
     noise: pd.DataFrame,
     previous_month_value: str | None,
     previous_run_id: str | None,
+    clip_rate: float,
 ) -> Path:
     """이 달의 이벤트·상태를 staging 에 쓰고 rename 으로 공개합니다.
 
@@ -179,6 +180,9 @@ def write_checkpoint(
             "previous_month": previous_month_value,
             "previous_run_id": previous_run_id,
             "created_at": run.created_at,
+            # D7 노이즈 클리핑 발생 비율(#608 품질 리포트) — 재생성해도 값이
+            # 그대로라 상태와 같이 계보로 남깁니다.
+            "clip_rate": clip_rate,
             "datasets": entries,
         }
         (staging / MANIFEST_FILE).write_text(

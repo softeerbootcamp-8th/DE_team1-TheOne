@@ -34,6 +34,7 @@ from sub.spark.jobs.driver_assignment.source_job import (
     SNAPSHOT_SOURCE_COLUMNS,
     TRIP_SOURCE_COLUMNS,
     _apply_test_row_limit,
+    _quality_report,
     _test_scoped_root,
     add_trip_keys,
     build_driver_vehicle_monthly_snapshot,
@@ -416,6 +417,44 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
     assert row.vehicle_model_id
 
 
+def test_품질리포트는_커버리지_천장_소진율_클리핑을_계산한다(spark):
+    """#608 — coverage/ceiling/saturation/rejection_counts/clip_rate 다섯 지표."""
+    trips = spark.createDataFrame([
+        {"pickup_datetime": datetime(2026, 1, 5, 9)},   # 월요일
+        {"pickup_datetime": datetime(2026, 1, 5, 10)},
+        {"pickup_datetime": datetime(2026, 1, 6, 9)},   # 화요일
+    ])
+    preferences = spark.createDataFrame([
+        {"target_drive_minutes": 100, "weekday_mask": 0b011},  # 월,화 활성
+    ])
+    assignments = spark.createDataFrame([
+        {
+            "pickup_datetime": datetime(2026, 1, 5, 9),
+            "dropoff_datetime": datetime(2026, 1, 5, 9, 20),
+            "deadhead_minutes": 5.0,
+        }
+    ])
+    run = RunContext.create("2026-01", _monthly_config(1))
+
+    report = _quality_report(
+        run=run,
+        trips=trips,
+        preferences=preferences,
+        assignments=assignments,
+        assignment_count=1,
+        rejected={"c1": 2},
+        clip_rate=0.03,
+    )
+
+    assert report["trips_offered"] == 3
+    assert report["trips_attributed"] == 1
+    assert report["coverage_pct"] == pytest.approx(33.33, abs=0.01)
+    assert report["capacity_drive_minutes"] == 200  # 100분 x 활성 요일 2일(월,화)
+    assert report["saturation_pct"] == pytest.approx(100.0 * 25.0 / 200.0, abs=0.01)
+    assert report["rejection_counts"] == {"c1": 2}
+    assert report["clip_rate"] == 0.03
+
+
 def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_않는다(spark, tmp_path):
     trips = spark.createDataFrame([{
         "pickup_datetime": datetime(2026, 1, 2, 9), "taxi_id": "taxi-1"
@@ -445,10 +484,10 @@ def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_�
 
     run = RunContext.create("2026-01", _monthly_config(50))
     first = write_source_release(
-        trips, snapshots, inventory, output_dir=tmp_path, run=run
+        trips, snapshots, inventory, output_dir=tmp_path, run=run, input_scope="full"
     )
     second = write_source_release(
-        trips, snapshots, inventory, output_dir=tmp_path, run=run
+        trips, snapshots, inventory, output_dir=tmp_path, run=run, input_scope="full"
     )
 
     assert first == second
