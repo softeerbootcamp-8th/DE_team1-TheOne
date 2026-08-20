@@ -45,6 +45,7 @@ from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
     HVFHVCleanTransformer,
 )
+from sub.config import load_config
 from sub.generators.synthetic_driver_trip_source.monthly import prepare_monthly_state
 from sub.spark.jobs.driver_assignment.allocator import allocate_trips
 from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
@@ -533,6 +534,7 @@ def main(args_list: list[str] | None = None) -> Path:
     parser.add_argument("--test_row_limit", type=int, default=0)
     args = parser.parse_args(args_list)
 
+    config = load_config()
     snapshot_date = date.fromisoformat(f"{args.year_month}-01")
     state_output_dir = _test_scoped_root(
         args.state_output_dir, args.test_row_limit
@@ -552,6 +554,7 @@ def main(args_list: list[str] | None = None) -> Path:
         output_dir=state_output_dir,
         snapshot_date=snapshot_date,
         seed=args.seed,
+        sample_per_month=config.bootstrap.sample_per_month,
         change_rate=args.change_rate,
     )
 
