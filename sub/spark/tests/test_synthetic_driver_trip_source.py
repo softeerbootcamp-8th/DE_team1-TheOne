@@ -14,6 +14,8 @@ import pandas as pd
 import pytest
 from pyspark.sql.functions import lit
 
+from conftest import TEST_CONFIG_DATA
+
 from schema.source.hvfhv import FINAL_SCHEMA
 from schema.source import (
     DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA,
@@ -22,13 +24,10 @@ from schema.source import (
 )
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import FINAL_SCHEMA as SOURCE_FINAL_SCHEMA
-from sub.generators.synthetic_company_snapshot.snapshot import (
-    build_company_snapshot,
-    build_vehicle_pool,
-    read_snapshot,
-    write_snapshot,
-)
+from sub.config import build_config
+from sub.generators.synthetic_company_snapshot.snapshot import read_snapshot
 from sub.generators.synthetic_driver_trip_source import monthly
+from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.source_job import (
     INVENTORY_COLUMNS,
     PRIOR_EXPERIENCE_MAX_YEARS,
@@ -42,7 +41,6 @@ from sub.spark.jobs.driver_assignment.source_job import (
     build_trip_source,
     write_source_release,
 )
-from sub.spark.jobs.driver_master.preference import build_driver_preferences
 
 
 def test_가짜원천_정제는_중앙_Silver_스키마와_구조가_같다():
@@ -81,11 +79,15 @@ def spark():
     session.stop()
 
 
-def _driver_ids() -> list[str]:
-    return [f"DRIVER_{index:06d}" for index in range(2_000)]
+def _bootstrap_pools() -> dict[str, np.ndarray]:
+    return {
+        "trip_miles": np.array([1.0, 3.0, 8.0]),
+        "trip_time_min": np.array([10.0, 20.0, 40.0]),
+    }
 
 
-def _vehicle_master() -> pd.DataFrame:
+def _vehicle_master_silver() -> pd.DataFrame:
+    """`schema.source.VEHICLE_MASTER_SCHEMA` 모양 (제원은 min/max 범위)."""
     rows = [
         {"make_key": "A", "model_key": "BOTH", "platform": "uber", "product": "Comfort"},
         {"make_key": "A", "model_key": "BOTH", "platform": "lyft", "product": "Extra Comfort"},
@@ -100,68 +102,79 @@ def _vehicle_master() -> pd.DataFrame:
             "vendor": "fasttrack",
             "min_year": 2020,
             "weekly_lease_fee": prices[row["model_key"]],
+            "combined_mpg_min": 28.0, "combined_mpg_max": 32.0,
+            "combined_kwh_per_100mi_min": 0.0, "combined_kwh_per_100mi_max": 0.0,
         }
         for row in rows
     ])
 
 
-def _bootstrap_pools() -> dict[str, np.ndarray]:
-    return {
-        "trip_miles": np.array([1.0, 3.0, 8.0]),
-        "trip_time_min": np.array([10.0, 20.0, 40.0]),
-    }
+def _monthly_config(initial_count: int):
+    data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in TEST_CONFIG_DATA.items()}
+    data["driver"] = {**data["driver"], "initial_count": initial_count}
+    return build_config(data)
 
 
-def test_월별_상태는_월초에_기존기사를_내보내고_같은수의_신규기사를_받는다(
+def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가_읽는_계약을_지킨다(
     tmp_path, monkeypatch
 ):
-    previous_date = date(2026, 8, 1)
-    target_date = date(2026, 9, 1)
-    vehicle_master = _vehicle_master()
-    pool = build_vehicle_pool(vehicle_master)
-    previous = build_company_snapshot(
-        _driver_ids(), pool, snapshot_date=previous_date
-    )
-    previous_root = tmp_path / "previous"
-    previous_dir = previous_root / f"snapshot_date={previous_date}"
-    write_snapshot(previous, previous_root, previous_date)
-    preferences = build_driver_preferences(
-        _driver_ids(), _bootstrap_pools(), as_of_date=np.datetime64(previous_date)
-    )
-    previous_preferences = previous_dir / "driver_preferences.parquet"
-    preferences.to_parquet(previous_preferences, index=False)
-    monkeypatch.setattr(monthly, "load_bootstrap_pools", lambda **_: _bootstrap_pools())
+    """#628 — lifecycle 정본이 event-sourced 체크포인트로 옮겨간 뒤의 계약.
 
-    result = monthly.prepare_monthly_state(
-        previous_snapshot_dir=previous_dir,
-        previous_preferences_path=previous_preferences,
+    월초에 기존기사 이탈·동수 신규 유입이라는 예전 규칙(evolve_company_snapshot)
+    대신, join/exit/vehicle_change가 config 비율로 독립 적용된다(D14) — 그래서
+    "이탈 수 == 신규 수"를 더는 단정하지 않는다.
+    """
+    monkeypatch.setattr(monthly, "load_bootstrap_pools", lambda **_: _bootstrap_pools())
+    monkeypatch.setattr(
+        monthly.fleet, "load_fuel_prices", lambda: {"gallon_usd": 4.0, "kwh_usd": 0.4}
+    )
+    vehicle_master_path = tmp_path / "vehicle_master.parquet"
+    _vehicle_master_silver().to_parquet(vehicle_master_path, index=False)
+    config = _monthly_config(400)  # 400 x join_rate(0.008) = 3.2 기대 — 실제 발생을 담보
+
+    first = monthly.prepare_monthly_state(
+        previous_snapshot_dir=tmp_path / "unused",
+        previous_preferences_path=None,
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
-        snapshot_date=target_date,
-        seed=42,
-        change_rate=0.005,
+        snapshot_date=date(2026, 8, 1),
+        config=config,
+        vehicle_master_path=vehicle_master_path,
+    )
+    second = monthly.prepare_monthly_state(
+        previous_snapshot_dir=tmp_path / "unused",
+        previous_preferences_path=None,
+        hvfhv_input_dir=tmp_path / "source-input",
+        output_dir=tmp_path / "state",
+        snapshot_date=date(2026, 9, 1),
+        config=config,
+        vehicle_master_path=vehicle_master_path,
     )
     rerun = monthly.prepare_monthly_state(
-        previous_snapshot_dir=previous_dir,
-        previous_preferences_path=previous_preferences,
+        previous_snapshot_dir=tmp_path / "unused",
+        previous_preferences_path=None,
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
-        snapshot_date=target_date,
-        seed=42,
-        change_rate=0.005,
+        snapshot_date=date(2026, 9, 1),
+        config=config,
+        vehicle_master_path=vehicle_master_path,
     )
+    assert rerun == second
 
-    current = read_snapshot(result.snapshot_dir)
-    ended = current.lease_contract[current.lease_contract["lease_ended_on"].notna()]
-    active = current.lease_contract[current.lease_contract["lease_ended_on"].isna()]
-    new_drivers = set(current.customer["synthetic_driver_id"]) - set(previous.customer["synthetic_driver_id"])
-    assert len(ended) == len(new_drivers) == 10
-    assert set(ended["lease_ended_on"]) == {target_date}
-    assert set(active.loc[active["lease_started_on"] == target_date, "lease_started_on"]) == {target_date}
-    assert all(driver.startswith("DRIVER_202609_") for driver in new_drivers)
-    assert len(active) == 2_000
-    assert result.snapshot_dir.name == "data_month=2026-09"
-    assert rerun == result
+    first_tables = read_snapshot(first.snapshot_dir)
+    second_tables = read_snapshot(second.snapshot_dir)
+    assert len(first_tables.customer) == 400
+    assert first.snapshot_dir.name == "data_month=2026-08"
+    assert second.snapshot_dir.name == "data_month=2026-09"
+
+    new_drivers = set(second_tables.customer["synthetic_driver_id"]) - set(
+        first_tables.customer["synthetic_driver_id"]
+    )
+    ended = second_tables.lease_contract[second_tables.lease_contract["lease_ended_on"].notna()]
+    assert len(new_drivers) >= 1, "join_rate 가 0이 아닌데 신규 유입이 없습니다"
+    assert len(ended) >= 1, "exit_rate 가 0이 아닌데 유출이 없습니다"
+    # D15: 유출 기사도 customer/taxi 행이 남아 있습니다 — lease_ended_on 만 채워짐.
+    assert set(ended["customer_id"]) <= set(second_tables.customer["customer_id"])
 
 
 def _raw_trip(pickup: datetime, **overrides) -> dict:
@@ -436,11 +449,12 @@ def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_�
         INVENTORY_COLUMNS,
     )
 
+    run = RunContext.create("2026-01", _monthly_config(50))
     first = write_source_release(
-        trips, snapshots, inventory, output_dir=tmp_path, year_month="2026-01", seed=42
+        trips, snapshots, inventory, output_dir=tmp_path, run=run
     )
     second = write_source_release(
-        trips, snapshots, inventory, output_dir=tmp_path, year_month="2026-01", seed=42
+        trips, snapshots, inventory, output_dir=tmp_path, run=run
     )
 
     assert first == second

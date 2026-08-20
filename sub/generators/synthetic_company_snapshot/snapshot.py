@@ -32,7 +32,8 @@ from schema.source import COMPANY_SNAPSHOT_SCHEMAS
 # 딱 떨어지는 날짜를 씁니다. 바꿀 때는 여기만 고치면 되고, 테스트도 이 상수를
 # 참조하므로 리터럴을 따라다닐 필요가 없습니다.
 DEFAULT_SNAPSHOT_DATE = date(2026, 1, 1)
-DEFAULT_LEASE_START_MIN = date(2023, 1, 1)
+LEASE_START_MIN = date(2023, 1, 1)
+MODEL_YEAR = 2023
 
 # 회사 원천 스냅샷 저장 스키마는 `schema/source` 가 소유합니다.
 SCHEMAS = COMPANY_SNAPSHOT_SCHEMAS
@@ -40,8 +41,11 @@ SCHEMAS = COMPANY_SNAPSHOT_SCHEMAS
 
 DRIVER_COUNT = 2_000
 DRIVER_ID_PREFIX = "SD"
+# 초기 기사단의 차량 자격 구성. 총원은 `config/generation.json` 의
+# `driver.initial_count` 가 소유하고, 여기는 **구성비**만 소유합니다.
 GROUP_COUNTS = {"BOTH": 400, "STANDARD": 1_200, "SINGLE": 400}
-GROUP_WEIGHTS = {group: count / DRIVER_COUNT for group, count in GROUP_COUNTS.items()}
+_GROUP_TOTAL = sum(GROUP_COUNTS.values())
+GROUP_WEIGHTS = {group: count / _GROUP_TOTAL for group, count in GROUP_COUNTS.items()}
 MIN_MONTHLY_CHANGE_RATE = 0.005
 MAX_MONTHLY_CHANGE_RATE = 0.01
 ID_NAMESPACE = uuid.UUID("f795ec33-9231-5f39-aade-fdf81c34bf62")
@@ -64,7 +68,7 @@ def build_driver_ids(driver_count: int = DRIVER_COUNT) -> list[str]:
 
 def build_vehicle_pool(
     vehicle_master: pd.DataFrame,
-    model_year: int = 2023,
+    model_year: int = MODEL_YEAR,
 ) -> pd.DataFrame:
     """리스 업체 차량 마스터(플랫폼·상품 한 행씩)를 차종 한 행으로 접습니다."""
     key = ["make_key", "model_key"]
@@ -120,10 +124,20 @@ def build_company_snapshot(
     *,
     seed: int = 42,
     snapshot_date: date = DEFAULT_SNAPSHOT_DATE,
-    lease_start_min: date = DEFAULT_LEASE_START_MIN,
+    lease_start_min: date = LEASE_START_MIN,
 ) -> SnapshotTables:
-    if len(driver_ids) != DRIVER_COUNT or len(set(driver_ids)) != DRIVER_COUNT:
-        raise ValueError(f"중복 없는 가상 기사 {DRIVER_COUNT}명이 필요합니다")
+    if not driver_ids or len(set(driver_ids)) != len(driver_ids):
+        raise ValueError(f"중복 없는 가상 기사 1명 이상이 필요합니다: {len(driver_ids)}명")
+    # 총원은 config(`driver.initial_count`), 구성비는 `GROUP_COUNTS` 가 소유합니다.
+    # 소유자가 둘이라 둘이 어긋날 수 있고, 어긋나면 아래 `zip(strict=True)` 가
+    # 원인을 알기 어려운 메시지로 죽습니다. 두 출처를 함께 지목하고 먼저 멈춥니다.
+    if len(driver_ids) != _GROUP_TOTAL:
+        raise ValueError(
+            f"기사 수와 그룹 구성이 어긋납니다: driver.initial_count={len(driver_ids)}, "
+            f"GROUP_COUNTS 합={_GROUP_TOTAL} ({GROUP_COUNTS}). "
+            "config/generation.json 의 driver.initial_count 또는 snapshot.py 의 "
+            "GROUP_COUNTS 를 맞추세요."
+        )
     if lease_start_min > snapshot_date:
         raise ValueError("lease_start_min은 snapshot_date보다 늦을 수 없습니다")
 
