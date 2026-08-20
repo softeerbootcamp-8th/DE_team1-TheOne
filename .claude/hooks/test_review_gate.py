@@ -88,6 +88,34 @@ class ReviewGateCheckTest(unittest.TestCase):
             self.assertIn(".claude/hooks/review_gate.py", content)
             self.assertIn(check_arg, content)
 
+    def test_cache_dir_works_inside_a_git_worktree(self) -> None:
+        """worktree의 `.git`은 디렉터리가 아니라 gitdir 포인터 파일이라, `--show-toplevel` + `.git`으로
+        캐시 경로를 만들면 그 파일 아래에 mkdir을 시도해 NotADirectoryError로 죽는다."""
+        with tempfile.TemporaryDirectory() as tmp:
+            main = Path(tmp) / "main"
+            main.mkdir()
+            run_git = lambda *args, cwd=main: subprocess.run(
+                ["git", *args], cwd=cwd, capture_output=True, text=True, check=True
+            )
+            run_git("init", "-q")
+            run_git("config", "user.email", "test@example.com")
+            run_git("config", "user.name", "test")
+            (main / "f.txt").write_text("x", encoding="utf-8")
+            run_git("add", "f.txt")
+            run_git("commit", "-q", "-m", "init")
+
+            worktree = Path(tmp) / "worktree"
+            run_git("worktree", "add", "-q", "-b", "wt-branch", str(worktree))
+
+            previous = os.getcwd()
+            os.chdir(worktree)
+            try:
+                cache = review_gate.cache_dir()
+                cache.mkdir(parents=True, exist_ok=True)
+                self.assertTrue(cache.is_dir())
+            finally:
+                os.chdir(previous)
+
     def test_pre_push_checks_only_non_deletion_branch_pushes(self) -> None:
         hook = ROOT / ".githooks/pre-push"
         zero = "0" * 40
