@@ -21,9 +21,10 @@ dependencies = [
     "shapely==2.1.2",
     "requests==2.34.2",
     "pipeline-core",
-    # S3 파티션 목록 조회(list_keys)에만 씀 — EMR이 이미 boto3를 제공하므로, 위 numpy 등과
-    # 같은 이유로 실제 EMR 7.13 이미지의 버전과 맞춰야 함(버전 미확인, TODO).
-    "boto3",
+    # S3 파티션 목록 조회(list_keys)에만 씀. EMR 7.13 이미지 실측값으로 고정
+    # (docker run --rm --entrypoint /usr/bin/python3.11
+    #   public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest -m pip list --format=freeze).
+    "boto3==1.42.78",
 ]
 
 [dependency-groups]
