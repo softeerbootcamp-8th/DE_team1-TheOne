@@ -1,13 +1,13 @@
 """HVFHV+taxi_id 데이터 Raw→Bronze 수집 시나리오.
 
 1. 월별 Parquet URL 한 번만 호출해 원본 bytes와 footer 행 수를 저장
-2. 같은 월 재실행은 같은 파일을 원자적으로 교체
+2. 같은 월 재실행은 수집 시각 파일을 추가해 이전 원본까지 보존
 3. 빈 응답과 잘못된 Parquet은 완료 파일을 공개하지 않음
 4. latest 응답의 최종 URL에서 실제 월을 확인
 5. 다른 host로 이동한 응답은 저장 전에 거부
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -23,6 +23,8 @@ YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips"
 LATEST_URL = f"{API_URL}/v1/data/latest/datasets/hvfhv_taxi_trips"
+FIRST_COLLECTED_AT = datetime(2026, 8, 20, 10, 15, 30, 123456, tzinfo=timezone.utc)
+SECOND_COLLECTED_AT = datetime(2026, 8, 20, 11, 22, 5, 654321, tzinfo=timezone.utc)
 
 
 def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
@@ -81,11 +83,17 @@ def _event(tmp_path) -> dict:
     }
 
 
+def _clock(monkeypatch, *moments: datetime) -> None:
+    values = iter(moments)
+    monkeypatch.setattr(monthly_dataset, "_utc_now", lambda: next(values), raising=False)
+
+
 def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     tmp_path, monkeypatch
 ):
     requested = []
     _api(monkeypatch, requested)
+    _clock(monkeypatch, FIRST_COLLECTED_AT)
 
     result = lambda_handler(_event(tmp_path))
 
@@ -94,9 +102,12 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     assert path.read_bytes() == CONTENT
     assert path.parent.name == f"year_month={YEAR_MONTH}"
     assert path.parent.parent.name == "hvfhv"
+    assert path.name == "20260820T101530123456Z.parquet"
+    assert result["collected_at"] == "2026-08-20T10:15:30.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
     assert set(result) == {
         "file_size_bytes",
+        "collected_at",
         "locations",
         "month",
         "row_count",
@@ -105,20 +116,23 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     }
 
 
-def test_같은월을_다시수집하면_같은파일을_원자적으로_교체한다(
+def test_같은월을_다시수집하면_수집시각파일을_추가해_이력을_보존한다(
     tmp_path, monkeypatch
 ):
     _api(monkeypatch)
+    _clock(monkeypatch, FIRST_COLLECTED_AT, SECOND_COLLECTED_AT)
     first = lambda_handler(_event(tmp_path))
 
     corrected = _parquet_bytes(taxi_id="taxi-2")
     _api(monkeypatch, content=corrected)
     second = lambda_handler(_event(tmp_path))
 
-    path = Path(second["locations"][0])
-    assert first["locations"] == second["locations"]
-    assert path.read_bytes() == corrected
-    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
+    first_path = Path(first["locations"][0])
+    second_path = Path(second["locations"][0])
+    assert first_path != second_path
+    assert first_path.read_bytes() == CONTENT
+    assert second_path.read_bytes() == corrected
+    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 2
     assert not list((tmp_path / "hvfhv").rglob("*.json"))
 
 

@@ -14,7 +14,7 @@ from main.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
-from main.airflow.common.monthly_bronze import validate_synthetic_bronze
+from main.airflow.common.monthly_bronze import validate_monthly_parquet_bronze
 from shared.airflow.common.validation import (
     parse_handler_result,
     parse_year_month,
@@ -243,7 +243,7 @@ def _bronze_quality_result(
     required_columns: list[str],
 ):
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
-    path, _ = validate_synthetic_bronze(
+    path, _ = validate_monthly_parquet_bronze(
         result,
         dataset_dir="hvfhv",
         base_dir=base_dir,

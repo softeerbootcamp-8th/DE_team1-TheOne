@@ -30,6 +30,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     payload = loader.payload
     return {
         "year_month": payload["year_month"],
+        "collected_at": payload["collected_at"],
         "year": payload["year_month"][:4],
         "month": payload["year_month"][5:],
         "row_count": result.write_result.row_count,

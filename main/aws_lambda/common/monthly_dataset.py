@@ -1,7 +1,7 @@
 """월별 원천 API의 Parquet 한 종을 Bronze에 보존합니다."""
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -36,10 +36,14 @@ def requested_year_month(event: dict) -> str | None:
     return value
 
 
-class SyntheticDatasetExtractor(Extractor):
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+class MonthlyParquetAPIExtractor(Extractor):
     """월별 API에서 요청한 데이터셋의 Parquet 파일만 내려받습니다."""
 
-    name = "synthetic_dataset"
+    name = "monthly_parquet_api"
 
     def __init__(
         self,
@@ -61,9 +65,16 @@ class SyntheticDatasetExtractor(Extractor):
             urljoin(f"{self._api_base_url}/", endpoint), timeout=self._timeout
         )
         response.raise_for_status()
+        collected_at = (
+            _utc_now()
+            .astimezone(timezone.utc)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
         return {
             "year_month": self._response_year_month(response.url),
             "dataset": self._dataset,
+            "collected_at": collected_at,
             "content": response.content,
         }
 
@@ -86,8 +97,8 @@ class SyntheticDatasetExtractor(Extractor):
         return year_month
 
 
-class SyntheticDatasetLoader(Loader):
-    """읽을 수 있는 원본 Parquet을 데이터셋별 월 파티션에 적재합니다."""
+class MonthlyParquetBronzeLoader(Loader):
+    """읽을 수 있는 월별 원본 Parquet을 수집 시각 파일로 보존합니다."""
 
     def __init__(self, base_dir: str, dataset: str, dataset_dir: str):
         self._base_dir = Path(base_dir)
@@ -114,9 +125,18 @@ class SyntheticDatasetLoader(Loader):
         return WriteResult(str(self.path), parquet.metadata.num_rows)
 
     def _data_path(self, payload: dict) -> Path:
+        collected_at = payload.get("collected_at")
+        if not isinstance(collected_at, str):
+            raise ValueError("collected_at이 누락되었습니다")
+        try:
+            timestamp = datetime.strptime(
+                collected_at, "%Y-%m-%dT%H:%M:%S.%fZ"
+            ).replace(tzinfo=timezone.utc)
+        except ValueError as exc:
+            raise ValueError("collected_at이 UTC 수집 시각 형식이 아닙니다") from exc
         return (
             self._base_dir
             / self._dataset_dir
             / f"year_month={payload['year_month']}"
-            / "data.parquet"
+            / f"{timestamp:%Y%m%dT%H%M%S%fZ}.parquet"
         )

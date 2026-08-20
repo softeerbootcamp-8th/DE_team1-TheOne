@@ -1,12 +1,12 @@
 """HVFHV+taxi_id Parquet을 데이터 제공 경로에서 수집합니다."""
 
-from main.aws_lambda.common.monthly_dataset import SyntheticDatasetExtractor
+from main.aws_lambda.common.monthly_dataset import MonthlyParquetAPIExtractor
 
 
 DATASET = "hvfhv_taxi_trips"
 
 
-class HvfhvExtractor(SyntheticDatasetExtractor):
+class HvfhvExtractor(MonthlyParquetAPIExtractor):
     def __init__(
         self,
         api_base_url: str,
