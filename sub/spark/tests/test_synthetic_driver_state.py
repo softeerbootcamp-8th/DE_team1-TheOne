@@ -24,7 +24,6 @@ from sub.prototype import synthesize as prototype_synthesize
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.candidates import REQUIRED as CANDIDATES_REQUIRED
 from sub.spark.jobs.driver_master.preference import PREFERENCE_COLUMNS
-from sub.spark.jobs.driver_master.traits import TIME_BLOCK_LABELS, WEEKDAY_LABELS
 
 SEED = 42
 POOL = {
@@ -278,16 +277,44 @@ def _synthesize_for_adapters(initial_count=50):
     return result, pool
 
 
-def test_snapshot_뷰가_candidates_필수컬럼을_전부_채운다():
+def test_snapshot_뷰가_이력기반_계산에_필요한_컬럼을_전부_채운다():
+    """이 3-테이블 뷰는 이제 candidates.py 가 아니라 `build_driver_vehicle_monthly_snapshot()`
+    (이력 기반 join_date/experience_years 계산) 전용입니다 — candidates.py 는
+    `to_current_driver_vehicle()` 한 테이블을 씁니다(#643)."""
     result, pool = _synthesize_for_adapters()
     tables = adapters.to_snapshot_tables(result.current, pool, snapshot_date=date(2024, 1, 1))
 
-    assert CANDIDATES_REQUIRED["customers"] <= set(tables.customer.columns)
-    assert CANDIDATES_REQUIRED["leases"] <= set(tables.lease_contract.columns)
-    assert CANDIDATES_REQUIRED["taxis"] <= set(tables.taxi.columns)
+    assert {"customer_id", "synthetic_driver_id"} <= set(tables.customer.columns)
+    assert {"lease_id", "customer_id", "taxi_id", "lease_started_on", "lease_ended_on"} <= set(
+        tables.lease_contract.columns
+    )
+    assert {"taxi_id", "uber_comfort_eligible", "lyft_extra_comfort_eligible"} <= set(
+        tables.taxi.columns
+    )
     assert set(tables.customer["synthetic_driver_id"]) == set(result.current["driver_id"])
     # 아직 아무도 퇴사하지 않은 초기 스냅샷 — lease_ended_on 이 전부 결측입니다.
     assert tables.lease_contract["lease_ended_on"].isna().all()
+
+
+def test_current_driver_vehicle_뷰가_candidates_필수컬럼을_전부_채운다():
+    result, pool = _synthesize_for_adapters()
+    current_driver_vehicle = adapters.to_current_driver_vehicle(result.current, pool)
+
+    assert CANDIDATES_REQUIRED["current_driver_vehicle"] <= set(current_driver_vehicle.columns)
+    assert set(current_driver_vehicle["driver_id"]) == set(result.current["driver_id"])
+    # 아직 아무도 퇴사하지 않은 초기 스냅샷 — lease_ended_on 이 전부 결측입니다.
+    assert current_driver_vehicle["lease_ended_on"].isna().all()
+
+
+def test_current_driver_vehicle_뷰는_퇴사기사의_lease_ended_on을_채운다():
+    result, pool = _synthesize_for_adapters()
+    current = result.current.copy()
+    exited_id = current.iloc[0]["driver_id"]
+    current.loc[current["driver_id"] == exited_id, "exited_on"] = pd.Timestamp("2024-02-01")
+
+    current_driver_vehicle = adapters.to_current_driver_vehicle(current, pool)
+    row = current_driver_vehicle.loc[current_driver_vehicle["driver_id"] == exited_id].iloc[0]
+    assert row["lease_ended_on"] == date(2024, 2, 1)
 
 
 def test_snapshot_뷰는_퇴사기사의_lease_ended_on을_채운다():
@@ -306,13 +333,19 @@ def test_snapshot_뷰는_퇴사기사의_lease_ended_on을_채운다():
 def test_preferences_뷰가_candidates_필수컬럼을_전부_채운다():
     result, _ = _synthesize_for_adapters()
     preferences = adapters.to_driver_preferences(result.profiles)
+    profiles = result.profiles.set_index("driver_id")
+    preferences_by_driver = preferences.set_index("driver_id")
 
     assert CANDIDATES_REQUIRED["preferences"] <= set(preferences.columns)
     assert list(preferences.columns) == PREFERENCE_COLUMNS
-    assert set(preferences["driver_id"]) == set(result.profiles["driver_id"])
-    # 요일·시간대는 문자열 라벨로 바뀌어야 합니다 (bitmask 인코딩이 라벨 문자열을 봄).
-    assert preferences["active_weekdays"].iloc[0][0] in WEEKDAY_LABELS
-    assert preferences["preferred_time_blocks"].iloc[0][0] in TIME_BLOCK_LABELS
+    assert set(preferences["driver_id"]) == set(profiles.index)
+    # weekday_mask/time_block_mask는 profiles의 정수 인덱스 리스트를 그대로
+    # 비트마스크로 인코딩한 값이어야 합니다(#643).
+    for driver_id in profiles.index[:5]:
+        weekday_mask = int(sum(1 << int(i) for i in profiles.loc[driver_id, "active_weekdays"]))
+        time_block_mask = int(sum(1 << int(i) for i in profiles.loc[driver_id, "preferred_time_blocks"]))
+        assert preferences_by_driver.loc[driver_id, "weekday_mask"] == weekday_mask
+        assert preferences_by_driver.loc[driver_id, "time_block_mask"] == time_block_mask
 
 
 # ── 4. 실측 Silver 변환 (#628) ──────────────────────────────────────────

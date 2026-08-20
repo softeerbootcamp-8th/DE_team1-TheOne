@@ -10,15 +10,17 @@ from sub.spark.jobs.driver_master.traits import (
     DISTANCE_LABELS,
     DISTANCE_MEDIUM_MAX_MI,
     DISTANCE_SHORT_MAX_MI,
-    TIME_BLOCK_LABELS,
-    WEEKDAY_LABELS,
     sample_driver_traits,
 )
 
 PREFERENCE_COLUMNS = [
     "driver_id",
-    "active_weekdays",
-    "preferred_time_blocks",
+    # 요일(0=월~6=일)·시간대(0~7) 인덱스의 비트마스크 정수입니다. 문자열 배열
+    # (예전 `active_weekdays`/`preferred_time_blocks`) 대신 candidates.py 가
+    # 비트 연산으로 멤버십을 검사합니다 — Spark 자체 벡터화 연산이라 이득이
+    # 크진 않지만, `array_contains` 와 데이터 계약을 하나로 맞춥니다(#643).
+    "weekday_mask",
+    "time_block_mask",
     "time_block_weights",
     "preferred_distance_band",
     "preferred_distance_miles",
@@ -62,6 +64,11 @@ def _distance_band(miles: float) -> str:
     if miles <= DISTANCE_MEDIUM_MAX_MI:
         return DISTANCE_LABELS[1]
     return DISTANCE_LABELS[2]
+
+
+def _bitmask(indexes) -> int:
+    """정수 인덱스 리스트 -> 비트마스크. 인덱스 i는 비트 i에 대응합니다."""
+    return int(sum(1 << int(index) for index in indexes))
 
 
 def _preferred_block_indexes(time_weights: np.ndarray) -> list[int]:
@@ -120,8 +127,8 @@ def build_driver_preferences(
 
         rows.append({
             "driver_id": driver_id,
-            "active_weekdays": [WEEKDAY_LABELS[index] for index in trait["active_weekdays"]],
-            "preferred_time_blocks": [TIME_BLOCK_LABELS[index] for index in preferred_indexes],
+            "weekday_mask": _bitmask(trait["active_weekdays"]),
+            "time_block_mask": _bitmask(preferred_indexes),
             "time_block_weights": time_weights.tolist(),
             "preferred_distance_band": _distance_band(distance_miles),
             "preferred_distance_miles": distance_miles,

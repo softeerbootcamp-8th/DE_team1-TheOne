@@ -3,30 +3,24 @@
 from pyspark.sql import DataFrame, Window
 from pyspark.sql.functions import (
     abs as spark_abs,
-    array,
-    array_contains,
-    array_distinct,
     col,
     concat_ws,
     dayofweek,
     element_at,
-    explode,
     floor,
     greatest,
     hour,
     lit,
     pmod,
+    pow as spark_pow,
     row_number,
-    sequence,
     sha2,
     size,
     to_date,
-    transform,
     when,
     xxhash64,
 )
 TIME_BLOCKS = ["00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24"]
-WEEKDAYS = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"]
 # 선호 점수 가중치는 `config/generation.json` 의 `allocation.score_weights` 가
 # 소유하고 `build_trip_candidates` 인자로 들어옵니다. 합이 1.0 이어야
 # preference_score 가 0~1 범위를 유지하며, 그 검증은 설정 로더가 합니다
@@ -40,14 +34,15 @@ REQUIRED = {
         "pickup_service_zone", "dropoff_service_zone",
     },
     "preferences": {
-        "driver_id", "active_weekdays", "preferred_time_blocks", "time_block_weights",
+        "driver_id", "weekday_mask", "time_block_mask", "time_block_weights",
         "preferred_distance_miles", "airport_preference", "manhattan_preference",
         "tier_preference",
         "target_work_minutes", "target_drive_minutes", "max_deadhead_minutes",
     },
-    "customers": {"customer_id", "synthetic_driver_id"},
-    "leases": {"lease_id", "customer_id", "taxi_id", "lease_started_on", "lease_ended_on"},
-    "taxis": {"taxi_id", "uber_comfort_eligible", "lyft_extra_comfort_eligible"},
+    "current_driver_vehicle": {
+        "driver_id", "taxi_id", "lease_started_on", "lease_ended_on",
+        "uber_comfort_eligible", "lyft_extra_comfort_eligible",
+    },
 }
 def _validate(frame: DataFrame, name: str, key: str) -> None:
     missing = REQUIRED[name] - set(frame.columns)
@@ -60,9 +55,7 @@ def _validate(frame: DataFrame, name: str, key: str) -> None:
 def build_trip_candidates(
     trips: DataFrame,
     preferences: DataFrame,
-    customers: DataFrame,
-    leases: DataFrame,
-    taxis: DataFrame,
+    current_driver_vehicle: DataFrame,
     *,
     seed: int,
     bucket_size: int,
@@ -90,9 +83,7 @@ def build_trip_candidates(
     for frame, name, key in [
         (trips, "trips", "trip_key"),
         (preferences, "preferences", "driver_id"),
-        (customers, "customers", "customer_id"),
-        (leases, "leases", "lease_id"),
-        (taxis, "taxis", "taxi_id"),
+        (current_driver_vehicle, "current_driver_vehicle", "driver_id"),
     ]:
         _validate(frame, name, key)
     invalid_weights = preferences.filter(
@@ -102,28 +93,16 @@ def build_trip_candidates(
         raise ValueError(f"time_block_weights는 {len(TIME_BLOCKS)}개여야 합니다")
 
     drivers = (
-        preferences.join(customers, preferences.driver_id == customers.synthetic_driver_id, "inner")
-        .drop("synthetic_driver_id")
-        .join(leases, "customer_id", "inner")
-        .join(taxis.withColumnRenamed("taxi_id", "_candidate_taxi_id"),
-              leases.taxi_id == col("_candidate_taxi_id"), "inner")
-        .drop(leases.taxi_id)
-        # 고객·계약·택시가 각자 `snapshot_date` 를 들고 있어 조인 3번이면 같은 이름의
-        # 컬럼이 3개가 됩니다. 그 상태로 배정의 `applyInPandas` 에 넘기면
-        # `df["snapshot_date"]` 가 AMBIGUOUS_REFERENCE 로 죽습니다.
-        #
-        # 후보에는 필요 없는 값입니다 — 스냅샷 시점은 `source_job` 이 인자로 받아
-        # 릴리스 계보에 직접 붙입니다. 이름으로 지우면 세 개가 함께 사라집니다.
-        .drop("snapshot_date")
-        .withColumn("_driver_index", row_number().over(Window.orderBy("driver_id", "lease_id")))
+        preferences.join(current_driver_vehicle, "driver_id", "inner")
+        .withColumn("_driver_index", row_number().over(Window.orderBy("driver_id")))
         # 2,000행이지만 파티션 없는 윈도우가 붙어 있어, 캐시하지 않으면 아래 조인과
-        # 이후 모든 action 에서 조인 3개 + 윈도우가 통째로 다시 돕니다. 로그에
+        # 이후 모든 action 에서 조인 + 윈도우가 통째로 다시 돕니다. 로그에
         # `WindowExec: No Partition Defined` 경고가 반복되는 것이 그 흔적입니다 (#360).
         .cache()
     )
     driver_count = drivers.count()
     if driver_count == 0:
-        raise ValueError("기사·계약·택시를 결합한 후보 차원이 비어 있습니다")
+        raise ValueError("기사·차량을 결합한 후보 차원이 비어 있습니다")
 
     # 기사를 버킷에 돌아가며 배치합니다. `_driver_index` 가 1..N 연속이라 나머지
     # 연산만으로 각 버킷에 bucket_size 명씩 고르게 들어갑니다.
@@ -143,11 +122,14 @@ def build_trip_candidates(
     # allocator._validate 가 (trip_key, driver_id) 유일성을 검사해 잡습니다.
 
     time_block_index = floor(hour("pickup_datetime") / lit(3)).cast("int")
+    # Spark `dayofweek()` 는 1=일~7=토 입니다. `weekday_mask` 는 전처리 쪽(D9 파생
+    # 시드 없는 곳, preference.py/traits.py)이 이미 쓰는 파이썬 `datetime.weekday()`
+    # 규칙(0=월~6=일)이라 여기서 그 규칙으로 맞춰 비트 인덱스를 만듭니다.
+    weekday_index = pmod(dayofweek("pickup_datetime") + lit(5), lit(7))
     candidates = (
         candidates.withColumn("_service_date", to_date("pickup_datetime"))
-        .withColumn("_weekday", element_at(array(*(lit(v) for v in WEEKDAYS)), dayofweek("pickup_datetime")))
+        .withColumn("_weekday_index", weekday_index)
         .withColumn("_time_block_index", time_block_index)
-        .withColumn("_time_block", element_at(array(*(lit(v) for v in TIME_BLOCKS)), time_block_index + 1))
     )
     active_contract = (
         (col("lease_started_on") <= col("_service_date"))
@@ -160,11 +142,14 @@ def build_trip_candidates(
         | ((col("platform_name") == "Lyft") & (col("estimated_service_tier") == "Extra Comfort")
            & col("lyft_extra_comfort_eligible"))
     )
+    # `shiftleft` 는 이동 비트수로 정수 리터럴만 받아 행마다 다른 인덱스에 못 씁니다
+    # — `2**index` 를 bigint 로 캐스팅해 같은 비트값을 만듭니다.
+    weekday_bit = spark_pow(lit(2), col("_weekday_index")).cast("bigint")
+    time_block_bit = spark_pow(lit(2), col("_time_block_index")).cast("bigint")
+    weekday_ok = col("weekday_mask").bitwiseAND(weekday_bit) != 0
+    time_block_ok = col("time_block_mask").bitwiseAND(time_block_bit) != 0
     candidates = candidates.filter(
-        active_contract
-        & array_contains("active_weekdays", col("_weekday"))
-        & array_contains("preferred_time_blocks", col("_time_block"))
-        & vehicle_eligible
+        active_contract & weekday_ok & time_block_ok & vehicle_eligible
     )
 
     is_airport = (
@@ -194,8 +179,7 @@ def build_trip_candidates(
             + col("tier_score") * score_weights["tier"],
         )
         .withColumn("tie_break", sha2(concat_ws(":", lit(seed), "trip_key", "driver_id"), 256))
-        .withColumnRenamed("_candidate_taxi_id", "taxi_id")
         # `_bucket` 은 남깁니다 — 배정이 (버킷 × 날짜) 로 묶어 처리합니다.
-        .drop("_driver_index", "_service_date", "_weekday", "_time_block_index", "_time_block")
+        .drop("_driver_index", "_service_date", "_weekday_index", "_time_block_index")
     )
     return result

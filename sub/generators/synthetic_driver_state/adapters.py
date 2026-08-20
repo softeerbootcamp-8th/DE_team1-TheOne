@@ -12,10 +12,14 @@ import pandas as pd
 
 from sub.generators.synthetic_company_snapshot.snapshot import SnapshotTables, build_vehicle_pool
 from sub.spark.jobs.driver_master.preference import PREFERENCE_COLUMNS
-from sub.spark.jobs.driver_master.traits import TIME_BLOCK_LABELS, WEEKDAY_LABELS
 
 CUSTOMER_ID_PREFIX = "CUST"
 LEASE_ID_PREFIX = "LEASE"
+
+
+def _bitmask(indexes) -> int:
+    """정수 인덱스 리스트 -> 비트마스크. `preference.py::_bitmask`와 같은 규칙."""
+    return int(sum(1 << int(index) for index in indexes))
 
 
 def vehicle_pool_from_silver(vehicle_master: pd.DataFrame) -> pd.DataFrame:
@@ -137,6 +141,39 @@ def to_snapshot_tables(
     )
 
 
+def to_current_driver_vehicle(current: pd.DataFrame, vehicle_pool: pd.DataFrame) -> pd.DataFrame:
+    """`driver_vehicle_current` 를 candidates.py 가 읽는 단일 테이블로 바꿉니다 (#643).
+
+    `customer`/`taxi`/`lease_contract` 3-테이블(`to_snapshot_tables`)은
+    `source_job.py::build_driver_vehicle_monthly_snapshot()`(이력 기반
+    `join_date`/`experience_years` 계산에 필요)가 계속 쓰므로 남겨 둡니다.
+    candidates.py는 그 달의 활성 계약 여부와 차량 자격만 있으면 되고, 그 정보는
+    이 달 `current` 한 장에 이미 다 있어서 조인 3개를 거칠 이유가 없습니다.
+
+    D15 와 같은 규칙 — 퇴사 기사도 행을 남기고 `lease_ended_on` 만 채웁니다.
+    """
+    if current.empty:
+        raise ValueError("current 가 비어 있습니다")
+    pool = vehicle_master_with_model_id(vehicle_pool)
+    by_model = pool.drop_duplicates("vehicle_model_id").set_index("vehicle_model_id")
+
+    rows = current.copy()
+    rows["_vehicle_model_id"] = rows["taxi_id"].astype(str).map(_parse_vehicle_model_id)
+    unknown = sorted(set(rows["_vehicle_model_id"]) - set(by_model.index))
+    if unknown:
+        raise ValueError(f"vehicle_pool 에 없는 차종입니다: {unknown}")
+
+    joined = rows.join(by_model, on="_vehicle_model_id")
+    return pd.DataFrame({
+        "driver_id": rows["driver_id"],
+        "taxi_id": rows["taxi_id"],
+        "lease_started_on": pd.to_datetime(rows["vehicle_since"]).dt.date,
+        "lease_ended_on": pd.to_datetime(rows["exited_on"]).dt.date,
+        "uber_comfort_eligible": joined["uber_comfort_eligible"].to_numpy(),
+        "lyft_extra_comfort_eligible": joined["lyft_extra_comfort_eligible"].to_numpy(),
+    }).reset_index(drop=True)
+
+
 def to_driver_preferences(profiles: pd.DataFrame) -> pd.DataFrame:
     """`profiles`(`synthesize_month` 산출물)를 legacy `driver_preferences` 뷰로 바꿉니다.
 
@@ -152,12 +189,8 @@ def to_driver_preferences(profiles: pd.DataFrame) -> pd.DataFrame:
 
     out = pd.DataFrame({
         "driver_id": profiles["driver_id"],
-        "active_weekdays": profiles["active_weekdays"].apply(
-            lambda days: [WEEKDAY_LABELS[d] for d in days]
-        ),
-        "preferred_time_blocks": profiles["preferred_time_blocks"].apply(
-            lambda blocks: [TIME_BLOCK_LABELS[b] for b in blocks]
-        ),
+        "weekday_mask": profiles["active_weekdays"].apply(_bitmask),
+        "time_block_mask": profiles["preferred_time_blocks"].apply(_bitmask),
         "time_block_weights": profiles["time_block_weights"],
         "preferred_distance_band": profiles["preferred_distance_band"],
         "preferred_distance_miles": profiles["distance_pref_mi"],

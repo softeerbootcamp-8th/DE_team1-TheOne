@@ -12,7 +12,7 @@
 from datetime import date, datetime
 
 import pytest
-from pyspark.sql.functions import array, concat, lit, slice
+from pyspark.sql.functions import concat, lit, slice
 
 from shared.spark.common.session import get_or_create_spark_session
 from conftest import TEST_SCORE_WEIGHTS as SCORE_WEIGHTS, TEST_SEED
@@ -37,31 +37,21 @@ def _frames(spark, *, tier="Standard", pickup_zone="Queens", bucket_size=1):
         "pickup_service_zone": "Airports" if pickup_zone == "Airport" else "Boro Zone",
         "dropoff_service_zone": "Boro Zone",
     }])
+    # 2024-03-04는 월요일(비트 0), 09-12는 시간대 인덱스 3(비트 3).
     preferences = spark.createDataFrame([{
-        "driver_id": "driver-1", "active_weekdays": ["MON"],
-        "preferred_time_blocks": ["09-12"], "time_block_weights": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        "driver_id": "driver-1", "weekday_mask": 1 << 0,
+        "time_block_mask": 1 << 3, "time_block_weights": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
         "preferred_distance_miles": 5.0, "airport_preference": 0.9,
         "manhattan_preference": 0.8, "tier_preference": 0.7,
         "target_drive_minutes": 400,
         "target_work_minutes": 480, "max_deadhead_minutes": 10,
     }])
-    # 실제 회사 스냅샷은 세 테이블이 모두 `snapshot_date` 를 갖습니다. 빼놓으면
-    # 조인 후 컬럼이 3개로 겹치는 상황을 재현하지 못합니다.
-    customers = spark.createDataFrame([{
-        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
-        "snapshot_date": date(2026, 8, 12),
-    }])
-    leases = spark.createDataFrame([{
-        "lease_id": "lease-1", "customer_id": "customer-1", "taxi_id": "taxi-1",
+    current_driver_vehicle = spark.createDataFrame([{
+        "driver_id": "driver-1", "taxi_id": "taxi-1",
         "lease_started_on": date(2024, 1, 1), "lease_ended_on": date(2099, 1, 1),
-        "snapshot_date": date(2026, 8, 12),
+        "uber_comfort_eligible": True, "lyft_extra_comfort_eligible": True,
     }])
-    taxis = spark.createDataFrame([{
-        "taxi_id": "taxi-1", "uber_comfort_eligible": True,
-        "lyft_extra_comfort_eligible": True,
-        "snapshot_date": date(2026, 8, 12),
-    }])
-    return trips, preferences, customers, leases, taxis, bucket_size
+    return trips, preferences, current_driver_vehicle, bucket_size
 
 
 def _with_drivers(frames, count):
@@ -71,19 +61,10 @@ def _with_drivers(frames, count):
             frames[1].limit(1).withColumn("driver_id", concat(lit("driver-"), suffix))
         )
         frames[2] = frames[2].unionByName(frames[2].limit(1).select(
-            concat(lit("customer-"), suffix).alias("customer_id"),
-            concat(lit("driver-"), suffix).alias("synthetic_driver_id"),
-            "snapshot_date",
-        ))
-        frames[3] = frames[3].unionByName(frames[3].limit(1).select(
-            concat(lit("lease-"), suffix).alias("lease_id"),
-            concat(lit("customer-"), suffix).alias("customer_id"),
+            concat(lit("driver-"), suffix).alias("driver_id"),
             concat(lit("taxi-"), suffix).alias("taxi_id"),
-            "lease_started_on", "lease_ended_on", "snapshot_date",
-        ))
-        frames[4] = frames[4].unionByName(frames[4].limit(1).select(
-            concat(lit("taxi-"), suffix).alias("taxi_id"),
-            "uber_comfort_eligible", "lyft_extra_comfort_eligible", "snapshot_date",
+            "lease_started_on", "lease_ended_on",
+            "uber_comfort_eligible", "lyft_extra_comfort_eligible",
         ))
     return frames
 
@@ -92,11 +73,11 @@ def _with_drivers(frames, count):
 def test_계약_요일_시간대가_맞지_않으면_후보에서_제외한다(spark, change):
     frames = list(_frames(spark))
     if change == "contract":
-        frames[3] = frames[3].withColumn("lease_ended_on", frames[3].lease_started_on)
+        frames[2] = frames[2].withColumn("lease_ended_on", frames[2].lease_started_on)
     elif change == "weekday":
-        frames[1] = frames[1].withColumn("active_weekdays", array(lit("TUE")))
+        frames[1] = frames[1].withColumn("weekday_mask", lit(1 << 1))  # 화요일만
     else:
-        frames[1] = frames[1].withColumn("preferred_time_blocks", array(lit("12-15")))
+        frames[1] = frames[1].withColumn("time_block_mask", lit(1 << 4))  # 12-15만
 
     assert build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected()).count() == 0
 
@@ -107,7 +88,7 @@ def test_계약_요일_시간대가_맞지_않으면_후보에서_제외한다(s
 )
 def test_프리미엄_운행은_해당_자격_차량만_후보다(spark, tier, eligibility):
     frames = list(_frames(spark, tier=tier))
-    frames[4] = frames[4].withColumn(eligibility, ~frames[4][eligibility])
+    frames[2] = frames[2].withColumn(eligibility, ~frames[2][eligibility])
 
     assert build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected()).count() == 0
 
@@ -214,17 +195,17 @@ def test_입력_계약_위반은_ValueError다(spark, violation):
 
 # --- 컬럼 이름 중복 (#365) -------------------------------------------------
 #
-# 고객·계약·택시가 각자 `snapshot_date` 를 들고 있어 조인 3번이면 같은 이름의 컬럼이
-# 3개가 됩니다. 그 상태로 배정의 `applyInPandas` 에 넘기면 `df["snapshot_date"]` 가
-# AMBIGUOUS_REFERENCE 로 죽습니다 — 후보 생성 단계에서는 아무 증상이 없어서,
-# 배정까지 가봐야 드러납니다.
+# customer/lease/taxi 3-테이블 조인 시절엔 각 테이블의 `snapshot_date` 가 3개로
+# 겹쳐 배정의 `applyInPandas` 가 AMBIGUOUS_REFERENCE 로 죽었습니다(#365).
+# `current_driver_vehicle` 한 테이블로 합친 뒤(#643)는 그 경로 자체가 없지만,
+# 회귀 안전망으로 남겨 둡니다 — 다음에 컬럼을 또 추가할 때도 조용히 겹치지 않게.
 
 
 def test_후보에_같은_이름의_컬럼이_두_번_들어가지_않는다(spark):
     """중복 컬럼은 실패하지 않고 다음 단계로 흘러가 거기서 터집니다."""
     frames = _frames(spark)
 
-    columns = build_trip_candidates(*frames[:5], bucket_size=frames[5], **_injected()).columns
+    columns = build_trip_candidates(*frames[:3], bucket_size=frames[3], **_injected()).columns
 
     duplicated = sorted({name for name in columns if columns.count(name) > 1})
     assert not duplicated, f"중복 컬럼: {duplicated}"

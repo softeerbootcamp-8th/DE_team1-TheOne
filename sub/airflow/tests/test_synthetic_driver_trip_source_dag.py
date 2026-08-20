@@ -62,8 +62,6 @@ def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다()
     for option in (
         "--hvfhv_input_path",
         "--zone_lookup_path",
-        "--previous_snapshot_dir",
-        "--previous_preferences_path",
         "--vehicle_master_path",
         "--state_output_dir",
         "--release_output_dir",
@@ -86,8 +84,6 @@ class _StubTaskInstance:
         return {
             "hvfhv_input_path": "h",
             "zone_lookup_path": "z",
-            "previous_snapshot_dir": "p",
-            "previous_preferences_path": "pp",
             "vehicle_master_path": "v",
             "year_month": "2026-08",
         }
@@ -177,7 +173,7 @@ def test_TLC_월별_Parquet은_전체응답을_메모리에_올리지_않고_저
 
 def _touch_snapshot(partition):
     partition.mkdir(parents=True)
-    for name in ("customer", "lease_contract", "taxi"):
+    for name in ("customer", "lease_contract", "taxi", "current_driver_vehicle"):
         (partition / f"{name}.parquet").touch()
 
 
@@ -218,8 +214,6 @@ def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(
     )
 
     assert result["snapshot_date"] == "2026-09-01"
-    assert result["previous_snapshot_dir"] == str(previous)
-    assert result["previous_preferences_path"] == str(preferences)
     assert result["vehicle_master_path"] == str(vehicle_master)
 
 

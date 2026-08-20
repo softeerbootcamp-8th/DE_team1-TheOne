@@ -21,7 +21,6 @@ from sub.spark.jobs.driver_master.preference import (
     extend_driver_preferences,
     write_driver_preferences,
 )
-from sub.spark.jobs.driver_master.traits import TIME_BLOCK_LABELS, WEEKDAY_LABELS
 
 
 def _pools() -> dict[str, np.ndarray]:
@@ -29,6 +28,11 @@ def _pools() -> dict[str, np.ndarray]:
         "trip_miles": np.array([1.0, 3.0, 8.0]),
         "trip_time_min": np.array([10.0, 20.0, 30.0]),
     }
+
+
+def _mask_indexes(mask: int) -> list[int]:
+    """비트마스크 -> 켜진 비트 인덱스 목록 (테스트 전용 디코더)."""
+    return [i for i in range(64) if (mask >> i) & 1]
 
 
 def _build(driver_ids=None) -> pd.DataFrame:
@@ -46,10 +50,12 @@ def test_기사마다_선호_한행과_허용된_요일_시간대를_생성한�
     assert result["driver_id"].is_unique
     assert set(result.columns) == set(PREFERENCE_COLUMNS)
     for row in result.itertuples():
-        assert 3 <= len(row.active_weekdays) <= 7
-        assert set(row.active_weekdays) <= set(WEEKDAY_LABELS)
-        assert len(row.preferred_time_blocks) == 3
-        assert set(row.preferred_time_blocks) <= set(TIME_BLOCK_LABELS)
+        weekdays = _mask_indexes(row.weekday_mask)
+        blocks = _mask_indexes(row.time_block_mask)
+        assert 3 <= len(weekdays) <= 7
+        assert set(weekdays) <= set(range(7))
+        assert len(blocks) == 3
+        assert set(blocks) <= set(range(8))
 
 
 def test_시간대_가중치와_거리구간이_값에_맞는다():
@@ -112,7 +118,7 @@ def test_선호_시간블록은_연속이고_가중치_합이_최대인_구간�
     result = _build([f"DRIVER_{index:06d}" for index in range(100)])
 
     for row in result.itertuples():
-        indexes = [TIME_BLOCK_LABELS.index(block) for block in row.preferred_time_blocks]
+        indexes = _mask_indexes(row.time_block_mask)
         assert indexes == list(range(min(indexes), min(indexes) + len(indexes)))
         # 아무 연속 구간이나 고르면 안 됩니다 — 가중치 합이 최대인 구간이어야 합니다.
         weights = np.asarray(row.time_block_weights, dtype=float)
@@ -153,10 +159,11 @@ def test_parquet_저장후_리스트와_숫자타입이_보존된다(tmp_path):
     path = write_driver_preferences(_build(), tmp_path / "driver_preference.parquet")
     written = pd.read_parquet(path)
 
-    assert isinstance(written.iloc[0]["active_weekdays"], np.ndarray)
     assert isinstance(written.iloc[0]["time_block_weights"], np.ndarray)
     assert pd.api.types.is_float_dtype(written["airport_preference"])
     assert pd.api.types.is_integer_dtype(written["target_daily_trips"])
+    assert pd.api.types.is_integer_dtype(written["weekday_mask"])
+    assert pd.api.types.is_integer_dtype(written["time_block_mask"])
 
 
 @pytest.mark.parametrize("driver_ids", [[], [""], ["DRIVER_1", "DRIVER_1"]])
@@ -170,7 +177,7 @@ def test_빈값과_중복기사_id를_거부한다(driver_ids):
 def test_기존선호_스키마가_깨지면_갱신을_거부한다():
     with pytest.raises(ValueError, match="컬럼 누락"):
         extend_driver_preferences(
-            _build().drop(columns="active_weekdays"),
+            _build().drop(columns="weekday_mask"),
             ["DRIVER_000001"],
             _pools(),
             as_of_date=np.datetime64("2026-09-12"),
