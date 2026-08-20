@@ -596,19 +596,20 @@ def main(args_list: list[str] | None = None) -> Path:
     leases = read(str(state.snapshot_dir / "lease_contract.parquet"))
     taxis = read(str(state.snapshot_dir / "taxi.parquet"))
     vehicle_master = read(args.vehicle_master_path)
-    candidates = build_trip_candidates(
+    candidates, candidate_rejects = build_trip_candidates(
         trips,
         preferences,
         current_driver_vehicle,
         seed=args.seed,
         bucket_size=args.bucket_size,
         score_weights=config.allocation.score_weights,
-    ).persist(StorageLevel.DISK_ONLY)
-    assignments = allocate_trips(
-        candidates, build_travel_times(trips)
-    ).persist(StorageLevel.MEMORY_AND_DISK)
+    )
+    candidates = candidates.persist(StorageLevel.DISK_ONLY)
+    assignments, allocation_rejects = allocate_trips(candidates, build_travel_times(trips))
     assignment_count = assignments.count()
     candidates.unpersist(blocking=True)
+    # 릴리스 계보가 아니라 진단용입니다 — manifest 에는 싣지 않습니다(#644).
+    print(f"배정 탈락 사유: {dict(candidate_rejects, **allocation_rejects)}")
     trip_source = build_trip_source(
         raw_trips,
         trips,

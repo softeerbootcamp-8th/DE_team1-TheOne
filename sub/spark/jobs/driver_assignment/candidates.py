@@ -5,6 +5,8 @@ from pyspark.sql.functions import (
     abs as spark_abs,
     col,
     concat_ws,
+    count,
+    countDistinct,
     dayofweek,
     element_at,
     floor,
@@ -21,6 +23,13 @@ from pyspark.sql.functions import (
     xxhash64,
 )
 TIME_BLOCKS = ["00-03", "03-06", "06-09", "09-12", "12-15", "15-18", "18-21", "21-24"]
+
+# 제약 이름. `sub/prototype/attribution.py`와 같은 이름을 씁니다 — 보고서와 코드가
+# 같은 이름을 써야 대조가 됩니다(#644).
+C1_ROSTER = "c1_roster_period"        # 트립 시각에 기사가 명부(활성 계약)에 존재
+C2_TIER = "c2_vehicle_tier"           # 배정 가능 차량 등급 = 트립 서비스 등급
+C6_PROFILE = "c6_profile_fit"         # 근무 요일·시간대 적합
+C_NO_CANDIDATE = "no_bucket_candidate"  # 버킷에 후보 기사가 아예 없음
 # 선호 점수 가중치는 `config/generation.json` 의 `allocation.score_weights` 가
 # 소유하고 `build_trip_candidates` 인자로 들어옵니다. 합이 1.0 이어야
 # preference_score 가 0~1 범위를 유지하며, 그 검증은 설정 로더가 합니다
@@ -60,8 +69,14 @@ def build_trip_candidates(
     seed: int,
     bucket_size: int,
     score_weights: dict[str, float],
-) -> DataFrame:
+) -> tuple[DataFrame, dict[str, int]]:
     """기사를 버킷으로 묶고, 각 운행을 한 버킷에만 배정해 후보를 만듭니다.
+
+    두 번째 반환값은 제약별 탈락 건수입니다(#644) — 매칭률이 낮을 때 "기사가
+    부족한가, 프로필이 안 맞는가, 등급이 안 맞는가"를 구분하기 위한 진단용이고
+    릴리스 계보에는 싣지 않습니다. 후보 행에는 boolean/문자열 사유 컬럼을 남기지
+    않고 한 번의 집계로만 셉니다 — 후보가 수백만 행이라 사유 컬럼을 실어 보내면
+    그 자체가 메모리 비용입니다.
 
     기사가 병목입니다 — 기사 2,000명이 한 달에 소화할 수 있는 운행은 약 117만 건으로
     전체 트립의 5.7% 뿐입니다. 그래서 "운행마다 기사를 뽑는" 방향으로 후보를 만들면
@@ -110,6 +125,7 @@ def build_trip_candidates(
     drivers = drivers.withColumn("_bucket", pmod(col("_driver_index") - lit(1), lit(bucket_count)))
 
     trip_base = trips.drop("driver_id", "taxi_id", "taxi_model_id")
+    total_trips = trip_base.count()
     # 운행도 같은 버킷 수로 해시해 **한 버킷에만** 들어갑니다. 해시 입력이
     # (trip_key, seed) 라 같은 seed 는 같은 분할을 냅니다.
     candidates = trip_base.withColumn(
@@ -146,11 +162,36 @@ def build_trip_candidates(
     # — `2**index` 를 bigint 로 캐스팅해 같은 비트값을 만듭니다.
     weekday_bit = spark_pow(lit(2), col("_weekday_index")).cast("bigint")
     time_block_bit = spark_pow(lit(2), col("_time_block_index")).cast("bigint")
-    weekday_ok = col("weekday_mask").bitwiseAND(weekday_bit) != 0
-    time_block_ok = col("time_block_mask").bitwiseAND(time_block_bit) != 0
-    candidates = candidates.filter(
-        active_contract & weekday_ok & time_block_ok & vehicle_eligible
+    profile_ok = (
+        (col("weekday_mask").bitwiseAND(weekday_bit) != 0)
+        & (col("time_block_mask").bitwiseAND(time_block_bit) != 0)
     )
+    # 탈락 사유별 건수를 한 번의 집계로 셉니다(#644) — 후보 행에 boolean/문자열
+    # 사유 컬럼을 남기지 않습니다. `sub/prototype/attribution.py::candidates_for()`
+    # 와 같은 순서(로스터 -> 등급 -> 프로필)로 세되, 순서는 최종 후보 집합에는
+    # 영향이 없습니다(넷 다 AND 로 묶여 필터링되므로).
+    candidates = (
+        candidates.withColumn("_c1_roster_ok", active_contract)
+        .withColumn("_c2_tier_ok", vehicle_eligible)
+        .withColumn("_c6_profile_ok", profile_ok)
+    )
+    stats = candidates.agg(
+        count(when(~col("_c1_roster_ok"), 1)).alias(C1_ROSTER),
+        count(when(col("_c1_roster_ok") & ~col("_c2_tier_ok"), 1)).alias(C2_TIER),
+        count(
+            when(col("_c1_roster_ok") & col("_c2_tier_ok") & ~col("_c6_profile_ok"), 1)
+        ).alias(C6_PROFILE),
+        countDistinct("trip_key").alias("_trips_with_candidate"),
+    ).first()
+    rejected = {
+        C_NO_CANDIDATE: total_trips - stats["_trips_with_candidate"],
+        C1_ROSTER: stats[C1_ROSTER],
+        C2_TIER: stats[C2_TIER],
+        C6_PROFILE: stats[C6_PROFILE],
+    }
+    candidates = candidates.filter(
+        col("_c1_roster_ok") & col("_c2_tier_ok") & col("_c6_profile_ok")
+    ).drop("_c1_roster_ok", "_c2_tier_ok", "_c6_profile_ok")
 
     is_airport = (
         (col("pickup_service_zone") == "Airports") | (col("dropoff_service_zone") == "Airports")
@@ -182,4 +223,4 @@ def build_trip_candidates(
         # `_bucket` 은 남깁니다 — 배정이 (버킷 × 날짜) 로 묶어 처리합니다.
         .drop("_driver_index", "_service_date", "_weekday_index", "_time_block_index")
     )
-    return result
+    return result, rejected
