@@ -17,6 +17,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
+from main.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
@@ -167,7 +168,11 @@ def combine_silver_task(**context) -> dict:
     return {"year_month": year_month, **result}
 
 
-@task(task_id="validate_silver")
+@task(task_id="validate_silver", outlets=[assets.FUEL_PRICE_SILVER])
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="combine_silver")
-    validate_silver(context["params"]["silver_dir"], result["year_month"])
+    year_month = result["year_month"]
+    validate_silver(context["params"]["silver_dir"], year_month)
+    assets.publish_month_partition(
+        context.get("outlet_events"), assets.FUEL_PRICE_SILVER, year_month
+    )
