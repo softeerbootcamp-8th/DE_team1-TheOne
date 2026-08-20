@@ -43,7 +43,7 @@ REQUIRED = {
         "driver_id", "active_weekdays", "preferred_time_blocks", "time_block_weights",
         "preferred_distance_miles", "airport_preference", "manhattan_preference",
         "tier_preference",
-        "target_daily_trips", "target_work_minutes", "max_deadhead_minutes",
+        "target_work_minutes", "target_drive_minutes", "max_deadhead_minutes",
     },
     "customers": {"customer_id", "synthetic_driver_id"},
     "leases": {"lease_id", "customer_id", "taxi_id", "lease_started_on", "lease_ended_on"},

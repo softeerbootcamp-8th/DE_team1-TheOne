@@ -42,7 +42,7 @@ def _frames(spark, *, tier="Standard", pickup_zone="Queens", bucket_size=1):
         "preferred_time_blocks": ["09-12"], "time_block_weights": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
         "preferred_distance_miles": 5.0, "airport_preference": 0.9,
         "manhattan_preference": 0.8, "tier_preference": 0.7,
-        "target_daily_trips": 10,
+        "target_drive_minutes": 400,
         "target_work_minutes": 480, "max_deadhead_minutes": 10,
     }])
     # 실제 회사 스냅샷은 세 테이블이 모두 `snapshot_date` 를 갖습니다. 빼놓으면
