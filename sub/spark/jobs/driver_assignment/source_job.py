@@ -539,8 +539,6 @@ def main(args_list: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="월별 가짜 기사-운행 원천 릴리스 생성")
     parser.add_argument("--hvfhv_input_path", required=True)
     parser.add_argument("--zone_lookup_path", required=True)
-    parser.add_argument("--previous_preferences_path", default=None)
-    parser.add_argument("--previous_snapshot_dir", required=True)
     parser.add_argument("--vehicle_master_path", required=True)
     parser.add_argument("--state_output_dir", required=True)
     parser.add_argument("--release_output_dir", required=True)
@@ -569,8 +567,6 @@ def main(args_list: list[str] | None = None) -> Path:
             f"test_row_limit={args.test_row_limit}, output={release_output_dir}"
         )
     state = prepare_monthly_state(
-        previous_snapshot_dir=args.previous_snapshot_dir,
-        previous_preferences_path=args.previous_preferences_path,
         hvfhv_input_dir=Path(args.hvfhv_input_path).parent.parent,
         output_dir=state_output_dir,
         snapshot_date=snapshot_date,
@@ -595,6 +591,7 @@ def main(args_list: list[str] | None = None) -> Path:
         error_threshold=0.2,
     ).transform(raw_trips).persist(StorageLevel.DISK_ONLY)
     preferences = read(str(state.preferences_path))
+    current_driver_vehicle = read(str(state.current_driver_vehicle_path))
     customers = read(str(state.snapshot_dir / "customer.parquet"))
     leases = read(str(state.snapshot_dir / "lease_contract.parquet"))
     taxis = read(str(state.snapshot_dir / "taxi.parquet"))
@@ -602,9 +599,7 @@ def main(args_list: list[str] | None = None) -> Path:
     candidates = build_trip_candidates(
         trips,
         preferences,
-        customers,
-        leases,
-        taxis,
+        current_driver_vehicle,
         seed=args.seed,
         bucket_size=args.bucket_size,
         score_weights=config.allocation.score_weights,

@@ -133,8 +133,6 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
     config = _monthly_config(400)  # 400 x join_rate(0.008) = 3.2 기대 — 실제 발생을 담보
 
     first = monthly.prepare_monthly_state(
-        previous_snapshot_dir=tmp_path / "unused",
-        previous_preferences_path=None,
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
         snapshot_date=date(2026, 8, 1),
@@ -142,8 +140,6 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
         vehicle_master_path=vehicle_master_path,
     )
     second = monthly.prepare_monthly_state(
-        previous_snapshot_dir=tmp_path / "unused",
-        previous_preferences_path=None,
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
         snapshot_date=date(2026, 9, 1),
@@ -151,8 +147,6 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
         vehicle_master_path=vehicle_master_path,
     )
     rerun = monthly.prepare_monthly_state(
-        previous_snapshot_dir=tmp_path / "unused",
-        previous_preferences_path=None,
         hvfhv_input_dir=tmp_path / "source-input",
         output_dir=tmp_path / "state",
         snapshot_date=date(2026, 9, 1),

@@ -2,9 +2,10 @@
 
 lifecycle·성향·차량배정의 정본은 `sub/generators/synthetic_driver_state`
 (event sourcing, #605)입니다. 여기서 쓰는 `customer`/`taxi`/`lease_contract`/
-`driver_preferences`는 그 상태를 `adapters`로 비춘 legacy 뷰일 뿐입니다 —
-기존 Spark 경로(`candidates.py`/`allocator.py`)를 바꾸지 않기 위해서입니다
-(asistobe.md Phase C).
+`driver_preferences`/`current_driver_vehicle`는 그 상태를 `adapters`로 비춘
+뷰일 뿐입니다 — `customer`/`taxi`/`lease_contract`는 이력 기반 계산(발행 계약의
+`join_date`/`experience_years`)에, `current_driver_vehicle`은 candidates.py의
+후보 생성에 씁니다(#643).
 """
 
 from __future__ import annotations
@@ -20,71 +21,60 @@ import pandas as pd
 from sub.config import GenerationConfig
 from sub.generators.synthetic_driver_state import adapters, checkpoint, fleet
 from sub.generators.synthetic_driver_state.lifecycle import synthesize_month
-from sub.generators.synthetic_company_snapshot.snapshot import read_snapshot, write_snapshot
+from sub.generators.synthetic_company_snapshot.snapshot import write_snapshot
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_master.preference import write_driver_preferences
 from sub.spark.jobs.driver_master.traits import load_bootstrap_pools
 
 CHECKPOINT_DIR_NAME = "driver_state"
 PREFERENCES_FILE = "driver_preferences.parquet"
+CURRENT_DRIVER_VEHICLE_FILE = "current_driver_vehicle.parquet"
 
 
 @dataclass(frozen=True)
 class MonthlyStatePaths:
     snapshot_dir: Path
     preferences_path: Path
+    current_driver_vehicle_path: Path
 
 
 def _data_month_partition(root: Path, value: date) -> Path:
     return root / f"data_month={value.strftime('%Y-%m')}"
 
 
-def _active_driver_ids_legacy(snapshot_dir: Path) -> list[str]:
-    tables = read_snapshot(snapshot_dir)
-    active = tables.lease_contract[tables.lease_contract["lease_ended_on"].isna()]
-    if active["customer_id"].duplicated().any() or active["taxi_id"].duplicated().any():
-        raise ValueError("기사 또는 택시에 활성 리스가 여러 건입니다")
-    mapped = active[["customer_id"]].merge(
-        tables.customer[["customer_id", "synthetic_driver_id"]],
-        on="customer_id",
-        how="left",
-        validate="one_to_one",
-    )
-    if mapped["synthetic_driver_id"].isna().any():
-        raise ValueError("활성 리스의 기사 ID를 찾을 수 없습니다")
-    return sorted(mapped["synthetic_driver_id"].astype(str))
+def _active_driver_ids(snapshot_dir: Path) -> list[str]:
+    current_driver_vehicle = pd.read_parquet(snapshot_dir / CURRENT_DRIVER_VEHICLE_FILE)
+    active = current_driver_vehicle[current_driver_vehicle["lease_ended_on"].isna()]
+    if active["driver_id"].duplicated().any():
+        raise ValueError("기사에 활성 리스가 여러 건입니다")
+    return sorted(active["driver_id"].astype(str))
 
 
 def _validate_state(snapshot_dir: Path) -> MonthlyStatePaths:
     preferences_path = snapshot_dir / PREFERENCES_FILE
+    current_driver_vehicle_path = snapshot_dir / CURRENT_DRIVER_VEHICLE_FILE
     if not preferences_path.is_file():
         raise FileNotFoundError(f"기사 선호 파일이 없습니다: {preferences_path}")
+    if not current_driver_vehicle_path.is_file():
+        raise FileNotFoundError(f"current_driver_vehicle 파일이 없습니다: {current_driver_vehicle_path}")
     preferences = pd.read_parquet(preferences_path)
     if preferences["driver_id"].isna().any() or preferences["driver_id"].duplicated().any():
         raise ValueError("기사 선호 driver_id는 null 없이 고유해야 합니다")
-    missing = set(_active_driver_ids_legacy(snapshot_dir)) - set(preferences["driver_id"].astype(str))
+    missing = set(_active_driver_ids(snapshot_dir)) - set(preferences["driver_id"].astype(str))
     if missing:
         raise ValueError(f"활성 기사 선호가 없습니다: {sorted(missing)[:5]}")
-    return MonthlyStatePaths(snapshot_dir, preferences_path)
+    return MonthlyStatePaths(snapshot_dir, preferences_path, current_driver_vehicle_path)
 
 
 def prepare_monthly_state(
     *,
-    previous_snapshot_dir: str | Path,
-    previous_preferences_path: str | Path | None,
     hvfhv_input_dir: str | Path,
     output_dir: str | Path,
     snapshot_date: date,
     config: GenerationConfig,
     vehicle_master_path: str | Path,
 ) -> MonthlyStatePaths:
-    """전월 체크포인트를 한 달 진화시켜 완결된 디렉터리로 원자적으로 공개합니다.
-
-    `previous_snapshot_dir`/`previous_preferences_path`는 현재 읽지 않습니다 —
-    상태의 정본이 `#605`의 체크포인트(`output_dir/driver_state/`)로 옮겨갔기
-    때문입니다. `source_job.py` CLI 호환을 위해 인자만 남겨 뒀고, 제거는 `#607`
-    (Spark 입력 단순화)에서 합니다.
-    """
+    """전월 체크포인트를 한 달 진화시켜 완결된 디렉터리로 원자적으로 공개합니다."""
     if snapshot_date.day != 1:
         raise ValueError("월별 snapshot_date는 매월 1일이어야 합니다")
 
@@ -137,6 +127,7 @@ def prepare_monthly_state(
 
     tables = adapters.to_snapshot_tables(result.current, vehicle_pool, snapshot_date=snapshot_date)
     preferences = adapters.to_driver_preferences(result.profiles)
+    current_driver_vehicle = adapters.to_current_driver_vehicle(result.current, vehicle_pool)
 
     output_root.mkdir(parents=True, exist_ok=True)
     staging_root = output_root / f".snapshot-{snapshot_date}-{uuid.uuid4().hex}"
@@ -146,6 +137,9 @@ def prepare_monthly_state(
         write_snapshot(tables, staging_root, snapshot_date)
         snapshot_partition.rename(staged_partition)
         write_driver_preferences(preferences, staged_partition / PREFERENCES_FILE)
+        current_driver_vehicle.to_parquet(
+            staged_partition / CURRENT_DRIVER_VEHICLE_FILE, index=False
+        )
         _validate_state(staged_partition)
         staged_partition.rename(target)
         return _validate_state(target)

@@ -67,7 +67,7 @@ def _test_scoped_root(path: str | Path, test_row_limit: int) -> Path:
 
 
 def _require_snapshot(path: Path) -> None:
-    for name in ("customer", "lease_contract", "taxi"):
+    for name in ("customer", "lease_contract", "taxi", "current_driver_vehicle"):
         if not (path / f"{name}.parquet").is_file():
             raise FileNotFoundError(f"회사 스냅샷 파일이 없습니다: {path / f'{name}.parquet'}")
 
@@ -235,15 +235,12 @@ def validate_source_inputs(source_result: dict, params: dict) -> dict:
         if not path.is_file():
             raise FileNotFoundError(f"기사-운행 입력 파일이 없습니다: {name}={path}")
 
-    preferences = snapshot_dir / "driver_preferences.parquet"
     vehicle_master = resolve_vehicle_master_path(params["vehicle_master_dir"])
     return {
         "year_month": year_month,
         "snapshot_date": target_date.isoformat(),
         "hvfhv_input_path": str(hvfhv_input),
         "zone_lookup_path": str(zone_lookup),
-        "previous_snapshot_dir": str(snapshot_dir),
-        "previous_preferences_path": str(preferences),
         "vehicle_master_path": str(vehicle_master),
     }
 
