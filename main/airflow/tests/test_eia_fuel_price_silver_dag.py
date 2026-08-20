@@ -113,7 +113,7 @@ def test_두_CLEAN_이_있으면_통과한다(tmp_path):
 @pytest.mark.parametrize(
     ("missing", "expected_dag"),
     [
-        ({"gas": False}, "eia_gas_price_bronze_to_silver_pipeline"),
+        ({"gas": False}, "eia_gas_price_raw_to_silver_pipeline"),
         ({"electricity": False}, "eia_electricity_price_bronze_to_silver_pipeline"),
     ],
 )

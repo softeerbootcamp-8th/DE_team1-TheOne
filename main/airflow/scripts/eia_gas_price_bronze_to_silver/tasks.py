@@ -9,7 +9,6 @@ EIA 파일 하나에 이력이 통째로 들어 있어 **어느 달이든** 만�
 """
 
 import calendar
-import importlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,28 +65,6 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def require_bronze(base_dir: str, year_month: str) -> str:
-    """원본이 있는지 변환 **전에** 확인합니다.
-
-    `year_month` 로 원본을 걸러내지 않습니다 — 이력 파일이라 어느 수집분이든 여러 달을
-    담고 있고, 실제로 대상 월이 들어있는지는 파일을 열어봐야 알 수 있어서 변환이
-    판단합니다(없으면 관측 시작일을 알려주며 실패). 여기서는 존재 여부만 봅니다.
-    """
-    layout = importlib.import_module("main.aws_lambda.common.eia_fuel_price_layout")
-    dag_id = "eia_gas_price_raw_to_bronze_pipeline"
-    try:
-        _, partition = layout.newest_bronze_partition(base_dir, layout.GAS_DATASET)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"{exc} — {dag_id} 을 먼저 돌리세요.") from exc
-
-    path = partition / layout.GAS_FILE_NAME
-    if not path.is_file():
-        raise FileNotFoundError(f"EIA 휘발유 원본이 없습니다: {path} — {dag_id} 을 먼저 돌리세요.")
-
-    logger.info("EIA 휘발유 원본 확인 (%s 대상): %s", year_month, path)
-    return str(path)
-
-
 def validate_silver(base_dir: str, year_month: str) -> None:
     """스키마·행 수·날짜 완결성을 확인합니다.
 
@@ -115,18 +92,11 @@ def validate_silver(base_dir: str, year_month: str) -> None:
     logger.info("EIA 휘발유 단가 Silver 검증 통과: %s rows=%d", path, table.num_rows)
 
 
-@task(task_id="check_bronze")
-def check_bronze_task(**context) -> str:
-    year_month = resolve_year_month(context)
-    logger.info("EIA 휘발유 단가 대상 월: %s", year_month)
-    require_bronze(context["params"]["bronze_dir"], year_month)
-    return year_month
-
-
 @task(task_id="bronze_to_silver")
 def bronze_to_silver_task(**context) -> dict:
     params = context["params"]
-    year_month = context["task_instance"].xcom_pull(task_ids="check_bronze")
+    year_month = resolve_year_month(context)
+    logger.info("EIA 휘발유 단가 대상 월: %s", year_month)
 
     result = lambda_handler_for("eia_gas_price_bronze_to_silver")(
         event={
