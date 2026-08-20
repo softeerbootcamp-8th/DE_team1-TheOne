@@ -105,13 +105,13 @@ def test_적재와_검증이_번갈아_이어진다(dag_module):
     assert dag.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}
 
 
-def test_Bronze_event_는_base_dir_하나만_넘긴다(dag_module, events):
+def test_Bronze_event_는_base_dir_와_collected_date_를_넘긴다(dag_module, events):
     """핸들러가 받는 인자명이 `base_dir` 입니다 — `bronze_dir` 로 바뀌면 조용히 기본 경로에 씁니다."""
     call_task(dag_module, "raw_to_bronze", params={"bronze_dir": "/tmp/bronze"})
 
     name, event = events[0]
     assert name == BRONZE_FUNCTION
-    assert event == {"base_dir": "/tmp/bronze"}
+    assert event == {"base_dir": "/tmp/bronze", "collected_date": None}
 
 
 def test_collected_date_가_없으면_Bronze_가_알려준_값을_쓴다(dag_module, events):

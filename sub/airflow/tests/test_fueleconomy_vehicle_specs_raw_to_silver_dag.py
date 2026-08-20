@@ -96,11 +96,14 @@ def test_월_1회_스케줄_계약을_지킨다():
     assert DAG.max_active_runs == 1  # 수동 트리거가 겹쳐 같은 파티션을 동시에 쓰는 것 방지
 
 
-def test_Bronze_event_는_base_dir_하나만_넘긴다(events):
+def test_Bronze_event_는_base_dir_와_collected_date_를_넘긴다(events):
     """핸들러가 받는 인자명이 `base_dir` 입니다 — `bronze_dir` 로 보내면 기본 경로에 씁니다."""
     call_task("raw_to_bronze", params={"bronze_dir": "/tmp/bronze"})
 
-    assert only_event(events, BRONZE_FUNCTION) == {"base_dir": "/tmp/bronze"}
+    assert only_event(events, BRONZE_FUNCTION) == {
+        "base_dir": "/tmp/bronze",
+        "collected_date": None,
+    }
 
 
 def test_Silver_event_는_세_키를_넘긴다(events):

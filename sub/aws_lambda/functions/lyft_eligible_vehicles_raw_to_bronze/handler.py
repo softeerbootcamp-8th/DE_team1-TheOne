@@ -1,10 +1,10 @@
 """Lyft Premium Eligible Vehicles 수집과 Bronze 적재 핸들러."""
 
 import os
-from datetime import datetime, timezone
 
 from pipeline_core.pipeline import Pipeline
 
+from shared.aws_lambda.common.collected_at import resolve_collected_at
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
 from .extractor import CITY_SLUG, LyftEligibleVehiclesExtractor
 from .loader import build_bronze_loader
@@ -18,7 +18,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
-    collected_at = datetime.now(timezone.utc)
+    collected_at = resolve_collected_at(event)
 
     result = Pipeline(
         LyftEligibleVehiclesExtractor(city_slug, collected_at),
