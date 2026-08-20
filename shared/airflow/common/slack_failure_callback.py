@@ -1,4 +1,4 @@
-"""Slack 재시도 Alert와 최종 Fail 알림 콜백."""
+"""Slack 재시도·최종 실패·Gold 성공 알림 콜백."""
 
 import logging
 
@@ -36,6 +36,15 @@ SLACK_FAILURE_TEXT = (
     "*로그*: <{{ ti.log_url }}|Airflow 로그 열기>"
 )
 
+SLACK_SUCCESS_TEXT = (
+    ":white_check_mark: *Airflow Gold Success*\n"
+    "*상태*: `Gold 생성 완료`\n"
+    "*DAG*: `{{ dag.dag_id }}`\n"
+    "*Task*: `{{ ti.task_id }}`\n"
+    "*Run*: `{{ run_id }}`\n"
+    "*로그*: <{{ ti.log_url }}|Airflow 로그 열기>"
+)
+
 try:
     from airflow.providers.slack.notifications.slack_webhook import (
         send_slack_webhook_notification,
@@ -57,8 +66,16 @@ except ImportError as exc:
             task_instance.task_id if task_instance else "unknown",
         )
 
+    def slack_success_callback(context):
+        task_instance = context.get("task_instance")
+        logger.info(
+            "Task 성공: %s",
+            task_instance.task_id if task_instance else "unknown",
+        )
+
     slack_retry_alert_callback.is_fallback = True
     slack_failure_callback.is_fallback = True
+    slack_success_callback.is_fallback = True
 else:
     slack_retry_alert_callback = send_slack_webhook_notification(
         slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
@@ -67,4 +84,8 @@ else:
     slack_failure_callback = send_slack_webhook_notification(
         slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
         text=SLACK_FAILURE_TEXT,
+    )
+    slack_success_callback = send_slack_webhook_notification(
+        slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
+        text=SLACK_SUCCESS_TEXT,
     )

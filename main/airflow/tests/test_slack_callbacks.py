@@ -1,6 +1,6 @@
 """Airflow Slack 알림 단계와 DAG 연결 시나리오.
 
-1. Retry Alert와 Final Fail은 서로 다른 상태와 공통 실행 정보를 표시
+1. Retry Alert·Final Fail·Gold Success는 서로 다른 상태와 실행 정보를 표시
 2. 모든 DAG Task는 Retry Alert와 Final Fail 콜백을 상속
 3. Slack provider가 없어도 로깅 fallback으로 DAG import 유지
 4. 그 fallback 이 지금 쓰이고 있으면 실패 — 알림이 죽은 채로 초록불이면
@@ -20,9 +20,11 @@ from shared.airflow.common.slack_failure_callback import (
     REASON_MAX_CHARS,
     SLACK_FAILURE_TEXT,
     SLACK_RETRY_ALERT_TEXT,
+    SLACK_SUCCESS_TEXT,
     SLACK_WEBHOOK_CONN_ID,
     slack_failure_callback,
     slack_retry_alert_callback,
+    slack_success_callback,
 )
 
 
@@ -80,9 +82,23 @@ def test_Slack_알림은_상태와_실행_정보를_표시한다(text, heading):
         assert expected in text
 
 
-def test_Retry_Alert와_Final_Fail은_서로_다른_콜백이다():
+def test_Retry_Fail_GoldSuccess는_서로_다른_콜백이다():
     assert SLACK_WEBHOOK_CONN_ID == "slack_webhook"
-    assert slack_retry_alert_callback is not slack_failure_callback
+    assert len(
+        {slack_retry_alert_callback, slack_failure_callback, slack_success_callback}
+    ) == 3
+
+
+def test_Gold_Success_알림은_실행정보를_표시한다():
+    assert ":white_check_mark: *Airflow Gold Success*" in SLACK_SUCCESS_TEXT
+    assert "`Gold 생성 완료`" in SLACK_SUCCESS_TEXT
+    for expected in (
+        "{{ dag.dag_id }}",
+        "{{ ti.task_id }}",
+        "{{ run_id }}",
+        "{{ ti.log_url }}",
+    ):
+        assert expected in SLACK_SUCCESS_TEXT
 
 
 @pytest.mark.parametrize("module_name,dag_variable", DAG_MODULES.items())
@@ -106,7 +122,11 @@ def test_지금_쓰는_콜백은_로깅_fallback_이_아니다():
     (#546). `apache-airflow-providers-slack` 은 이제 선언된 의존성이므로 폴백은
     "설치가 빠졌다" 는 신호입니다.
     """
-    for callback in (slack_retry_alert_callback, slack_failure_callback):
+    for callback in (
+        slack_retry_alert_callback,
+        slack_failure_callback,
+        slack_success_callback,
+    ):
         assert not getattr(callback, "is_fallback", False), (
             "Slack provider 가 없어 로깅 폴백을 쓰고 있습니다. "
             "main/airflow 에서 `uv sync --frozen` 을 돌리세요."
@@ -131,13 +151,16 @@ def test_provider가_없으면_fallback_콜백이_로그로_대체한다(caplog,
     spec.loader.exec_module(module)
 
     assert module.slack_failure_callback.is_fallback
+    assert module.slack_success_callback.is_fallback
 
     context = {"task_instance": type("TI", (), {"task_id": "smoke"})()}
     module.slack_retry_alert_callback(context)
     module.slack_failure_callback(context)
+    module.slack_success_callback(context)
 
     assert "Task 재시도 예정: smoke" in caplog.text
     assert "Task 최종 실패: smoke" in caplog.text
+    assert "Task 성공: smoke" in caplog.text
 
 
 # --- 실제 렌더 결과 (#550) ----------------------------------------------------

@@ -11,6 +11,7 @@ from main.airflow.common import assets
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
+    slack_success_callback,
 )
 from main.airflow.scripts.hvfhv_silver_to_gold.tasks import (
     DEFAULT_PATHS,
@@ -84,9 +85,12 @@ def hvfhv_silver_to_gold_pipeline():
         },
     )
 
-    validate_inputs_task.override(retries=0)() >> build >> validate_gold_task.override(
-        retries=0
+    validate_inputs = validate_inputs_task.override(retries=0)()
+    validate_gold = validate_gold_task.override(
+        retries=0,
+        on_success_callback=slack_success_callback,
     )()
+    validate_inputs >> build >> validate_gold
 
 
 # 다른 DAG 와 같은 규칙 — 팩토리 호출 결과를 모듈 속성으로 노출합니다.
