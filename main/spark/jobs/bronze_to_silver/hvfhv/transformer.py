@@ -6,7 +6,11 @@ from pipeline_core.transformer import Transformer
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, count, date_format, lit, trim, when
 
-from schema.silver.hvfhv import FINAL_SCHEMA, REQUIRED_COLUMNS
+from schema.silver.hvfhv import (
+    FINAL_SCHEMA,
+    REQUIRED_COLUMNS,
+    REQUIRED_NON_NULL_COLUMNS,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -40,7 +44,7 @@ class HVFHVCleanTransformer(Transformer):
             )
         )
         present = lit(True)
-        for name in REQUIRED_COLUMNS:
+        for name in REQUIRED_NON_NULL_COLUMNS:
             present &= col(name).isNotNull()
         for name in _STRING_COLUMNS:
             present &= trim(col(name)) != ""
@@ -98,4 +102,9 @@ class HVFHVCleanTransformer(Transformer):
         )
 
 
-__all__ = ["FINAL_SCHEMA", "REQUIRED_COLUMNS", "HVFHVCleanTransformer"]
+__all__ = [
+    "FINAL_SCHEMA",
+    "REQUIRED_COLUMNS",
+    "REQUIRED_NON_NULL_COLUMNS",
+    "HVFHVCleanTransformer",
+]

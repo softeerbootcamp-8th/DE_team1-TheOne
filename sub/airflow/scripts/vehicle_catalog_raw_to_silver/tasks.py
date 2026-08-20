@@ -254,7 +254,10 @@ def raw_to_bronze_task(**context) -> dict:
     """렌탈 업체 사이트를 수집해 Bronze 에 적재합니다."""
     params = context.get("params", {})
     result = lambda_handler_for("vehicle_catalog_raw_to_bronze", package="sub.aws_lambda.functions")(
-        event={"base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR}
+        event={
+            "base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
+            "collected_date": params.get("collected_date"),
+        }
     )
     logger.info("Raw -> Bronze 완료: %s", result)
     return result

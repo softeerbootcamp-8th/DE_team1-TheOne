@@ -95,3 +95,70 @@ def test_월간_리포트는_회사_객단가가_실제로_상승한_기사만_�
     assert report.avg_net_profit_increase_per_driver == 600.0
     assert report.avg_revenue_increase_per_driver == 1.0
     assert report.total_revenue_increase == 1.0
+
+
+# --- Gold 3종 적재 일관성 (#589) ---------------------------------------------
+# 예전에는 `toPandas()` 와 CSV 쓰기가 한 루프에 섞여 최종 경로에 바로 썼습니다.
+# 두 번째 산출물에서 죽으면 첫 파일은 이번 값, 세 번째는 직전 실행 값이 남았고,
+# 대시보드는 그 섞인 상태를 그대로 읽었습니다.
+
+def _frames(mark: str):
+    import pandas as pd
+
+    return {
+        name: pd.DataFrame([{"year_month": "2026-01", "mark": mark}])
+        for name in ("driver_aggregation", "driver_car_suggestion", "monthly_report")
+    }
+
+
+def test_세_산출물이_한꺼번에_교체된다(tmp_path):
+    from main.spark.jobs.silver_to_gold.job import _write_all_csv
+
+    written = _write_all_csv(_frames("first"), str(tmp_path), "2026-01")
+
+    assert set(written) == {"driver_aggregation", "driver_car_suggestion", "monthly_report"}
+    for path in written.values():
+        assert path.read_text().count("first") == 1
+
+
+def test_쓰는_도중_실패하면_기존_산출물이_그대로_남는다(tmp_path, monkeypatch):
+    """가장 현실적인 실패는 두 번째 산출물의 메모리 부족입니다."""
+    import pandas as pd
+
+    from main.spark.jobs.silver_to_gold import job
+
+    job._write_all_csv(_frames("first"), str(tmp_path), "2026-01")
+
+    original = pd.DataFrame.to_csv
+    calls = {"n": 0}
+
+    def fail_on_second(self, path, *args, **kwargs):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise MemoryError("toPandas 상당 지점")
+        return original(self, path, *args, **kwargs)
+
+    monkeypatch.setattr(pd.DataFrame, "to_csv", fail_on_second)
+
+    with pytest.raises(MemoryError):
+        job._write_all_csv(_frames("second"), str(tmp_path), "2026-01")
+
+    # 셋 다 직전 실행 값이어야 합니다 — 하나라도 second 면 섞인 것입니다.
+    for dataset in ("driver_aggregation", "driver_car_suggestion", "monthly_report"):
+        path = job._csv_path(str(tmp_path), dataset, "2026-01")
+        assert "second" not in path.read_text(), f"{dataset} 이 새 값으로 바뀌었습니다"
+
+
+def test_실패해도_임시_파일을_남기지_않는다(tmp_path, monkeypatch):
+    import pandas as pd
+
+    from main.spark.jobs.silver_to_gold import job
+
+    monkeypatch.setattr(
+        pd.DataFrame, "to_csv", lambda self, path, *a, **k: (_ for _ in ()).throw(OSError("디스크"))
+    )
+
+    with pytest.raises(OSError):
+        job._write_all_csv(_frames("x"), str(tmp_path), "2026-01")
+
+    assert not list(tmp_path.rglob("*.tmp"))

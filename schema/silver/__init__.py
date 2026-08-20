@@ -24,6 +24,13 @@ CLEAN_MONTHLY_TAXI_TRIP_SCHEMA = pa.schema(
     ]
 )
 
+# `on_scene_datetime` 은 원천이 채우지 않는 달이 있습니다(플랫폼에 따라 비어 있고,
+# 합성 원천도 `source_job` 에서 non-null 검사 대상이 아닙니다). 스키마에는 남기고
+# 필수값 검사에서만 뺍니다 — 기사 스냅샷의 `exit_date` 와 같은 취급입니다.
+CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL = frozenset(
+    set(CLEAN_MONTHLY_TAXI_TRIP_SCHEMA.names) - {"on_scene_datetime"}
+)
+
 """
 [CLEAN 월 기사 차량 스냅샷]
 input: schema/bronze.py - DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA

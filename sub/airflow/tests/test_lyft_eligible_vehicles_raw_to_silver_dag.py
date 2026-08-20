@@ -86,7 +86,7 @@ def test_적재와_검증이_번갈아_이어진다():
     assert DAG.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}
 
 
-def test_Bronze_event_는_base_dir_와_city_slug_두_키다(events):
+def test_Bronze_event_는_base_dir_city_slug_collected_date_를_넘긴다(events):
     """[필수] 핸들러가 받는 경로 인자명은 `base_dir` — `bronze_dir` 로 보내면 기본 경로에 씁니다."""
     call_task(
         "raw_to_bronze",
@@ -96,6 +96,7 @@ def test_Bronze_event_는_base_dir_와_city_slug_두_키다(events):
     assert only_event(events, BRONZE_FUNCTION) == {
         "base_dir": "/tmp/bronze",
         "city_slug": "chicago",
+        "collected_date": None,
     }
 
 

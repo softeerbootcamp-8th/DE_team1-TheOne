@@ -232,6 +232,7 @@ def raw_to_bronze_task(**context) -> dict:
         event={
             "base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
             "city_slug": params.get("city_slug") or DEFAULT_CITY_SLUG,
+            "collected_date": params.get("collected_date"),
         }
     )
     logger.info("Raw -> Bronze 완료: %s", result)

@@ -10,6 +10,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
+from main.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
@@ -20,7 +21,10 @@ from shared.airflow.common.validation import (
     run_gx_validation,
 )
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
-from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA
+from schema.silver import (
+    CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL as SILVER_REQUIRED_NON_NULL,
+    CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -257,11 +261,12 @@ def _bronze_quality_result(
 
 @task(
     task_id="validate_silver",
+    outlets=[assets.HVFHV_SILVER],
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_silver_task(raw_result: dict) -> None:
+def validate_silver_task(raw_result: dict, **context) -> None:
     """BashOperator 라 handler 결과 dict 가 없어, Silver 파티션을 직접 열어서 확인합니다."""
     parsed = parse_handler_result(raw_result, expected_locations=1)
     year_month = parse_year_month(
@@ -292,11 +297,14 @@ def validate_silver_task(raw_result: dict) -> None:
                 _schema_signature(expected_schema, logical_timestamp=True)
             ],
         ),
+        # NULL 건수는 전 컬럼을 요약에 담아 Data Docs 에서 보이게 두고, 검사는
+        # 필수값 계약이 있는 컬럼에만 겁니다.
         *(
             gx.expectations.ExpectColumnValuesToBeInSet(
                 column=f"{column}_null_count", value_set=[0]
             )
             for column in required_columns
+            if column in SILVER_REQUIRED_NON_NULL
         ),
     ]
     run_gx_validation(
@@ -321,3 +329,8 @@ def validate_silver_task(raw_result: dict) -> None:
         raise ValueError(
             f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
+
+    # 파일·스키마·행 수 검증이 모두 끝난 뒤에만 Gold 입력 완료를 알립니다.
+    assets.publish_month_partition(
+        context.get("outlet_events"), assets.HVFHV_SILVER, year_month
+    )

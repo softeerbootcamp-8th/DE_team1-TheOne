@@ -16,6 +16,7 @@ output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
 import argparse
 import logging
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 from pyspark.sql import DataFrame
@@ -33,16 +34,41 @@ from shared.spark.common.session import get_or_create_spark_session
 logger = logging.getLogger(__name__)
 
 
-def _write_csv(
-    dataframe: pd.DataFrame,
-    output_dir: str,
-    dataset: str,
-    year_month: str,
-) -> Path:
-    path = Path(output_dir) / dataset / f"year_month={year_month}" / f"{dataset}.csv"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    dataframe.to_csv(path, index=False)
-    return path
+def _csv_path(output_dir: str, dataset: str, year_month: str) -> Path:
+    return Path(output_dir) / dataset / f"year_month={year_month}" / f"{dataset}.csv"
+
+
+def _write_all_csv(
+    frames: dict[str, pd.DataFrame], output_dir: str, year_month: str
+) -> dict[str, Path]:
+    """3종을 임시 파일에 모두 쓴 뒤 한꺼번에 교체합니다.
+
+    예전에는 최종 경로에 바로, 그것도 `toPandas()` 와 섞어 순차로 썼습니다. 두 번째에서
+    죽으면 첫 산출물은 이번 값, 세 번째는 **직전 실행 값**이 남았고 대시보드는 그 섞인
+    상태를 그대로 읽었습니다 (#589).
+
+    파일 하나의 원자성이 아니라 **3종의 일관성**이 목적이라 교체를 끝으로 모읍니다.
+    `replace` 세 번 사이의 창은 남지만, 무거운 계산과 쓰기가 모두 끝난 뒤라 실패
+    가능성이 사실상 사라집니다.
+    """
+    temporary: dict[str, Path] = {}
+    try:
+        for dataset, frame in frames.items():
+            path = _csv_path(output_dir, dataset, year_month)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            staged = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+            frame.to_csv(staged, index=False)
+            temporary[dataset] = staged
+
+        written: dict[str, Path] = {}
+        for dataset, staged in temporary.items():
+            path = _csv_path(output_dir, dataset, year_month)
+            staged.replace(path)
+            written[dataset] = path
+        return written
+    finally:
+        for staged in temporary.values():
+            staged.unlink(missing_ok=True)
 
 
 def main(args_list: list[str] | None = None) -> None:
@@ -106,10 +132,10 @@ def main(args_list: list[str] | None = None) -> None:
             "driver_car_suggestion": recommendation,
             "monthly_report": report,
         }
-        for dataset, dataframe in outputs.items():
-            path = _write_csv(
-                dataframe.toPandas(), args.output_dir, dataset, year_month
-            )
+        # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
+        # 계산 중 실패가 기존 산출물을 남기지 않습니다.
+        frames = {name: frame.toPandas() for name, frame in outputs.items()}
+        for dataset, path in _write_all_csv(frames, args.output_dir, year_month).items():
             logger.info("gold 적재 완료: dataset=%s path=%s", dataset, path)
     finally:
         if enriched is not None:

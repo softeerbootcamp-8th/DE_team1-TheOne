@@ -5,7 +5,9 @@ from datetime import datetime, timedelta
 
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
+from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
+from main.airflow.common import assets
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
@@ -31,8 +33,10 @@ default_args = {
 @dag(
     dag_id="hvfhv_silver_to_gold_pipeline",
     default_args=default_args,
-    # 배정 DAG 가 매월 12일 01:00 이라 그 뒤에 둡니다.
-    schedule="0 3 13 * *",
+    schedule=PartitionedAssetTimetable(
+        assets=assets.GOLD_INPUTS,
+        default_partition_mapper=IdentityMapper(),
+    ),
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,

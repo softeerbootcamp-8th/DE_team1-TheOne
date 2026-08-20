@@ -4,6 +4,7 @@
 2. Uber Comfort와 Lyft Extra Comfort를 추정 없이 보존
 3. 누락 컬럼과 잘못된 license·등급 조합을 실패 처리
 4. 임계치 미만의 잘못된 행만 제거
+5. 필수값이 아닌 `on_scene_datetime` 이 전 행 NULL 이어도 살아남음
 """
 
 from datetime import datetime
@@ -14,7 +15,13 @@ from main.spark.jobs.bronze_to_silver.hvfhv.transformer import (
     FINAL_SCHEMA,
     HVFHVCleanTransformer,
 )
+from pyspark.sql.types import StructType
 from shared.spark.common.session import get_or_create_spark_session
+
+# 입력(Bronze)은 Silver 계약에서 파생 컬럼만 뺀 모양입니다.
+BRONZE_INPUT_SCHEMA = StructType(
+    [field for field in FINAL_SCHEMA if field.name != "year_month"]
+)
 
 
 @pytest.fixture(scope="module")
@@ -43,6 +50,19 @@ def _row(**overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+def test_on_scene_datetime이_전부_NULL이어도_행이_살아남는다(spark):
+    """원천이 이 컬럼을 채우지 않는 달이 있습니다(#582). 필수값 검사에서 빠졌으므로
+    전 행 NULL 이어도 불합격 0건이어야 합니다 — 예전 계약에서는 100% 탈락했습니다."""
+    rows = [_row(on_scene_datetime=None), _row(taxi_id="taxi-2", on_scene_datetime=None)]
+
+    result = HVFHVCleanTransformer(error_threshold=0.05).transform(
+        spark.createDataFrame(rows, schema=BRONZE_INPUT_SCHEMA)
+    )
+
+    assert result.count() == 2
+    assert result.filter("on_scene_datetime is not null").count() == 0
 
 
 def test_새_14컬럼과_원천_운행등급을_Silver에_그대로_전달한다(spark):
