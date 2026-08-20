@@ -75,6 +75,19 @@ def test_선호점수와_작업한도가_허용범위다():
     assert result["max_deadhead_minutes"].between(10, 25).all()
 
 
+def test_운행분_예산은_근무시간의_일부이고_상한을_넘지_않는다():
+    """`target_drive_minutes`가 candidates.py/allocator.py가 실제로 읽는 하루 상한입니다(#642).
+
+    idle_frac 이 [0.15, 0.35] 이므로 근무시간의 65~85% 여야 하고, 근무시간을 넘을 수 없습니다.
+    """
+    result = _build([f"DRIVER_{index:06d}" for index in range(100)])
+
+    assert (result["target_drive_minutes"] >= 1).all()
+    assert (result["target_drive_minutes"] <= result["target_work_minutes"]).all()
+    ratio = result["target_drive_minutes"] / result["target_work_minutes"]
+    assert ratio.between(0.64, 0.86).all()
+
+
 def test_트립수_하한_상한과_준비시간이_가이드_범위_안이다():
     result = _build([f"DRIVER_{index:06d}" for index in range(100)])
 

@@ -22,13 +22,13 @@ def spark():
     session.stop()
 
 
-def _candidate(key, driver, pickup, dropoff, pu=1, do=2, score=0.8, tie="a", trips=10, minutes=480):
+def _candidate(key, driver, pickup, dropoff, pu=1, do=2, score=0.8, tie="a", drive_minutes=480, minutes=480):
     return {
         "trip_key": key, "driver_id": driver, "taxi_id": f"taxi-{driver}",
         "pickup_datetime": pickup, "dropoff_datetime": dropoff,
         "PULocationID": pu, "DOLocationID": do,
         "preference_score": score, "tie_break": tie,
-        "target_daily_trips": trips, "target_work_minutes": minutes,
+        "target_drive_minutes": drive_minutes, "target_work_minutes": minutes,
         "max_deadhead_minutes": 15,
     }
 
@@ -51,12 +51,16 @@ def test_겹치거나_공차시간_안에_도착할_수_없는_운행은_배정�
     assert result.orderBy("trip_sequence").collect()[1].deadhead_minutes == pytest.approx(10.0)
 
 
-@pytest.mark.parametrize("limit", ["trips", "minutes"])
-def test_일일_운행수와_근무시간_상한을_넘지_않는다(spark, limit):
+@pytest.mark.parametrize("limit", ["drive_minutes", "work_minutes"])
+def test_운행분_예산과_근무시간_상한을_넘지_않는다(spark, limit):
+    """상한은 트립 수(`target_daily_trips`)가 아니라 누적 운행분(`target_drive_minutes`)입니다.
+
+    첫 트립 20분 + 둘째 30분 = 50분. 예산을 25분으로 두면 둘째에서 끊깁니다.
+    """
     first = _candidate("t1", "d1", datetime(2024, 3, 4, 9), datetime(2024, 3, 4, 9, 20))
     second = _candidate("t2", "d1", datetime(2024, 3, 4, 9, 30), datetime(2024, 3, 4, 10), pu=2)
-    if limit == "trips":
-        first["target_daily_trips"] = second["target_daily_trips"] = 1
+    if limit == "drive_minutes":
+        first["target_drive_minutes"] = second["target_drive_minutes"] = 25
     else:
         first["target_work_minutes"] = second["target_work_minutes"] = 50
 
@@ -121,7 +125,7 @@ def test_입력_계약_위반은_ValueError다(spark, violation):
 
 
 def test_빈_후보는_고정_스키마의_빈_결과다(spark):
-    schema = "trip_key string, driver_id string, taxi_id string, pickup_datetime timestamp, dropoff_datetime timestamp, PULocationID int, DOLocationID int, preference_score double, tie_break string, target_daily_trips int, target_work_minutes int, max_deadhead_minutes int"
+    schema = "trip_key string, driver_id string, taxi_id string, pickup_datetime timestamp, dropoff_datetime timestamp, PULocationID int, DOLocationID int, preference_score double, tie_break string, target_drive_minutes int, target_work_minutes int, max_deadhead_minutes int"
 
     result = allocate_trips(spark.createDataFrame([], schema), _travel(spark))
 

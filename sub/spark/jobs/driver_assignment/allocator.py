@@ -18,7 +18,7 @@ from pyspark.sql.types import (
 CANDIDATE_COLUMNS = {
     "trip_key", "driver_id", "taxi_id", "pickup_datetime", "dropoff_datetime",
     "PULocationID", "DOLocationID", "preference_score", "tie_break",
-    "target_daily_trips", "target_work_minutes", "max_deadhead_minutes",
+    "target_work_minutes", "target_drive_minutes", "max_deadhead_minutes",
 }
 TRAVEL_COLUMNS = {"from_location_id", "to_location_id", "travel_minutes"}
 ASSIGNMENT_SCHEMA = StructType([
@@ -51,7 +51,7 @@ def _validate(candidates: DataFrame, travel_times: DataFrame) -> None:
         col("trip_key").isNull() | col("driver_id").isNull() | col("taxi_id").isNull()
         | col("pickup_datetime").isNull() | col("dropoff_datetime").isNull()
         | (col("pickup_datetime") >= col("dropoff_datetime"))
-        | (col("target_daily_trips") < 1) | (col("target_work_minutes") < 1)
+        | (col("target_drive_minutes") < 1) | (col("target_work_minutes") < 1)
         | (col("max_deadhead_minutes") < 0)
     ).limit(1).count():
         raise ValueError("후보의 ID·시간·일일 한도 계약이 올바르지 않습니다")
@@ -88,49 +88,111 @@ def allocation_input(candidates: DataFrame) -> DataFrame:
 
 
 def _allocate_day(frame: pd.DataFrame, travel: dict[tuple[int, int], float]) -> pd.DataFrame:
-    state: dict[str, dict] = {}
-    assigned: list[dict] = []
+    """제약 3·4·5 를 순차 상태로 지키며 greedy 배정.
+
+    이 세 제약은 벡터화할 수 없습니다. "이 기사가 이 트립을 받을 수 있는가"가
+    그 기사가 **이미 받은 트립들**에 의존하기 때문입니다. 그래서 픽업 시각 순으로
+    훑습니다 — 여기 들어오는 `frame` 은 이미 (버킷, 서비스일) 하나 몫뿐이라
+    (`allocate_trips` 의 `groupBy` 가 나눠 줌) 그룹 경계를 다시 추적할 필요가
+    없습니다.
+
+    벡터화가 안 되는 것과 **pandas 객체를 행마다 만드는 것**은 다른 문제입니다.
+    예전에는 트립마다 `groupby("trip_key")` + `itertuples` 를 불렀는데, 트립
+    하나당 namedtuple 생성 + 컬럼별 `.iloc` 가 붙습니다. 482k 트립 한 part 에서
+    그것만 494초 — 전체 실행의 93% 였습니다(`docs/blog/03_speed_optimization_reference.md`
+    7.3). 지금은 정렬한 뒤 컬럼을 파이썬 리스트로 뽑아 한 번만 훑고, 트립 경계에서
+    "이미 배정됨" 플래그로 다음 후보로 넘어갑니다 — `sub/prototype/attribution.py::allocate()`
+    와 같은 알고리즘입니다.
+
+    하루 상한은 트립 수(`target_daily_trips`)가 아니라 누적 운행분(승객 태운 시간 +
+    공차, `target_drive_minutes`)입니다 — 첫 트립도 예산을 넘을 수 있어서
+    `previous` 유무와 무관하게 매 트립에서 봅니다.
+    """
+    if frame.empty:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+
     ordered = frame.sort_values(
         ["pickup_datetime", "trip_key", "preference_score", "tie_break", "driver_id"],
         ascending=[True, True, False, True, True],
         kind="stable",
     )
-    for _, trip_candidates in ordered.groupby("trip_key", sort=False):
-        for candidate in trip_candidates.itertuples(index=False):
-            previous = state.get(candidate.driver_id)
-            deadhead = 0.0
-            sequence = 1
-            if previous:
-                if previous["count"] >= candidate.target_daily_trips:
+
+    trip_keys = ordered["trip_key"].tolist()
+    driver_ids = ordered["driver_id"].tolist()
+    pickups = ordered["pickup_datetime"].tolist()
+    dropoffs = ordered["dropoff_datetime"].tolist()
+    pickup_zones = ordered["PULocationID"].tolist()
+    dropoff_zones = ordered["DOLocationID"].tolist()
+    work_minute_caps = ordered["target_work_minutes"].tolist()
+    drive_budgets = ordered["target_drive_minutes"].tolist()
+    deadhead_caps = ordered["max_deadhead_minutes"].tolist()
+
+    picked: list[int] = []
+    sequences: list[int] = []
+    deadheads: list[float] = []
+
+    # driver_id -> (첫 픽업, 막 하차, 막 하차 구역, 트립 수, 누적 운행분)
+    driver_state: dict[str, tuple] = {}
+    current_trip = None
+    trip_taken = False
+
+    for row in range(len(trip_keys)):
+        trip_key = trip_keys[row]
+        if trip_key != current_trip:
+            current_trip = trip_key
+            trip_taken = False
+        elif trip_taken:
+            continue  # 이 트립은 이미 배정됐습니다 (예전의 `break`)
+
+        driver_id = driver_ids[row]
+        previous = driver_state.get(driver_id)
+        pickup = pickups[row]
+        dropoff = dropoffs[row]
+        pickup_zone = int(pickup_zones[row])
+        deadhead = 0.0
+        sequence = 1
+        first_pickup = pickup
+        used = 0.0
+        if previous is not None:
+            first_pickup, previous_dropoff, previous_zone, count, used = previous
+            if previous_zone != pickup_zone:
+                pair = (previous_zone, pickup_zone)
+                if pair not in travel:
                     continue
-                pair = (int(previous["dropoff_zone"]), int(candidate.PULocationID))
-                if pair[0] != pair[1] and pair not in travel:
-                    continue
-                deadhead = 0.0 if pair[0] == pair[1] else travel[pair]
-                if deadhead > candidate.max_deadhead_minutes:
-                    continue
-                if previous["dropoff"] + timedelta(minutes=deadhead) > candidate.pickup_datetime:
-                    continue
-                if (candidate.dropoff_datetime - previous["first_pickup"]).total_seconds() / 60 > candidate.target_work_minutes:
-                    continue
-                sequence = previous["count"] + 1
-            state[candidate.driver_id] = {
-                "first_pickup": previous["first_pickup"] if previous else candidate.pickup_datetime,
-                "dropoff": candidate.dropoff_datetime,
-                "dropoff_zone": candidate.DOLocationID,
-                "count": sequence,
-            }
-            assigned.append({
-                "trip_key": candidate.trip_key, "driver_id": candidate.driver_id,
-                "taxi_id": candidate.taxi_id, "service_date": candidate.pickup_datetime.date(),
-                "trip_sequence": sequence, "pickup_datetime": candidate.pickup_datetime,
-                "dropoff_datetime": candidate.dropoff_datetime,
-                "PULocationID": int(candidate.PULocationID), "DOLocationID": int(candidate.DOLocationID),
-                "preference_score": float(candidate.preference_score), "tie_break": candidate.tie_break,
-                "deadhead_minutes": float(deadhead),
-            })
-            break
-    return pd.DataFrame(assigned, columns=OUTPUT_COLUMNS)
+                deadhead = travel[pair]
+            if deadhead > deadhead_caps[row]:
+                continue
+            if previous_dropoff + timedelta(minutes=deadhead) > pickup:
+                continue
+            if (dropoff - first_pickup).total_seconds() / 60 > work_minute_caps[row]:
+                continue
+            sequence = count + 1
+        drive = (dropoff - pickup).total_seconds() / 60 + deadhead
+        if used + drive > drive_budgets[row]:
+            continue
+        driver_state[driver_id] = (
+            first_pickup, dropoff, int(dropoff_zones[row]), sequence, used + drive
+        )
+        picked.append(row)
+        sequences.append(sequence)
+        deadheads.append(deadhead)
+        trip_taken = True
+
+    if not picked:
+        return pd.DataFrame(columns=OUTPUT_COLUMNS)
+    assigned = ordered.iloc[picked][[
+        "trip_key", "driver_id", "taxi_id", "pickup_datetime", "dropoff_datetime",
+        "PULocationID", "DOLocationID", "preference_score", "tie_break",
+    ]].reset_index(drop=True)
+    assigned["service_date"] = [pickups[row].date() for row in picked]
+    assigned["trip_sequence"] = sequences
+    assigned["deadhead_minutes"] = deadheads
+    # 존 ID 는 Arrow 로 올라올 때 int32 일 수 있습니다. 예전 경로(파이썬 int)와
+    # 같은 int64 로 맞춰 산출물 스키마가 바뀌지 않게 합니다.
+    assigned["PULocationID"] = assigned["PULocationID"].astype("int64")
+    assigned["DOLocationID"] = assigned["DOLocationID"].astype("int64")
+    assigned["preference_score"] = assigned["preference_score"].astype("float64")
+    return assigned[OUTPUT_COLUMNS]
 
 
 def allocate_trips(candidates: DataFrame, travel_times: DataFrame) -> DataFrame:

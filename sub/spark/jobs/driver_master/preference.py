@@ -25,10 +25,13 @@ PREFERENCE_COLUMNS = [
     "airport_preference",
     "manhattan_preference",
     "tier_preference",
+    # 참고용 근사치입니다 — candidates.py/allocator.py는 더 이상 이 값을 하루 상한으로
+    # 읽지 않습니다(#642). 실제 상한은 target_drive_minutes(분 예산)입니다.
     "target_daily_trips",
     "min_daily_trips",
     "max_daily_trips",
     "target_work_minutes",
+    "target_drive_minutes",
     "max_deadhead_minutes",
     "buffer_seconds",
 ]
@@ -101,6 +104,12 @@ def build_driver_preferences(
         distance_miles = float(trait["distance_pref_mi"])
         work_minutes = int(round(float(trait["work_mean_h"]) * 60))
         trip_minutes = max(float(trait["avg_trip_duration_min"]), 1.0)
+        target_work_minutes = max(60, min(work_minutes, 12 * 60))
+        # 근무시간 중 실제로 승객을 태우는 비중 (D7과 같은 idle_frac 기준).
+        # `sub/generators/synthetic_driver_state/traits.py`는 반대 방향으로 계산합니다
+        # (target_drive_minutes가 1차, target_work_minutes = 그걸 idle_frac로 나눈 값)
+        # — 여기는 target_work_minutes가 이미 1차 산출값이라 같은 관계를 거꾸로 씁니다.
+        target_drive_minutes = int(round(target_work_minutes * (1.0 - float(trait["idle_frac"]))))
 
         min_daily_trips = int(rng.integers(*MIN_DAILY_TRIPS_RANGE))
         max_daily_trips = max(min_daily_trips, int(rng.integers(*MAX_DAILY_TRIPS_RANGE)))
@@ -131,7 +140,8 @@ def build_driver_preferences(
             "target_daily_trips": target_daily_trips,
             "min_daily_trips": min_daily_trips,
             "max_daily_trips": max_daily_trips,
-            "target_work_minutes": max(60, min(work_minutes, 12 * 60)),
+            "target_work_minutes": target_work_minutes,
+            "target_drive_minutes": target_drive_minutes,
             # 5~15분(중앙 10분)이던 값입니다. 구역쌍 이동시간(taxi_zone_travel_times,
             # 50,633쌍)의 중앙값이 33.4분이라 중앙 기사가 하차 후 이어갈 수 있는
             # 구역쌍이 2.8% 뿐이었습니다. 배정 결과에서 0분 초과 공차의 최대값이
