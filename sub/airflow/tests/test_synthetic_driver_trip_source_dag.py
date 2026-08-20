@@ -30,7 +30,7 @@ from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module
 
 sys.path.append(str(PROJECT_ROOT))
-from sub.source_api.server import create_server
+from sub.source_api.server import LocalDatasetStorage, create_server
 
 DAG = dag_module.synthetic_driver_trip_source_dag
 
@@ -255,11 +255,15 @@ def test_릴리스행수가_manifest와_다르면_실패한다(tmp_path):
 
 
 def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다(tmp_path):
+    """manifest의 dataset 키는 생성 DAG가 쓰는 이름 그대로지만, 공개 API는 이름이
+    다른 것(hvfhv_taxi_trips -> monthly_taxi_trip)이 있어 URL은 그걸로 만듭니다
+    (LocalDatasetStorage의 번역표 참고)."""
     release, manifest = _write_release(tmp_path)
-    server = create_server(tmp_path, port=0)
+    server = create_server(LocalDatasetStorage(tmp_path), port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
+    public_names = {"hvfhv_taxi_trips": "monthly_taxi_trip"}
     try:
         for path in ("/v1/data/latest", "/v1/data/2026-09"):
             with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -267,7 +271,8 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
             assert exc_info.value.code == 404
 
         for dataset in manifest["datasets"]:
-            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{dataset}"
+            public_name = public_names.get(dataset, dataset)
+            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{public_name}"
             with urllib.request.urlopen(dataset_url) as response:
                 assert response.headers["Content-Type"] == (
                     "application/vnd.apache.parquet"
@@ -277,7 +282,7 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
                 ).read_bytes()
 
             with urllib.request.urlopen(
-                f"{base_url}/v1/data/latest/datasets/{dataset}"
+                f"{base_url}/v1/data/latest/datasets/{public_name}"
             ) as response:
                 assert response.geturl() == dataset_url
                 assert response.read() == (

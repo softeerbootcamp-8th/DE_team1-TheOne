@@ -3,7 +3,7 @@
 from main.aws_lambda.common.monthly_dataset import SyntheticDatasetExtractor
 
 
-DATASET = "hvfhv_taxi_trips"
+DATASET = "monthly_taxi_trip"
 
 
 class HvfhvExtractor(SyntheticDatasetExtractor):
