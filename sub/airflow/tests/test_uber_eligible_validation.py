@@ -26,10 +26,10 @@ layout = importlib.import_module(
     "sub.aws_lambda.common.uber_eligible_vehicles_layout"
 )
 bronze_loader = importlib.import_module(
-    "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze.loader"
+    "sub.aws_lambda.functions.uber_eligible_vehicles_source_to_raw.loader"
 )
 silver_loader = importlib.import_module(
-    "sub.aws_lambda.functions.uber_eligible_vehicles_bronze_to_silver.loader"
+    "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_curated.loader"
 )
 
 DAG = dag_module.uber_eligible_vehicles_dag
@@ -78,7 +78,7 @@ def silver_rows(count: int = 2) -> list[dict]:
 def write_bronze_records(
     bronze_dir, records: list[dict], *, city: str = CITY, schema=None
 ) -> str:
-    path = layout.bronze_file(str(bronze_dir), city, COLLECTED_AT)
+    path = layout.raw_file(str(bronze_dir), city, COLLECTED_AT)
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(
         pa.Table.from_pylist(records, schema=schema or bronze_loader.SCHEMA), path
@@ -91,7 +91,7 @@ def write_bronze(bronze_dir, city: str = CITY, rows: int = 3) -> str:
 
 
 def write_silver(silver_dir, city: str, rows: list[dict], schema=None) -> str:
-    path = layout.silver_file(str(silver_dir), COLLECTED_AT.date(), city)
+    path = layout.curated_file(str(silver_dir), COLLECTED_AT.date(), city)
     path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(rows, schema=schema or silver_loader.SCHEMA)
     pq.write_table(table, path)
@@ -429,7 +429,7 @@ def test_collected_date_형식이_틀리면_실패한다(tmp_path, collected_dat
 
 
 def test_파일이_없으면_실패한다(tmp_path):
-    missing = str(layout.bronze_file(str(tmp_path), CITY, COLLECTED_AT))
+    missing = str(layout.raw_file(str(tmp_path), CITY, COLLECTED_AT))
 
     with pytest.raises(FileNotFoundError):
         validate_bronze(
@@ -440,7 +440,7 @@ def test_파일이_없으면_실패한다(tmp_path):
 
 def test_도시_파일이_0바이트면_실패한다(tmp_path):
     """도시 하나가 통째로 빠지는 상황입니다. 합계만 보면 못 잡습니다."""
-    path = layout.silver_file(str(tmp_path), COLLECTED_AT.date(), CITY)
+    path = layout.curated_file(str(tmp_path), COLLECTED_AT.date(), CITY)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
 

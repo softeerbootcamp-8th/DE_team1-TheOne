@@ -27,10 +27,10 @@ from dags import vehicle_catalog_raw_to_silver_dag as dag_module
 
 layout = importlib.import_module("sub.aws_lambda.common.vehicle_catalog_layout")
 bronze_loader = importlib.import_module(
-    "sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.loader"
+    "sub.aws_lambda.functions.vehicle_catalog_source_to_raw.loader"
 )
 silver_loader = importlib.import_module(
-    "sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.loader"
+    "sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.loader"
 )
 
 DAG = dag_module.vehicle_catalog_dag
@@ -84,7 +84,7 @@ def silver_rows(count: int = 2) -> list[dict]:
 
 
 def write_silver(silver_dir, vendor: str, rows: list[dict], schema=None) -> str:
-    path = layout.silver_file(str(silver_dir), COLLECTED_AT.date(), vendor)
+    path = layout.curated_file(str(silver_dir), COLLECTED_AT.date(), vendor)
     path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(rows, schema=schema or silver_loader.SCHEMA)
     pq.write_table(table, path)
@@ -98,7 +98,7 @@ def write_bronze_records(
     vendor: str = VENDOR,
     schema=None,
 ) -> str:
-    path = layout.bronze_file(str(bronze_dir), vendor, COLLECTED_AT)
+    path = layout.raw_file(str(bronze_dir), vendor, COLLECTED_AT)
     path.parent.mkdir(parents=True, exist_ok=True)
     table = pa.Table.from_pylist(
         records,
@@ -511,7 +511,7 @@ def test_collected_date_형식이_틀리면_실패한다(tmp_path, collected_dat
 
 
 def test_파일이_없으면_실패한다(tmp_path):
-    missing = str(layout.bronze_file(str(tmp_path), VENDOR, COLLECTED_AT))
+    missing = str(layout.raw_file(str(tmp_path), VENDOR, COLLECTED_AT))
 
     with pytest.raises(FileNotFoundError):
         validate_bronze(
@@ -521,7 +521,7 @@ def test_파일이_없으면_실패한다(tmp_path):
 
 def test_업체_파일이_0바이트면_실패한다(tmp_path):
     """업체 하나가 통째로 빠지는 상황입니다. 합계만 보면 못 잡습니다."""
-    path = layout.silver_file(str(tmp_path), COLLECTED_AT.date(), VENDOR)
+    path = layout.curated_file(str(tmp_path), COLLECTED_AT.date(), VENDOR)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
 

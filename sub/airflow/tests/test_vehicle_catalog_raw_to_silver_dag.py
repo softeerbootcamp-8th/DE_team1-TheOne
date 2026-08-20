@@ -25,8 +25,8 @@ DAG_FILE = (
     Path(__file__).resolve().parents[1] / "dags" / "vehicle_catalog_raw_to_silver_dag.py"
 )
 DAG_ID = "vehicle_catalog_raw_to_silver_pipeline"
-BRONZE_FUNCTION = "vehicle_catalog_raw_to_bronze"
-SILVER_FUNCTION = "vehicle_catalog_bronze_to_silver"
+BRONZE_FUNCTION = "vehicle_catalog_source_to_raw"
+SILVER_FUNCTION = "vehicle_catalog_raw_to_curated"
 
 # Bronze 가 돌려줬다고 가정할 수집일. 아래 PARAM_DATE 와 반드시 달라야
 # "어느 쪽 값이 갔는지" 를 구분할 수 있습니다.
@@ -165,8 +165,8 @@ def test_Silver_event_는_세_키를_넘긴다(dag_module, events):
 
     assert silver_event(events) == {
         "collected_date": BRONZE_DATE,
-        "bronze_dir": "/tmp/bronze",
-        "silver_dir": "/tmp/silver",
+        "raw_dir": "/tmp/bronze",
+        "curated_dir": "/tmp/silver",
     }
 
 
@@ -180,7 +180,7 @@ def test_경로_파라미터가_비면_DAG_기본값을_쓴다(dag_module, event
         params={},
     )
 
-    assert events[0][1]["base_dir"] == dag_module.DEFAULT_BRONZE_DIR
+    assert events[0][1]["base_dir"] == dag_module.DEFAULT_RAW_DIR
     silver = silver_event(events)
-    assert silver["bronze_dir"] == dag_module.DEFAULT_BRONZE_DIR
-    assert silver["silver_dir"] == dag_module.DEFAULT_SILVER_DIR
+    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR

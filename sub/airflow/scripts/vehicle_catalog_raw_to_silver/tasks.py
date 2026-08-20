@@ -23,8 +23,8 @@ from shared.airflow.common.validation import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BRONZE_DIR = os.getenv("BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze"))
-DEFAULT_SILVER_DIR = os.getenv("SILVER_DIR", str(PROJECT_ROOT / "data" / "silver"))
+DEFAULT_RAW_DIR = os.getenv("RAW_DIR", str(PROJECT_ROOT / "data" / "source" / "raw"))
+DEFAULT_CURATED_DIR = os.getenv("CURATED_DIR", str(PROJECT_ROOT / "data" / "source" / "curated"))
 
 
 def run_gx_bronze_validation(
@@ -251,33 +251,33 @@ def run_gx_silver_validation(
 
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
-    """렌탈 업체 사이트를 수집해 Bronze 에 적재합니다."""
+    """렌탈 업체 사이트를 수집해 Raw 에 적재합니다."""
     params = context.get("params", {})
-    result = lambda_handler_for("vehicle_catalog_raw_to_bronze", package="sub.aws_lambda.functions")(
+    result = lambda_handler_for("vehicle_catalog_source_to_raw", package="sub.aws_lambda.functions")(
         event={
-            "base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
+            "base_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
             "collected_date": params.get("collected_date"),
         }
     )
-    logger.info("Raw -> Bronze 완료: %s", result)
+    logger.info("Source -> Raw 완료: %s", result)
     return result
 
 
 @task(task_id="bronze_to_silver")
 def bronze_to_silver_task(raw_result: dict, **context) -> dict:
-    """Bronze 차량 대장의 조인 키를 정규화해 Silver 로 적재합니다."""
+    """Raw 차량 대장의 조인 키를 정규화해 Curated 로 적재합니다."""
     params = context.get("params", {})
     collected_date = (params.get("collected_date") or "").strip() or raw_result[
         "collected_date"
     ]
-    result = lambda_handler_for("vehicle_catalog_bronze_to_silver", package="sub.aws_lambda.functions")(
+    result = lambda_handler_for("vehicle_catalog_raw_to_curated", package="sub.aws_lambda.functions")(
         event={
             "collected_date": collected_date,
-            "bronze_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
-            "silver_dir": params.get("silver_dir") or DEFAULT_SILVER_DIR,
+            "raw_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
+            "curated_dir": params.get("silver_dir") or DEFAULT_CURATED_DIR,
         }
     )
-    logger.info("Bronze -> Silver 완료: %s", result)
+    logger.info("Raw -> Curated 완료: %s", result)
     return result
 
 
@@ -288,18 +288,18 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
     on_failure_callback=slack_failure_callback,
 )
 def validate_bronze_task(result: dict, **context) -> None:
-    """Bronze 적재 경계를 확인한 뒤 원본 품질을 GX로 검증합니다."""
+    """Raw 적재 경계를 확인한 뒤 원본 품질을 GX로 검증합니다."""
     params = context.get("params", {})
-    bronze_dir = params.get("bronze_dir") or DEFAULT_BRONZE_DIR
+    raw_dir = params.get("bronze_dir") or DEFAULT_RAW_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_catalog_layout")
     extractor = importlib.import_module(
-        "sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.extractor"
+        "sub.aws_lambda.functions.vehicle_catalog_source_to_raw.extractor"
     )
     loader = importlib.import_module(
-        "sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.loader"
+        "sub.aws_lambda.functions.vehicle_catalog_source_to_raw.loader"
     )
     transformer = importlib.import_module(
-        "sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.transformer"
+        "sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.transformer"
     )
 
     parsed = parse_handler_result(result, expected_locations=1)
@@ -311,11 +311,11 @@ def validate_bronze_task(result: dict, **context) -> None:
         )
     except ValueError as exc:
         raise ValueError(
-            f"Bronze 파일명이 수집시각 형식이 아닙니다: {path.name}"
+            f"Raw 파일명이 수집시각 형식이 아닙니다: {path.name}"
         ) from exc
 
     vendor = layout.vendor_from_partition(path.parent)
-    expected = layout.bronze_file(bronze_dir, vendor, collected_at)
+    expected = layout.raw_file(raw_dir, vendor, collected_at)
     if path.resolve() != expected.resolve():
         raise ValueError(f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}")
     if collected_at.date() != target_date:
@@ -347,15 +347,15 @@ def validate_bronze_task(result: dict, **context) -> None:
     on_failure_callback=slack_failure_callback,
 )
 def validate_silver_task(result: dict, **context) -> None:
-    """Silver 는 업체별로 파일을 씁니다. 그중 하나가 비어도 잡아냅니다."""
+    """Curated 는 업체별로 파일을 씁니다. 그중 하나가 비어도 잡아냅니다."""
     params = context.get("params", {})
-    silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
+    curated_dir = params.get("silver_dir") or DEFAULT_CURATED_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_catalog_layout")
     loader = importlib.import_module(
-        "sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.loader"
+        "sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.loader"
     )
     transformer = importlib.import_module(
-        "sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.transformer"
+        "sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.transformer"
     )
     parsed = parse_handler_result(result)
     target_date = parse_iso_date(result.get("collected_date"))
@@ -369,7 +369,7 @@ def validate_silver_task(result: dict, **context) -> None:
             raise ValueError(f"같은 업체가 두 번 적재됐습니다: {vendor}")
         seen_vendors.add(vendor)
 
-        expected = layout.silver_file(silver_dir, target_date, vendor)
+        expected = layout.curated_file(curated_dir, target_date, vendor)
         if path.resolve() != expected.resolve():
             raise ValueError(
                 f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}"
