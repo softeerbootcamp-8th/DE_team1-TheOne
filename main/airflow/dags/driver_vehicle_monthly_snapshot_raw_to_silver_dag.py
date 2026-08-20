@@ -38,7 +38,7 @@ default_args = {
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["driver", "taxi", "snapshot", "bronze", "silver"],
+    tags=["main", "driver", "taxi", "snapshot", "bronze", "silver"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),

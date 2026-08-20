@@ -38,7 +38,7 @@ default_args = {
     start_date=datetime(2026, 8, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
-    tags=["uber_eligible_vehicles", "raw", "bronze", "silver", "lambda"],
+    tags=["sub", "uber_eligible_vehicles", "raw", "bronze", "silver", "lambda"],
     params={
         "collected_date": Param(
             None,

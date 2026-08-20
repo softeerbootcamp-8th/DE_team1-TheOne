@@ -40,7 +40,7 @@ default_args = {
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["hvfhv", "bronze", "silver", "spark", "lambda"],
+    tags=["main", "hvfhv", "bronze", "silver", "spark", "lambda"],
     params={
         "year": Param(
             None,
