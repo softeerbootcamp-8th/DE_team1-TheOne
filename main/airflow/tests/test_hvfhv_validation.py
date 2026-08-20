@@ -25,7 +25,16 @@ COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 YEAR_MONTH = "2026-07"
 SILVER_SCHEMA = task_module.SILVER_SCHEMA
 SILVER_COLUMNS = list(SILVER_SCHEMA.names)
-SILVER_REQUIRED_COLUMNS = list(SILVER_SCHEMA.names)
+SILVER_REQUIRED_COLUMNS = [
+    name
+    for name in SILVER_SCHEMA.names
+    if name in task_module.SILVER_REQUIRED_NON_NULL
+]
+SILVER_NULLABLE_COLUMNS = [
+    name
+    for name in SILVER_SCHEMA.names
+    if name not in task_module.SILVER_REQUIRED_NON_NULL
+]
 
 validate_bronze = DAG.get_task("validate_bronze").python_callable
 validate_silver = DAG.get_task("validate_silver").python_callable
@@ -327,6 +336,28 @@ def test_silver_필수값이_NULL이면_GX가_실패한다(
     assert "gx_validation failed layer=silver" in caplog.text
     assert f"column={column}_null_count" in caplog.text
     assert "observed_value=[1]" in caplog.text
+
+
+@pytest.mark.parametrize("column", SILVER_NULLABLE_COLUMNS)
+def test_silver_필수값이_아닌_컬럼은_전부_NULL이어도_통과한다(
+    tmp_path, monkeypatch, column
+):
+    """원천이 `on_scene_datetime` 을 채우지 않는 달이 있습니다(#582). 스키마에는
+    남아 있으므로 컬럼별 NULL 검사만 빠지고, 적재는 그대로 통과해야 합니다."""
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    records = silver_rows(5)
+    for record in records:
+        record[column] = None
+    write_silver(tmp_path / "silver", records=records)
+
+    validate_silver(result_for(bronze_path))
+
+
+def test_silver_필수값_목록에_on_scene_datetime이_없다():
+    """계약이 되돌아가면(필수값에 다시 들어가면) 원천 릴리스가 100% 불합격합니다."""
+    assert "on_scene_datetime" in SILVER_SCHEMA.names
+    assert "on_scene_datetime" not in task_module.SILVER_REQUIRED_NON_NULL
 
 
 def test_silver_FINAL_SCHEMA_타입이_다르면_GX가_실패한다(

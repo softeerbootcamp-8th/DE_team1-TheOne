@@ -10,6 +10,8 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
+from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL
+
 
 FINAL_SCHEMA = StructType(
     [
@@ -46,4 +48,10 @@ REQUIRED_COLUMNS = [
     "driver_pay",
     "tips",
     "estimated_service_tier",
+]
+
+# 존재·타입 검사는 REQUIRED_COLUMNS 전체, 필수값(non-null) 검사는 이 목록으로 합니다.
+# 순서를 스키마에서 그대로 가져와 로그·검증 순서가 계약과 같게 둡니다.
+REQUIRED_NON_NULL_COLUMNS = [
+    name for name in REQUIRED_COLUMNS if name in CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL
 ]
