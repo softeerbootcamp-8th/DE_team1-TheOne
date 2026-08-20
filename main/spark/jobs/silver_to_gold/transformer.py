@@ -15,7 +15,9 @@ from schema.silver import (
     CLEAN_MONTHLY_TAXI_TRIP_SCHEMA,
 )
 KWH_PER_GALLON_EQUIVALENT = 33.7
-MONTHLY_WEEKS = 4.0
+# 프리미엄 자격을 얻어도 Standard 수요가 모두 전환되지는 않습니다.
+# 현재 사업 시나리오는 기존 Standard 운행 중 80%만 프리미엄으로 전환합니다.
+PREMIUM_TIER_TRIP_SHARE = 0.8
 
 
 def _columns(model: type) -> list[str]:
@@ -38,6 +40,23 @@ def _require_columns(dataframe: DataFrame, required: set[str], dataset: str) -> 
 
 def _has_rows(dataframe: DataFrame) -> bool:
     return dataframe.limit(1).count() > 0
+
+
+def _require_all_join_keys_match(
+    left: DataFrame,
+    right: DataFrame,
+    condition,
+    relationship: str,
+    sample_columns: list[str],
+) -> None:
+    """inner join 전에 미매칭 키를 찾아 조용한 행 유실을 막습니다."""
+    unmatched = left.join(F.broadcast(right), condition, "left_anti")
+    samples = [
+        row.asDict(recursive=True)
+        for row in unmatched.select(*sample_columns).limit(5).collect()
+    ]
+    if samples:
+        raise ValueError(f"{relationship} 조인 키 미매칭: sample={samples}")
 
 
 def _validate_dimensions(
@@ -140,8 +159,7 @@ def enrich_trips_with_fuel_cost(
 
     snapshots = driver_snapshot.alias("snapshot")
     vehicles = inventory.alias("vehicle")
-    profile_join = snapshots.join(
-        F.broadcast(vehicles),
+    profile_condition = (
         (F.col("snapshot.vehicle_model_id") == F.col("vehicle.vehicle_model_id"))
         & F.col("snapshot.manufacturer").eqNullSafe(F.col("vehicle.manufacturer"))
         & F.col("snapshot.model_name").eqNullSafe(F.col("vehicle.model_name"))
@@ -151,7 +169,18 @@ def enrich_trips_with_fuel_cost(
         )
         & F.col("snapshot.extra_comfort_eligible").eqNullSafe(
             F.col("vehicle.extra_comfort_eligible")
-        ),
+        )
+    )
+    _require_all_join_keys_match(
+        snapshots,
+        vehicles,
+        profile_condition,
+        "기사 차량 스냅샷→보유 차량",
+        ["driver_id", "taxi_id", "vehicle_model_id"],
+    )
+    profile_join = snapshots.join(
+        F.broadcast(vehicles),
+        profile_condition,
         "inner",
     )
 
@@ -172,15 +201,33 @@ def enrich_trips_with_fuel_cost(
     trip_rows = trips.alias("trip")
     profile_rows = profiles.alias("profile")
     price_rows = fuel_price.alias("price")
+    trip_profile_condition = F.col("trip.taxi_id") == F.col("profile.taxi_id")
+    _require_all_join_keys_match(
+        trip_rows,
+        profile_rows,
+        trip_profile_condition,
+        "HVFHV 운행→기사 차량 프로필",
+        ["taxi_id"],
+    )
+    trip_price_condition = (
+        F.to_date(F.col("trip.pickup_datetime")) == F.col("price.date")
+    )
+    _require_all_join_keys_match(
+        trip_rows,
+        price_rows,
+        trip_price_condition,
+        "HVFHV 운행→일별 연료비",
+        ["taxi_id", "pickup_datetime"],
+    )
     enriched = (
         trip_rows.join(
             F.broadcast(profile_rows),
-            F.col("trip.taxi_id") == F.col("profile.taxi_id"),
+            trip_profile_condition,
             "inner",
         )
         .join(
             F.broadcast(price_rows),
-            F.to_date(F.col("trip.pickup_datetime")) == F.col("price.date"),
+            trip_price_condition,
             "inner",
         )
         .select(
@@ -246,30 +293,40 @@ def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:
     standard = F.col("estimated_service_tier") == "Standard"
     uber_standard = standard & (F.col("hvfhs_license_num") == "HV0003")
     lyft_standard = standard & (F.col("hvfhs_license_num") == "HV0005")
+    comfort_pay = F.col("driver_pay") * (
+        F.lit(1.0)
+        + F.lit(PREMIUM_TIER_TRIP_SHARE)
+        * (F.col("_comfort_multiplier") - F.lit(1.0))
+    )
+    extra_comfort_pay = F.col("driver_pay") * (
+        F.lit(1.0)
+        + F.lit(PREMIUM_TIER_TRIP_SHARE)
+        * (F.col("_extra_comfort_multiplier") - F.lit(1.0))
+    )
     return (
         rows.withColumn(
             "_driver_pay_if_comfort",
             F.when(
                 uber_standard,
-                F.col("driver_pay") * F.col("_comfort_multiplier"),
+                comfort_pay,
             ).otherwise(F.col("driver_pay")),
         )
         .withColumn(
             "_driver_pay_if_extra_comfort",
             F.when(
                 lyft_standard,
-                F.col("driver_pay") * F.col("_extra_comfort_multiplier"),
+                extra_comfort_pay,
             ).otherwise(F.col("driver_pay")),
         )
         .withColumn(
             "_driver_pay_if_both",
             F.when(
                 uber_standard,
-                F.col("driver_pay") * F.col("_comfort_multiplier"),
+                comfort_pay,
             )
             .when(
                 lyft_standard,
-                F.col("driver_pay") * F.col("_extra_comfort_multiplier"),
+                extra_comfort_pay,
             )
             .otherwise(F.col("driver_pay")),
         )
@@ -280,6 +337,7 @@ def build_driver_monthly_aggregation(
     enriched: DataFrame, year_month: str
 ) -> DataFrame:
     """기사별 실제 운행·비용을 집계하고 추천 계산용 연료비 기준값을 보존합니다."""
+    days_in_month = monthrange(*map(int, year_month.split("-")))[1]
     grouped = _with_tier_revenue_scenarios(enriched).groupBy(
         "driver_id",
         "taxi_id",
@@ -313,9 +371,11 @@ def build_driver_monthly_aggregation(
 
     return (
         grouped.withColumn("year_month", F.lit(year_month))
+        .withColumn("_lease_weeks_in_month", F.lit(days_in_month / 7.0))
         .withColumn("monthly_fuel_cost", current_fuel_cost)
         .withColumn(
-            "monthly_lease_fee", F.col("weekly_lease_fee") * F.lit(MONTHLY_WEEKS)
+            "monthly_lease_fee",
+            F.col("weekly_lease_fee") * F.col("_lease_weeks_in_month"),
         )
         .withColumn(
             "monthly_net_profit",
@@ -424,7 +484,10 @@ def build_monthly_vehicle_recommendation(
     ).otherwise(F.col("_gas_price_miles") / F.col("_candidate_fuel_efficiency"))
     expected_lease_fee = F.when(
         F.col("_is_current"), F.col("monthly_lease_fee")
-    ).otherwise(F.col("_candidate_weekly_lease_fee") * F.lit(MONTHLY_WEEKS))
+    ).otherwise(
+        F.col("_candidate_weekly_lease_fee")
+        * F.col("_lease_weeks_in_month")
+    )
     gains_comfort = (
         ~F.col("comfort_eligible") & F.col("_candidate_comfort_eligible")
     )
