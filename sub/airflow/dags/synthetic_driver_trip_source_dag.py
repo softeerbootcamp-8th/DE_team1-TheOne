@@ -35,7 +35,7 @@ default_args = {
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
-    tags=["hvfhv", "driver", "synthetic", "source", "spark"],
+    tags=["sub", "hvfhv", "driver", "synthetic", "source", "spark"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),

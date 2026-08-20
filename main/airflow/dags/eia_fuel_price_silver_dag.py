@@ -47,7 +47,7 @@ default_args = {
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["fuel", "eia", "silver"],
+    tags=["main", "fuel", "eia", "silver"],
     params={
         # 비우면 전력 공개 지연(약 3개월)만큼 물러선 달을 채웁니다.
         "year_month": Param(None, type=["string", "null"]),

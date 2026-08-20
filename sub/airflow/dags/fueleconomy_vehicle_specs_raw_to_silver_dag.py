@@ -37,7 +37,7 @@ default_args = {
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
-    tags=["vehicle_specs", "raw", "bronze", "silver", "lambda"],
+    tags=["sub", "vehicle_specs", "raw", "bronze", "silver", "lambda"],
     params={
         "collected_date": Param(
             None,
