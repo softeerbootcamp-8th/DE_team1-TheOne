@@ -1,0 +1,70 @@
+# =============================================================================
+# EC2 운영용 Airflow — 로컬 개발용 docker-compose.yml 과 별개 파일입니다.
+#
+#   docker compose -f docker-compose.ec2.yml up -d
+#   docker compose -f docker-compose.ec2.yml exec airflow airflow dags list
+#
+# 로컬용과 다른 점:
+#   * 이미지를 ECR 에서 받습니다(빌드하지 않음). DAG·프로젝트 코드는 이미지 안에 있습니다.
+#   * 바인드 마운트가 없습니다 — 이미지 태그가 곧 코드 버전입니다. 코드를 바꾸면
+#     커밋 → `make build RUNTIMES=main/airflow PLATFORM=linux/arm64` → push → pull 순서를
+#     다시 밟아야 반영됩니다. 파일만 고쳐도 안 바뀝니다.
+#   * SIMPLE_AUTH_MANAGER_ALL_ADMINS 를 켜지 않습니다 — 인증을 없애는 개발용 설정입니다.
+#
+# 이미지는 arm64 로 굽습니다 (인스턴스가 t4g = Graviton). Makefile 기본값은 amd64 이고,
+# 그 기본값을 바꾸면 x86_64 로 배포된 Lambda 가 함께 깨지니 호출할 때만 넘기세요.
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      # TODO: 평문입니다. private 서브넷의 컨테이너 사이 통신이라 당장 노출은 없지만
+      #       .env 나 Secrets Manager 로 빼야 합니다.
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow:
+    image: 572660899671.dkr.ecr.ap-northeast-2.amazonaws.com/theone-airflow:01c60a0
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      # 로그인 사용자. 비밀번호는 컨테이너 안
+      # /opt/airflow/simple_auth_manager_passwords.json.generated 에 자동 생성됩니다.
+      # Airflow 가 평문 저장을 경고합니다 — 인터넷에 노출할 계획이면 auth manager 를
+      # 먼저 교체해야 합니다.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: "admin:admin"
+      # 이 두 개가 없으면 Lambda 핸들러 계열 산출물이 S3 가 아니라 컨테이너 디스크에
+      # 쌓입니다(핸들러의 기본값이 local). 배포된 Lambda 9개와 같은 값입니다.
+      RAW_STORAGE: s3
+      DATA_LAKE_S3_BUCKET: de-theone
+      AWS_DEFAULT_REGION: ap-northeast-2
+    volumes:
+      # 이미지에 이미 있는 경로라 named volume 이 소유권을 물려받습니다. 이미지에 없는
+      # 경로에 볼륨을 붙이면 마운트 지점이 root 소유로 생겨 uid 50000 이 쓰지 못합니다.
+      - airflow-logs:/opt/airflow/logs
+    ports:
+      # 127.0.0.1 에만 바인딩 — 보안그룹이 열려도 외부에서 붙지 못합니다.
+      # UI 는 SSH 터널로 봅니다: ssh -N -L 8080:localhost:8080 <인스턴스>
+      - "127.0.0.1:8080:8080"
+    # standalone = api-server + scheduler + dag-processor + triggerer 를 한 컨테이너에서
+    command: standalone
+    restart: unless-stopped
+
+volumes:
+  postgres-db:
+  airflow-logs:
