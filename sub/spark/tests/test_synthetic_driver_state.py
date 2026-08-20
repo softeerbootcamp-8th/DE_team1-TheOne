@@ -220,9 +220,12 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
         previous_current=first.current, previous_events=first.events,
         previous_noise=first.noise_state, fuel=FUEL,
     )
+    # events_all은 그 달 이벤트만이 아니라 **누적 전체**입니다 — 아니면 다음 재개가
+    # 이번 달 이전 역사를 잃습니다.
+    second_events_all = pd.concat([first.events, second.events], ignore_index=True)
     run2 = RunContext.create("2024-02", config)
     checkpoint.write_checkpoint(
-        tmp_path, run2, events=second.events, events_all=second.events, current=second.current,
+        tmp_path, run2, events=second.events, events_all=second_events_all, current=second.current,
         noise=second.noise_state, previous_month_value="2024-01", previous_run_id=run1.run_id,
     )
 
@@ -233,6 +236,10 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     assert prev_month == "2024-02"
     assert prev_run_id == run2.run_id
     pd.testing.assert_frame_equal(current, second.current)
+    # events_all에서 재생(fold_events)해도 같은 current가 나와야 재개 후 이어지는
+    # 월들이 올바른 역사를 봅니다.
+    pd.testing.assert_frame_equal(prototype_synthesize.fold_events(events_all), second.current)
+    assert len(events_all) == len(first.events) + len(second.events)
 
 
 # ── 3. legacy 어댑터 (#606) ──────────────────────────────────────────────
