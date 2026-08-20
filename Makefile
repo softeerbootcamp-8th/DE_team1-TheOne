@@ -7,10 +7,14 @@ RUNTIMES := main/airflow main/spark main/aws_lambda
 # build·sync 는 Docker 이미지가 있는 RUNTIMES 만 그대로 순회합니다.
 UV_PROJECTS := $(RUNTIMES) main/dashboard
 GIT_SHA  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "nogit")
-# 기본값은 비워둡니다 — 로컬에서 `make build` 하면 tlc-airflow:<sha> 로 태그됩니다.
+# 기본값은 비워둡니다 — 로컬에서 `make build` 하면 theone-airflow:<sha> 로 태그됩니다.
 # ECR 로 푸시할 때만 끝에 슬래시를 붙여 지정하세요:
-#   make build REGISTRY=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/
+#   make build REGISTRY=572660899671.dkr.ecr.ap-northeast-2.amazonaws.com/
 REGISTRY ?=
+# 이미지 이름 접두사. ECR 리포지토리 이름과 **같아야** 합니다 — 전에는 `tlc-` 였는데
+# 실제 ECR 은 `theone-airflow` 라서, 배포할 때마다 사람이 손으로 다시 태그해야 했습니다.
+# 자동 배포에서는 그 한 단계가 들어갈 자리가 없어 이름을 맞춥니다.
+IMAGE_PREFIX ?= theone-
 # Lambda/EMR 기본 아키텍처. 고정하지 않으면 Apple Silicon 팀원은 arm64 이미지를 만들고,
 # 그건 x86_64 Lambda 에서 "exec format error" 로 죽습니다. Graviton 으로 갈 때만 바꾸세요.
 PLATFORM ?= linux/amd64
@@ -27,7 +31,7 @@ help:
 	@echo "test         - 전 프로젝트 pytest (활성화된 venv 와 무관하게 각자 것으로 실행)"
 	@echo "uv-bin       - uv 설치 확인/설치 (sync 가 먼저 호출)"
 	@echo "tesseract    - OCR 바이너리 확인/설치 (sync 가 먼저 호출)"
-	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: <runtime>:<git-sha>)"
+	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: theone-<runtime>:<git-sha>)"
 	@echo "setup-hooks  - review-engineering 검토 기록 Git 훅 설치"
 	@echo "bootstrap    - DAG 가 없는 로컬 파생 산출물 4개 생성 (있으면 건너뜀)"
 	@echo "               개별: zone-lookup / travel-times / driver-preferences / company-snapshot"
@@ -107,9 +111,9 @@ build:
 	@for r in $(RUNTIMES); do \
 		name=$$(basename $$r); \
 		if [ "$$name" = "aws_lambda" ]; then name="lambda"; fi; \
-		echo "==> building $(REGISTRY)tlc-$$name:$(GIT_SHA)"; \
+		echo "==> building $(REGISTRY)$(IMAGE_PREFIX)$$name:$(GIT_SHA)"; \
 		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f $$r/Dockerfile \
-			-t $(REGISTRY)tlc-$$name:$(GIT_SHA) . || exit 1; \
+			-t $(REGISTRY)$(IMAGE_PREFIX)$$name:$(GIT_SHA) . || exit 1; \
 	done
 
 .PHONY: setup-hooks
