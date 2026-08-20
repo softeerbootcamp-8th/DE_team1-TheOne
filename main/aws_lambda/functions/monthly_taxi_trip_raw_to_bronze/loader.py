@@ -1,4 +1,4 @@
-"""보유 차량 원본 Parquet을 Bronze에 보존합니다."""
+"""HVFHV+taxi_id Parquet을 Bronze에 보존합니다."""
 
 from pipeline_core.loader import Loader
 
