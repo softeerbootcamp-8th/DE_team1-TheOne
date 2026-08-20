@@ -50,7 +50,7 @@ class DriverMonthlyProfit:
     """월간 연료비 (USD) = gas_price|ev_price * monthly_mileage / fuel_efficiency"""
 
     monthly_lease_fee: float
-    """월간 리스료 (USD) = CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.weekly_lease_fee(기사 계약가) * 4"""
+    """월간 리스료 (USD) = 주간 계약 리스료 / 7 * 대상 월 일수"""
 
     monthly_net_profit: float
     """월간 순수익 (USD) = monthly_driver_pay + monthly_tips - monthly_fuel_cost - monthly_lease_fee"""
