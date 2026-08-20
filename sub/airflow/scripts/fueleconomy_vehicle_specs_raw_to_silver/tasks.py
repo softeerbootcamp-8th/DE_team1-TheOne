@@ -246,7 +246,10 @@ def raw_to_bronze_task(**context) -> dict:
     """벌크 CSV 를 받아 원본 컬럼 그대로 Bronze 에 적재합니다."""
     params = context.get("params", {})
     result = lambda_handler_for("fueleconomy_vehicle_specs_raw_to_bronze", package="sub.aws_lambda.functions")(
-        event={"base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR}
+        event={
+            "base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
+            "collected_date": params.get("collected_date"),
+        }
     )
     logger.info("Raw -> Bronze 완료: %s", result)
     return result
