@@ -20,7 +20,10 @@ from shared.airflow.common.validation import (
     run_gx_validation,
 )
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
-from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA
+from schema.silver import (
+    CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL as SILVER_REQUIRED_NON_NULL,
+    CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -292,11 +295,14 @@ def validate_silver_task(raw_result: dict) -> None:
                 _schema_signature(expected_schema, logical_timestamp=True)
             ],
         ),
+        # NULL 건수는 전 컬럼을 요약에 담아 Data Docs 에서 보이게 두고, 검사는
+        # 필수값 계약이 있는 컬럼에만 겁니다.
         *(
             gx.expectations.ExpectColumnValuesToBeInSet(
                 column=f"{column}_null_count", value_set=[0]
             )
             for column in required_columns
+            if column in SILVER_REQUIRED_NON_NULL
         ),
     ]
     run_gx_validation(
