@@ -1,11 +1,13 @@
 """Silver → Gold DAG의 현재 4입력 계약과 산출물 검증 시나리오.
 
-1. Gold 스케줄은 같은 파티션 키의 Silver 4종 AND Asset
+1. Gold 스케줄은 같은 파티션 키의 Silver 4종 OR Asset
 2. Silver Asset 은 적재가 아닌 검증 태스크에서 월 파티션으로 발행
 3. Asset 으로 실행된 Gold 는 해당 파티션 키를 대상 월로 사용
 4. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
-5. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
-6. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
+5. Asset 실행은 같은 월 Silver가 덜 준비되면 skip, 수동 실행은 실패
+6. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
+7. Gold 검증 성공 태스크에만 Slack 완료 알림 연결
+8. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 """
 
 import importlib
@@ -14,10 +16,12 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from airflow.sdk.exceptions import AirflowSkipException
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
 from main.airflow.common import assets
 from main.airflow.scripts.hvfhv_silver_to_gold import tasks as dag_module
+from shared.airflow.common.slack_failure_callback import slack_success_callback
 
 
 GOLD_DAG = importlib.import_module(
@@ -58,11 +62,11 @@ def _write_inputs(root: Path, year_month: str) -> None:
         (partition / file_name).touch()
 
 
-def test_Gold_DAG은_같은_월_Silver_4종_AND_Asset으로만_실행된다():
+def test_Gold_DAG은_같은_월_Silver_4종중_어느_Asset이든_실행된다():
     timetable = GOLD_DAG.timetable
 
     assert isinstance(timetable, PartitionedAssetTimetable)
-    assert type(timetable.asset_condition).__name__ == "SerializedAssetAll"
+    assert type(timetable.asset_condition).__name__ == "SerializedAssetAny"
     assert {item.name for item in timetable.asset_condition.objects} == {
         assets.HVFHV_SILVER.name,
         assets.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER.name,
@@ -185,6 +189,36 @@ def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):
 
     with pytest.raises(FileNotFoundError, match="eia_fuel_price_silver_pipeline"):
         dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+
+
+def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp_path):
+    dag_run = type("DagRun", (), {"partition_key": "2026-05"})()
+
+    with pytest.raises(AirflowSkipException, match="Silver 4종 준비 대기"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path),
+            logical_date=_logical_date(2026, 5),
+            dag_run=dag_run,
+        )
+
+
+def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
+    with pytest.raises(FileNotFoundError, match="HVFHV Silver"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path, year="2026", month="5"),
+            logical_date=_logical_date(2026, 5),
+            dag_run=type("DagRun", (), {"partition_key": None})(),
+        )
+
+
+def test_Gold검증_성공태스크만_Slack완료알림을_보낸다():
+    validate_gold = GOLD_DAG.get_task("validate_gold")
+
+    assert slack_success_callback in validate_gold.on_success_callback
+    for task_id in ("validate_inputs", "build_gold"):
+        assert slack_success_callback not in (
+            GOLD_DAG.get_task(task_id).on_success_callback or []
+        )
 
 
 def _write_gold(root: Path, year_month: str) -> None:
