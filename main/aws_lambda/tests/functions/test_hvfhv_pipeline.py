@@ -1,7 +1,7 @@
 """HVFHV+taxi_id 데이터 Raw→Bronze 수집 시나리오.
 
 1. 월별 Parquet URL 한 번만 호출해 원본 bytes와 footer 행 수를 저장
-2. 같은 월 재실행은 수집 시각 파일을 추가해 이전 원본까지 보존
+2. 같은 원본 재수집은 최신 파일을 재사용하고 변경된 원본만 새 파일로 보존
 3. 빈 응답과 잘못된 Parquet은 완료 파일을 공개하지 않음
 4. latest 응답의 최종 URL에서 실제 월을 확인
 5. 다른 host로 이동한 응답은 저장 전에 거부
@@ -116,7 +116,7 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     }
 
 
-def test_같은월을_다시수집하면_수집시각파일을_추가해_이력을_보존한다(
+def test_같은월의_원본이_변경되면_수집시각파일을_추가해_이력을_보존한다(
     tmp_path, monkeypatch
 ):
     _api(monkeypatch)
@@ -134,6 +134,18 @@ def test_같은월을_다시수집하면_수집시각파일을_추가해_이력�
     assert second_path.read_bytes() == corrected
     assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 2
     assert not list((tmp_path / "hvfhv").rglob("*.json"))
+
+
+def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_path, monkeypatch):
+    _api(monkeypatch)
+    _clock(monkeypatch, FIRST_COLLECTED_AT, SECOND_COLLECTED_AT)
+
+    first = lambda_handler(_event(tmp_path))
+    second = lambda_handler(_event(tmp_path))
+
+    assert second["locations"] == first["locations"]
+    assert second["collected_at"] == first["collected_at"]
+    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
 
 
 @pytest.mark.parametrize("content", [b"", b"not parquet"], ids=["empty", "invalid"])

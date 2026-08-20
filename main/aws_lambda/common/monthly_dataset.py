@@ -1,5 +1,6 @@
 """월별 원천 API의 Parquet 한 종을 Bronze에 보존합니다."""
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
@@ -18,6 +19,7 @@ YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 DATASET_URL_PATTERN = re.compile(
     r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$"
 )
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 
 def requested_year_month(event: dict) -> str | None:
@@ -120,9 +122,40 @@ class MonthlyParquetBronzeLoader(Loader):
 
         self.payload = payload
         self.path = self._data_path(payload)
+        latest = self._latest_data_path(self.path.parent)
+        if latest is not None and self._same_content(latest, content):
+            self.path = latest
+            self.payload = {**payload, "collected_at": self._collected_at(latest)}
+            return WriteResult(str(latest), parquet.metadata.num_rows)
+
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(self.path, lambda temporary: temporary.write_bytes(content))
         return WriteResult(str(self.path), parquet.metadata.num_rows)
+
+    @staticmethod
+    def _latest_data_path(partition_dir: Path) -> Path | None:
+        return max(
+            (
+                path
+                for path in partition_dir.glob("*.parquet")
+                if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
+            ),
+            key=lambda path: path.name,
+            default=None,
+        )
+
+    @staticmethod
+    def _same_content(path: Path, content: bytes) -> bool:
+        with path.open("rb") as source:
+            existing_hash = hashlib.file_digest(source, "sha256").digest()
+        return existing_hash == hashlib.sha256(content).digest()
+
+    @staticmethod
+    def _collected_at(path: Path) -> str:
+        timestamp = datetime.strptime(path.stem, "%Y%m%dT%H%M%S%fZ").replace(
+            tzinfo=timezone.utc
+        )
+        return timestamp.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
     def _data_path(self, payload: dict) -> Path:
         collected_at = payload.get("collected_at")
