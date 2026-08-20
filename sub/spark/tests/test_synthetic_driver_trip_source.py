@@ -25,7 +25,6 @@ from schema.source import (
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import FINAL_SCHEMA as SOURCE_FINAL_SCHEMA
 from sub.config import build_config
-from sub.generators.synthetic_company_snapshot.snapshot import read_snapshot
 from sub.generators.synthetic_driver_trip_source import monthly
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.source_job import (
@@ -156,20 +155,17 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
     )
     assert rerun == second
 
-    first_tables = read_snapshot(first.snapshot_dir)
-    second_tables = read_snapshot(second.snapshot_dir)
-    assert len(first_tables.customer) == 400
+    first_cdv = pd.read_parquet(first.current_driver_vehicle_path)
+    second_cdv = pd.read_parquet(second.current_driver_vehicle_path)
+    assert len(first_cdv) == 400
     assert first.snapshot_dir.name == "data_month=2026-08"
     assert second.snapshot_dir.name == "data_month=2026-09"
 
-    new_drivers = set(second_tables.customer["synthetic_driver_id"]) - set(
-        first_tables.customer["synthetic_driver_id"]
-    )
-    ended = second_tables.lease_contract[second_tables.lease_contract["lease_ended_on"].notna()]
+    new_drivers = set(second_cdv["driver_id"]) - set(first_cdv["driver_id"])
+    ended = second_cdv[second_cdv["lease_ended_on"].notna()]
     assert len(new_drivers) >= 1, "join_rate 가 0이 아닌데 신규 유입이 없습니다"
     assert len(ended) >= 1, "exit_rate 가 0이 아닌데 유출이 없습니다"
-    # D15: 유출 기사도 customer/taxi 행이 남아 있습니다 — lease_ended_on 만 채워짐.
-    assert set(ended["customer_id"]) <= set(second_tables.customer["customer_id"])
+    # D15: 유출 기사도 행이 남아 있습니다 — lease_ended_on 만 채워짐.
 
 
 def _raw_trip(pickup: datetime, **overrides) -> dict:
@@ -208,6 +204,17 @@ def _clean_trips(spark, keyed):
     )
 
 
+def _current_driver_vehicle(spark, rows):
+    """`adapters.to_current_driver_vehicle()` 산출물 모양의 Spark DataFrame(#609)."""
+    return spark.createDataFrame(
+        rows,
+        "driver_id string, taxi_id string, joined_on date, lease_started_on date, "
+        "lease_ended_on date, make_key string, model_key string, model_year int, "
+        "weekly_lease_fee double, uber_comfort_eligible boolean, "
+        "lyft_extra_comfort_eligible boolean",
+    )
+
+
 def test_배정결과를_공개_계약_두_데이터셋으로_분리한다(spark):
     raw = spark.createDataFrame([
         _raw_trip(datetime(2026, 1, 2, 9)),
@@ -218,29 +225,17 @@ def test_배정결과를_공개_계약_두_데이터셋으로_분리한다(spark
         "taxi_id", lit("taxi-1")
     )
     snapshot_date = date(2026, 1, 1)
-    customers = spark.createDataFrame([{
-        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
-        "snapshot_date": snapshot_date,
-    }])
-    leases = spark.createDataFrame([{
-        "lease_id": "lease-1", "customer_id": "customer-1", "taxi_id": "taxi-1",
-        "lease_started_on": date(2024, 3, 1), "lease_ended_on": None,
-        "snapshot_date": snapshot_date,
-    }], "lease_id string, customer_id string, taxi_id string, "
-        "lease_started_on date, lease_ended_on date, snapshot_date date")
-    taxis = spark.createDataFrame([{
-        "taxi_id": "taxi-1", "make_key": "Toyota", "model_key": "Camry",
-        "model_year": 2023, "weekly_lease_fee": 500.0,
-        "uber_comfort_eligible": True, "lyft_extra_comfort_eligible": False,
-        "snapshot_date": snapshot_date,
-    }])
+    current_driver_vehicle = _current_driver_vehicle(spark, [
+        ("driver-1", "taxi-1", date(2024, 3, 1), date(2024, 3, 1), None,
+         "Toyota", "Camry", 2023, 500.0, True, False),
+    ])
     vehicle_master = spark.createDataFrame(
         [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
     )
 
     trips = build_trip_source(raw, _clean_trips(spark, keyed), assignment)
     snapshots = build_driver_vehicle_monthly_snapshot(
-        customers, leases, taxis, vehicle_master,
+        current_driver_vehicle, vehicle_master,
         snapshot_date=snapshot_date, year_month="2026-01", seed=42,
     )
 
@@ -277,62 +272,45 @@ def test_운행_기록은_원본_컬럼을_그대로_흘려보내지_않는다(s
     assert "trip_key" not in trips.columns
 
 
-def test_기사당_계약이_여러_건이면_최초_가입일과_현재_차량을_고른다(spark):
-    """`evolve_company_snapshot` 이 계약을 종료시키면 기사당 여러 행이 됩니다."""
+def test_차량을_바꾼_기사는_입사일과_현재_차량_배정일이_다르다(spark):
+    """#609 — `joined_on`(최초 입사일)과 `vehicle_since`(현재 차량 배정일)가
+    같은 기사당-한-행 뷰 안에서 이미 분리돼 있어, 리스 이력을 재구성해
+    최초 계약을 다시 찾을 필요가 없습니다. 예전 3-테이블 어댑터는 기사당
+    행을 하나만 만들면서 이 둘을 늘 같은 값으로 퇴화시켰습니다."""
     snapshot_date = date(2026, 1, 1)
-    customers = spark.createDataFrame([{
-        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
-        "snapshot_date": snapshot_date,
-    }])
-    leases = spark.createDataFrame([
-        ("lease-1", "customer-1", "taxi-1", date(2023, 1, 1), date(2025, 6, 1), snapshot_date),
-        ("lease-2", "customer-1", "taxi-2", date(2025, 6, 1), None, snapshot_date),
-    ], "lease_id string, customer_id string, taxi_id string, "
-       "lease_started_on date, lease_ended_on date, snapshot_date date")
-    taxis = spark.createDataFrame([
-        (t, "Toyota", "Camry", 2023, 500.0, True, False, snapshot_date)
-        for t in ("taxi-1", "taxi-2")
-    ], "taxi_id string, make_key string, model_key string, model_year int, "
-       "weekly_lease_fee double, uber_comfort_eligible boolean, "
-       "lyft_extra_comfort_eligible boolean, snapshot_date date")
+    current_driver_vehicle = _current_driver_vehicle(spark, [
+        ("driver-1", "taxi-2", date(2023, 1, 1), date(2025, 6, 1), None,
+         "Toyota", "Camry", 2023, 500.0, True, False),
+    ])
     vehicle_master = spark.createDataFrame(
         [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
     )
 
     snapshots = build_driver_vehicle_monthly_snapshot(
-        customers, leases, taxis, vehicle_master,
+        current_driver_vehicle, vehicle_master,
         snapshot_date=snapshot_date, year_month="2026-01", seed=42,
     )
 
     assert snapshots.count() == 1
     row = snapshots.first()
-    assert row.taxi_id == "taxi-2"                 # 진행 중 계약
-    assert row.join_date == date(2023, 1, 1)       # 최초 계약
-    assert row.vehicle_since == date(2025, 6, 1)   # 현재 차량
-    assert row.exit_date is None                   # 진행 중 계약이 있음
+    assert row.taxi_id == "taxi-2"                 # 현재 차량
+    assert row.join_date == date(2023, 1, 1)       # 최초 입사일
+    assert row.vehicle_since == date(2025, 6, 1)   # 현재 차량 배정일
+    assert row.exit_date is None                   # 재직 중
 
 
 def test_모든_계약이_끝난_기사는_퇴사일이_찍힌다(spark):
     snapshot_date = date(2026, 1, 1)
-    customers = spark.createDataFrame([{
-        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
-        "snapshot_date": snapshot_date,
-    }])
-    leases = spark.createDataFrame([
-        ("lease-1", "customer-1", "taxi-1", date(2023, 1, 1), date(2025, 12, 1), snapshot_date),
-    ], "lease_id string, customer_id string, taxi_id string, "
-       "lease_started_on date, lease_ended_on date, snapshot_date date")
-    taxis = spark.createDataFrame([
-        ("taxi-1", "Toyota", "Camry", 2023, 500.0, True, False, snapshot_date),
-    ], "taxi_id string, make_key string, model_key string, model_year int, "
-       "weekly_lease_fee double, uber_comfort_eligible boolean, "
-       "lyft_extra_comfort_eligible boolean, snapshot_date date")
+    current_driver_vehicle = _current_driver_vehicle(spark, [
+        ("driver-1", "taxi-1", date(2023, 1, 1), date(2023, 1, 1), date(2025, 12, 1),
+         "Toyota", "Camry", 2023, 500.0, True, False),
+    ])
     vehicle_master = spark.createDataFrame(
         [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
     )
 
     row = build_driver_vehicle_monthly_snapshot(
-        customers, leases, taxis, vehicle_master,
+        current_driver_vehicle, vehicle_master,
         snapshot_date=snapshot_date, year_month="2026-01", seed=42,
     ).first()
 
@@ -342,28 +320,19 @@ def test_모든_계약이_끝난_기사는_퇴사일이_찍힌다(spark):
 def test_경력은_근속보다_짧을_수_없고_시드마다_재현된다(spark):
     """독립 난수로 두면 "근속 5년인데 경력 1년" 이 나옵니다."""
     snapshot_date = date(2026, 1, 1)
-    customers = spark.createDataFrame([{
-        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
-        "snapshot_date": snapshot_date,
-    }])
     # 근속 16년. 입사 전 경력 상한(10년)보다 커야 "근속을 뺐다"를 잡을 수 있습니다 —
     # 근속이 상한보다 작으면 난수만으로도 우연히 기준을 넘습니다.
-    leases = spark.createDataFrame([
-        ("lease-1", "customer-1", "taxi-1", date(2010, 1, 1), None, snapshot_date),
-    ], "lease_id string, customer_id string, taxi_id string, "
-       "lease_started_on date, lease_ended_on date, snapshot_date date")
-    taxis = spark.createDataFrame([
-        ("taxi-1", "Toyota", "Camry", 2023, 500.0, True, False, snapshot_date),
-    ], "taxi_id string, make_key string, model_key string, model_year int, "
-       "weekly_lease_fee double, uber_comfort_eligible boolean, "
-       "lyft_extra_comfort_eligible boolean, snapshot_date date")
+    current_driver_vehicle = _current_driver_vehicle(spark, [
+        ("driver-1", "taxi-1", date(2010, 1, 1), date(2010, 1, 1), None,
+         "Toyota", "Camry", 2023, 500.0, True, False),
+    ])
     vehicle_master = spark.createDataFrame(
         [("Toyota", "Camry", "GAS")], "make_key string, model_key string, fuel_type string"
     )
 
     def run(seed):
         return build_driver_vehicle_monthly_snapshot(
-            customers, leases, taxis, vehicle_master,
+            current_driver_vehicle, vehicle_master,
             snapshot_date=snapshot_date, year_month="2026-01", seed=seed,
         ).first().experience_years
 
@@ -374,16 +343,11 @@ def test_경력은_근속보다_짧을_수_없고_시드마다_재현된다(spar
 
 
 def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집계한다(spark):
-    snapshot_date = date(2026, 1, 1)
-    taxis = spark.createDataFrame(
-        [
-            (taxi_id, "KIA", "SPORTAGE", 2023, 574.0, True, False, snapshot_date)
-            for taxi_id in ("taxi-1", "taxi-2")
-        ],
-        "taxi_id string, make_key string, model_key string, model_year int, "
-        "weekly_lease_fee double, uber_comfort_eligible boolean, "
-        "lyft_extra_comfort_eligible boolean, snapshot_date date",
-    )
+    current_driver_vehicle = _current_driver_vehicle(spark, [
+        (f"driver-{i}", taxi_id, date(2023, 1, 1), date(2023, 1, 1), None,
+         "KIA", "SPORTAGE", 2023, 574.0, True, False)
+        for i, taxi_id in enumerate(("taxi-1", "taxi-2"))
+    ])
     vehicle_master = spark.createDataFrame(
         [
             (
@@ -401,9 +365,7 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
         "combined_mpg_max double, image_url string, product string",
     )
 
-    inventory = build_lease_vehicle_inventory(
-        taxis, vehicle_master, snapshot_date=snapshot_date
-    )
+    inventory = build_lease_vehicle_inventory(current_driver_vehicle, vehicle_master)
     row = inventory.first()
 
     assert inventory.columns == LEASE_VEHICLE_INVENTORY_SCHEMA.names
@@ -415,6 +377,27 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
     assert row.weekly_lease_fee == 574.0
     assert row.image_url == "https://example.com/sportage.png"
     assert row.vehicle_model_id
+
+
+def test_보유차량_재고는_재배정된_taxi_id를_두_번_세지_않는다(spark):
+    """#609 — 퇴사 기사와 신규 기사가 같은 달에 같은 taxi_id 를 나눠 갖고 있으면
+    (재배정) `current_driver_vehicle`에 그 taxi_id 가 두 행으로 남습니다. taxi_id
+    로 먼저 dedup 하지 않으면 물리적으로 한 대인 차량이 재고 두 대로 집계됩니다."""
+    current_driver_vehicle = _current_driver_vehicle(spark, [
+        ("driver-1", "taxi-1", date(2020, 1, 1), date(2020, 1, 1), date(2026, 1, 15),
+         "KIA", "SPORTAGE", 2023, 574.0, True, False),
+        ("driver-2", "taxi-1", date(2026, 1, 15), date(2026, 1, 15), None,
+         "KIA", "SPORTAGE", 2023, 574.0, True, False),
+    ])
+    vehicle_master = spark.createDataFrame(
+        [("KIA", "SPORTAGE", "GAS", 24.0, 28.0, "https://example.com/sportage.png", "UberX")],
+        "make_key string, model_key string, fuel_type string, combined_mpg_min double, "
+        "combined_mpg_max double, image_url string, product string",
+    )
+
+    inventory = build_lease_vehicle_inventory(current_driver_vehicle, vehicle_master)
+
+    assert inventory.first().stock == 1
 
 
 def test_품질리포트는_커버리지_천장_소진율_클리핑을_계산한다(spark):

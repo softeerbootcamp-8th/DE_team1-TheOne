@@ -24,8 +24,6 @@ from pyspark.sql.functions import (
     floor,
     hash as spark_hash,
     lit,
-    max as spark_max,
-    min as spark_min,
     monotonically_increasing_id,
     pmod,
     row_number,
@@ -207,9 +205,7 @@ def _vehicle_model_id(manufacturer, model_name, model_year):
 
 
 def build_driver_vehicle_monthly_snapshot(
-    customers: DataFrame,
-    leases: DataFrame,
-    taxis: DataFrame,
+    current_driver_vehicle: DataFrame,
     vehicle_master: DataFrame,
     *,
     snapshot_date: date,
@@ -218,54 +214,38 @@ def build_driver_vehicle_monthly_snapshot(
 ) -> DataFrame:
     """(기사, 대상 월) 한 행짜리 월별 스냅샷을 만듭니다.
 
-    리스 계약 단위가 아니라 **기사 단위**입니다. 기사당 계약이 여러 건일 수 있으므로
-    (`evolve_company_snapshot` 이 계약을 종료시키고 새로 맺습니다) 1:1 을 가정하지 않고
-    윈도우로 고릅니다.
+    `current_driver_vehicle` 은 기사당 정확히 한 행(이벤트소싱 `driver_vehicle_current`
+    뷰, #609)이라 리스 이력에서 최초/최근을 윈도우로 골라낼 필요가 없습니다 —
+    `joined_on`이 이미 그 기사의 최초 입사일입니다.
 
-        join_date     그 기사의 최초 계약 시작일
-        vehicle_since 현재 계약의 시작일
-        exit_date     진행 중 계약이 하나도 없을 때만 마지막 종료일, 아니면 NULL
+    예전에는 customer/taxi/lease_contract 3-테이블에서 기사당 리스 이력을
+    한 행으로 재구성했는데, 그 재구성이 매달 리스 1건만 만들어서 `join_date`가
+    항상 "현재 차량 배정일"로 퇴화하는 조용한 버그가 있었습니다(#609) —
+    `joined_on`을 그대로 흘려보내 그 재구성 자체를 없앴습니다.
+
+        join_date     joined_on(최초 입사일)
+        vehicle_since lease_started_on(현재 차량 배정일)
+        exit_date     lease_ended_on(퇴사했으면 그 시각, 아니면 NULL)
     """
-    c = customers.filter(col("snapshot_date") == lit(snapshot_date)).alias("c")
-    l = leases.filter(col("snapshot_date") == lit(snapshot_date)).alias("l")
-    x = taxis.filter(col("snapshot_date") == lit(snapshot_date)).alias("x")
-
-    joined = l.join(c, col("l.customer_id") == col("c.customer_id"), "inner").select(
-        col("c.synthetic_driver_id").alias("driver_id"),
-        col("l.taxi_id").alias("taxi_id"),
-        col("l.lease_started_on").alias("lease_started_on"),
-        col("l.lease_ended_on").alias("lease_ended_on"),
-    )
-
-    by_driver = Window.partitionBy("driver_id")
-    # 진행 중 계약을 먼저, 그다음 시작일이 늦은 순. 첫 행이 "현재 차량"입니다.
-    current = Window.partitionBy("driver_id").orderBy(
-        col("lease_ended_on").isNotNull().asc(), col("lease_started_on").desc()
-    )
-    ranked = (
-        joined.withColumn("_join_date", spark_min("lease_started_on").over(by_driver))
-        .withColumn("_open", count(when(col("lease_ended_on").isNull(), 1)).over(by_driver))
-        .withColumn("_last_end", spark_max("lease_ended_on").over(by_driver))
-        .withColumn("_rank", row_number().over(current))
-        .filter(col("_rank") == 1)
-    )
-
-    fleet = x.select(
-        col("x.taxi_id").alias("_taxi_id"),
-        col("x.make_key").alias("manufacturer"),
-        col("x.model_key").alias("model_name"),
-        col("x.model_year").alias("_model_year"),
-        col("x.weekly_lease_fee").alias("weekly_lease_fee"),
-        col("x.uber_comfort_eligible").alias("comfort_eligible"),
-        col("x.lyft_extra_comfort_eligible").alias("extra_comfort_eligible"),
+    fleet = current_driver_vehicle.select(
+        col("driver_id"),
+        col("taxi_id"),
+        col("joined_on"),
+        col("lease_started_on"),
+        col("lease_ended_on"),
+        col("make_key").alias("manufacturer"),
+        col("model_key").alias("model_name"),
+        col("model_year").alias("_model_year"),
+        col("weekly_lease_fee"),
+        col("uber_comfort_eligible").alias("comfort_eligible"),
+        col("lyft_extra_comfort_eligible").alias("extra_comfort_eligible"),
     )
     fuel = vehicle_master.select(
         col("make_key").alias("_mk"), col("model_key").alias("_mo"), col("fuel_type")
     ).distinct()
 
     snapshot = (
-        ranked.join(fleet, col("taxi_id") == col("_taxi_id"), "inner")
-        .join(
+        fleet.join(
             fuel,
             (col("manufacturer") == col("_mk")) & (col("model_name") == col("_mo")),
             "left",
@@ -275,15 +255,13 @@ def build_driver_vehicle_monthly_snapshot(
             "vehicle_model_id",
             _vehicle_model_id(col("manufacturer"), col("model_name"), col("_model_year")),
         )
-        .withColumn("join_date", col("_join_date"))
-        .withColumn(
-            "exit_date", when(col("_open") == 0, col("_last_end")).otherwise(lit(None))
-        )
+        .withColumn("join_date", col("joined_on"))
+        .withColumn("exit_date", col("lease_ended_on"))
         .withColumn("vehicle_since", col("lease_started_on"))
         .withColumn(
             "experience_years",
             (
-                floor(datediff(lit(snapshot_date), col("_join_date")) / lit(365.25))
+                floor(datediff(lit(snapshot_date), col("joined_on")) / lit(365.25))
                 + pmod(
                     spark_hash(col("driver_id")) + lit(seed),
                     lit(PRIOR_EXPERIENCE_MAX_YEARS + 1),
@@ -293,7 +271,7 @@ def build_driver_vehicle_monthly_snapshot(
         .withColumn("snapshot_created_at", to_timestamp(lit(snapshot_date)))
     )
 
-    expected = joined.select("driver_id").distinct().count()
+    expected = current_driver_vehicle.select("driver_id").distinct().count()
     stats = snapshot.agg(
         count(lit(1)).alias("rows"),
         countDistinct("driver_id").alias("distinct_drivers"),
@@ -325,14 +303,17 @@ def _require_non_null(frame: DataFrame, columns: set[str], label: str) -> None:
 
 
 def build_lease_vehicle_inventory(
-    taxis: DataFrame,
+    current_driver_vehicle: DataFrame,
     vehicle_master: DataFrame,
-    *,
-    snapshot_date: date,
 ) -> DataFrame:
-    """보유 차량을 차종·연식별 API 재고로 집계합니다."""
+    """보유 차량을 차종·연식별 API 재고로 집계합니다.
+
+    `taxi_id` 로 먼저 dedup 합니다 — 이번 달 안에 기사가 바뀐 차량(퇴사 기사의
+    차량이 신규 기사에게 재배정된 경우)이 `current_driver_vehicle`에 두 행으로
+    남아 있으면 그 차량이 재고에 두 번 집계됩니다.
+    """
     fleet = (
-        taxis.filter(col("snapshot_date") == lit(snapshot_date)).groupBy(
+        current_driver_vehicle.dropDuplicates(["taxi_id"]).groupBy(
             "make_key",
             "model_key",
             "model_year",
@@ -691,9 +672,6 @@ def main(args_list: list[str] | None = None) -> Path:
     ).transform(raw_trips).persist(StorageLevel.DISK_ONLY)
     preferences = read(str(state.preferences_path))
     current_driver_vehicle = read(str(state.current_driver_vehicle_path))
-    customers = read(str(state.snapshot_dir / "customer.parquet"))
-    leases = read(str(state.snapshot_dir / "lease_contract.parquet"))
-    taxis = read(str(state.snapshot_dir / "taxi.parquet"))
     vehicle_master = read(args.vehicle_master_path)
     candidates, candidate_rejects = build_trip_candidates(
         trips,
@@ -726,16 +704,14 @@ def main(args_list: list[str] | None = None) -> Path:
     if trip_source.count() != assignment_count:
         raise ValueError("배정 결과와 HVFHV 원천 행이 일대일로 연결되지 않습니다")
     snapshot_source = build_driver_vehicle_monthly_snapshot(
-        customers,
-        leases,
-        taxis,
+        current_driver_vehicle,
         vehicle_master,
         snapshot_date=snapshot_date,
         year_month=args.year_month,
         seed=args.seed,
     ).persist(StorageLevel.DISK_ONLY)
     inventory_source = build_lease_vehicle_inventory(
-        taxis, vehicle_master, snapshot_date=snapshot_date
+        current_driver_vehicle, vehicle_master
     ).persist(StorageLevel.DISK_ONLY)
     try:
         final = write_source_release(

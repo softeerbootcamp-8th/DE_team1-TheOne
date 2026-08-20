@@ -1,20 +1,24 @@
-"""신규 event-sourced 상태 모델과 기존 legacy 스냅샷 사이의 뷰 변환.
+"""신규 event-sourced 상태 모델과 기존 Spark 경로 사이의 뷰 변환.
 
-기존 Spark 경로(`candidates.py`/`allocator.py`)는 `customer`/`taxi`/`lease_contract`/
-`driver_preferences` 스키마를 그대로 소비하므로 바꾸지 않는다(asistobe.md Phase C).
-이 모듈이 신규 상태모델(`lifecycle.synthesize_month`)의 산출물을 그 스키마로
-바꾸는 유일한 통로다 — 정본은 event-sourced 상태이고, legacy 스냅샷은 그 뷰다.
+기존 Spark 경로(`candidates.py`/`allocator.py`/`source_job.py`)는
+`current_driver_vehicle`/`driver_preferences` 스키마를 소비한다. 이 모듈이
+신규 상태모델(`lifecycle.synthesize_month`)의 산출물을 그 스키마로 바꾸는
+유일한 통로다 — 정본은 event-sourced 상태이고, 이 뷰들은 그 파생이다.
+
+`to_current_driver_vehicle()`이 기사당 한 행짜리 유일한 차량 배정 뷰다(#609).
+예전에는 이력 기반 계산(join_date/experience_years)용으로 customer/taxi/
+lease_contract 3-테이블 뷰(`to_snapshot_tables`)를 따로 뒀지만, 기사당 리스
+이력을 한 행으로 재구성하는 과정에서 진짜 입사일을 잃어버리는 조용한 버그가
+있었다 — `driver_vehicle_current`가 이미 갖고 있는 `joined_on`을 재구성하지
+않고 그대로 흘려보내 없앴다.
 """
 
 from __future__ import annotations
 
 import pandas as pd
 
-from sub.generators.synthetic_company_snapshot.snapshot import SnapshotTables, build_vehicle_pool
+from sub.generators.synthetic_company_snapshot.snapshot import build_vehicle_pool
 from sub.spark.jobs.driver_master.preference import PREFERENCE_COLUMNS
-
-CUSTOMER_ID_PREFIX = "CUST"
-LEASE_ID_PREFIX = "LEASE"
 
 
 def _bitmask(indexes) -> int:
@@ -82,79 +86,24 @@ def _parse_vehicle_model_id(taxi_id: str) -> str:
     return str(taxi_id).rsplit("#", 1)[0]
 
 
-def to_snapshot_tables(
-    current: pd.DataFrame, vehicle_pool: pd.DataFrame, *, snapshot_date
-) -> SnapshotTables:
-    """`driver_vehicle_current` 를 legacy `customer`/`taxi`/`lease_contract` 뷰로 바꿉니다.
-
-    D15 와 같은 규칙입니다 — 퇴사 기사도 행을 남기고 `lease_ended_on` 만 채웁니다.
-    `customer_id`/`lease_id`는 `driver_id` 에서 결정적으로 파생합니다 — legacy
-    스키마가 문자열이기만 하면 되므로 uuid5 를 다시 만들 이유가 없습니다.
-    """
-    if current.empty:
-        raise ValueError("current 가 비어 있습니다")
-    pool = vehicle_master_with_model_id(vehicle_pool)
-    # `fleet.py`/`assignment.py` 는 `weekly_price_usd` 를 쓰고(`vehicle_pool_from_silver`
-    # 가 그렇게 이름 붙임), legacy `taxi` 스키마는 `weekly_lease_fee` 를 씁니다.
-    # 어느 이름으로 들어오든 legacy 쪽으로 맞춥니다.
-    if "weekly_price_usd" in pool.columns and "weekly_lease_fee" not in pool.columns:
-        pool = pool.rename(columns={"weekly_price_usd": "weekly_lease_fee"})
-    by_model = pool.drop_duplicates("vehicle_model_id").set_index("vehicle_model_id")
-
-    rows = current.copy()
-    rows["customer_id"] = CUSTOMER_ID_PREFIX + "_" + rows["driver_id"].astype(str)
-    rows["lease_id"] = LEASE_ID_PREFIX + "_" + rows["driver_id"].astype(str)
-    rows["_vehicle_model_id"] = rows["taxi_id"].astype(str).map(_parse_vehicle_model_id)
-    unknown = sorted(set(rows["_vehicle_model_id"]) - set(by_model.index))
-    if unknown:
-        raise ValueError(f"vehicle_pool 에 없는 차종입니다: {unknown}")
-
-    customer = pd.DataFrame({
-        "customer_id": rows["customer_id"],
-        "synthetic_driver_id": rows["driver_id"],
-        "snapshot_date": snapshot_date,
-    })
-
-    joined = rows.join(by_model, on="_vehicle_model_id")
-    taxi = (
-        joined[[
-            "taxi_id", "make_key", "model_key", "model_year", "weekly_lease_fee",
-            "uber_comfort_eligible", "lyft_extra_comfort_eligible", "vehicle_group",
-        ]]
-        .drop_duplicates("taxi_id")
-        .assign(snapshot_date=snapshot_date)
-    )
-
-    lease = pd.DataFrame({
-        "lease_id": rows["lease_id"],
-        "customer_id": rows["customer_id"],
-        "taxi_id": rows["taxi_id"],
-        "lease_started_on": pd.to_datetime(rows["vehicle_since"]).dt.date,
-        "lease_ended_on": pd.to_datetime(rows["exited_on"]).dt.date,
-        "snapshot_date": snapshot_date,
-    })
-
-    return SnapshotTables(
-        customer=customer.reset_index(drop=True),
-        taxi=taxi.reset_index(drop=True),
-        lease_contract=lease.reset_index(drop=True),
-    )
-
-
 def to_current_driver_vehicle(current: pd.DataFrame, vehicle_pool: pd.DataFrame) -> pd.DataFrame:
-    """`driver_vehicle_current` 를 candidates.py 가 읽는 단일 테이블로 바꿉니다 (#643).
+    """`driver_vehicle_current` 를 기사·차량 월간 뷰로 바꿉니다 (#643, #609).
 
-    `customer`/`taxi`/`lease_contract` 3-테이블(`to_snapshot_tables`)은
-    `source_job.py::build_driver_vehicle_monthly_snapshot()`(이력 기반
-    `join_date`/`experience_years` 계산에 필요)가 계속 쓰므로 남겨 둡니다.
-    candidates.py는 그 달의 활성 계약 여부와 차량 자격만 있으면 되고, 그 정보는
-    이 달 `current` 한 장에 이미 다 있어서 조인 3개를 거칠 이유가 없습니다.
+    candidates.py 의 배정 후보 생성과 source_job.py 의 발행(기사 스냅샷·보유
+    차량 재고)이 함께 읽는 단일 뷰입니다. candidates.py 는 이 중 활성 계약
+    여부와 차량 자격만 읽고, 발행 쪽은 최초 입사일(`joined_on`)과 차종 스펙
+    (`make_key`/`model_key`/`model_year`/`weekly_lease_fee`)까지 씁니다.
 
     D15 와 같은 규칙 — 퇴사 기사도 행을 남기고 `lease_ended_on` 만 채웁니다.
     """
     if current.empty:
         raise ValueError("current 가 비어 있습니다")
     pool = vehicle_master_with_model_id(vehicle_pool)
+    # `fleet.py`/`assignment.py` 는 `weekly_price_usd` 를 쓰고(`vehicle_pool_from_silver`
+    # 가 그렇게 이름 붙임), 발행 스키마는 `weekly_lease_fee` 를 씁니다. 어느
+    # 이름으로 들어오든 발행 쪽으로 맞춥니다.
+    if "weekly_price_usd" in pool.columns and "weekly_lease_fee" not in pool.columns:
+        pool = pool.rename(columns={"weekly_price_usd": "weekly_lease_fee"})
     by_model = pool.drop_duplicates("vehicle_model_id").set_index("vehicle_model_id")
 
     rows = current.copy()
@@ -167,8 +116,13 @@ def to_current_driver_vehicle(current: pd.DataFrame, vehicle_pool: pd.DataFrame)
     return pd.DataFrame({
         "driver_id": rows["driver_id"],
         "taxi_id": rows["taxi_id"],
+        "joined_on": pd.to_datetime(rows["joined_on"]).dt.date,
         "lease_started_on": pd.to_datetime(rows["vehicle_since"]).dt.date,
         "lease_ended_on": pd.to_datetime(rows["exited_on"]).dt.date,
+        "make_key": joined["make_key"].to_numpy(),
+        "model_key": joined["model_key"].to_numpy(),
+        "model_year": joined["model_year"].to_numpy(),
+        "weekly_lease_fee": joined["weekly_lease_fee"].to_numpy(),
         "uber_comfort_eligible": joined["uber_comfort_eligible"].to_numpy(),
         "lyft_extra_comfort_eligible": joined["lyft_extra_comfort_eligible"].to_numpy(),
     }).reset_index(drop=True)
