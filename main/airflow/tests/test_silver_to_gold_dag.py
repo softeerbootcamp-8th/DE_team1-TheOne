@@ -1,17 +1,28 @@
 """Silver → Gold DAG의 현재 4입력 계약과 산출물 검증 시나리오.
 
-1. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
-2. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
-3. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
+1. Gold 스케줄은 같은 파티션 키의 Silver 4종 AND Asset
+2. Silver Asset 은 적재가 아닌 검증 태스크에서 월 파티션으로 발행
+3. Asset 으로 실행된 Gold 는 해당 파티션 키를 대상 월로 사용
+4. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
+5. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
+6. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 """
 
+import importlib
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import pytest
+from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
+from main.airflow.common import assets
 from main.airflow.scripts.hvfhv_silver_to_gold import tasks as dag_module
+
+
+GOLD_DAG = importlib.import_module(
+    "dags.hvfhv_silver_to_gold_dag"
+).hvfhv_silver_to_gold_dag
 
 
 def _params(root: Path, **overrides) -> dict:
@@ -45,6 +56,88 @@ def _write_inputs(root: Path, year_month: str) -> None:
         partition = root / dataset / f"year_month={year_month}"
         partition.mkdir(parents=True)
         (partition / file_name).touch()
+
+
+def test_Gold_DAG은_같은_월_Silver_4종_AND_Asset으로만_실행된다():
+    timetable = GOLD_DAG.timetable
+
+    assert isinstance(timetable, PartitionedAssetTimetable)
+    assert type(timetable.asset_condition).__name__ == "SerializedAssetAll"
+    assert {item.name for item in timetable.asset_condition.objects} == {
+        assets.HVFHV_SILVER.name,
+        assets.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER.name,
+        assets.LEASE_VEHICLE_INVENTORY_SILVER.name,
+        assets.FUEL_PRICE_SILVER.name,
+    }
+    assert isinstance(timetable.default_partition_mapper, IdentityMapper)
+    assert timetable.default_partition_mapper.to_downstream("2026-05") == "2026-05"
+
+
+@pytest.mark.parametrize(
+    ("module_name", "dag_name", "asset", "writer_task"),
+    [
+        (
+            "dags.hvfhv_raw_to_silver_dag",
+            "hvfhv_dag",
+            assets.HVFHV_SILVER,
+            "bronze_to_silver",
+        ),
+        (
+            "dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag",
+            "driver_vehicle_monthly_snapshot_raw_to_silver_dag",
+            assets.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER,
+            "bronze_to_silver",
+        ),
+        (
+            "dags.lease_vehicle_inventory_raw_to_silver_dag",
+            "lease_vehicle_inventory_raw_to_silver_dag",
+            assets.LEASE_VEHICLE_INVENTORY_SILVER,
+            "bronze_to_silver",
+        ),
+        (
+            "dags.eia_fuel_price_silver_dag",
+            "eia_fuel_price_silver_dag",
+            assets.FUEL_PRICE_SILVER,
+            "combine_silver",
+        ),
+    ],
+)
+def test_Silver_Asset은_적재가_아니라_검증_태스크에서_발행된다(
+    module_name, dag_name, asset, writer_task
+):
+    upstream = getattr(importlib.import_module(module_name), dag_name)
+
+    assert asset.name in {
+        outlet.name for outlet in upstream.get_task("validate_silver").outlets
+    }
+    assert not upstream.get_task(writer_task).outlets
+
+
+def test_검증된_월이_Asset_파티션키로_기록된다():
+    class Recorder:
+        def __init__(self):
+            self.keys = set()
+
+        def add_partitions(self, keys):
+            self.keys.add(keys)
+
+    recorder = Recorder()
+    events = {assets.HVFHV_SILVER: recorder}
+
+    assets.publish_month_partition(events, assets.HVFHV_SILVER, "2026-05")
+
+    assert recorder.keys == {"2026-05"}
+
+
+def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path):
+    resolved = dag_module.resolve_target_year_month(
+        _logical_date(2026, 8),
+        _params(tmp_path),
+        str(tmp_path / "hvfhv"),
+        partition_key="2026-05",
+    )
+
+    assert resolved == "2026-05"
 
 
 def test_대상연월은_기준일_이하_최신_HVFHV_파티션이다(tmp_path):

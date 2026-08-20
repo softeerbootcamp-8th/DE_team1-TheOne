@@ -47,18 +47,28 @@ def available_year_months(hvfhv_path: str | Path) -> list[str]:
     )
 
 
-def resolve_target_year_month(logical_date: datetime, params: dict, hvfhv_path: str) -> str:
-    """대상 연월. 파라미터가 있으면 그 값, 없으면 HVFHV 최신 월을 고릅니다.
+def resolve_target_year_month(
+    logical_date: datetime,
+    params: dict,
+    hvfhv_path: str,
+    partition_key: str | None = None,
+) -> str:
+    """대상 연월. 수동 파라미터, Asset 파티션 키, HVFHV 최신 월 순으로 고릅니다.
 
-    달력으로 직전 달을 계산하면 안 됩니다 — 배정이 도는 시점은 TLC 공개 지연에
-    묶여 있어서(`hvfhv_raw_to_silver_dag` 참고) 직전 달 파티션이 없는 것이 정상입니다.
-    있는 것 중 최신을 고르되 **기준일을 넘지 않습니다.** 과거 날짜로 다시 돌렸을 때
-    그때 없던 달이 섞이면 결과를 재현할 수 없습니다.
+    최신 월 탐색은 파티션 키가 없는 수동 실행의 폴백입니다. 달력으로 직전 달을
+    계산하면 안 됩니다 — 배정이 도는 시점은 TLC 공개 지연에 묶여 있어서
+    (`hvfhv_raw_to_silver_dag` 참고) 직전 달 파티션이 없는 것이 정상입니다. 있는 것 중
+    최신을 고르되 **기준일을 넘지 않습니다.** 과거 날짜로 다시 돌렸을 때 그때 없던
+    달이 섞이면 결과를 재현할 수 없습니다.
     """
     year = str(params.get("year") or "").strip()
     month = str(params.get("month") or "").strip()
     if year and month:
         return f"{year}-{month.zfill(2)}"
+
+    if partition_key:
+        datetime.strptime(partition_key, "%Y-%m")
+        return partition_key
 
     if logical_date.tzinfo is None:
         logical_date = logical_date.replace(tzinfo=timezone.utc)
@@ -138,7 +148,14 @@ def validate_gold_outputs(output_dir: str, year_month: str) -> None:
 def validate_inputs_task(**context) -> dict:
     params = context["params"]
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
-    year_month = resolve_target_year_month(logical_date, params, params["hvfhv_path"])
+    dag_run = context.get("dag_run")
+    partition_key = getattr(dag_run, "partition_key", None)
+    year_month = resolve_target_year_month(
+        logical_date,
+        params,
+        params["hvfhv_path"],
+        partition_key,
+    )
     logger.info("Gold 대상 연월: %s", year_month)
     return resolve_input_paths(year_month, params)
 
