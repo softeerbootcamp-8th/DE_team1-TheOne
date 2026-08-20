@@ -2,7 +2,7 @@
 
 from datetime import datetime, timezone
 
-from sub.aws_lambda.functions.lyft_eligible_vehicles_raw_to_bronze import extractor
+from sub.aws_lambda.functions.lyft_eligible_vehicles_source_to_raw import extractor
 
 
 def test_연식이_없는_묶음은_건너뛰고_상품명은_선별하지_않는다(monkeypatch):

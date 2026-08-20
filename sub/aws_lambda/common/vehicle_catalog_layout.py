@@ -1,7 +1,7 @@
 """리스 업체 보유 차량 대장 데이터셋의 저장 경로 규칙.
 
-Bronze 를 쓰는 쪽(`vehicle_catalog_raw_to_bronze`)과 읽는 쪽
-(`vehicle_catalog_bronze_to_silver`)이 같은 규칙을 봐야 하므로 한 곳에 모읍니다.
+Raw 를 쓰는 쪽(`vehicle_catalog_source_to_raw`)과 읽는 쪽
+(`vehicle_catalog_raw_to_curated`)이 같은 규칙을 봐야 하므로 한 곳에 모읍니다.
 
     <base>/vehicle_catalog/raw/collected_at=<수집시각>/source.html
     <base>/vehicle_catalog/raw/collected_at=<수집시각>/images/<URL-SHA256>.bin
@@ -23,7 +23,7 @@ RAW_DIR_NAME = "raw"
 SNAPSHOT_PARTITION_KEY = "collected_at"
 HTML_SNAPSHOT_FILE_NAME = "source.html"
 IMAGE_SNAPSHOT_DIR_NAME = "images"
-SILVER_FILE_NAME = f"{DATASET}.parquet"
+CURATED_FILE_NAME = f"{DATASET}.parquet"
 
 
 def dataset_path(base_dir: str) -> Path:
@@ -60,45 +60,45 @@ def vendor_from_partition(partition: Path) -> str:
     return partition.name.removeprefix(f"{VENDOR_PARTITION_KEY}=")
 
 
-def bronze_file(base_dir: str, vendor: str, collected_at: datetime) -> Path:
-    """Bronze 파일 이름은 수집 시각입니다 (하루에 여러 번 수집해도 안 덮어씁니다)."""
+def raw_file(base_dir: str, vendor: str, collected_at: datetime) -> Path:
+    """Raw 파일 이름은 수집 시각입니다 (하루에 여러 번 수집해도 안 덮어씁니다)."""
     partition = vendor_partition(base_dir, f"{collected_at:%Y-%m-%d}", vendor)
     return partition / f"{collected_at:%Y%m%dT%H%M%SZ}.parquet"
 
 
-def bronze_date_prefix(collected_date: str) -> str:
-    """S3 bronze의 날짜 파티션 prefix. 그 아래 업체별 파티션이 있습니다.
+def raw_date_prefix(collected_date: str) -> str:
+    """S3 raw의 날짜 파티션 prefix. 그 아래 업체별 파티션이 있습니다.
 
-    bronze_key()와 이 함수가 서로 다른 문자열을 만들면 업체 목록을 나열하는 쪽
-    (S3BronzeExtractor)이 쓰는 쪽이 실제로 쓴 위치를 못 찾게 되므로 한 곳에 모읍니다.
+    raw_key()와 이 함수가 서로 다른 문자열을 만들면 업체 목록을 나열하는 쪽
+    (S3RawExtractor)이 쓰는 쪽이 실제로 쓴 위치를 못 찾게 되므로 한 곳에 모읍니다.
     """
-    return f"bronze/{DATASET}/{DATE_PARTITION_KEY}={collected_date}/"
+    return f"source/raw/{DATASET}/{DATE_PARTITION_KEY}={collected_date}/"
 
 
-def bronze_key(vendor: str, collected_at: datetime) -> str:
-    """S3 bronze key. bronze_file()과 같은 파티션 규칙, base_dir 대신 bronze/ prefix."""
+def raw_key(vendor: str, collected_at: datetime) -> str:
+    """S3 raw key. raw_file()과 같은 파티션 규칙, base_dir 대신 raw/ prefix."""
     return (
-        f"{bronze_date_prefix(f'{collected_at:%Y-%m-%d}')}"
+        f"{raw_date_prefix(f'{collected_at:%Y-%m-%d}')}"
         f"{VENDOR_PARTITION_KEY}={vendor}/{collected_at:%Y%m%dT%H%M%SZ}.parquet"
     )
 
 
-def silver_file(base_dir: str, collected_date: date, vendor: str) -> Path:
-    """Silver 는 재실행하면 덮어씁니다. 그래서 파일명이 고정입니다."""
+def curated_file(base_dir: str, collected_date: date, vendor: str) -> Path:
+    """Curated 는 재실행하면 덮어씁니다. 그래서 파일명이 고정입니다."""
     partition = vendor_partition(base_dir, collected_date.isoformat(), vendor)
-    return partition / SILVER_FILE_NAME
+    return partition / CURATED_FILE_NAME
 
 
-def silver_key(collected_date: date, vendor: str) -> str:
-    """S3 silver key. silver_file()과 같은 파티션 규칙, base_dir 대신 silver/ prefix."""
+def curated_key(collected_date: date, vendor: str) -> str:
+    """S3 curated key. curated_file()과 같은 파티션 규칙, base_dir 대신 curated/ prefix."""
     return (
-        f"silver/{DATASET}/{DATE_PARTITION_KEY}={collected_date.isoformat()}/"
-        f"{VENDOR_PARTITION_KEY}={vendor}/{SILVER_FILE_NAME}"
+        f"source/curated/{DATASET}/{DATE_PARTITION_KEY}={collected_date.isoformat()}/"
+        f"{VENDOR_PARTITION_KEY}={vendor}/{CURATED_FILE_NAME}"
     )
 
 
 def vendor_from_key(key: str) -> str:
-    """S3 bronze key에서 vendor=<업체> 파티션 세그먼트를 읽습니다 (파일 안에는 없는 값입니다)."""
+    """S3 raw key에서 vendor=<업체> 파티션 세그먼트를 읽습니다 (파일 안에는 없는 값입니다)."""
     for segment in key.split("/"):
         if segment.startswith(f"{VENDOR_PARTITION_KEY}="):
             return segment.removeprefix(f"{VENDOR_PARTITION_KEY}=")

@@ -7,36 +7,36 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from sub.aws_lambda.functions.fueleconomy_vehicle_specs_bronze_to_silver.loader import (
+from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_curated.loader import (
     SCHEMA as SPECS_SILVER_SCHEMA,
-    VehicleSpecsSilverLoader,
+    VehicleSpecsCuratedLoader,
 )
-from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_bronze.loader import (
-    VehicleSpecsBronzeLoader,
+from sub.aws_lambda.functions.fueleconomy_vehicle_specs_source_to_raw.loader import (
+    VehicleSpecsRawLoader,
 )
-from sub.aws_lambda.functions.lyft_eligible_vehicles_raw_to_bronze.loader import (
+from sub.aws_lambda.functions.lyft_eligible_vehicles_source_to_raw.loader import (
     SCHEMA as LYFT_BRONZE_SCHEMA,
-    LyftEligibleVehiclesBronzeLoader,
+    LyftEligibleVehiclesRawLoader,
 )
-from sub.aws_lambda.functions.lyft_eligible_vehicles_bronze_to_silver.loader import (
+from sub.aws_lambda.functions.lyft_eligible_vehicles_raw_to_curated.loader import (
     SCHEMA as LYFT_SILVER_SCHEMA,
-    LyftEligibleVehiclesSilverLoader,
+    LyftEligibleVehiclesCuratedLoader,
 )
-from sub.aws_lambda.functions.uber_eligible_vehicles_bronze_to_silver.loader import (
+from sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_curated.loader import (
     SCHEMA as UBER_SILVER_SCHEMA,
-    UberEligibleVehiclesSilverLoader,
+    UberEligibleVehiclesCuratedLoader,
 )
-from sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze.loader import (
+from sub.aws_lambda.functions.uber_eligible_vehicles_source_to_raw.loader import (
     SCHEMA as UBER_BRONZE_SCHEMA,
-    UberEligibleVehiclesBronzeLoader,
+    UberEligibleVehiclesRawLoader,
 )
-from sub.aws_lambda.functions.vehicle_catalog_raw_to_bronze.loader import (
+from sub.aws_lambda.functions.vehicle_catalog_source_to_raw.loader import (
     SCHEMA as CATALOG_BRONZE_SCHEMA,
-    VehicleCatalogBronzeLoader,
+    VehicleCatalogRawLoader,
 )
-from sub.aws_lambda.functions.vehicle_catalog_bronze_to_silver.loader import (
+from sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.loader import (
     SCHEMA as CATALOG_SILVER_SCHEMA,
-    VehicleCatalogSilverLoader,
+    VehicleCatalogCuratedLoader,
 )
 from sub.aws_lambda.functions.vehicle_master_silver.loader import (
     SCHEMA as MASTER_SILVER_SCHEMA,
@@ -67,7 +67,7 @@ def _row(schema: pa.Schema) -> dict:
 
 
 def _specs(root):
-    return VehicleSpecsBronzeLoader(str(root), COLLECTED_AT), [
+    return VehicleSpecsRawLoader(str(root), COLLECTED_AT), [
         {"source": "fueleconomy.gov", "id": "1", "collected_at": COLLECTED_AT}
     ]
 
@@ -75,7 +75,7 @@ def _specs(root):
 def _lyft(root):
     row = _row(LYFT_BRONZE_SCHEMA)
     row["city_slug"] = "new-york"
-    return LyftEligibleVehiclesBronzeLoader(
+    return LyftEligibleVehiclesRawLoader(
         str(root), "new-york", COLLECTED_AT
     ), [row]
 
@@ -83,7 +83,7 @@ def _lyft(root):
 def _uber(root):
     row = _row(UBER_BRONZE_SCHEMA)
     row["city_slug"] = "new-york"
-    return UberEligibleVehiclesBronzeLoader(
+    return UberEligibleVehiclesRawLoader(
         str(root), "new-york", COLLECTED_AT
     ), [row]
 
@@ -91,7 +91,7 @@ def _uber(root):
 def _catalog(root):
     row = _row(CATALOG_BRONZE_SCHEMA)
     row["vendor"] = "fasttrack"
-    return VehicleCatalogBronzeLoader(str(root), COLLECTED_AT), [row]
+    return VehicleCatalogRawLoader(str(root), COLLECTED_AT), [row]
 
 
 @pytest.mark.parametrize(
@@ -124,25 +124,25 @@ def test_Raw_Bronze_교체실패는_기존파일을_보존하고_tmp를_정리�
 def _specs_silver(root):
     row = _row(SPECS_SILVER_SCHEMA)
     row.update({"source": "fueleconomy.gov", "collected_at": COLLECTED_AT})
-    return VehicleSpecsSilverLoader(str(root)), [row]
+    return VehicleSpecsCuratedLoader(str(root)), [row]
 
 
 def _lyft_silver(root):
     row = _row(LYFT_SILVER_SCHEMA)
     row.update({"city": "new-york", "collected_at": COLLECTED_AT})
-    return LyftEligibleVehiclesSilverLoader(str(root)), [row]
+    return LyftEligibleVehiclesCuratedLoader(str(root)), [row]
 
 
 def _uber_silver(root):
     row = _row(UBER_SILVER_SCHEMA)
     row.update({"city": "new-york", "collected_at": COLLECTED_AT})
-    return UberEligibleVehiclesSilverLoader(str(root)), [row]
+    return UberEligibleVehiclesCuratedLoader(str(root)), [row]
 
 
 def _catalog_silver(root):
     row = _row(CATALOG_SILVER_SCHEMA)
     row.update({"vendor": "fasttrack", "collected_at": COLLECTED_AT})
-    return VehicleCatalogSilverLoader(str(root)), [row]
+    return VehicleCatalogCuratedLoader(str(root)), [row]
 
 
 def _master_silver(root):

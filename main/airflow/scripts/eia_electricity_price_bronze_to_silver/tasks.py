@@ -9,7 +9,6 @@ EIA 파일 하나에 이력이 통째로 들어 있어 **어느 달이든** 만�
 """
 
 import calendar
-import importlib
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -46,9 +45,13 @@ def default_year_month(reference: datetime) -> str:
 
 
 def resolve_year_month(context: dict) -> str:
-    configured = (context.get("params") or {}).get("year_month")
-    if configured:
-        year_month = str(configured).strip()
+    params = context.get("params") or {}
+    year = str(params.get("year") or "").strip()
+    month = str(params.get("month") or "").strip()
+    if bool(year) != bool(month):
+        raise ValueError("year와 month는 함께 지정해야 합니다")
+    if year:
+        year_month = f"{year}-{month.zfill(2)}"
         datetime.strptime(year_month, "%Y-%m")
         return year_month
     reference = context.get("data_interval_end") or datetime.now(timezone.utc)
@@ -64,28 +67,6 @@ def silver_file(base_dir: str, year_month: str) -> Path:
 def month_day_count(year_month: str) -> int:
     year, month = (int(part) for part in year_month.split("-"))
     return calendar.monthrange(year, month)[1]
-
-
-def require_bronze(base_dir: str, year_month: str) -> str:
-    """원본이 있는지 변환 **전에** 확인합니다.
-
-    `year_month` 로 원본을 걸러내지 않습니다 — 이력 파일이라 어느 수집분이든 여러 달을
-    담고 있고, 실제로 대상 월이 들어있는지는 파일을 열어봐야 알 수 있어서 변환이
-    판단합니다(없으면 보유 구간을 알려주며 실패). 여기서는 존재 여부만 봅니다.
-    """
-    layout = importlib.import_module("main.aws_lambda.common.eia_fuel_price_layout")
-    dag_id = "eia_electricity_price_raw_to_bronze_pipeline"
-    try:
-        _, partition = layout.newest_bronze_partition(base_dir, layout.ELECTRICITY_DATASET)
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"{exc} — {dag_id} 을 먼저 돌리세요.") from exc
-
-    path = partition / layout.ELECTRICITY_FILE_NAME
-    if not path.is_file():
-        raise FileNotFoundError(f"EIA 전력 원본이 없습니다: {path} — {dag_id} 을 먼저 돌리세요.")
-
-    logger.info("EIA 전력 원본 확인 (%s 대상): %s", year_month, path)
-    return str(path)
 
 
 def validate_silver(base_dir: str, year_month: str) -> None:
@@ -115,18 +96,11 @@ def validate_silver(base_dir: str, year_month: str) -> None:
     logger.info("EIA 충전 단가 Silver 검증 통과: %s rows=%d", path, table.num_rows)
 
 
-@task(task_id="check_bronze")
-def check_bronze_task(**context) -> str:
-    year_month = resolve_year_month(context)
-    logger.info("EIA 충전 단가 대상 월: %s", year_month)
-    require_bronze(context["params"]["bronze_dir"], year_month)
-    return year_month
-
-
 @task(task_id="bronze_to_silver")
 def bronze_to_silver_task(**context) -> dict:
     params = context["params"]
-    year_month = context["task_instance"].xcom_pull(task_ids="check_bronze")
+    year_month = resolve_year_month(context)
+    logger.info("EIA 충전 단가 대상 월: %s", year_month)
 
     result = lambda_handler_for("eia_electricity_price_bronze_to_silver")(
         event={

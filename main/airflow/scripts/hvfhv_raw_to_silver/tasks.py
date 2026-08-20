@@ -164,7 +164,7 @@ def _collect_bronze(params: dict) -> dict:
         "month": params.get("month"),
     }
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
-    result = lambda_handler_for("hvfhv_raw_to_bronze")(event=event)
+    result = lambda_handler_for("monthly_taxi_trip_raw_to_bronze")(event=event)
     logger.info("raw_to_bronze 작업 완료: result=%s", result)
     return result
 

@@ -22,8 +22,8 @@ from shared.airflow.common.validation import (
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BRONZE_DIR = os.getenv("BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze"))
-DEFAULT_SILVER_DIR = os.getenv("SILVER_DIR", str(PROJECT_ROOT / "data" / "silver"))
+DEFAULT_RAW_DIR = os.getenv("RAW_DIR", str(PROJECT_ROOT / "data" / "source" / "raw"))
+DEFAULT_CURATED_DIR = os.getenv("CURATED_DIR", str(PROJECT_ROOT / "data" / "source" / "curated"))
 DEFAULT_CITY_SLUG = os.getenv("UBER_CITY_SLUG", "new-york")
 
 
@@ -228,14 +228,14 @@ def run_gx_silver_validation(
 def raw_to_bronze_task(**context) -> dict:
     """Uber 자격 페이지를 수집해 Bronze 에 적재합니다."""
     params = context.get("params", {})
-    result = lambda_handler_for("uber_eligible_vehicles_raw_to_bronze", package="sub.aws_lambda.functions")(
+    result = lambda_handler_for("uber_eligible_vehicles_source_to_raw", package="sub.aws_lambda.functions")(
         event={
-            "base_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
+            "base_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
             "city_slug": params.get("city_slug") or DEFAULT_CITY_SLUG,
             "collected_date": params.get("collected_date"),
         }
     )
-    logger.info("Raw -> Bronze 완료: %s", result)
+    logger.info("Source -> Raw 완료: %s", result)
     return result
 
 
@@ -246,14 +246,14 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
     collected_date = (params.get("collected_date") or "").strip() or raw_result[
         "collected_date"
     ]
-    result = lambda_handler_for("uber_eligible_vehicles_bronze_to_silver", package="sub.aws_lambda.functions")(
+    result = lambda_handler_for("uber_eligible_vehicles_raw_to_curated", package="sub.aws_lambda.functions")(
         event={
             "collected_date": collected_date,
-            "bronze_dir": params.get("bronze_dir") or DEFAULT_BRONZE_DIR,
-            "silver_dir": params.get("silver_dir") or DEFAULT_SILVER_DIR,
+            "raw_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
+            "curated_dir": params.get("silver_dir") or DEFAULT_CURATED_DIR,
         }
     )
-    logger.info("Bronze -> Silver 완료: %s", result)
+    logger.info("Raw -> Curated 완료: %s", result)
     return result
 
 
@@ -266,16 +266,16 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
 def validate_bronze_task(result: dict, **context) -> None:
     """Bronze 적재 결과가 layout 규칙과 맞는지, 요청한 도시를 긁었는지 봅니다."""
     params = context.get("params", {})
-    bronze_dir = params.get("bronze_dir") or DEFAULT_BRONZE_DIR
+    raw_dir = params.get("bronze_dir") or DEFAULT_RAW_DIR
     requested_city = params.get("city_slug") or DEFAULT_CITY_SLUG
     layout = importlib.import_module(
         "sub.aws_lambda.common.uber_eligible_vehicles_layout"
     )
     loader = importlib.import_module(
-        "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze.loader"
+        "sub.aws_lambda.functions.uber_eligible_vehicles_source_to_raw.loader"
     )
     transformer = importlib.import_module(
-        "sub.aws_lambda.functions.uber_eligible_vehicles_bronze_to_silver.transformer"
+        "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_curated.transformer"
     )
     parsed = parse_handler_result(result, expected_locations=1)
     collected_date = parse_iso_date(result.get("collected_date"))
@@ -295,7 +295,7 @@ def validate_bronze_task(result: dict, **context) -> None:
         raise ValueError(
             f"Bronze 파일명이 수집시각 형식이 아닙니다: {path.name}"
         ) from exc
-    expected = layout.bronze_file(bronze_dir, requested_city, collected_at)
+    expected = layout.raw_file(raw_dir, requested_city, collected_at)
     if path.resolve() != expected.resolve():
         raise ValueError(f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}")
     if collected_at.date() != collected_date:
@@ -326,15 +326,15 @@ def validate_bronze_task(result: dict, **context) -> None:
 def validate_silver_task(result: dict, **context) -> None:
     """Silver 는 도시별로 파일을 씁니다. 그중 하나가 비어도 잡아냅니다."""
     params = context.get("params", {})
-    silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
+    curated_dir = params.get("silver_dir") or DEFAULT_CURATED_DIR
     layout = importlib.import_module(
         "sub.aws_lambda.common.uber_eligible_vehicles_layout"
     )
     loader = importlib.import_module(
-        "sub.aws_lambda.functions.uber_eligible_vehicles_bronze_to_silver.loader"
+        "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_curated.loader"
     )
     transformer = importlib.import_module(
-        "sub.aws_lambda.functions.uber_eligible_vehicles_bronze_to_silver.transformer"
+        "sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_curated.transformer"
     )
     parsed = parse_handler_result(result)
     target_date = parse_iso_date(result.get("collected_date"))
@@ -347,7 +347,7 @@ def validate_silver_task(result: dict, **context) -> None:
         if city in seen_cities:
             raise ValueError(f"같은 도시가 두 번 적재됐습니다: {city}")
         seen_cities.add(city)
-        expected = layout.silver_file(silver_dir, target_date, city)
+        expected = layout.curated_file(curated_dir, target_date, city)
         if path.resolve() != expected.resolve():
             raise ValueError(
                 f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}"

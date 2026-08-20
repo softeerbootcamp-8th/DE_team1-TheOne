@@ -26,6 +26,7 @@ airflow/**/*.pyc
 .env
 .env.*
 !.env.example
+.ssh-config
 
 # Editor
 .vscode/

@@ -12,6 +12,7 @@ from pipeline_core.extractor import Extractor
 from pipeline_core.loader import Loader, WriteResult
 
 from shared.aws_lambda.common.atomic_write import atomic_write
+from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
 
 
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
@@ -86,8 +87,18 @@ class SyntheticDatasetExtractor(Extractor):
         return year_month
 
 
+def _read_parquet(dataset: str, content) -> pq.ParquetFile:
+    """content 가 읽을 수 있는 Parquet bytes 인지 확인하고 엽니다."""
+    if not isinstance(content, bytes) or not content:
+        raise ValueError(f"다운로드한 {dataset} 파일이 비어 있습니다")
+    try:
+        return pq.ParquetFile(pa.BufferReader(content))
+    except (OSError, pa.ArrowInvalid) as exc:
+        raise ValueError(f"{dataset} 원본이 읽을 수 있는 Parquet이 아닙니다") from exc
+
+
 class SyntheticDatasetLoader(Loader):
-    """읽을 수 있는 원본 Parquet을 데이터셋별 월 파티션에 적재합니다."""
+    """읽을 수 있는 원본 Parquet을 데이터셋별 월 파티션에 로컬로 적재합니다."""
 
     def __init__(self, base_dir: str, dataset: str, dataset_dir: str):
         self._base_dir = Path(base_dir)
@@ -99,13 +110,8 @@ class SyntheticDatasetLoader(Loader):
     def write(self, payload: dict) -> WriteResult:
         if payload.get("dataset") != self._dataset:
             raise ValueError(f"수집 dataset이 다릅니다: {payload.get('dataset')}")
-        content = payload.get("content")
-        if not isinstance(content, bytes) or not content:
-            raise ValueError(f"다운로드한 {self._dataset} 파일이 비어 있습니다")
-        try:
-            parquet = pq.ParquetFile(pa.BufferReader(content))
-        except (OSError, pa.ArrowInvalid) as exc:
-            raise ValueError(f"{self._dataset} 원본이 읽을 수 있는 Parquet이 아닙니다") from exc
+        content = payload["content"]
+        parquet = _read_parquet(self._dataset, content)
 
         self.payload = payload
         self.path = self._data_path(payload)
@@ -120,3 +126,43 @@ class SyntheticDatasetLoader(Loader):
             / f"year_month={payload['year_month']}"
             / "data.parquet"
         )
+
+
+class S3SyntheticDatasetLoader(Loader):
+    """읽을 수 있는 원본 Parquet을 데이터셋별 월 파티션에 S3로 적재합니다."""
+
+    def __init__(self, dataset: str, dataset_dir: str, bucket: str | None = None):
+        self._dataset = dataset
+        self._dataset_dir = dataset_dir
+        self._bucket = bucket
+        self.payload: dict = {}
+
+    def write(self, payload: dict) -> WriteResult:
+        if payload.get("dataset") != self._dataset:
+            raise ValueError(f"수집 dataset이 다릅니다: {payload.get('dataset')}")
+        content = payload["content"]
+        parquet = _read_parquet(self._dataset, content)
+
+        self.payload = payload
+        key = self._data_key(payload)
+        return S3Loader(key=key, bucket=self._bucket).write(
+            S3Object(body=content, row_count=parquet.metadata.num_rows)
+        )
+
+    def _data_key(self, payload: dict) -> str:
+        return f"bronze/{self._dataset_dir}/year_month={payload['year_month']}/data.parquet"
+
+
+def build_bronze_loader(
+    storage: str,
+    base_dir: str,
+    dataset: str,
+    dataset_dir: str,
+    bucket: str | None = None,
+) -> Loader:
+    """storage 파라미터로 로컬/S3 Loader 중 하나를 고릅니다."""
+    if storage == "local":
+        return SyntheticDatasetLoader(base_dir, dataset, dataset_dir)
+    if storage == "s3":
+        return S3SyntheticDatasetLoader(dataset, dataset_dir, bucket=bucket)
+    raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

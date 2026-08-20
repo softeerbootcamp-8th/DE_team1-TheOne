@@ -30,7 +30,7 @@ from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module
 
 sys.path.append(str(PROJECT_ROOT))
-from sub.synthetic_source_api.server import create_server
+from sub.source_api.server import LocalDatasetStorage, create_server
 
 DAG = dag_module.synthetic_driver_trip_source_dag
 
@@ -69,6 +69,7 @@ def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다()
         # 조건부 플래그입니다. Param 을 비우면 렌더링 후 사라지지만, 템플릿 원문에는
         # 남아 있어야 합니다 — 없으면 seed 오버라이드 경로가 끊긴 것입니다.
         "--seed",
+        "--bucket_size",
         "--test_row_limit",
     ):
         assert option in command
@@ -89,11 +90,12 @@ class _StubTaskInstance:
         }
 
 
-def _render_build_command(seed) -> str:
+def _render_build_command(seed=None, bucket_size=None) -> str:
     task = DAG.get_task("build_source_release")
     return DAG.get_template_env().from_string(task.bash_command).render(
         params={
             "seed": seed,
+            "bucket_size": bucket_size,
             "state_output_dir": "S",
             "release_output_dir": "R",
             "test_row_limit": 0,
@@ -107,11 +109,20 @@ def test_seed_Param을_비우면_플래그가_렌더링되지_않는다():
 
     비어 있을 때 플래그 자체가 사라져야 job 이 설정 파일을 읽습니다.
     """
-    assert "--seed" not in _render_build_command(None)
+    assert "--seed" not in _render_build_command(seed=None)
 
 
 def test_seed_Param을_주면_CLI로_전달된다():
-    assert "--seed 7" in _render_build_command(7)
+    assert "--seed 7" in _render_build_command(seed=7)
+
+
+def test_bucket_size_Param을_비우면_플래그가_렌더링되지_않는다():
+    """Param 에 기본값을 두면 항상 CLI 로 실려서 config 의 allocation.bucket_size 가 가려집니다."""
+    assert "--bucket_size" not in _render_build_command(bucket_size=None)
+
+
+def test_bucket_size_Param을_주면_CLI로_전달된다():
+    assert "--bucket_size 20" in _render_build_command(bucket_size=20)
 
 
 def test_임시행제한은_프로덕션과_분리된_경로를_사용한다(tmp_path):
@@ -337,11 +348,15 @@ def test_품질리포트가_없으면_실패한다(tmp_path):
 
 
 def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다(tmp_path):
+    """manifest의 dataset 키는 생성 DAG가 쓰는 이름 그대로지만, 공개 API는 이름이
+    다른 것(hvfhv_taxi_trips -> monthly_taxi_trip)이 있어 URL은 그걸로 만듭니다
+    (LocalDatasetStorage의 번역표 참고)."""
     release, manifest = _write_release(tmp_path)
-    server = create_server(tmp_path, port=0)
+    server = create_server(LocalDatasetStorage(tmp_path), port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
+    public_names = {"hvfhv_taxi_trips": "monthly_taxi_trip"}
     try:
         for path in ("/v1/data/latest", "/v1/data/2026-09"):
             with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -349,7 +364,8 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
             assert exc_info.value.code == 404
 
         for dataset in manifest["datasets"]:
-            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{dataset}"
+            public_name = public_names.get(dataset, dataset)
+            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{public_name}"
             with urllib.request.urlopen(dataset_url) as response:
                 assert response.headers["Content-Type"] == (
                     "application/vnd.apache.parquet"
@@ -359,7 +375,7 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
                 ).read_bytes()
 
             with urllib.request.urlopen(
-                f"{base_url}/v1/data/latest/datasets/{dataset}"
+                f"{base_url}/v1/data/latest/datasets/{public_name}"
             ) as response:
                 assert response.geturl() == dataset_url
                 assert response.read() == (

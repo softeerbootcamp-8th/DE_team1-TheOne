@@ -42,14 +42,21 @@ default_args = {
         # 비우면(None) CLI 플래그 자체가 렌더링되지 않아 job 이 config/generation.json
         # 의 global_seed 를 읽습니다. 기본값을 두면 항상 이 값이 실려 설정을 가립니다.
         "seed": Param(None, type=["integer", "null"]),
+        # 비우면 플래그 자체를 생략해 config 의 allocation.bucket_size 가 그대로 쓰입니다.
+        "bucket_size": Param(
+            None,
+            type=["integer", "null"],
+            description="기사 후보 버킷 크기. 비우면 config 의 allocation.bucket_size",
+        ),
         # TEMPORARY(#452): 로컬 DAG smoke test용. 0이면 전체 월을 처리합니다.
         #
         # 0 이 아니면 생성 결과가 `<release_output_dir>/_temporary/test_row_limit=N/`
         # 아래로 갑니다. 가짜 데이터 API 는 그 위 디렉터리만 보므로, 하류 DAG 까지
         # 이어서 돌리려면 API 를 그 경로로 띄워야 합니다 — 안 그러면 404 입니다.
         #
-        #   python sub/synthetic_source_api/server.py --port 8091 \
-        #     --root "data/source/synthetic_driver_trip_api/_temporary/test_row_limit=1000"
+        #   SOURCE_API_PORT=8091 \
+        #   SOURCE_API_LOCAL_ROOT="data/source/synthetic_driver_trip_api/_temporary/test_row_limit=1000" \
+        #     python -m sub.source_api.server
         "test_row_limit": Param(
             0,
             type="integer",
@@ -79,6 +86,7 @@ def synthetic_driver_trip_source_pipeline():
             + "--year_month "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
             + "{% if params.seed is not none %}--seed {{ params.seed }} {% endif %}"
+            + "{% if params.bucket_size is not none %}--bucket_size {{ params.bucket_size }} {% endif %}"
             + "--test_row_limit {{ params.test_row_limit }}"
         ),
         env={

@@ -12,11 +12,11 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
-from sub.aws_lambda.functions.uber_eligible_vehicles_raw_to_bronze import (
+from sub.aws_lambda.functions.uber_eligible_vehicles_source_to_raw import (
     extractor as uber_extractor,
     handler as uber_handler,
 )
-from sub.aws_lambda.functions.lyft_eligible_vehicles_raw_to_bronze import (
+from sub.aws_lambda.functions.lyft_eligible_vehicles_source_to_raw import (
     extractor as lyft_extractor,
     handler as lyft_handler,
 )
