@@ -19,6 +19,20 @@ RUN pip install --no-cache-dir "uv==0.12.2" \
  && pip install --no-cache-dir -r /tmp/build/requirements.txt \
  && rm -rf /tmp/build
 
-# DAG 가 생기면 아래 한 줄 추가 (컨텍스트가 저장소 루트라 airflow/ 가 붙습니다):
-# COPY --chown=airflow:root main/airflow/dags/ /opt/airflow/dags/main/
-# COPY --chown=airflow:root sub/airflow/dags/ /opt/airflow/dags/sub/
+# 여기부터는 이미지 하나로 EC2 에서 뜨게 하기 위한 소스 복사입니다. 의존성 설치 뒤에
+# 두어야 소스만 바뀌었을 때 위 레이어 캐시가 살아남습니다.
+# 로컬 compose 는 아래 세 경로를 전부 바인드 마운트로 덮으므로 개발 흐름은 그대로입니다.
+ENV PYTHONPATH=/opt/airflow/project-root
+
+COPY --chown=airflow:root main/airflow/dags/ /opt/airflow/dags/main/
+COPY --chown=airflow:root sub/airflow/dags/ /opt/airflow/dags/sub/
+
+# DAG 는 shared.airflow.common 과 main/sub 의 scripts 를 절대 import 하고, 그 아래로
+# schema.*, sub.generators, importlib 로 sub.aws_lambda.functions.*, 그리고
+# project_paths.py 가 sys.path 에 넣는 libs/pipeline_core 까지 끌어옵니다.
+# 하나라도 빠지면 그 DAG 는 import 단계에서 죽습니다.
+COPY --chown=airflow:root main/ /opt/airflow/project-root/main/
+COPY --chown=airflow:root sub/ /opt/airflow/project-root/sub/
+COPY --chown=airflow:root shared/ /opt/airflow/project-root/shared/
+COPY --chown=airflow:root schema/ /opt/airflow/project-root/schema/
+COPY --chown=airflow:root libs/ /opt/airflow/project-root/libs/
