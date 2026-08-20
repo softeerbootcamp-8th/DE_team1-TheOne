@@ -40,6 +40,12 @@ default_args = {
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         "seed": Param(42, type="integer"),
+        # 비우면 플래그 자체를 생략해 config 의 allocation.bucket_size 가 그대로 쓰입니다.
+        "bucket_size": Param(
+            None,
+            type=["integer", "null"],
+            description="기사 후보 버킷 크기. 비우면 config 의 allocation.bucket_size",
+        ),
         # TEMPORARY(#452): 로컬 DAG smoke test용. 0이면 전체 월을 처리합니다.
         #
         # 0 이 아니면 생성 결과가 `<release_output_dir>/_temporary/test_row_limit=N/`
@@ -81,6 +87,7 @@ def synthetic_driver_trip_source_pipeline():
             + "--year_month "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
             + "--seed {{ params.seed }} "
+            + "{% if params.bucket_size is not none %}--bucket_size {{ params.bucket_size }} {% endif %}"
             + "--test_row_limit {{ params.test_row_limit }}"
         ),
         env={
