@@ -73,6 +73,14 @@ jobs:
               - 'main/aws_lambda/Dockerfile'
               - 'main/aws_lambda/pyproject.toml'
               - 'main/aws_lambda/uv.lock'
+              # ↓ Dockerfile 이 COPY 하는데 빠져 있던 것들. 없으면 main 함수 코드를
+              #   고쳐도 이미지 빌드가 스킵됩니다.
+              - 'main/aws_lambda/functions/**'
+              - 'main/aws_lambda/common/**'
+              - 'main/__init__.py'
+              - 'sub/__init__.py'
+              - 'shared/__init__.py'
+              - 'schema/**'
               - 'sub/aws_lambda/**'
               - 'shared/aws_lambda/**'
               - 'libs/pipeline_core/**'

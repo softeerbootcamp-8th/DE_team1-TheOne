@@ -1,0 +1,184 @@
+# =============================================================================
+# Lambda 컨테이너 이미지 배포.
+#
+#   이미지 하나(theone-lambda)에 main·sub 함수가 전부 들어 있고, AWS Lambda 함수는
+#   핸들러 경로로 구분됩니다. 그래서 배포는 "이미지 1개 푸시 → 그 이미지를 쓰는
+#   함수들을 새 태그로 갱신" 입니다.
+#
+# 자격증명을 저장하지 않습니다 (OIDC)
+# --------------------------------
+# GitHub 이 실행마다 서명한 신분증(JWT)을 발급하고, AWS 가 그것을 신뢰관계와 대조해
+# 1시간짜리 임시 자격증명을 내줍니다. Secrets 에 들어가는 장기 Access Key 가 없습니다.
+# 신뢰관계에 저장소·브랜치 조건이 박혀 있어 포크에서 올린 PR 은 통과하지 못합니다.
+#
+# 사전 준비 (AWS 콘솔 — 1회)
+#   1. IAM Identity provider 로 token.actions.githubusercontent.com 등록
+#   2. Role `theone-github-actions-lambda-deploy` 생성 (신뢰관계에 repo·branch 조건)
+#   3. ECR 리포지토리 `theone-lambda` 생성
+#   4. GitHub Variables: AWS_REGION / AWS_ROLE_ARN / ECR_REPOSITORY
+#
+# 함수 생성은 하지 않습니다
+# ----------------------
+# IAM 정책에 UpdateFunctionCode 만 있고 CreateFunction 이 없습니다. 함수를 만들거나
+# 지우는 것은 사람이 합니다 — CI 가 실수로 함수를 없애는 사고를 구조적으로 막습니다.
+# =============================================================================
+name: Deploy Lambda
+
+on:
+  push:
+    branches: [develop]
+    # Dockerfile 의 COPY 와 같아야 합니다. 빠지면 코드가 바뀌었는데 배포가 스킵됩니다.
+    paths:
+      - 'main/aws_lambda/**'
+      - 'sub/aws_lambda/**'
+      - 'shared/aws_lambda/**'
+      - 'main/__init__.py'
+      - 'sub/__init__.py'
+      - 'shared/__init__.py'
+      - 'schema/**'
+      - 'libs/pipeline_core/**'
+      - 'Makefile'
+      - '.dockerignore'
+      - '.github/workflows/deploy-lambda.yml'
+  workflow_dispatch:
+    inputs:
+      functions:
+        description: '갱신할 함수 이름(쉼표 구분). 비우면 이 이미지를 쓰는 함수를 자동 탐색'
+        required: false
+        default: ''
+
+# ★ id-token 이 없으면 OIDC 가 조용히 실패합니다. 가장 흔한 실수입니다.
+permissions:
+  id-token: write
+  contents: read
+
+# 배포는 겹치면 안 됩니다. 진행 중인 것을 취소하지도 않습니다 — 중간에 끊기면
+# 일부 함수만 새 이미지인 상태로 남습니다.
+concurrency:
+  group: deploy-lambda
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 이미지 푸시와 함수 갱신
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 이미지 태그 결정
+        id: image
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          registry="${{ steps.ecr.outputs.registry }}"
+          repo="${{ vars.ECR_REPOSITORY }}"
+          echo "uri=${registry}/${repo}:${sha}" >> "$GITHUB_OUTPUT"
+          echo "repo_uri=${registry}/${repo}"   >> "$GITHUB_OUTPUT"
+
+      # 로컬과 같은 명령을 씁니다. CI 만 통하는 빌드가 되지 않도록,
+      # 그리고 PLATFORM=linux/amd64 고정이 자동으로 따라오도록.
+      #
+      # IMAGE_NAME 에 ECR 리포지토리 이름을 그대로 넘깁니다. Makefile 이 이름을 스스로
+      # 만들게 두면(theone-lambda) 실제 리포지토리 이름(theone-main-lambda)과 어긋나
+      # 푸시가 실패합니다. 리포지토리 이름을 단일 원천으로 둡니다.
+      - name: 이미지 빌드
+        run: |
+          make build \
+            RUNTIMES=main/aws_lambda \
+            REGISTRY="${{ steps.ecr.outputs.registry }}/" \
+            IMAGE_NAME="${{ vars.ECR_REPOSITORY }}"
+
+      - name: 이미지 푸시
+        run: docker push "${{ steps.image.outputs.uri }}"
+
+      # 갱신 대상을 "지금 이 리포지토리의 이미지를 쓰고 있는 함수" 로 정합니다.
+      # 목록을 저장소에 적어두는 방식은 콘솔에서 함수가 추가·삭제되는 순간 어긋나고,
+      # CI 에는 AWS 접근이 없어 그 어긋남을 잡을 방법도 없습니다.
+      - name: 갱신 대상 탐색
+        id: targets
+        env:
+          REPO_URI: ${{ steps.image.outputs.repo_uri }}
+          OVERRIDE: ${{ github.event.inputs.functions }}
+        run: |
+          set -euo pipefail
+          if [ -n "$OVERRIDE" ]; then
+            echo "$OVERRIDE" | tr ',' '\n' | sed 's/[[:space:]]//g' | grep -v '^$' > targets.txt
+            echo "손으로 지정한 대상을 씁니다."
+          else
+            : > targets.txt
+            for fn in $(aws lambda list-functions \
+                          --query "Functions[?PackageType=='Image'].FunctionName" \
+                          --output text); do
+              uri="$(aws lambda get-function --function-name "$fn" \
+                       --query 'Code.ImageUri' --output text)"
+              case "$uri" in
+                "$REPO_URI":*) echo "$fn" >> targets.txt ;;
+              esac
+            done
+          fi
+          echo "count=$(wc -l < targets.txt)" >> "$GITHUB_OUTPUT"
+          echo "대상 $(wc -l < targets.txt) 개:"; cat targets.txt
+
+      # 0개인데 성공으로 끝나면 "배포했다" 고 착각합니다. 이미지는 이미 푸시됐으니
+      # 그 URI 를 알려주고 멈춥니다.
+      - name: 대상이 없으면 실패
+        if: steps.targets.outputs.count == '0'
+        run: |
+          echo "::error::이 리포지토리의 이미지를 쓰는 Lambda 함수를 찾지 못했습니다."
+          echo "이미지는 푸시됐습니다: ${{ steps.image.outputs.uri }}"
+          echo ""
+          echo "처음 배포라면 함수를 이 이미지로 한 번 지정해 주세요(콘솔 또는 CLI):"
+          echo "  aws lambda update-function-code --function-name <이름> \\"
+          echo "    --image-uri ${{ steps.image.outputs.uri }}"
+          echo ""
+          echo "함수가 이미 있는데 안 잡히면 두 가지를 확인하세요:"
+          echo "  - PackageType 이 Image 인지 (Zip 이면 --image-uri 가 통하지 않습니다)"
+          echo "  - IAM 정책의 리소스 범위(function:theone-*)가 실제 함수 이름과 맞는지"
+          exit 1
+
+      - name: 함수 갱신
+        run: |
+          set -euo pipefail
+          while read -r fn; do
+            echo "==> $fn"
+            aws lambda update-function-code \
+              --function-name "$fn" \
+              --image-uri "${{ steps.image.outputs.uri }}" \
+              --query 'LastUpdateStatus' --output text
+          done < targets.txt
+
+      # update-function-code 는 비동기입니다. 명령이 성공해도 갱신은 진행 중일 수 있어,
+      # 여기서 기다리지 않으면 "배포 성공" 뒤에 함수가 깨져 있을 수 있습니다.
+      # 전부 요청한 뒤 한꺼번에 기다립니다 — 하나씩 기다리면 19번 직렬이 됩니다.
+      - name: 갱신 완료 대기
+        run: |
+          set -euo pipefail
+          while read -r fn; do
+            aws lambda wait function-updated --function-name "$fn"
+            state="$(aws lambda get-function-configuration --function-name "$fn" \
+                      --query 'LastUpdateStatus' --output text)"
+            echo "$fn -> $state"
+            [ "$state" = "Successful" ] || { echo "::error::$fn 갱신 실패"; exit 1; }
+          done < targets.txt
+
+      - name: 요약
+        run: |
+          {
+            echo "### Lambda 배포 완료"
+            echo ""
+            echo '```'
+            echo "이미지: ${{ steps.image.outputs.uri }}"
+            echo '```'
+            echo ""
+            echo "갱신한 함수 ${{ steps.targets.outputs.count }} 개:"
+            sed 's/^/- /' targets.txt
+          } >> "$GITHUB_STEP_SUMMARY"
