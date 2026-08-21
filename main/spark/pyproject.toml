@@ -20,6 +20,7 @@ dependencies = [
     "geopandas==1.1.4",   # taxi_zone shapefile ↔ AFDC 충전소 공간조인
     "shapely==2.1.2",
     "requests==2.34.2",
+    "boto3==1.43.65",     # SparkSession 없는 순수 pandas 스크립트의 S3 쓰기 (main/aws_lambda와 버전 통일)
     "pipeline-core",
 ]
 
