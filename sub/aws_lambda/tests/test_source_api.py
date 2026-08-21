@@ -14,12 +14,15 @@
 5. manifest 상태 — 없으면 404, 깨졌으면 500
 6. `/health`·HEAD·쿼리스트링·트레일링 슬래시
 7. `S3DatasetStorage` — prod 저장소가 고정 키를 스트림으로 읽고, 없는 키는 None
+8. HEAD validator — ETag·Last-Modified 제공, 조건이 맞으면 본문 없이 304
+9. HEAD 감시는 파일 스트림을 열지 않고 S3는 object metadata를 그대로 사용
 
 공개 API 이름은 `monthly_taxi_trip`이지만, 생성 DAG(synthetic_driver_trip_source)가
 쓰는 manifest는 아직 예전 이름(`hvfhv_taxi_trips`)을 키로 씁니다 — `LocalDatasetStorage`가
 그 번역을 하므로, 이 파일의 manifest 픽스처도 실제 운영과 같은 이름을 그대로 씁니다.
 """
 
+import hashlib
 import json
 import threading
 import urllib.error
@@ -48,7 +51,10 @@ def release_root(tmp_path):
     for name, body in BODIES.items():
         manifest_key = MANIFEST_KEYS.get(name, name)
         (release / f"{manifest_key}.parquet").write_bytes(body)
-        manifest_datasets[manifest_key] = {"file": f"{manifest_key}.parquet"}
+        manifest_datasets[manifest_key] = {
+            "file": f"{manifest_key}.parquet",
+            "sha256": hashlib.sha256(body).hexdigest(),
+        }
     _write_manifest(release, manifest_datasets)
     # 릴리스 **밖**의 파일 — 경로 탈출이 성공하면 이게 새어 나갑니다.
     (tmp_path.parent / "SECRET.txt").write_text("top secret")
@@ -93,14 +99,29 @@ def raw_get(base: str, path: str) -> tuple[int, bytes]:
     return status, raw
 
 
-def get(base: str, path: str, method: str = "GET"):
-    """(상태코드, 본문, 최종URL). 4xx·5xx 는 예외 대신 값으로 돌려줍니다."""
-    request = urllib.request.Request(f"{base}{path}", method=method)
+def send(base: str, path: str, method: str = "GET", headers: dict | None = None):
+    """(상태코드, 본문, 최종URL, 응답헤더). 오류 응답도 값으로 돌려줍니다."""
+    request = urllib.request.Request(
+        f"{base}{path}",
+        method=method,
+        headers=headers or {},
+    )
     try:
         with urllib.request.urlopen(request) as response:
-            return response.status, response.read(), response.geturl()
+            return (
+                response.status,
+                response.read(),
+                response.geturl(),
+                dict(response.headers.items()),
+            )
     except urllib.error.HTTPError as error:
-        return error.code, error.read(), None
+        return error.code, error.read(), None, dict(error.headers.items())
+
+
+def get(base: str, path: str, method: str = "GET"):
+    """(상태코드, 본문, 최종URL). 기존 API 라우팅 테스트용 축약 결과입니다."""
+    status, body, final, _ = send(base, path, method)
+    return status, body, final
 
 
 @pytest.mark.parametrize("dataset", sorted(BODIES))
@@ -233,8 +254,68 @@ def test_health_는_상태를_돌려준다(api):
     assert (status, json.loads(body)) == (200, {"status": "ok"})
 
 
-def test_HEAD_는_본문_없이_길이만_준다(api):
-    status, body, _ = get(api, f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip", "HEAD")
+def test_HEAD_는_파일을_열지_않고_validator를_제공한다(api, monkeypatch):
+    def fail_if_opened(*args, **kwargs):
+        pytest.fail("HEAD 감시에서 parquet 스트림을 열었습니다")
+
+    monkeypatch.setattr(LocalDatasetStorage, "open", fail_if_opened)
+    status, body, _, headers = send(
+        api,
+        f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip",
+        "HEAD",
+    )
+
+    digest = hashlib.sha256(BODIES["monthly_taxi_trip"]).hexdigest()
+    expected_etag = f'"{digest}"'
+    assert (status, body) == (200, b"")
+    assert headers["ETag"] == expected_etag
+    assert headers["Last-Modified"].endswith("GMT")
+    assert headers["Content-Length"] == str(len(BODIES["monthly_taxi_trip"]))
+
+
+def test_If_None_Match가_일치하면_304를_돌려준다(api):
+    path = f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+    _, _, _, validators = send(api, path, "HEAD")
+
+    status, body, _, response_headers = send(
+        api,
+        path,
+        "HEAD",
+        {"If-None-Match": validators["ETag"]},
+    )
+
+    assert (status, body) == (304, b"")
+    assert response_headers["ETag"] == validators["ETag"]
+    assert response_headers["Last-Modified"] == validators["Last-Modified"]
+
+
+def test_If_Modified_Since가_일치하면_304를_돌려준다(api):
+    path = f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+    _, _, _, validators = send(api, path, "HEAD")
+
+    status, body, _, _ = send(
+        api,
+        path,
+        "HEAD",
+        {"If-Modified-Since": validators["Last-Modified"]},
+    )
+
+    assert (status, body) == (304, b"")
+
+
+def test_ETag가_틀리면_수정시각이_맞아도_200을_돌려준다(api):
+    path = f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+    _, _, _, validators = send(api, path, "HEAD")
+
+    status, body, _, _ = send(
+        api,
+        path,
+        "HEAD",
+        {
+            "If-None-Match": '"different"',
+            "If-Modified-Since": validators["Last-Modified"],
+        },
+    )
 
     assert (status, body) == (200, b"")
 
@@ -304,6 +385,24 @@ def test_S3저장소는_없는_키를_None으로_돌려준다(s3_client):
     storage = S3DatasetStorage(S3_BUCKET)
 
     assert storage.open("lease_vehicle_inventory", "2099-01") is None
+    assert storage.metadata("lease_vehicle_inventory", "2099-01") is None
+
+
+def test_S3저장소는_object_validator를_메타데이터로_돌려준다(s3_client):
+    body = b"PAR1-lease"
+    written = s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=_s3_key("lease_vehicle_inventory", YEAR_MONTH),
+        Body=body,
+    )
+    storage = S3DatasetStorage(S3_BUCKET)
+
+    metadata = storage.metadata("lease_vehicle_inventory", YEAR_MONTH)
+
+    assert metadata is not None
+    assert metadata.content_length == len(body)
+    assert metadata.etag == written["ETag"]
+    assert metadata.last_modified.tzinfo is not None
 
 
 def test_S3저장소의_latest는_가장_최신_year_month를_찾는다(s3_client):

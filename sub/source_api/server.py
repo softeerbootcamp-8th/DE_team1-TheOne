@@ -11,11 +11,15 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from email.utils import format_datetime, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import BinaryIO
 from urllib.parse import urlsplit
 
+import boto3
 from botocore.exceptions import ClientError
 
 from shared.common.env import load_local_env
@@ -36,6 +40,13 @@ class DatasetStorageError(Exception):
     """릴리스는 있지만 읽을 수 없는 상태(예: manifest 손상)."""
 
 
+@dataclass(frozen=True)
+class DatasetMetadata:
+    content_length: int
+    etag: str
+    last_modified: datetime
+
+
 class DatasetStorage:
     """dataset+year_month 로 parquet 스트림을 찾는 인터페이스."""
 
@@ -50,6 +61,9 @@ class DatasetStorage:
     def latest_year_month(self, dataset: str) -> str | None:
         raise NotImplementedError
 
+    def metadata(self, dataset: str, year_month: str) -> DatasetMetadata | None:
+        raise NotImplementedError
+
 
 class LocalDatasetStorage(DatasetStorage):
     """`<root>/year_month=YYYY-MM/manifest.json` 릴리스 레이아웃을 그대로 읽습니다."""
@@ -61,7 +75,7 @@ class LocalDatasetStorage(DatasetStorage):
     def __init__(self, root: str | Path):
         self._root = Path(root).resolve()
 
-    def open(self, dataset: str, year_month: str) -> tuple[BinaryIO, int] | None:
+    def _file(self, dataset: str, year_month: str) -> tuple[Path, dict] | None:
         release = self._root / f"year_month={year_month}"
         manifest_path = release / "manifest.json"
         if not manifest_path.is_file():
@@ -76,11 +90,33 @@ class LocalDatasetStorage(DatasetStorage):
         # release 디렉터리 밖을 가리키면(경로 탈출) 내보내지 않습니다.
         if not path.is_file() or path.parent.parent != self._root:
             return None
+        return path, metadata
+
+    def open(self, dataset: str, year_month: str) -> tuple[BinaryIO, int] | None:
+        found = self._file(dataset, year_month)
+        if found is None:
+            return None
+        path, _ = found
         return path.open("rb"), path.stat().st_size
 
     def latest_year_month(self, dataset: str) -> str | None:
         releases = sorted(self._root.glob("year_month=????-??"))
         return releases[-1].name.removeprefix("year_month=") if releases else None
+
+    def metadata(self, dataset: str, year_month: str) -> DatasetMetadata | None:
+        found = self._file(dataset, year_month)
+        if found is None:
+            return None
+        path, manifest_metadata = found
+        sha256 = manifest_metadata.get("sha256")
+        if not isinstance(sha256, str) or not re.fullmatch(r"[0-9a-f]{64}", sha256):
+            raise DatasetStorageError(f"invalid sha256 metadata: {path}")
+        stat = path.stat()
+        return DatasetMetadata(
+            content_length=stat.st_size,
+            etag=f'"{sha256}"',
+            last_modified=datetime.fromtimestamp(stat.st_mtime, timezone.utc),
+        )
 
 
 class S3DatasetStorage(DatasetStorage):
@@ -110,6 +146,23 @@ class S3DatasetStorage(DatasetStorage):
             if key.startswith(prefix)
         )
         return months[-1] if months else None
+
+    def metadata(self, dataset: str, year_month: str) -> DatasetMetadata | None:
+        try:
+            response = boto3.client("s3").head_object(
+                Bucket=self._bucket,
+                Key=self._key(dataset, year_month),
+            )
+        except ClientError as exc:
+            code = exc.response.get("Error", {}).get("Code")
+            if code in ("NoSuchKey", "404"):
+                return None
+            raise DatasetStorageError(str(exc)) from exc
+        return DatasetMetadata(
+            content_length=response["ContentLength"],
+            etag=response["ETag"],
+            last_modified=response["LastModified"],
+        )
 
 
 class ReleaseRequestHandler(BaseHTTPRequestHandler):
@@ -155,28 +208,73 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
             self.send_error(404, "dataset not found")
             return
         try:
-            opened = self.storage.open(dataset, year_month)
+            metadata = self.storage.metadata(dataset, year_month)
         except DatasetStorageError:
             self.send_error(500, "invalid release")
             return
-        if opened is None:
+        if metadata is None:
             self.send_error(404, "dataset file not found")
             return
-        stream, content_length = opened
-        try:
-            self.send_response(200)
-            self.send_header("Content-Type", "application/vnd.apache.parquet")
-            self.send_header("Content-Length", str(content_length))
-            self.send_header(
-                "Content-Disposition", f'attachment; filename="{dataset}.parquet"'
-            )
+        if self._not_modified(metadata):
+            self.send_response(304)
+            self._send_validator_headers(metadata)
             self.end_headers()
-            if not head_only:
-                chunk_size = int(os.getenv("SOURCE_API_CHUNK_SIZE", DEFAULT_CHUNK_SIZE))
-                while chunk := stream.read(chunk_size):
-                    self.wfile.write(chunk)
+            return
+
+        stream = None
+        if not head_only:
+            try:
+                opened = self.storage.open(dataset, year_month)
+            except DatasetStorageError:
+                self.send_error(500, "invalid release")
+                return
+            if opened is None:
+                self.send_error(404, "dataset file not found")
+                return
+            stream, _ = opened
+
+        self.send_response(200)
+        self.send_header("Content-Type", "application/vnd.apache.parquet")
+        self.send_header("Content-Length", str(metadata.content_length))
+        self.send_header(
+            "Content-Disposition", f'attachment; filename="{dataset}.parquet"'
+        )
+        self._send_validator_headers(metadata)
+        self.end_headers()
+        if head_only:
+            return
+
+        try:
+            chunk_size = int(os.getenv("SOURCE_API_CHUNK_SIZE", DEFAULT_CHUNK_SIZE))
+            while chunk := stream.read(chunk_size):
+                self.wfile.write(chunk)
         finally:
             stream.close()
+
+    def _not_modified(self, metadata: DatasetMetadata) -> bool:
+        if_none_match = self.headers.get("If-None-Match")
+        if if_none_match is not None:
+            tags = {tag.strip().removeprefix("W/") for tag in if_none_match.split(",")}
+            return "*" in tags or metadata.etag in tags
+
+        if_modified_since = self.headers.get("If-Modified-Since")
+        if if_modified_since is None:
+            return False
+        try:
+            since = parsedate_to_datetime(if_modified_since)
+        except (TypeError, ValueError, OverflowError):
+            return False
+        if since.tzinfo is None:
+            since = since.replace(tzinfo=timezone.utc)
+        modified = metadata.last_modified.astimezone(timezone.utc).replace(microsecond=0)
+        return modified <= since.astimezone(timezone.utc)
+
+    def _send_validator_headers(self, metadata: DatasetMetadata) -> None:
+        self.send_header("ETag", metadata.etag)
+        self.send_header(
+            "Last-Modified",
+            format_datetime(metadata.last_modified.astimezone(timezone.utc), usegmt=True),
+        )
 
     def _send_json(self, value: dict, *, head_only: bool) -> None:
         body = json.dumps(value, ensure_ascii=False, sort_keys=True).encode()
