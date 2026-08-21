@@ -14,9 +14,9 @@ from pipeline_core.extractor import Extractor
 from pipeline_core.loader import Loader, WriteResult
 
 from shared.aws_lambda.common.atomic_write import atomic_write
-from shared.aws_lambda.common.env import load_local_env
+from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
-from shared.aws_lambda.common.s3_reader import get_object_bytes, list_keys
+from shared.common.s3_reader import get_object_bytes, list_keys
 
 
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
@@ -148,6 +148,7 @@ class MonthlyParquetBronzeLoader(Loader):
         self._dataset_dir = dataset_dir
         self.payload: dict = {}
         self.path: Path | None = None
+        self.source_changed = True
 
     def write(self, payload: dict) -> WriteResult:
         if payload.get("dataset") != self._dataset:
@@ -155,10 +156,12 @@ class MonthlyParquetBronzeLoader(Loader):
         content = payload.get("content")
         parquet = _read_parquet(self._dataset, content)
 
+        self.source_changed = True
         self.payload = payload
         self.path = self._data_path(payload)
         latest = self._latest_data_path(self.path.parent)
         if latest is not None and self._same_content(latest, content):
+            self.source_changed = False
             self.path = latest
             self.payload = {
                 **payload,
@@ -206,6 +209,7 @@ class S3MonthlyParquetBronzeLoader(Loader):
         self._dataset_dir = dataset_dir
         self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
         self.payload: dict = {}
+        self.source_changed = True
 
     def write(self, payload: dict) -> WriteResult:
         if payload.get("dataset") != self._dataset:
@@ -213,12 +217,14 @@ class S3MonthlyParquetBronzeLoader(Loader):
         content = payload.get("content")
         parquet = _read_parquet(self._dataset, content)
 
+        self.source_changed = True
         self.payload = payload
         prefix = self._partition_prefix(payload)
         latest = self._latest_key(prefix)
         if latest is not None and _same_bytes(
             get_object_bytes(self._bucket, latest), content
         ):
+            self.source_changed = False
             self.payload = {
                 **payload,
                 "collected_at": _collected_at_from_name(latest),
