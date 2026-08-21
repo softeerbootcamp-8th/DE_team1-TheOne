@@ -7,8 +7,10 @@
 5. Data Docs 빌드 실패 시 데이터 검증 결과를 우선해 예외를 전달한다.
 6. 경고 severity GX 실패는 Data Docs에 남기되 파이프라인을 중단하지 않는다.
 7. Suite에 저장할 날짜 InSet 값은 ISO 문자열로 왕복한다.
+8. s3:// 위치는 Path로 접히지 않고 S3 조회로 검증한다.
 """
 
+import io
 import json
 import logging
 from pathlib import Path
@@ -19,7 +21,10 @@ import pyarrow.parquet as pq
 import pytest
 
 from shared.airflow.common.validation import (
+    S3Location,
+    layout_tail,
     parse_handler_result,
+    parse_location,
     parse_iso_date,
     parse_year_month,
     read_parquet,
@@ -270,3 +275,85 @@ def test_GX_InSet_날짜값은_ISO_문자열로_저장하고_검증한다(tmp_pa
     suite_json = next((docs / ".gx_store" / "expectations").glob("*.json"))
     suite = json.loads(suite_json.read_text())
     assert suite["expectations"][0]["kwargs"]["value_set"] == ["2026-08-13"]
+
+
+S3_URI = (
+    "s3://de-theone/source/raw/lyft_eligible_vehicles/"
+    "collected_date=2026-01-01/city=new-york/20260101T000000Z.parquet"
+)
+
+
+def test_s3_위치는_Path로_접히지_않고_이름을_그대로_준다():
+    location = parse_location(S3_URI)
+
+    assert isinstance(location, S3Location)
+    # Path 로 감싸면 s3:// 가 s3:/ 로 접혀 로컬 조회가 되어버립니다.
+    assert str(location) == S3_URI
+    assert str(Path(S3_URI)).startswith("s3:/de-theone")
+    assert location.bucket == "de-theone"
+    assert location.stem == "20260101T000000Z"
+    assert location.name == "20260101T000000Z.parquet"
+    assert location.suffix == ".parquet"
+
+
+def test_로컬_경로는_그대로_Path로_남는다(tmp_path):
+    assert isinstance(parse_location(str(tmp_path / "a.parquet")), Path)
+
+
+@pytest.mark.parametrize("value", ["s3://", "s3://bucket", "s3:///key"])
+def test_형식이_어긋난_s3_URI는_실패한다(value):
+    with pytest.raises(ValueError):
+        parse_location(value)
+
+
+def test_handler_result가_s3_위치를_보존한다():
+    parsed = parse_handler_result({"row_count": 1, "locations": [S3_URI]})
+
+    assert str(parsed.locations[0]) == S3_URI
+
+
+def test_layout_tail은_로컬과_s3의_파티션을_같게_본다():
+    local = Path("/opt/airflow/project-root/data/source/raw/lyft_eligible_vehicles")
+    local = local / "collected_date=2026-01-01/city=new-york/20260101T000000Z.parquet"
+
+    assert layout_tail(parse_location(S3_URI)) == layout_tail(local)
+    assert layout_tail(local).startswith("collected_date=2026-01-01/")
+
+
+def test_s3_객체가_없으면_FileNotFoundError로_알린다(monkeypatch):
+    def 없음(bucket, key):
+        raise RuntimeError("NoSuchKey")
+
+    monkeypatch.setattr(
+        "shared.airflow.common.validation.get_object_stream", 없음
+    )
+    with pytest.raises(FileNotFoundError):
+        require_file(parse_location(S3_URI))
+
+
+def test_s3_객체가_비어_있으면_실패한다(monkeypatch):
+    monkeypatch.setattr(
+        "shared.airflow.common.validation.get_object_stream",
+        lambda bucket, key: (io.BytesIO(b""), 0),
+    )
+    with pytest.raises(ValueError, match="비어 있습니다"):
+        require_file(parse_location(S3_URI))
+
+
+def test_s3_parquet을_읽는다(monkeypatch, tmp_path):
+    source = tmp_path / "src.parquet"
+    pq.write_table(pa.table({"city": ["new-york"]}), source)
+    payload = source.read_bytes()
+
+    monkeypatch.setattr(
+        "shared.airflow.common.validation.get_object_stream",
+        lambda bucket, key: (io.BytesIO(payload), len(payload)),
+    )
+    monkeypatch.setattr(
+        "shared.airflow.common.validation.get_object_bytes",
+        lambda bucket, key: payload,
+    )
+
+    table = read_parquet(parse_location(S3_URI))
+
+    assert table.column("city").to_pylist() == ["new-york"]
