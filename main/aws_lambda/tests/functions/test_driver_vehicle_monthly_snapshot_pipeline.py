@@ -4,7 +4,7 @@
 2. 원천 행 수 없이 받은 Parquet footer에서 행 수 계산
 """
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -17,6 +17,7 @@ from functions.driver_vehicle_monthly_snapshot_raw_to_bronze.handler import lamb
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_monthly_snapshot"
+COLLECTED_AT = datetime(2026, 8, 20, 10, 15, 31, 123456, tzinfo=timezone.utc)
 ROWS = [
     {
         "snapshot_month": YEAR_MONTH,
@@ -69,6 +70,7 @@ def test_기사차량스냅샷Parquet만_직접받아_footer행수와함께_Bron
 ):
     requested = []
     _api(monkeypatch, requested)
+    monkeypatch.setattr(monthly_dataset, "_utc_now", lambda: COLLECTED_AT, raising=False)
 
     result = lambda_handler(
         {
@@ -83,5 +85,7 @@ def test_기사차량스냅샷Parquet만_직접받아_footer행수와함께_Bron
     assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
     assert path.parent.parent.name == "driver_vehicle_monthly_snapshot"
+    assert path.name == "20260820T101531123456Z.parquet"
+    assert result["collected_at"] == "2026-08-20T10:15:31.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
     assert "sha256" not in result and "marker_location" not in result

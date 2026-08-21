@@ -61,7 +61,12 @@ def write_bronze(
 ) -> str:
     schema = task_module.SCHEMA if schema is None else schema
     records = bronze_rows(rows, schema) if records is None else records
-    path = Path(base_dir) / "hvfhv" / f"year_month={year_month}" / "data.parquet"
+    path = (
+        Path(base_dir)
+        / "hvfhv"
+        / f"year_month={year_month}"
+        / "20260811T085354000000Z.parquet"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
     return str(path)
@@ -73,6 +78,7 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
         "row_count": parquet.metadata.num_rows,
         "locations": [path],
         "year_month": year_month,
+        "collected_at": "2026-08-11T08:53:54.000000Z",
         "file_size_bytes": Path(path).stat().st_size,
     }
 
@@ -129,6 +135,15 @@ def test_파티션이_year_month와_다르면_막는다(tmp_path):
     path = write_bronze(tmp_path)
     result = result_for(path, year_month="2026-08")
     with pytest.raises(ValueError, match="월 파티션 계약과 다릅니다"):
+        validate_bronze(result, params=bronze_params(tmp_path))
+
+
+def test_파일명의_수집시각이_handler_결과와_다르면_막는다(tmp_path):
+    path = write_bronze(tmp_path)
+    result = result_for(path)
+    result["collected_at"] = "2026-08-11T09:00:00.000000Z"
+
+    with pytest.raises(ValueError, match="collected_at과 다릅니다"):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 

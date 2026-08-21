@@ -1,5 +1,6 @@
-"""월별 원천 API에서 받은 단일 Bronze 파일을 검증합니다."""
+"""월별 원천 API에서 받은 단일 Bronze 수집본을 검증합니다."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -7,7 +8,7 @@ import pyarrow.parquet as pq
 from shared.airflow.common.validation import parse_handler_result, parse_year_month
 
 
-def validate_synthetic_bronze(
+def validate_monthly_parquet_bronze(
     result: dict,
     *,
     dataset_dir: str,
@@ -21,9 +22,21 @@ def validate_synthetic_bronze(
     if (
         path.parent.name != f"year_month={year_month}"
         or path.parent.parent.name != dataset_dir
-        or path.name != "data.parquet"
     ):
         raise ValueError(f"Bronze 원본 경로가 월 파티션 계약과 다릅니다: {path}")
+    collected_at = result.get("collected_at")
+    if not isinstance(collected_at, str):
+        raise ValueError("Bronze 수집 결과에 collected_at이 없습니다")
+    try:
+        timestamp = datetime.strptime(
+            collected_at, "%Y-%m-%dT%H:%M:%S.%fZ"
+        ).replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ValueError("Bronze collected_at이 UTC 수집 시각 형식이 아닙니다") from exc
+    if path.name != f"{timestamp:%Y%m%dT%H%M%S%fZ}.parquet":
+        raise ValueError(
+            f"Bronze 파일명이 collected_at과 다릅니다: {path.name}"
+        )
     if base_dir is not None:
         expected_partition = Path(base_dir) / dataset_dir / f"year_month={year_month}"
         if path.parent.resolve() != expected_partition.resolve():

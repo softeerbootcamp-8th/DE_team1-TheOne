@@ -1,12 +1,12 @@
 """보유 차량 Parquet을 데이터 제공 경로에서 수집합니다."""
 
-from main.aws_lambda.common.monthly_dataset import SyntheticDatasetExtractor
+from main.aws_lambda.common.monthly_dataset import MonthlyParquetAPIExtractor
 
 
 DATASET = "lease_vehicle_inventory"
 
 
-class LeaseVehicleInventoryExtractor(SyntheticDatasetExtractor):
+class LeaseVehicleInventoryExtractor(MonthlyParquetAPIExtractor):
     def __init__(
         self,
         api_base_url: str,
