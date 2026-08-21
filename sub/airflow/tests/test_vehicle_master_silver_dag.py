@@ -26,7 +26,7 @@ from dags import vehicle_master_silver_dag as dag_module
 from sub.airflow.common import assets
 
 layout = importlib.import_module("sub.aws_lambda.common.vehicle_master_layout")
-loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_silver.loader")
+loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader")
 
 DAG = dag_module.vehicle_master_dag
 validate_silver = DAG.get_task("validate_silver").python_callable
@@ -68,7 +68,7 @@ def write_master(
 ) -> Path:
     """`blank` 를 주면 그 컬럼만 전 행 NULL 로 씁니다 (#567 재현)."""
     schema = loader.SCHEMA if schema is None else schema
-    path = layout.silver_file(str(silver_dir), date.fromisoformat(COLLECTED_DATE), city)
+    path = layout.curated_file(str(silver_dir), date.fromisoformat(COLLECTED_DATE), city)
     path.parent.mkdir(parents=True, exist_ok=True)
     records = [
         {
