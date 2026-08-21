@@ -1,14 +1,17 @@
 """Silver 4종 → Gold DAG의 월 파티션 경로와 산출물을 검증합니다."""
 
 import logging
+import os
+import re
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pandas as pd
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.sdk import task
 
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.common.s3_reader import list_keys
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +25,7 @@ DEFAULT_PATHS = {
     "output_dir": str(ROOT / "data" / "gold"),
 }
 DATASETS = ("driver_aggregation", "driver_car_suggestion", "monthly_report")
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 # 산출물마다 "이건 반드시 있어야 한다" 는 컬럼. 전체 스키마는 schema/gold/*.py 가
 # 소유하고, 여기서는 조인 키와 판단에 쓰이는 값만 봅니다.
 REQUIRED_COLUMNS = {
@@ -83,9 +87,96 @@ def resolve_target_year_month(
     return candidates[-1]
 
 
-def resolve_input_paths(year_month: str, params: dict) -> dict:
+def resolve_input_paths(
+    year_month: str,
+    params: dict,
+    *,
+    job_env: str = "local",
+    bucket: str | None = None,
+) -> dict:
     """Spark 잡에 넘길 같은 달의 Silver 4종 경로를 확인합니다."""
+    return resolve_input_paths_for_env(
+        year_month,
+        params,
+        job_env=job_env,
+        bucket=bucket,
+    )
+
+
+def _latest_s3_input(
+    bucket: str,
+    prefix: str,
+    *,
+    legacy_file_name: str | None = None,
+    allow_partition: bool = False,
+) -> str:
+    keys = sorted(key for key in list_keys(bucket, prefix) if key.endswith(".parquet"))
+    versions = [
+        key
+        for key in keys
+        if TIMESTAMP_FILE_PATTERN.fullmatch(PurePosixPath(key).name)
+    ]
+    if versions:
+        return f"s3://{bucket}/{versions[-1]}"
+    if legacy_file_name:
+        legacy_key = f"{prefix}{legacy_file_name}"
+        if legacy_key in keys:
+            return f"s3://{bucket}/{legacy_key}"
+    if allow_partition and keys:
+        return f"s3://{bucket}/{prefix.rstrip('/')}"
+    raise FileNotFoundError(f"Silver S3 파티션이 없거나 비어 있습니다: s3://{bucket}/{prefix}")
+
+
+def resolve_prod_input_paths(year_month: str, bucket: str) -> dict:
+    """운영 S3 Silver 4종에서 같은 달의 확정 입력만 고릅니다."""
+    if not bucket:
+        raise ValueError("운영 Gold 입력 검증에 DATA_LAKE_S3_BUCKET이 필요합니다")
+
+    monthly_taxi_trip = _latest_s3_input(
+        bucket,
+        f"silver/monthly_taxi_trip/year_month={year_month}/",
+        allow_partition=True,
+    )
+    driver_snapshot = _latest_s3_input(
+        bucket,
+        f"silver/driver_vehicle_monthly_snapshot/year_month={year_month}/",
+        legacy_file_name="driver_vehicle_monthly_snapshot.parquet",
+    )
+    inventory = _latest_s3_input(
+        bucket,
+        f"silver/lease_vehicle_inventory/year_month={year_month}/",
+        legacy_file_name="lease_vehicle_inventory.parquet",
+    )
+    fuel_prefix = "silver/gas_ev_price/"
+    if not any(key.endswith(".parquet") for key in list_keys(bucket, fuel_prefix)):
+        raise FileNotFoundError(
+            f"연료비 Silver S3 파티션이 없습니다: s3://{bucket}/{fuel_prefix}"
+        )
+
+    return {
+        "year_month": year_month,
+        "year": year_month[:4],
+        "month": str(int(year_month[5:])),
+        "monthly_taxi_trip_path": monthly_taxi_trip,
+        "driver_vehicle_monthly_snapshot_path": driver_snapshot,
+        "lease_vehicle_inventory_path": inventory,
+        "fuel_price_path": f"s3://{bucket}/{fuel_prefix.rstrip('/')}",
+    }
+
+
+def resolve_input_paths_for_env(
+    year_month: str,
+    params: dict,
+    *,
+    job_env: str = "local",
+    bucket: str | None = None,
+) -> dict:
+    """로컬은 파일을, 운영은 S3의 최신 확정 버전을 선택합니다."""
     datetime.strptime(year_month, "%Y-%m")
+    if job_env == "prod":
+        return resolve_prod_input_paths(year_month, bucket or "")
+    if job_env != "local":
+        raise ValueError(f"알 수 없는 SPARK_JOB_ENV: {job_env!r}")
 
     monthly_taxi_trip = Path(params["monthly_taxi_trip_path"]) / f"year_month={year_month}"
     if not monthly_taxi_trip.is_dir() or not any(monthly_taxi_trip.glob("*.parquet")):
@@ -151,6 +242,11 @@ def validate_inputs_task(**context) -> dict:
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
     dag_run = context.get("dag_run")
     partition_key = getattr(dag_run, "partition_key", None)
+    job_env = os.getenv("SPARK_JOB_ENV", "local")
+    if job_env == "prod" and not partition_key and not (
+        params.get("year") and params.get("month")
+    ):
+        raise ValueError("운영 수동 실행은 year와 month를 함께 지정해야 합니다")
     year_month = resolve_target_year_month(
         logical_date,
         params,
@@ -159,7 +255,12 @@ def validate_inputs_task(**context) -> dict:
     )
     logger.info("Gold 대상 연월: %s", year_month)
     try:
-        return resolve_input_paths(year_month, params)
+        return resolve_input_paths_for_env(
+            year_month,
+            params,
+            job_env=job_env,
+            bucket=os.getenv("DATA_LAKE_S3_BUCKET"),
+        )
     except FileNotFoundError as exc:
         if partition_key:
             raise AirflowSkipException(
@@ -171,4 +272,10 @@ def validate_inputs_task(**context) -> dict:
 @task(task_id="validate_gold")
 def validate_gold_task(**context) -> None:
     resolved = context["task_instance"].xcom_pull(task_ids="validate_inputs")
-    validate_gold_outputs(context["params"]["output_dir"], resolved["year_month"])
+    if os.getenv("SPARK_JOB_ENV", "local") == "prod":
+        logger.info(
+            "운영 Gold 검증은 EMR Spark의 RDS 적재 트랜잭션에서 완료했습니다: year_month=%s",
+            resolved["year_month"],
+        )
+    else:
+        validate_gold_outputs(context["params"]["output_dir"], resolved["year_month"])
