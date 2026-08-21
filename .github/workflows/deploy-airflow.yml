@@ -32,8 +32,9 @@ on:
       - 'main/airflow/**'
       - 'sub/airflow/**'
       - 'shared/airflow/**'
-      - 'sub/aws_lambda/**'
-      - 'main/aws_lambda/**'
+      # aws_lambda 는 넣지 않습니다. 이미지가 COPY 하긴 하지만, Lambda 코드만 고친
+      # 머지에도 배포가 돌면 컨테이너가 재생성되며 실행 중인 DAG 이 끊깁니다.
+      # 그 코드는 다음 airflow 배포에 따라옵니다.
       - 'schema/**'
       - 'libs/pipeline_core/**'
       - 'Makefile'
@@ -110,6 +111,10 @@ jobs:
             f"echo AIRFLOW_IMAGE={os.environ['IMAGE_URI']} > .env",
             "chown ubuntu:ubuntu docker-compose.ec2.yml .env",
             "docker compose -f docker-compose.ec2.yml up -d --pull always --force-recreate airflow",
+            # 배포마다 4.5GB 이미지가 쌓여 디스크(29GB)가 이틀이면 찹니다.
+            # until 필터를 두지 않는 이유: 하루 배포 횟수가 많아 24시간분도 디스크를
+            # 넘깁니다. 되돌릴 때는 ECR 에서 다시 받으면 되고 pull 은 1초 내입니다.
+            "docker image prune -af",
           ]
           print(json.dumps({"commands": cmds}))
           PY
