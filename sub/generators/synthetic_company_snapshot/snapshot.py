@@ -320,21 +320,48 @@ def read_snapshot(snapshot_dir: str | Path) -> SnapshotTables:
     })
 
 
+def _validated_table(name: str, frame: pd.DataFrame) -> pa.Table:
+    schema = SCHEMAS[name]
+    missing = set(schema.names) - set(frame.columns)
+    if missing:
+        raise ValueError(f"{name} 에 컬럼이 없습니다: {sorted(missing)}")
+    # 스키마를 넘겨 pandas 추론을 막습니다. 컬럼 순서도 여기서 고정됩니다.
+    return pa.Table.from_pandas(frame[schema.names], schema=schema, preserve_index=False)
+
+
 def write_snapshot(tables: SnapshotTables, output_dir: str | Path, snapshot_date: date) -> list[Path]:
     partition = Path(output_dir) / f"snapshot_date={snapshot_date.isoformat()}"
     partition.mkdir(parents=True, exist_ok=True)
     paths = []
     for name in ("customer", "taxi", "lease_contract"):
         path = partition / f"{name}.parquet"
-        frame = getattr(tables, name)
-        schema = SCHEMAS[name]
-        missing = set(schema.names) - set(frame.columns)
-        if missing:
-            raise ValueError(f"{name} 에 컬럼이 없습니다: {sorted(missing)}")
-        # 스키마를 넘겨 pandas 추론을 막습니다. 컬럼 순서도 여기서 고정됩니다.
-        table = pa.Table.from_pandas(
-            frame[schema.names], schema=schema, preserve_index=False
-        )
-        pq.write_table(table, path)
+        pq.write_table(_validated_table(name, getattr(tables, name)), path)
         paths.append(path)
     return paths
+
+
+def write_snapshot_s3(tables: SnapshotTables, snapshot_date: date, bucket: str | None = None) -> list[str]:
+    """S3의 `source/synthesize/snapshot_date=YYYY-MM-DD/{name}.parquet`에 씁니다.
+
+    로컬과 같은 파티션 구조를 그대로 쓰고 prefix만 다릅니다. SparkSession이 없는
+    순수 pandas 스크립트라 Spark의 s3a 커넥터를 못 쓰고 boto3로 직접 올립니다
+    (`shared.aws_lambda.common.s3_loader`는 dotenv에 의존해 main/spark 런타임에 없음).
+    """
+    import io
+    import os
+
+    import boto3
+
+    bucket = bucket or os.environ["DATA_LAKE_S3_BUCKET"]
+    client = boto3.client("s3")
+    locations = []
+    for name in ("customer", "taxi", "lease_contract"):
+        table = _validated_table(name, getattr(tables, name))
+        buffer = io.BytesIO()
+        pq.write_table(table, buffer)
+        key = f"source/synthesize/snapshot_date={snapshot_date.isoformat()}/{name}.parquet"
+        client.put_object(
+            Bucket=bucket, Key=key, Body=buffer.getvalue(), ServerSideEncryption="AES256"
+        )
+        locations.append(f"s3://{bucket}/{key}")
+    return locations
