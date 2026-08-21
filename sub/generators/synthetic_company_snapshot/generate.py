@@ -80,6 +80,37 @@ def resolve_vehicle_master_path(
     return files[0]
 
 
+def _resolve_bucket(explicit: str | None, from_env: str | None, env_var: str) -> str:
+    """버킷 이름을 정하고 **형식까지** 확인합니다.
+
+    형식을 여기서 보는 이유
+    ---------------------
+    이름이 틀리면 boto3 가 `ClientError: InvalidBucketName` 을 던지는데, 그 메시지에는
+    무엇이 들어왔는지도, 어디서 온 값인지도 안 나옵니다. 실제로 그 에러를 만나고
+    원인을 찾는 데 시간이 걸렸습니다.
+
+    S3 이름 규칙 전체를 다시 구현하지는 않습니다 — 흔히 하는 실수 세 개(`s3://` 를
+    붙임, 경로를 함께 적음, 공백)만 잡고 나머지는 AWS 에 맡깁니다.
+    """
+    source = "--bucket" if explicit else env_var
+    bucket = (explicit or from_env or "").strip()
+    if not bucket:
+        raise ValueError(
+            f"storage=s3 인데 버킷이 없습니다. --bucket 으로 넘기거나 {env_var} 를 설정하세요."
+        )
+    if bucket.startswith("s3://"):
+        raise ValueError(
+            f"{source} 에 스킴이 붙어 있습니다: {bucket!r}. "
+            f"버킷 이름만 넣으세요 (예: {bucket.removeprefix('s3://').split('/')[0]!r})."
+        )
+    if "/" in bucket:
+        raise ValueError(
+            f"{source} 에 경로가 섞여 있습니다: {bucket!r}. "
+            f"버킷 이름만 넣으세요 (예: {bucket.split('/')[0]!r})."
+        )
+    return bucket
+
+
 def _download_latest_from_s3(dataset_dir: str | Path, bucket: str | None) -> Path:
     """S3 의 최신 vehicle_master 를 `dataset_dir` 아래 같은 파티션 구조로 내려받습니다.
 
@@ -92,11 +123,7 @@ def _download_latest_from_s3(dataset_dir: str | Path, bucket: str | None) -> Pat
     from sub.aws_lambda.common import vehicle_master_layout as layout
 
     load_local_env()
-    bucket = bucket or os.environ.get(BUCKET_ENV_VAR)
-    if not bucket:
-        raise ValueError(
-            f"storage=s3 인데 버킷이 없습니다. --bucket 으로 넘기거나 {BUCKET_ENV_VAR} 를 설정하세요."
-        )
+    bucket = _resolve_bucket(bucket, os.environ.get(BUCKET_ENV_VAR), BUCKET_ENV_VAR)
 
     prefix = f"source/curated/{layout.DATASET}/"
     location = f"s3://{bucket}/{prefix}"
