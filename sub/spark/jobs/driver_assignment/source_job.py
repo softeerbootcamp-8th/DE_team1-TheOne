@@ -7,6 +7,8 @@ import hashlib
 import json
 import shutil
 import uuid
+from collections import Counter
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 
@@ -22,16 +24,16 @@ from pyspark.sql.functions import (
     floor,
     hash as spark_hash,
     lit,
-    max as spark_max,
-    min as spark_min,
     monotonically_increasing_id,
     pmod,
     row_number,
     sha2,
     struct,
+    sum as spark_sum,
     to_date,
     to_json,
     to_timestamp,
+    unix_timestamp,
     when,
 )
 
@@ -45,13 +47,29 @@ from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
     HVFHVCleanTransformer,
 )
+from sub.config import load_config
 from sub.generators.synthetic_driver_trip_source.monthly import prepare_monthly_state
+from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.allocator import allocate_trips
 from sub.spark.jobs.driver_assignment.candidates import build_trip_candidates
 from sub.spark.jobs.travel_times.transformer import build_travel_times
 
 SNAPSHOT_SOURCE_COLUMNS = DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA.names
 TRIP_SOURCE_COLUMNS = MONTHLY_TAXI_TRIP_SCHEMA.names
+
+# manifest 계약 버전. `run_id`/`config_hash`는 "어느 설정으로" 를 답하는데, 이 값은
+# "manifest·산출물 구조 자체가 바뀌었는가" 를 답합니다 — 설정을 안 바꿔도 계약이
+# 바뀌면 낡은 릴리스를 재사용하면 안 되므로 별도 필드로 둡니다(#608).
+SCHEMA_VERSION = "1"
+# 데이터셋별 실측 대 합성 비중. hvfhv_taxi_trips는 실측 TLC 운행에 합성 신원만
+# 얹은 것이고, driver_vehicle_monthly_snapshot은 기사·차량 자체가 합성이며,
+# lease_vehicle_inventory는 실측 렌탈 카탈로그에 보유 대수(stock)만 가정값입니다 —
+# 소비자가 "이 숫자가 실측인가" 를 API 응답만 보고 오판하지 않도록 명시합니다.
+PROVENANCE = {
+    "hvfhv_taxi_trips": "real_facts+synthetic_identity",
+    "driver_vehicle_monthly_snapshot": "synthetic",
+    "lease_vehicle_inventory": "real_catalog+assumed_stock",
+}
 
 # 입사 전 경력의 상한(년). `experience_years` 는 회사 근속에 이 값을 더해 만듭니다 —
 # 독립 난수로 두면 "근속 5년인데 경력 1년" 같은 모순이 생깁니다.
@@ -187,9 +205,7 @@ def _vehicle_model_id(manufacturer, model_name, model_year):
 
 
 def build_driver_vehicle_monthly_snapshot(
-    customers: DataFrame,
-    leases: DataFrame,
-    taxis: DataFrame,
+    current_driver_vehicle: DataFrame,
     vehicle_master: DataFrame,
     *,
     snapshot_date: date,
@@ -198,54 +214,38 @@ def build_driver_vehicle_monthly_snapshot(
 ) -> DataFrame:
     """(기사, 대상 월) 한 행짜리 월별 스냅샷을 만듭니다.
 
-    리스 계약 단위가 아니라 **기사 단위**입니다. 기사당 계약이 여러 건일 수 있으므로
-    (`evolve_company_snapshot` 이 계약을 종료시키고 새로 맺습니다) 1:1 을 가정하지 않고
-    윈도우로 고릅니다.
+    `current_driver_vehicle` 은 기사당 정확히 한 행(이벤트소싱 `driver_vehicle_current`
+    뷰, #609)이라 리스 이력에서 최초/최근을 윈도우로 골라낼 필요가 없습니다 —
+    `joined_on`이 이미 그 기사의 최초 입사일입니다.
 
-        join_date     그 기사의 최초 계약 시작일
-        vehicle_since 현재 계약의 시작일
-        exit_date     진행 중 계약이 하나도 없을 때만 마지막 종료일, 아니면 NULL
+    예전에는 customer/taxi/lease_contract 3-테이블에서 기사당 리스 이력을
+    한 행으로 재구성했는데, 그 재구성이 매달 리스 1건만 만들어서 `join_date`가
+    항상 "현재 차량 배정일"로 퇴화하는 조용한 버그가 있었습니다(#609) —
+    `joined_on`을 그대로 흘려보내 그 재구성 자체를 없앴습니다.
+
+        join_date     joined_on(최초 입사일)
+        vehicle_since lease_started_on(현재 차량 배정일)
+        exit_date     lease_ended_on(퇴사했으면 그 시각, 아니면 NULL)
     """
-    c = customers.filter(col("snapshot_date") == lit(snapshot_date)).alias("c")
-    l = leases.filter(col("snapshot_date") == lit(snapshot_date)).alias("l")
-    x = taxis.filter(col("snapshot_date") == lit(snapshot_date)).alias("x")
-
-    joined = l.join(c, col("l.customer_id") == col("c.customer_id"), "inner").select(
-        col("c.synthetic_driver_id").alias("driver_id"),
-        col("l.taxi_id").alias("taxi_id"),
-        col("l.lease_started_on").alias("lease_started_on"),
-        col("l.lease_ended_on").alias("lease_ended_on"),
-    )
-
-    by_driver = Window.partitionBy("driver_id")
-    # 진행 중 계약을 먼저, 그다음 시작일이 늦은 순. 첫 행이 "현재 차량"입니다.
-    current = Window.partitionBy("driver_id").orderBy(
-        col("lease_ended_on").isNotNull().asc(), col("lease_started_on").desc()
-    )
-    ranked = (
-        joined.withColumn("_join_date", spark_min("lease_started_on").over(by_driver))
-        .withColumn("_open", count(when(col("lease_ended_on").isNull(), 1)).over(by_driver))
-        .withColumn("_last_end", spark_max("lease_ended_on").over(by_driver))
-        .withColumn("_rank", row_number().over(current))
-        .filter(col("_rank") == 1)
-    )
-
-    fleet = x.select(
-        col("x.taxi_id").alias("_taxi_id"),
-        col("x.make_key").alias("manufacturer"),
-        col("x.model_key").alias("model_name"),
-        col("x.model_year").alias("_model_year"),
-        col("x.weekly_lease_fee").alias("weekly_lease_fee"),
-        col("x.uber_comfort_eligible").alias("comfort_eligible"),
-        col("x.lyft_extra_comfort_eligible").alias("extra_comfort_eligible"),
+    fleet = current_driver_vehicle.select(
+        col("driver_id"),
+        col("taxi_id"),
+        col("joined_on"),
+        col("lease_started_on"),
+        col("lease_ended_on"),
+        col("make_key").alias("manufacturer"),
+        col("model_key").alias("model_name"),
+        col("model_year").alias("_model_year"),
+        col("weekly_lease_fee"),
+        col("uber_comfort_eligible").alias("comfort_eligible"),
+        col("lyft_extra_comfort_eligible").alias("extra_comfort_eligible"),
     )
     fuel = vehicle_master.select(
         col("make_key").alias("_mk"), col("model_key").alias("_mo"), col("fuel_type")
     ).distinct()
 
     snapshot = (
-        ranked.join(fleet, col("taxi_id") == col("_taxi_id"), "inner")
-        .join(
+        fleet.join(
             fuel,
             (col("manufacturer") == col("_mk")) & (col("model_name") == col("_mo")),
             "left",
@@ -255,15 +255,13 @@ def build_driver_vehicle_monthly_snapshot(
             "vehicle_model_id",
             _vehicle_model_id(col("manufacturer"), col("model_name"), col("_model_year")),
         )
-        .withColumn("join_date", col("_join_date"))
-        .withColumn(
-            "exit_date", when(col("_open") == 0, col("_last_end")).otherwise(lit(None))
-        )
+        .withColumn("join_date", col("joined_on"))
+        .withColumn("exit_date", col("lease_ended_on"))
         .withColumn("vehicle_since", col("lease_started_on"))
         .withColumn(
             "experience_years",
             (
-                floor(datediff(lit(snapshot_date), col("_join_date")) / lit(365.25))
+                floor(datediff(lit(snapshot_date), col("joined_on")) / lit(365.25))
                 + pmod(
                     spark_hash(col("driver_id")) + lit(seed),
                     lit(PRIOR_EXPERIENCE_MAX_YEARS + 1),
@@ -273,7 +271,7 @@ def build_driver_vehicle_monthly_snapshot(
         .withColumn("snapshot_created_at", to_timestamp(lit(snapshot_date)))
     )
 
-    expected = joined.select("driver_id").distinct().count()
+    expected = current_driver_vehicle.select("driver_id").distinct().count()
     stats = snapshot.agg(
         count(lit(1)).alias("rows"),
         countDistinct("driver_id").alias("distinct_drivers"),
@@ -305,14 +303,17 @@ def _require_non_null(frame: DataFrame, columns: set[str], label: str) -> None:
 
 
 def build_lease_vehicle_inventory(
-    taxis: DataFrame,
+    current_driver_vehicle: DataFrame,
     vehicle_master: DataFrame,
-    *,
-    snapshot_date: date,
 ) -> DataFrame:
-    """보유 차량을 차종·연식별 API 재고로 집계합니다."""
+    """보유 차량을 차종·연식별 API 재고로 집계합니다.
+
+    `taxi_id` 로 먼저 dedup 합니다 — 이번 달 안에 기사가 바뀐 차량(퇴사 기사의
+    차량이 신규 기사에게 재배정된 경우)이 `current_driver_vehicle`에 두 행으로
+    남아 있으면 그 차량이 재고에 두 번 집계됩니다.
+    """
     fleet = (
-        taxis.filter(col("snapshot_date") == lit(snapshot_date)).groupBy(
+        current_driver_vehicle.dropDuplicates(["taxi_id"]).groupBy(
             "make_key",
             "model_key",
             "model_year",
@@ -418,15 +419,39 @@ def _validate_temporal_links(trips: DataFrame, snapshots: DataFrame) -> None:
         raise ValueError("모든 HVFHV 행은 운행 시점의 기사 스냅샷 한 건과 연결돼야 합니다")
 
 
-def _existing_release(path: Path, year_month: str, seed: int) -> bool:
+def _existing_release(path: Path, run: RunContext, *, input_scope: str) -> bool:
     manifest_path = path / "manifest.json"
     if not path.exists():
         return False
     if not manifest_path.is_file():
         raise ValueError(f"완료되지 않은 릴리스 경로가 남아 있습니다: {path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("year_month") != year_month or manifest.get("seed") != seed:
-        raise ValueError(f"기존 릴리스 계보가 요청과 다릅니다: {manifest}")
+    # `seed` 가 아니라 `run_id` 로 판정합니다. seed 만 보면 설정을 바꿔도 낡은
+    # 릴리스를 그대로 재사용해서 "설정을 바꿨는데 결과가 안 바뀐다" 가 됩니다.
+    if "run_id" not in manifest:
+        raise ValueError(
+            f"설정 통합 이전에 만든 릴리스입니다 (manifest 에 run_id 가 없습니다): {manifest_path}\n"
+            f"이 릴리스는 어느 설정으로 만들었는지 확인할 수 없어 재사용할 수 없습니다. "
+            f"해당 파티션을 지우고 다시 발행하세요: rm -rf {path}"
+        )
+    if manifest.get("year_month") != run.target_month or manifest.get("run_id") != run.run_id:
+        raise ValueError(
+            f"기존 릴리스 계보가 요청과 다릅니다: "
+            f"기존={{'year_month': {manifest.get('year_month')!r}, 'run_id': {manifest.get('run_id')!r}}}, "
+            f"요청={{'year_month': {run.target_month!r}, 'run_id': {run.run_id!r}}}. "
+            f"설정을 바꿔 다시 발행하려면 {path} 를 지우고 실행하세요."
+        )
+    # run_id 가 같아도 manifest·산출물 계약(schema_version) 이나 입력 범위
+    # (input_scope, 예: 표본 vs 전체 달) 가 다르면 재사용하지 않습니다(#608) —
+    # 설정은 안 바뀌었는데 계약만 바뀐 낡은 릴리스를 그대로 쓰게 되는 사고를 막습니다.
+    if manifest.get("schema_version") != SCHEMA_VERSION or manifest.get("input_scope") != input_scope:
+        raise ValueError(
+            f"기존 릴리스의 계약 버전·입력 범위가 다릅니다: "
+            f"기존={{'schema_version': {manifest.get('schema_version')!r}, "
+            f"'input_scope': {manifest.get('input_scope')!r}}}, "
+            f"요청={{'schema_version': {SCHEMA_VERSION!r}, 'input_scope': {input_scope!r}}}. "
+            f"다시 발행하려면 {path} 를 지우고 실행하세요."
+        )
     for name in (
         "hvfhv_taxi_trips",
         "driver_vehicle_monthly_snapshot",
@@ -464,12 +489,13 @@ def write_source_release(
     inventory: DataFrame,
     *,
     output_dir: str | Path,
-    year_month: str,
-    seed: int,
+    run: RunContext,
+    input_scope: str,
 ) -> Path:
     """세 데이터셋과 manifest를 staging에 쓴 뒤 디렉터리 rename으로 공개합니다."""
+    year_month = run.target_month
     final = Path(output_dir) / f"year_month={year_month}"
-    if _existing_release(final, year_month, seed):
+    if _existing_release(final, run, input_scope=input_scope):
         return final
 
     _validate_temporal_links(trips, snapshots)
@@ -485,9 +511,15 @@ def write_source_release(
         _write_one_parquet(snapshots, snapshot_file)
         _write_one_parquet(inventory, inventory_file)
         manifest = {
-            "release_id": f"{year_month}-seed-{seed}",
+            "release_id": f"{year_month}-seed-{run.config.global_seed}",
             "year_month": year_month,
-            "seed": seed,
+            "seed": run.config.global_seed,
+            "run_id": run.run_id,
+            "config_hash": run.config_hash,
+            "created_at": run.created_at,
+            "schema_version": SCHEMA_VERSION,
+            "input_scope": input_scope,
+            "provenance": PROVENANCE,
             "datasets": {
                 "hvfhv_taxi_trips": {
                     "file": trip_file.name,
@@ -516,22 +548,91 @@ def write_source_release(
         shutil.rmtree(staging, ignore_errors=True)
 
 
+def _capacity_drive_minutes(preferences: DataFrame, service_dates: list[date]) -> int:
+    """기사 정원의 운행분 예산 합계(`sub/prototype/metrics.py::capacity_ceiling` 축소판).
+
+    요일 선호(`weekday_mask`)가 있어 그 달의 요일 분포에 따라 값이 달라집니다.
+    """
+    weekday_counts = Counter(d.weekday() for d in service_dates)
+    prefs = preferences.select("target_drive_minutes", "weekday_mask").toPandas()
+    return int(
+        sum(
+            int(row.target_drive_minutes)
+            * sum(
+                days
+                for weekday, days in weekday_counts.items()
+                if int(row.weekday_mask) & (1 << weekday)
+            )
+            for row in prefs.itertuples()
+        )
+    )
+
+
+def _quality_report(
+    *,
+    run: RunContext,
+    trips: DataFrame,
+    preferences: DataFrame,
+    assignments: DataFrame,
+    assignment_count: int,
+    rejected: dict[str, int],
+    clip_rate: float,
+) -> dict:
+    """coverage/ceiling/saturation/탈락 사유/클리핑. 릴리스 계보가 아니라 진단용이라
+    manifest 와 분리된 quality_report.json 에 씁니다(#608)."""
+    trips_offered = trips.count()
+    service_dates = [
+        row[0] for row in trips.select(to_date("pickup_datetime").alias("d")).distinct().collect()
+    ]
+    capacity_drive_minutes = _capacity_drive_minutes(preferences, service_dates)
+    budget_minutes = max(1, capacity_drive_minutes)
+    drive_minutes = float(
+        assignments.select(
+            spark_sum(
+                (unix_timestamp("dropoff_datetime") - unix_timestamp("pickup_datetime")) / 60.0
+                + col("deadhead_minutes")
+            ).alias("drive_minutes")
+        ).first()["drive_minutes"]
+        or 0.0
+    )
+    minutes_per_trip = drive_minutes / assignment_count if assignment_count else 0.0
+    return {
+        "target_month": run.target_month,
+        "run_id": run.run_id,
+        "trips_offered": trips_offered,
+        "trips_attributed": assignment_count,
+        "coverage_pct": round(100.0 * assignment_count / max(1, trips_offered), 2),
+        "capacity_drive_minutes": capacity_drive_minutes,
+        "ceiling_pct": (
+            round(100.0 * (budget_minutes / minutes_per_trip) / max(1, trips_offered), 2)
+            if minutes_per_trip
+            else 0.0
+        ),
+        "saturation_pct": round(100.0 * drive_minutes / budget_minutes, 2),
+        "rejection_counts": rejected,
+        "clip_rate": round(clip_rate, 4),
+    }
+
+
 def main(args_list: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="월별 가짜 기사-운행 원천 릴리스 생성")
     parser.add_argument("--hvfhv_input_path", required=True)
     parser.add_argument("--zone_lookup_path", required=True)
-    parser.add_argument("--previous_preferences_path", default=None)
-    parser.add_argument("--previous_snapshot_dir", required=True)
     parser.add_argument("--vehicle_master_path", required=True)
     parser.add_argument("--state_output_dir", required=True)
     parser.add_argument("--release_output_dir", required=True)
     parser.add_argument("--year_month", required=True)
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--change_rate", type=float, default=None)
     parser.add_argument("--bucket_size", type=int, default=5)
     parser.add_argument("--spark_memory", default="4g")
     parser.add_argument("--test_row_limit", type=int, default=0)
     args = parser.parse_args(args_list)
+
+    # lifecycle(join/exit/vehicle_change) 비율은 이제 `--change_rate` 가 아니라
+    # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).
+    config = replace(load_config(), global_seed=args.seed)
+    run = RunContext.create(args.year_month, config)
+    input_scope = "full" if args.test_row_limit == 0 else f"test_row_limit={args.test_row_limit}"
 
     snapshot_date = date.fromisoformat(f"{args.year_month}-01")
     state_output_dir = _test_scoped_root(
@@ -546,13 +647,11 @@ def main(args_list: list[str] | None = None) -> Path:
             f"test_row_limit={args.test_row_limit}, output={release_output_dir}"
         )
     state = prepare_monthly_state(
-        previous_snapshot_dir=args.previous_snapshot_dir,
-        previous_preferences_path=args.previous_preferences_path,
         hvfhv_input_dir=Path(args.hvfhv_input_path).parent.parent,
         output_dir=state_output_dir,
         snapshot_date=snapshot_date,
-        seed=args.seed,
-        change_rate=args.change_rate,
+        config=config,
+        vehicle_master_path=args.vehicle_master_path,
     )
 
     spark = get_or_create_spark_session(
@@ -572,24 +671,31 @@ def main(args_list: list[str] | None = None) -> Path:
         error_threshold=0.2,
     ).transform(raw_trips).persist(StorageLevel.DISK_ONLY)
     preferences = read(str(state.preferences_path))
-    customers = read(str(state.snapshot_dir / "customer.parquet"))
-    leases = read(str(state.snapshot_dir / "lease_contract.parquet"))
-    taxis = read(str(state.snapshot_dir / "taxi.parquet"))
+    current_driver_vehicle = read(str(state.current_driver_vehicle_path))
     vehicle_master = read(args.vehicle_master_path)
-    candidates = build_trip_candidates(
+    candidates, candidate_rejects = build_trip_candidates(
         trips,
         preferences,
-        customers,
-        leases,
-        taxis,
+        current_driver_vehicle,
         seed=args.seed,
         bucket_size=args.bucket_size,
-    ).persist(StorageLevel.DISK_ONLY)
-    assignments = allocate_trips(
-        candidates, build_travel_times(trips)
-    ).persist(StorageLevel.MEMORY_AND_DISK)
+        score_weights=config.allocation.score_weights,
+    )
+    candidates = candidates.persist(StorageLevel.DISK_ONLY)
+    assignments, allocation_rejects = allocate_trips(candidates, build_travel_times(trips))
     assignment_count = assignments.count()
     candidates.unpersist(blocking=True)
+    # 릴리스 계보가 아니라 진단용입니다 — manifest 에는 싣지 않습니다(#644).
+    print(f"배정 탈락 사유: {dict(candidate_rejects, **allocation_rejects)}")
+    quality_report = _quality_report(
+        run=run,
+        trips=trips,
+        preferences=preferences,
+        assignments=assignments,
+        assignment_count=assignment_count,
+        rejected=dict(candidate_rejects, **allocation_rejects),
+        clip_rate=state.clip_rate,
+    )
     trip_source = build_trip_source(
         raw_trips,
         trips,
@@ -598,26 +704,28 @@ def main(args_list: list[str] | None = None) -> Path:
     if trip_source.count() != assignment_count:
         raise ValueError("배정 결과와 HVFHV 원천 행이 일대일로 연결되지 않습니다")
     snapshot_source = build_driver_vehicle_monthly_snapshot(
-        customers,
-        leases,
-        taxis,
+        current_driver_vehicle,
         vehicle_master,
         snapshot_date=snapshot_date,
         year_month=args.year_month,
         seed=args.seed,
     ).persist(StorageLevel.DISK_ONLY)
     inventory_source = build_lease_vehicle_inventory(
-        taxis, vehicle_master, snapshot_date=snapshot_date
+        current_driver_vehicle, vehicle_master
     ).persist(StorageLevel.DISK_ONLY)
     try:
-        return write_source_release(
+        final = write_source_release(
             trip_source,
             snapshot_source,
             inventory_source,
             output_dir=release_output_dir,
-            year_month=args.year_month,
-            seed=args.seed,
+            run=run,
+            input_scope=input_scope,
         )
+        (final / "quality_report.json").write_text(
+            json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return final
     finally:
         for frame in (
             inventory_source,

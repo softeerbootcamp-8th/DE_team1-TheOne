@@ -77,10 +77,13 @@ def discover_bootstrap_months(bronze_dir: str) -> list[str]:
 
 
 def load_bootstrap_pools(
-    bronze_dir: str = "data/bronze/hvfhv",
+    *,
+    bronze_dir: str,
+    sample_per_month: int,
+    seed: int,
+    # None 은 값이 아니라 "bronze_dir 에 있는 달 전부" 라는 뜻입니다 — 기본값 제거
+    # 대상이 아닙니다. 근거는 아래 docstring.
     months: list[str] | None = None,
-    sample_per_month: int = 200_000,
-    seed: int = 42,
 ) -> dict[str, np.ndarray]:
     """실측 trip_miles / trip_time 부트스트랩 풀 로드.
 
@@ -134,7 +137,7 @@ def sample_driver_traits(
     n_drivers: int,
     bootstrap_pools: dict[str, np.ndarray],
     today: np.datetime64,
-    seed: int | None = None,
+    seed: int | None,
 ) -> pd.DataFrame:
     """기사 1만 명(기본값)의 성향 샘플링. `implementation_plan.md` §1."""
     rng = np.random.default_rng(seed)

@@ -10,25 +10,30 @@ from sub.spark.jobs.driver_master.traits import (
     DISTANCE_LABELS,
     DISTANCE_MEDIUM_MAX_MI,
     DISTANCE_SHORT_MAX_MI,
-    TIME_BLOCK_LABELS,
-    WEEKDAY_LABELS,
     sample_driver_traits,
 )
 
 PREFERENCE_COLUMNS = [
     "driver_id",
-    "active_weekdays",
-    "preferred_time_blocks",
+    # 요일(0=월~6=일)·시간대(0~7) 인덱스의 비트마스크 정수입니다. 문자열 배열
+    # (예전 `active_weekdays`/`preferred_time_blocks`) 대신 candidates.py 가
+    # 비트 연산으로 멤버십을 검사합니다 — Spark 자체 벡터화 연산이라 이득이
+    # 크진 않지만, `array_contains` 와 데이터 계약을 하나로 맞춥니다(#643).
+    "weekday_mask",
+    "time_block_mask",
     "time_block_weights",
     "preferred_distance_band",
     "preferred_distance_miles",
     "airport_preference",
     "manhattan_preference",
     "tier_preference",
+    # 참고용 근사치입니다 — candidates.py/allocator.py는 더 이상 이 값을 하루 상한으로
+    # 읽지 않습니다(#642). 실제 상한은 target_drive_minutes(분 예산)입니다.
     "target_daily_trips",
     "min_daily_trips",
     "max_daily_trips",
     "target_work_minutes",
+    "target_drive_minutes",
     "max_deadhead_minutes",
     "buffer_seconds",
 ]
@@ -61,6 +66,11 @@ def _distance_band(miles: float) -> str:
     return DISTANCE_LABELS[2]
 
 
+def _bitmask(indexes) -> int:
+    """정수 인덱스 리스트 -> 비트마스크. 인덱스 i는 비트 i에 대응합니다."""
+    return int(sum(1 << int(index) for index in indexes))
+
+
 def _preferred_block_indexes(time_weights: np.ndarray) -> list[int]:
     """가중치 합이 가장 큰 연속 `PREFERRED_BLOCK_RUN` 블록의 인덱스.
 
@@ -86,7 +96,7 @@ def build_driver_preferences(
     bootstrap_pools: dict[str, np.ndarray],
     *,
     as_of_date: np.datetime64,
-    seed: int = 42,
+    seed: int,
 ) -> pd.DataFrame:
     """기사별 안정적인 seed로 배정용 선호를 한 행씩 생성합니다."""
     rows: list[dict] = []
@@ -101,6 +111,12 @@ def build_driver_preferences(
         distance_miles = float(trait["distance_pref_mi"])
         work_minutes = int(round(float(trait["work_mean_h"]) * 60))
         trip_minutes = max(float(trait["avg_trip_duration_min"]), 1.0)
+        target_work_minutes = max(60, min(work_minutes, 12 * 60))
+        # 근무시간 중 실제로 승객을 태우는 비중 (D7과 같은 idle_frac 기준).
+        # `sub/generators/synthetic_driver_state/traits.py`는 반대 방향으로 계산합니다
+        # (target_drive_minutes가 1차, target_work_minutes = 그걸 idle_frac로 나눈 값)
+        # — 여기는 target_work_minutes가 이미 1차 산출값이라 같은 관계를 거꾸로 씁니다.
+        target_drive_minutes = int(round(target_work_minutes * (1.0 - float(trait["idle_frac"]))))
 
         min_daily_trips = int(rng.integers(*MIN_DAILY_TRIPS_RANGE))
         max_daily_trips = max(min_daily_trips, int(rng.integers(*MAX_DAILY_TRIPS_RANGE)))
@@ -111,8 +127,8 @@ def build_driver_preferences(
 
         rows.append({
             "driver_id": driver_id,
-            "active_weekdays": [WEEKDAY_LABELS[index] for index in trait["active_weekdays"]],
-            "preferred_time_blocks": [TIME_BLOCK_LABELS[index] for index in preferred_indexes],
+            "weekday_mask": _bitmask(trait["active_weekdays"]),
+            "time_block_mask": _bitmask(preferred_indexes),
             "time_block_weights": time_weights.tolist(),
             "preferred_distance_band": _distance_band(distance_miles),
             "preferred_distance_miles": distance_miles,
@@ -131,7 +147,8 @@ def build_driver_preferences(
             "target_daily_trips": target_daily_trips,
             "min_daily_trips": min_daily_trips,
             "max_daily_trips": max_daily_trips,
-            "target_work_minutes": max(60, min(work_minutes, 12 * 60)),
+            "target_work_minutes": target_work_minutes,
+            "target_drive_minutes": target_drive_minutes,
             # 5~15분(중앙 10분)이던 값입니다. 구역쌍 이동시간(taxi_zone_travel_times,
             # 50,633쌍)의 중앙값이 33.4분이라 중앙 기사가 하차 후 이어갈 수 있는
             # 구역쌍이 2.8% 뿐이었습니다. 배정 결과에서 0분 초과 공차의 최대값이
@@ -148,7 +165,7 @@ def extend_driver_preferences(
     bootstrap_pools: dict[str, np.ndarray],
     *,
     as_of_date: np.datetime64,
-    seed: int = 42,
+    seed: int,
 ) -> pd.DataFrame:
     """기존 선호는 보존하고 처음 보는 기사만 같은 계약으로 추가합니다."""
     missing = set(PREFERENCE_COLUMNS) - set(previous.columns)

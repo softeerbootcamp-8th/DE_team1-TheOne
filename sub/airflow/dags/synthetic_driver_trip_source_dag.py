@@ -39,7 +39,9 @@ default_args = {
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
-        "seed": Param(42, type="integer"),
+        # 비우면(None) CLI 플래그 자체가 렌더링되지 않아 job 이 config/generation.json
+        # 의 global_seed 를 읽습니다. 기본값을 두면 항상 이 값이 실려 설정을 가립니다.
+        "seed": Param(None, type=["integer", "null"]),
         # 비우면 플래그 자체를 생략해 config 의 allocation.bucket_size 가 그대로 쓰입니다.
         "bucket_size": Param(
             None,
@@ -77,17 +79,13 @@ def synthetic_driver_trip_source_pipeline():
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['hvfhv_input_path'] }} "
             + "--zone_lookup_path "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['zone_lookup_path'] }} "
-            + "--previous_snapshot_dir "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['previous_snapshot_dir'] }} "
-            + "--previous_preferences_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['previous_preferences_path'] }} "
             + "--vehicle_master_path "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['vehicle_master_path'] }} "
             + "--state_output_dir {{ params.state_output_dir }} "
             + "--release_output_dir {{ params.release_output_dir }} "
             + "--year_month "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
-            + "--seed {{ params.seed }} "
+            + "{% if params.seed is not none %}--seed {{ params.seed }} {% endif %}"
             + "{% if params.bucket_size is not none %}--bucket_size {{ params.bucket_size }} {% endif %}"
             + "--test_row_limit {{ params.test_row_limit }}"
         ),

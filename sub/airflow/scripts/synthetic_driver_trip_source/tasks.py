@@ -29,7 +29,6 @@ ROOT = PROJECT_ROOT
 SOURCE_ROOT = ROOT / "data" / "source"
 DEFAULT_PATHS = {
     "source_input_dir": str(SOURCE_ROOT / "synthetic_driver_trip_inputs"),
-    "company_path": str(SOURCE_ROOT / "company"),
     "vehicle_master_dir": str(ROOT / "data" / "silver" / "vehicle_master"),
     "state_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_state"),
     "release_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_api"),
@@ -44,19 +43,6 @@ RELEASE_DATASETS = {
 }
 
 
-def _previous_month_start(year_month: str) -> date:
-    target = date.fromisoformat(f"{year_month}-01")
-    return (target - timedelta(days=1)).replace(day=1)
-
-
-def _company_snapshot_partition(path: Path, snapshot_date: date) -> Path:
-    return path / f"snapshot_date={snapshot_date.isoformat()}"
-
-
-def _monthly_state_partition(path: Path, snapshot_date: date) -> Path:
-    return path / f"data_month={snapshot_date.strftime('%Y-%m')}"
-
-
 def _test_scoped_root(path: str | Path, test_row_limit: int) -> Path:
     if test_row_limit < 0:
         raise ValueError("test_row_limit는 0 이상이어야 합니다")
@@ -64,12 +50,6 @@ def _test_scoped_root(path: str | Path, test_row_limit: int) -> Path:
     if test_row_limit == 0:
         return root
     return root / "_temporary" / f"test_row_limit={test_row_limit}"
-
-
-def _require_snapshot(path: Path) -> None:
-    for name in ("customer", "lease_contract", "taxi"):
-        if not (path / f"{name}.parquet").is_file():
-            raise FileNotFoundError(f"회사 스냅샷 파일이 없습니다: {path / f'{name}.parquet'}")
 
 
 def _manual_year_month(params: dict) -> str | None:
@@ -204,27 +184,16 @@ def collect_source_input_task(**context) -> dict:
 
 
 def validate_source_inputs(source_result: dict, params: dict) -> dict:
-    """대상 월을 만들 회사 상태와 수집한 HVFHV 파일을 확정합니다."""
+    """대상 월의 수집된 HVFHV 입력을 확정합니다.
+
+    기사·차량 상태는 여기서 확인하지 않습니다. event sourcing 이후
+    `prepare_monthly_state()`가 이전 체크포인트를 이어받거나(계속월) 스스로
+    부트스트랩하므로(첫 달), 사전에 어떤 스냅샷이 존재해야 한다는 전제 자체가
+    없습니다 — 예전(계약 기반 legacy) 아키텍처가 남긴 검사였습니다.
+    """
     year_month = str(source_result["year_month"])
     datetime.strptime(year_month, "%Y-%m")
     target_date = date.fromisoformat(f"{year_month}-01")
-    previous_date = _previous_month_start(year_month)
-    state_root = _test_scoped_root(
-        params["state_output_dir"], int(params.get("test_row_limit", 0))
-    )
-    company_root = Path(params["company_path"])
-    candidates = (
-        _monthly_state_partition(state_root, target_date),
-        _monthly_state_partition(state_root, previous_date),
-        _company_snapshot_partition(company_root, target_date),
-        _company_snapshot_partition(company_root, previous_date),
-    )
-    snapshot_dir = next((path for path in candidates if path.is_dir()), None)
-    if snapshot_dir is None:
-        raise FileNotFoundError(
-            f"대상 월 또는 직전 월 회사 스냅샷이 없습니다: {year_month}"
-        )
-    _require_snapshot(snapshot_dir)
 
     hvfhv_input = Path(source_result["hvfhv_input_path"])
     zone_lookup = Path(source_result["zone_lookup_path"])
@@ -235,15 +204,12 @@ def validate_source_inputs(source_result: dict, params: dict) -> dict:
         if not path.is_file():
             raise FileNotFoundError(f"기사-운행 입력 파일이 없습니다: {name}={path}")
 
-    preferences = snapshot_dir / "driver_preferences.parquet"
     vehicle_master = resolve_vehicle_master_path(params["vehicle_master_dir"])
     return {
         "year_month": year_month,
         "snapshot_date": target_date.isoformat(),
         "hvfhv_input_path": str(hvfhv_input),
         "zone_lookup_path": str(zone_lookup),
-        "previous_snapshot_dir": str(snapshot_dir),
-        "previous_preferences_path": str(preferences),
         "vehicle_master_path": str(vehicle_master),
     }
 
@@ -263,15 +229,34 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_release(output_dir: str | Path, year_month: str, seed: int) -> None:
+def validate_release(output_dir: str | Path, year_month: str, seed: int | None) -> None:
     """release로 공개할 manifest·단일 Parquet·행 수·checksum을 확인합니다."""
     release = Path(output_dir) / f"year_month={year_month}"
     manifest_path = release / "manifest.json"
     if not manifest_path.is_file():
         raise ValueError(f"원천 릴리스 manifest가 없습니다: {manifest_path}")
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    if manifest.get("year_month") != year_month or manifest.get("seed") != seed:
+    if manifest.get("year_month") != year_month:
         raise ValueError(f"원천 릴리스 계보가 요청과 다릅니다: {manifest}")
+    # 계보 필드를 여기서 다시 해싱하지 않습니다 — 설정을 두 곳에서 읽으면 그 둘이
+    # 갈릴 수 있습니다. 대신 존재와 내부 정합성만 봅니다. 어느 설정으로 만들었는지는
+    # run_id·config_hash 가 답하고, 그 값이 config 와 맞는지는 발행 쪽
+    # (`source_job._existing_release`) 이 이미 판정합니다.
+    run_id, config_hash = manifest.get("run_id"), manifest.get("config_hash")
+    if not run_id or not config_hash:
+        raise ValueError(
+            f"원천 릴리스 manifest에 run_id/config_hash가 없습니다: {manifest_path}. "
+            f"설정 통합 이전 릴리스라면 해당 파티션을 지우고 다시 발행하세요: rm -rf {release}"
+        )
+    if run_id != f"{year_month}_{config_hash}":
+        raise ValueError(
+            f"run_id가 year_month·config_hash와 어긋납니다: run_id={run_id!r}, "
+            f"year_month={year_month!r}, config_hash={config_hash!r}"
+        )
+    # seed 를 명시해 돌린 실행만 비교합니다. 비웠으면 config 의 global_seed 를 쓴
+    # 것이므로 여기서 맞춰 볼 요청값이 없습니다.
+    if seed is not None and manifest.get("seed") != seed:
+        raise ValueError(f"원천 릴리스 seed가 요청과 다릅니다: {manifest.get('seed')} != {seed}")
 
     for dataset, required_columns in RELEASE_DATASETS.items():
         metadata = manifest.get("datasets", {}).get(dataset, {})
@@ -288,6 +273,13 @@ def validate_release(output_dir: str | Path, year_month: str, seed: int) -> None
         missing = required_columns - set(parquet.schema_arrow.names)
         if missing:
             raise ValueError(f"{dataset} 필수 컬럼 누락: {sorted(missing)}")
+
+    # coverage/ceiling/saturation/탈락 사유/클리핑 — 진단용이라 manifest 계보와
+    # 분리돼 있습니다(#608). 존재만 확인하고 내용은 로그로 남겨 운영자가 봅니다.
+    quality_report_path = release / "quality_report.json"
+    if not quality_report_path.is_file():
+        raise ValueError(f"원천 릴리스 품질 리포트가 없습니다: {quality_report_path}")
+    logger.info("원천 릴리스 품질 리포트: %s", quality_report_path.read_text(encoding="utf-8"))
 
 
 @task(task_id="validate_release")

@@ -14,13 +14,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from conftest import TEST_SEED
 from sub.spark.jobs.driver_master.preference import (
     PREFERENCE_COLUMNS,
     build_driver_preferences,
     extend_driver_preferences,
     write_driver_preferences,
 )
-from sub.spark.jobs.driver_master.traits import TIME_BLOCK_LABELS, WEEKDAY_LABELS
 
 
 def _pools() -> dict[str, np.ndarray]:
@@ -30,12 +30,17 @@ def _pools() -> dict[str, np.ndarray]:
     }
 
 
+def _mask_indexes(mask: int) -> list[int]:
+    """비트마스크 -> 켜진 비트 인덱스 목록 (테스트 전용 디코더)."""
+    return [i for i in range(64) if (mask >> i) & 1]
+
+
 def _build(driver_ids=None) -> pd.DataFrame:
     return build_driver_preferences(
         driver_ids or ["DRIVER_000001", "DRIVER_000002"],
         _pools(),
         as_of_date=np.datetime64("2026-08-12"),
-        seed=42,
+        seed=TEST_SEED,
     )
 
 
@@ -45,10 +50,12 @@ def test_기사마다_선호_한행과_허용된_요일_시간대를_생성한�
     assert result["driver_id"].is_unique
     assert set(result.columns) == set(PREFERENCE_COLUMNS)
     for row in result.itertuples():
-        assert 3 <= len(row.active_weekdays) <= 7
-        assert set(row.active_weekdays) <= set(WEEKDAY_LABELS)
-        assert len(row.preferred_time_blocks) == 3
-        assert set(row.preferred_time_blocks) <= set(TIME_BLOCK_LABELS)
+        weekdays = _mask_indexes(row.weekday_mask)
+        blocks = _mask_indexes(row.time_block_mask)
+        assert 3 <= len(weekdays) <= 7
+        assert set(weekdays) <= set(range(7))
+        assert len(blocks) == 3
+        assert set(blocks) <= set(range(8))
 
 
 def test_시간대_가중치와_거리구간이_값에_맞는다():
@@ -72,6 +79,19 @@ def test_선호점수와_작업한도가_허용범위다():
     assert (result["target_daily_trips"] >= 1).all()
     assert result["target_work_minutes"].between(60, 720).all()
     assert result["max_deadhead_minutes"].between(10, 25).all()
+
+
+def test_운행분_예산은_근무시간의_일부이고_상한을_넘지_않는다():
+    """`target_drive_minutes`가 candidates.py/allocator.py가 실제로 읽는 하루 상한입니다(#642).
+
+    idle_frac 이 [0.15, 0.35] 이므로 근무시간의 65~85% 여야 하고, 근무시간을 넘을 수 없습니다.
+    """
+    result = _build([f"DRIVER_{index:06d}" for index in range(100)])
+
+    assert (result["target_drive_minutes"] >= 1).all()
+    assert (result["target_drive_minutes"] <= result["target_work_minutes"]).all()
+    ratio = result["target_drive_minutes"] / result["target_work_minutes"]
+    assert ratio.between(0.64, 0.86).all()
 
 
 def test_트립수_하한_상한과_준비시간이_가이드_범위_안이다():
@@ -98,7 +118,7 @@ def test_선호_시간블록은_연속이고_가중치_합이_최대인_구간�
     result = _build([f"DRIVER_{index:06d}" for index in range(100)])
 
     for row in result.itertuples():
-        indexes = [TIME_BLOCK_LABELS.index(block) for block in row.preferred_time_blocks]
+        indexes = _mask_indexes(row.time_block_mask)
         assert indexes == list(range(min(indexes), min(indexes) + len(indexes)))
         # 아무 연속 구간이나 고르면 안 됩니다 — 가중치 합이 최대인 구간이어야 합니다.
         weights = np.asarray(row.time_block_weights, dtype=float)
@@ -124,7 +144,7 @@ def test_기존선호는_보존하고_신규기사만_추가한다():
         ["DRIVER_000001", "DRIVER_000002", "DRIVER_202609_000001"],
         _pools(),
         as_of_date=np.datetime64("2026-09-12"),
-        seed=42,
+        seed=TEST_SEED,
     )
 
     pd.testing.assert_frame_equal(
@@ -139,25 +159,27 @@ def test_parquet_저장후_리스트와_숫자타입이_보존된다(tmp_path):
     path = write_driver_preferences(_build(), tmp_path / "driver_preference.parquet")
     written = pd.read_parquet(path)
 
-    assert isinstance(written.iloc[0]["active_weekdays"], np.ndarray)
     assert isinstance(written.iloc[0]["time_block_weights"], np.ndarray)
     assert pd.api.types.is_float_dtype(written["airport_preference"])
     assert pd.api.types.is_integer_dtype(written["target_daily_trips"])
+    assert pd.api.types.is_integer_dtype(written["weekday_mask"])
+    assert pd.api.types.is_integer_dtype(written["time_block_mask"])
 
 
 @pytest.mark.parametrize("driver_ids", [[], [""], ["DRIVER_1", "DRIVER_1"]])
 def test_빈값과_중복기사_id를_거부한다(driver_ids):
     with pytest.raises(ValueError, match="driver_id"):
         build_driver_preferences(
-            driver_ids, _pools(), as_of_date=np.datetime64("2026-08-12")
+            driver_ids, _pools(), as_of_date=np.datetime64("2026-08-12"), seed=TEST_SEED
         )
 
 
 def test_기존선호_스키마가_깨지면_갱신을_거부한다():
     with pytest.raises(ValueError, match="컬럼 누락"):
         extend_driver_preferences(
-            _build().drop(columns="active_weekdays"),
+            _build().drop(columns="weekday_mask"),
             ["DRIVER_000001"],
             _pools(),
             as_of_date=np.datetime64("2026-09-12"),
+            seed=TEST_SEED,
         )
