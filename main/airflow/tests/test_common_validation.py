@@ -23,6 +23,7 @@ import pytest
 from shared.airflow.common.validation import (
     S3Location,
     layout_tail,
+    location_size,
     parse_handler_result,
     parse_location,
     parse_iso_date,
@@ -357,3 +358,29 @@ def test_s3_parquet을_읽는다(monkeypatch, tmp_path):
     table = read_parquet(parse_location(S3_URI))
 
     assert table.column("city").to_pylist() == ["new-york"]
+
+
+def test_s3_위치의_parent가_파티션_이름을_준다():
+    location = parse_location(S3_URI)
+
+    # city_from_partition 류가 partition.name 만 쓰므로 그 계약만 맞추면 됩니다.
+    assert location.parent.name == "city=new-york"
+    assert location.parent.parent.name == "collected_date=2026-01-01"
+    assert str(location.parent).startswith("s3://de-theone/")
+
+
+def test_상위_prefix가_없으면_실패한다():
+    with pytest.raises(ValueError, match="상위 prefix"):
+        parse_location("s3://bucket/only-key.parquet").parent
+
+
+def test_location_size는_로컬과_s3를_같은_방식으로_준다(monkeypatch, tmp_path):
+    local = tmp_path / "a.parquet"
+    local.write_bytes(b"1234")
+    assert location_size(local) == 4
+
+    monkeypatch.setattr(
+        "shared.airflow.common.validation.get_object_stream",
+        lambda bucket, key: (io.BytesIO(b"12345"), 5),
+    )
+    assert location_size(parse_location(S3_URI)) == 5
