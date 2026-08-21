@@ -68,8 +68,12 @@ default_args = {
             ),
         ),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
+        # 읽기에도 씁니다. vehicle_master 를 어디서 찾을지가 이 값으로 갈립니다 —
+        # EC2 는 바인드 마운트가 없어 local 로 두면 컨테이너 빈 디스크를 보게 됩니다.
         "storage": Param(
-            "local", enum=["local", "s3"], description="attribution·published를 어디에 쓸지"
+            "local",
+            enum=["local", "s3"],
+            description="입력(vehicle_master) 조회와 attribution·published 적재를 어디로 할지",
         ),
         "bucket": Param("", type="string", description="storage=s3일 때. 비우면 DATA_LAKE_S3_BUCKET"),
     },
