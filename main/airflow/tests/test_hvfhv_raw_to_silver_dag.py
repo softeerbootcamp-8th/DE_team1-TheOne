@@ -7,6 +7,8 @@
 
 from datetime import timedelta
 
+from airflow.providers.standard.operators.python import ShortCircuitOperator
+
 from dags import hvfhv_raw_to_silver_dag as dag_module
 from main.airflow.scripts.hvfhv_raw_to_silver import tasks as task_module
 
@@ -16,7 +18,7 @@ DAG = dag_module.hvfhv_dag
 
 def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다():
     assert DAG.dag_id == "hvfhv_raw_to_silver_pipeline"
-    assert DAG.schedule == "0 0 10 * *"
+    assert DAG.schedule == "@daily"
     assert set(DAG.task_ids) == {
         "raw_to_bronze",
         "validate_bronze",
@@ -35,6 +37,7 @@ def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다(
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
+    assert isinstance(DAG.get_task("validate_bronze"), ShortCircuitOperator)
 
 
 def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_전달한다(monkeypatch):

@@ -12,6 +12,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from airflow.providers.standard.operators.python import ShortCircuitOperator
 
 from dags import lease_vehicle_inventory_raw_to_silver_dag as dag_module
 from dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag import driver_vehicle_monthly_snapshot_raw_to_silver_dag
@@ -51,7 +52,7 @@ def _silver_file(tmp_path: Path, rows: list[dict]) -> dict:
 
 def test_보유차량은_기사계약과_분리된_DAG에서_Silver까지_처리한다():
     assert DAG.dag_id == "lease_vehicle_inventory_raw_to_silver_pipeline"
-    assert DAG.schedule == "0 0 10 * *"
+    assert DAG.schedule == "@daily"
     assert set(DAG.task_ids) == {
         "raw_to_bronze",
         "validate_bronze",
@@ -68,6 +69,7 @@ def test_보유차량은_기사계약과_분리된_DAG에서_Silver까지_처리
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
+    assert isinstance(DAG.get_task("validate_bronze"), ShortCircuitOperator)
 
 
 def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
@@ -141,7 +143,11 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
             (Path("corrected.parquet"), []),
         ]
     )
-    recollected = {"year_month": "2026-08", "row_count": 1}
+    recollected = {
+        "year_month": "2026-08",
+        "row_count": 1,
+        "source_changed": True,
+    }
     calls = []
     monkeypatch.setattr(
         task_module,
@@ -155,12 +161,30 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
     )
 
     validated = DAG.get_task("validate_bronze").python_callable(
-        {"year_month": "2026-08"},
+        {"year_month": "2026-08", "source_changed": True},
         params={"base_dir": "/bronze", "api_base_url": "http://source"},
     )
 
     assert validated == recollected
     assert calls == [{"base_dir": "/bronze", "api_base_url": "http://source"}]
+
+
+def test_동일한_보유차량_Bronze는_검증후_Silver를_중단한다(monkeypatch):
+    validated = []
+    monkeypatch.setattr(
+        task_module,
+        "_validate_bronze_result",
+        lambda result, base_dir: validated.append(result) or (Path("same.parquet"), []),
+    )
+
+    result = {"year_month": "2026-08", "source_changed": False}
+    stopped = DAG.get_task("validate_bronze").python_callable(
+        result,
+        params={"base_dir": "/bronze"},
+    )
+
+    assert stopped is False
+    assert validated == [result]
 
 
 def test_Bronze와_행수가_같고_품질이_맞아야_Silver를_통과시킨다(tmp_path):

@@ -12,7 +12,10 @@ from main.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import parse_year_month
-from main.airflow.common.monthly_bronze import validate_monthly_parquet_bronze
+from main.airflow.common.monthly_bronze import (
+    should_process_silver,
+    validate_monthly_parquet_bronze,
+)
 from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
 
 
@@ -69,7 +72,7 @@ def _collect_bronze(params: dict) -> dict:
     return lambda_handler_for("driver_vehicle_monthly_snapshot_raw_to_bronze")(event=event)
 
 
-@task(task_id="validate_bronze")
+@task.short_circuit(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> dict:
     params = context.get("params", {})
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
@@ -80,6 +83,11 @@ def validate_bronze_task(result: dict, **context) -> dict:
         _, missing = _validate_bronze_result(result, base_dir)
     if missing:
         raise ValueError(f"기사 차량 스냅샷 Bronze 필수 컬럼 누락: {missing}")
+    if not should_process_silver(result):
+        logger.info(
+            "기사 차량 스냅샷 Bronze가 최신 수집본과 동일해 Silver 후속 처리를 건너뜁니다"
+        )
+        return False
     return result
 
 

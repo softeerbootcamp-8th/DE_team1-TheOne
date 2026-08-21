@@ -14,7 +14,10 @@ from main.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
-from main.airflow.common.monthly_bronze import validate_monthly_parquet_bronze
+from main.airflow.common.monthly_bronze import (
+    should_process_silver,
+    validate_monthly_parquet_bronze,
+)
 from shared.airflow.common.validation import (
     parse_handler_result,
     parse_year_month,
@@ -187,7 +190,7 @@ def existing_silver_partitions(silver_dir: str | Path) -> list[str]:
     )
 
 
-@task(
+@task.short_circuit(
     task_id="validate_bronze",
     retries=1,
     retry_delay=timedelta(minutes=10),
@@ -230,6 +233,12 @@ def validate_bronze_task(result: dict, **context) -> dict:
         suite_name="hvfhv_bronze_suite",
         layer="bronze",
     )
+    if not should_process_silver(result):
+        logger.info(
+            "Bronze 원본이 최신 수집본과 동일해 Silver 후속 처리를 건너뜁니다: %s",
+            result["locations"][0],
+        )
+        return False
     # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
     return {
         **result,

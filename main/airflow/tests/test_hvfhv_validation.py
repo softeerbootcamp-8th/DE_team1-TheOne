@@ -80,6 +80,7 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
         "year_month": year_month,
         "collected_at": "2026-08-11T08:53:54.000000Z",
         "file_size_bytes": Path(path).stat().st_size,
+        "source_changed": True,
     }
 
 
@@ -96,6 +97,23 @@ def test_Validation_Task에_Slack_실패_콜백이_연결된다():
 def test_정상_적재는_통과한다(tmp_path):
     path = write_bronze(tmp_path)
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_동일한_Bronze도_검증한_뒤_Silver후속처리를_중단한다(tmp_path):
+    path = write_bronze(tmp_path)
+    result = result_for(path)
+    result["source_changed"] = False
+
+    assert validate_bronze(result, params=bronze_params(tmp_path)) is False
+
+
+def test_Bronze_변경여부_신호가_없으면_조용히_skip하지않고_실패한다(tmp_path):
+    path = write_bronze(tmp_path)
+    result = result_for(path)
+    result.pop("source_changed")
+
+    with pytest.raises(ValueError, match="source_changed"):
+        validate_bronze(result, params=bronze_params(tmp_path))
 
 
 def test_필수컬럼보다_컬럼이_많아도_통과한다(tmp_path):
