@@ -17,7 +17,7 @@ from shared.airflow.common.slack_failure_callback import (
 )
 
 
-DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 SOURCES = (
     ("monthly_taxi_trip", "hvfhv_raw_to_silver_pipeline"),
     (
