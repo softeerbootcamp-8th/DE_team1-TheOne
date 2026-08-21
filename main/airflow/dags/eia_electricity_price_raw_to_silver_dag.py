@@ -47,6 +47,11 @@ default_args = {
         "markup": Param(2.0, type="number"),
         "bronze_dir": Param(BRONZE_DIR, type="string"),
         "silver_dir": Param(SILVER_DIR, type="string"),
+        "dry_run": Param(
+            False,
+            type="boolean",
+            description="실제 적재와 상태/Asset 발행 없이 실행 흐름을 검증",
+        ),
     },
 )
 def eia_electricity_price_raw_to_silver_pipeline():

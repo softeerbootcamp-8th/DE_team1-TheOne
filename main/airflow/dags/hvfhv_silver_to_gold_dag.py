@@ -54,6 +54,11 @@ default_args = {
         # (근거: docs/METRICS.md - 4. 추천 기준선)
         "threshold_profit_increase": Param(600.0, type="number"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
+        "dry_run": Param(
+            False,
+            type="boolean",
+            description="입력과 집계를 검증하되 Gold에는 적재하지 않음",
+        ),
     },
 )
 def hvfhv_silver_to_gold_pipeline():
@@ -61,17 +66,18 @@ def hvfhv_silver_to_gold_pipeline():
         task_id="build_gold",
         bash_command=(
             f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py "
-            + "--hvfhv_path {{ task_instance.xcom_pull(task_ids='validate_inputs')['hvfhv_path'] }} "
+            + "--hvfhv_path \"{{ task_instance.xcom_pull(task_ids='validate_inputs')['hvfhv_path'] }}\" "
             + "--driver_snapshot_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_snapshot_path'] }} "
+            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_snapshot_path'] }}\" "
             + "--inventory_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['inventory_path'] }} "
+            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['inventory_path'] }}\" "
             + "--fuel_price_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }} "
+            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }}\" "
             + "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
             + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
             + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
-            + "--output_dir {{ params.output_dir }}"
+            + "--output_dir {{ params.output_dir }} "
+            + "{% if params.dry_run %}--dry-run{% endif %}"
         ),
         # BashOperator 가 띄우는 별도 프로세스는 DAG 파싱 때의 sys.path 를 물려받지
         # 않습니다. spark/common/io.py 가 pipeline_core 를 import 하므로 그 경로까지

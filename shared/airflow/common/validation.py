@@ -3,10 +3,12 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import logging
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pyarrow as pa
 import pyarrow.parquet as pq
+
+from shared.common.s3_reader import get_object_bytes, get_object_stream
 
 
 logger = logging.getLogger(__name__)
@@ -24,11 +26,60 @@ _PROJECT_ROOT = (
 )
 _DEFAULT_DATA_DOCS_DIR = _PROJECT_ROOT / "data" / "gx_data_docs"
 
+S3_SCHEME = "s3://"
+
+
+@dataclass(frozen=True)
+class S3Location:
+    """`Path`가 손상시키는 S3 URI를 경로 속성과 함께 보존합니다."""
+
+    bucket: str
+    key: str
+
+    def __str__(self) -> str:
+        return f"{S3_SCHEME}{self.bucket}/{self.key}"
+
+    @property
+    def name(self) -> str:
+        return PurePosixPath(self.key).name
+
+    @property
+    def stem(self) -> str:
+        return PurePosixPath(self.key).stem
+
+    @property
+    def suffix(self) -> str:
+        return PurePosixPath(self.key).suffix
+
+    @property
+    def parent(self) -> "S3Location":
+        parent = PurePosixPath(self.key).parent
+        if str(parent) in (".", "/"):
+            raise ValueError(f"상위 prefix가 없습니다: {self}")
+        return S3Location(self.bucket, str(parent))
+
+
+def parse_location(value: str) -> Path | S3Location:
+    if not value.startswith(S3_SCHEME):
+        return Path(value)
+    bucket, _, key = value[len(S3_SCHEME):].partition("/")
+    if not bucket or not key:
+        raise ValueError(f"S3 URI 형식이 아닙니다: {value}")
+    return S3Location(bucket, key)
+
+
+def location_size(location: Path | S3Location) -> int:
+    if isinstance(location, S3Location):
+        stream, length = get_object_stream(location.bucket, location.key)
+        stream.close()
+        return length
+    return location.stat().st_size
+
 
 @dataclass(frozen=True)
 class HandlerResult:
     row_count: int
-    locations: tuple[Path, ...]
+    locations: tuple[Path | S3Location, ...]
 
 
 def parse_handler_result(
@@ -55,7 +106,7 @@ def parse_handler_result(
     if expected_locations is not None and len(raw_locations) != expected_locations:
         raise ValueError(f"locations에는 경로가 {expected_locations}개 있어야 합니다.")
 
-    return HandlerResult(row_count, tuple(map(Path, raw_locations)))
+    return HandlerResult(row_count, tuple(map(parse_location, raw_locations)))
 
 
 def parse_iso_date(value: object, field: str = "collected_date") -> date:
@@ -82,22 +133,38 @@ def parse_year_month(value: object, field: str = "collected_month") -> str:
     return value
 
 
-def require_file(path: Path) -> Path:
-    if not path.is_file():
-        raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
-    if path.stat().st_size == 0:
+def require_file(path: Path | S3Location) -> Path | S3Location:
+    if isinstance(path, S3Location):
+        try:
+            size = location_size(path)
+        except Exception as exc:
+            raise FileNotFoundError(f"적재 파일이 없습니다: {path}") from exc
+    else:
+        if not path.is_file():
+            raise FileNotFoundError(f"적재 파일이 없습니다: {path}")
+        size = path.stat().st_size
+    if size == 0:
         raise ValueError(f"적재 파일이 비어 있습니다: {path}")
     return path
 
 
-def read_parquet(path: Path) -> pa.Table:
+def parquet_file(path: Path | S3Location) -> pq.ParquetFile:
     require_file(path)
     if path.suffix != ".parquet":
         raise ValueError(f"Parquet 파일이 아닙니다: {path}")
     try:
-        return pq.ParquetFile(path).read()
+        source = (
+            pa.BufferReader(get_object_bytes(path.bucket, path.key))
+            if isinstance(path, S3Location)
+            else path
+        )
+        return pq.ParquetFile(source)
     except (OSError, pa.ArrowInvalid) as exc:
         raise RuntimeError(f"Parquet 파일을 읽지 못했습니다: {path}") from exc
+
+
+def read_parquet(path: Path | S3Location) -> pa.Table:
+    return parquet_file(path).read()
 
 
 def _failure_column(failure) -> str:

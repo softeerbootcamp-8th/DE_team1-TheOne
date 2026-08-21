@@ -11,8 +11,10 @@ import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from main.airflow.common import assets
+from main.airflow.common.dry_run import configure_dry_run_event
 from main.airflow.common.monthly_bronze import (
-    should_process_silver,
+    TIMESTAMP_FILE_PATTERN,
+    silver_version_path,
     validate_monthly_parquet_bronze,
 )
 from shared.airflow.common.lambda_runtime import lambda_handler_for
@@ -20,6 +22,7 @@ from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.slack_quality_warning import send_quality_warning
 from shared.airflow.common.validation import (
+    parquet_file as open_parquet_file,
     parse_handler_result,
     parse_year_month,
     run_gx_validation,
@@ -51,7 +54,8 @@ DEFAULT_SILVER_DIR = os.getenv(
 # 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
 HVFHV_ERROR_THRESHOLD = 0.05
 HVFHV_WARNING_THRESHOLD = 0.01
-DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+# 원천 API 서버(EC2) 주소. 로컬 개발은 SOURCE_API_URL 로 덮어씁니다.
+DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 
 
 def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> str:
@@ -197,6 +201,7 @@ def _collect_bronze(params: dict) -> dict:
         "year": params.get("year"),
         "month": params.get("month"),
     }
+    configure_dry_run_event(event, params)
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
     result = lambda_handler_for("monthly_taxi_trip_raw_to_bronze")(event=event)
     logger.info("raw_to_bronze 작업 완료: result=%s", result)
@@ -214,14 +219,23 @@ def existing_silver_partitions(silver_dir: str | Path) -> list[str]:
     root = Path(silver_dir)
     if not root.is_dir():
         return []
-    return sorted(
-        partition.name
-        for partition in root.glob("year_month=*")
-        if partition.is_dir() and any(partition.glob("*.parquet"))
-    )
+    existing = []
+    for partition in root.glob("year_month=*"):
+        if not partition.is_dir():
+            continue
+        files = list(partition.glob("*.parquet"))
+        has_legacy = any(
+            not TIMESTAMP_FILE_PATTERN.fullmatch(path.name) for path in files
+        )
+        has_version = any(
+            TIMESTAMP_FILE_PATTERN.fullmatch(path.name) for path in files
+        )
+        if has_legacy or has_version:
+            existing.append(partition.name)
+    return sorted(existing)
 
 
-@task.short_circuit(
+@task(
     task_id="validate_bronze",
     retries=1,
     retry_delay=timedelta(minutes=10),
@@ -294,15 +308,11 @@ def validate_bronze_task(result: dict, **context) -> dict:
             invalid_ratio=invalid_ratio,
             extra_columns=extra_columns,
         )
-    if not should_process_silver(result):
-        logger.info(
-            "Bronze 원본이 최신 수집본과 동일해 Silver 후속 처리를 건너뜁니다: %s",
-            result["locations"][0],
-        )
-        return False
+    version_path = silver_version_path(DEFAULT_SILVER_DIR, result)
     # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
     return {
         **result,
+        "silver_version_path": str(version_path),
         "silver_partitions_before": existing_silver_partitions(DEFAULT_SILVER_DIR),
     }
 
@@ -319,8 +329,8 @@ def _bronze_quality_result(
         base_dir=base_dir,
     )
     try:
-        parquet_file = pq.ParquetFile(path)
-    except (OSError, pa.ArrowInvalid) as exc:
+        parquet_file = open_parquet_file(path)
+    except (OSError, pa.ArrowInvalid, RuntimeError) as exc:
         raise ValueError(
             f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
         ) from exc
@@ -338,22 +348,24 @@ def _bronze_quality_result(
 )
 def validate_silver_task(raw_result: dict, **context) -> None:
     """BashOperator 라 handler 결과 dict 가 없어, Silver 파티션을 직접 열어서 확인합니다."""
+    if context.get("params", {}).get("dry_run"):
+        assets.disable_outlets_for_dry_run(context)
+        logger.info("dry-run: Spark job 내부 Silver 검증을 신뢰하고 적재 검증을 생략합니다")
+        return
+
     parsed = parse_handler_result(raw_result, expected_locations=1)
     year_month = parse_year_month(
         raw_result.get("year_month"), field="year_month"
     )
     bronze_rows = pq.ParquetFile(parsed.locations[0]).metadata.num_rows
 
-    silver_partition = Path(DEFAULT_SILVER_DIR) / f"year_month={year_month}"
-    silver_files = sorted(silver_partition.glob("*.parquet"))
-    if not silver_files:
-        raise ValueError(
-            f"Silver 파티션에 Parquet 파일이 없습니다: {silver_partition}"
-        )
+    version_path = Path(raw_result["silver_version_path"])
+    if not version_path.is_file():
+        raise ValueError(f"Silver 버전 파일이 없습니다: {version_path}")
 
     expected_schema = SILVER_SCHEMA
     required_columns = list(SILVER_SCHEMA.names)
-    parquet_files = [pq.ParquetFile(path) for path in silver_files]
+    parquet_files = [pq.ParquetFile(version_path)]
     summary = _silver_quality_summary(parquet_files, required_columns)
     import great_expectations as gx
 
@@ -400,7 +412,7 @@ def validate_silver_task(raw_result: dict, **context) -> None:
             f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
 
-    # 파일·스키마·행 수 검증이 모두 끝난 뒤에만 Gold 입력 완료를 알립니다.
+    # 최종 파일의 스키마·행 수 검증이 모두 끝난 뒤에만 Gold 입력 완료를 알립니다.
     assets.publish_month_partition(
         context.get("outlet_events"), assets.HVFHV_SILVER, year_month
     )

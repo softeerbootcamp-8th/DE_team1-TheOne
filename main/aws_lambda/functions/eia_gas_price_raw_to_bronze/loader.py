@@ -1,13 +1,15 @@
 """EIA 원본 파일을 수집일 파티션에 그대로 적재합니다."""
 
 import logging
+import os
 from datetime import date
 
 from pipeline_core.loader import Loader, WriteResult
 
 from main.aws_lambda.common import eia_fuel_price_layout as layout
 from shared.aws_lambda.common.atomic_write import atomic_write
-from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
+from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
+from shared.common.env import load_local_env
 
 logger = logging.getLogger(__name__)
 
@@ -15,23 +17,40 @@ logger = logging.getLogger(__name__)
 class EiaGasPriceBronzeLoader(Loader):
     """받은 bytes 를 변형 없이 로컬에 씁니다."""
 
-    def __init__(self, base_dir: str, collected_date: date):
+    def __init__(
+        self,
+        base_dir: str,
+        collected_date: date,
+        *,
+        dry_run: bool = False,
+    ):
         self._base_dir = base_dir
         self._collected_date = collected_date
+        self._dry_run = dry_run
+        self.byte_count = 0
 
     def write(self, data: dict) -> WriteResult:
         body = data["body"]
-
-        # 내용이 최신 수집분과 같으면 새 파티션을 만들지 않습니다. 그러면 파티션 개수
-        # 자체가 "언제 실제로 바뀌었는지" 를 말해주는 기록이 됩니다.
+        self.byte_count = len(body)
+        path = layout.gas_bronze_file(self._base_dir, self._collected_date)
         duplicate = layout.is_duplicate_of_newest(
             self._base_dir, layout.GAS_DATASET, layout.GAS_FILE_NAME, body
         )
+        if self._dry_run:
+            if duplicate is None:
+                raise ValueError(
+                    "dry_run 원본이 기존 EIA 휘발유 Bronze와 다릅니다. "
+                    "변경 원본은 정상 실행으로 확인하세요."
+                )
+            logger.info("dry-run 적재 생략: %s (%d bytes)", path, len(body))
+            return WriteResult(location=str(path), row_count=1)
+
+        # 내용이 최신 수집분과 같으면 새 파티션을 만들지 않습니다. 그러면 파티션 개수
+        # 자체가 "언제 실제로 바뀌었는지" 를 말해주는 기록이 됩니다.
         if duplicate is not None:
             logger.info("최신 수집분과 동일해 건너뜁니다: %s (%d bytes)", duplicate, len(body))
             return WriteResult(location=str(duplicate), row_count=1)
 
-        path = layout.gas_bronze_file(self._base_dir, self._collected_date)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(path, lambda temporary: temporary.write_bytes(body))
 
@@ -43,26 +62,65 @@ class EiaGasPriceBronzeLoader(Loader):
 class EiaGasPriceS3BronzeLoader(Loader):
     """받은 bytes 를 변형 없이 S3 에 씁니다."""
 
-    def __init__(self, collected_date: date, bucket: str | None = None):
+    def __init__(
+        self,
+        collected_date: date,
+        bucket: str | None = None,
+        *,
+        dry_run: bool = False,
+    ):
+        load_local_env()
         self._collected_date = collected_date
-        self._bucket = bucket
+        self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
+        self._dry_run = dry_run
+        self.byte_count = 0
 
     def write(self, data: dict) -> WriteResult:
         body = data["body"]
+        self.byte_count = len(body)
         key = layout.gas_bronze_key(self._collected_date)
 
-        result = S3Loader(key=key, bucket=self._bucket).write(
+        if self._dry_run and layout.is_duplicate_of_newest_s3(
+            self._bucket,
+            layout.GAS_DATASET,
+            layout.GAS_FILE_NAME,
+            body,
+        ) is None:
+            raise ValueError(
+                "dry_run 원본이 기존 EIA 휘발유 Bronze와 다릅니다. "
+                "변경 원본은 정상 실행으로 확인하세요."
+            )
+
+        result = S3Loader(
+            key=key,
+            bucket=self._bucket,
+            dry_run=self._dry_run,
+        ).write(
             S3Object(body=body, row_count=1)
         )
-        logger.info("적재 완료: %s (%d bytes)", result.location, len(body))
+        logger.info(
+            "%s: %s (%d bytes)",
+            "dry-run 적재 생략" if self._dry_run else "적재 완료",
+            result.location,
+            len(body),
+        )
         return result
 
 
 def build_bronze_loader(
-    storage: str, base_dir: str, collected_date: date, bucket: str | None = None
+    storage: str,
+    base_dir: str,
+    collected_date: date,
+    bucket: str | None = None,
+    *,
+    dry_run: bool = False,
 ) -> Loader:
     if storage == "local":
-        return EiaGasPriceBronzeLoader(base_dir, collected_date)
+        return EiaGasPriceBronzeLoader(base_dir, collected_date, dry_run=dry_run)
     if storage == "s3":
-        return EiaGasPriceS3BronzeLoader(collected_date, bucket=bucket)
+        return EiaGasPriceS3BronzeLoader(
+            collected_date,
+            bucket=bucket,
+            dry_run=dry_run,
+        )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

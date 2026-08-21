@@ -14,6 +14,7 @@ output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
 """
 
 import argparse
+from contextlib import ExitStack
 import logging
 from pathlib import Path
 from uuid import uuid4
@@ -30,6 +31,7 @@ from main.spark.jobs.silver_to_gold.transformer import (
     validate_gold_business_invariants,
 )
 from shared.spark.common.session import get_or_create_spark_session
+from shared.spark.common.io import stage_s3_parquet_inputs
 
 
 logger = logging.getLogger(__name__)
@@ -95,62 +97,92 @@ def main(args_list: list[str] | None = None) -> None:
         help="차량 교체 추천 기준 순수익 증가액 (USD)",
     )
     parser.add_argument("--output_dir", default="data/gold")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="입력과 집계를 실제 실행하되 Gold에는 적재하지 않음",
+    )
     args = parser.parse_args(args_list)
 
     year_month = f"{args.year:04d}-{args.month:02d}"
     spark = get_or_create_spark_session("hvfhv_silver_to_gold")
-    hvfhv: DataFrame = spark.read.parquet(args.hvfhv_path)
-    driver_snapshot: DataFrame = spark.read.parquet(args.driver_snapshot_path)
-    inventory: DataFrame = spark.read.parquet(args.inventory_path)
-    fuel_price: DataFrame = spark.read.parquet(args.fuel_price_path)
+    with ExitStack() as staging:
+        if args.dry_run:
+            hvfhv_paths, driver_paths, inventory_paths, fuel_paths = staging.enter_context(
+                stage_s3_parquet_inputs(
+                    args.hvfhv_path,
+                    args.driver_snapshot_path,
+                    args.inventory_path,
+                    args.fuel_price_path,
+                )
+            )
+            hvfhv: DataFrame = spark.read.parquet(*hvfhv_paths)
+            driver_snapshot: DataFrame = spark.read.parquet(*driver_paths)
+            inventory: DataFrame = spark.read.parquet(*inventory_paths)
+            fuel_price: DataFrame = spark.read.parquet(*fuel_paths)
+        else:
+            hvfhv = spark.read.parquet(args.hvfhv_path)
+            driver_snapshot = spark.read.parquet(args.driver_snapshot_path)
+            inventory = spark.read.parquet(args.inventory_path)
+            fuel_price = spark.read.parquet(args.fuel_price_path)
 
-    enriched: DataFrame | None = None
-    driver_metrics: DataFrame | None = None
-    recommendation: DataFrame | None = None
-    try:
-        enriched = enrich_trips_with_fuel_cost(
-            hvfhv,
-            driver_snapshot,
-            inventory,
-            fuel_price,
-            year_month,
-        )
-        driver_metrics = build_driver_monthly_aggregation(
-            enriched, year_month
-        ).persist()
-        driver_profit = build_driver_monthly_profit(driver_metrics)
-        recommendation = build_monthly_vehicle_recommendation(
-            driver_metrics, inventory
-        ).persist()
-        validate_gold_business_invariants(
-            driver_profit,
-            recommendation,
-            driver_snapshot,
-            inventory,
-        )
-        report = build_monthly_report(
-            recommendation,
-            year_month,
-            args.threshold_profit_increase,
-        )
+        enriched: DataFrame | None = None
+        driver_metrics: DataFrame | None = None
+        recommendation: DataFrame | None = None
+        try:
+            enriched = enrich_trips_with_fuel_cost(
+                hvfhv,
+                driver_snapshot,
+                inventory,
+                fuel_price,
+                year_month,
+            )
+            driver_metrics = build_driver_monthly_aggregation(
+                enriched, year_month
+            ).persist()
+            driver_profit = build_driver_monthly_profit(driver_metrics)
+            recommendation = build_monthly_vehicle_recommendation(
+                driver_metrics, inventory
+            ).persist()
+            validate_gold_business_invariants(
+                driver_profit,
+                recommendation,
+                driver_snapshot,
+                inventory,
+            )
+            report = build_monthly_report(
+                recommendation,
+                year_month,
+                args.threshold_profit_increase,
+            )
 
-        outputs: dict[str, DataFrame] = {
-            "driver_aggregation": driver_profit,
-            "driver_car_suggestion": recommendation,
-            "monthly_report": report,
-        }
-        # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
-        # 계산 중 실패가 기존 산출물을 남기지 않습니다.
-        frames = {name: frame.toPandas() for name, frame in outputs.items()}
-        for dataset, path in _write_all_csv(frames, args.output_dir, year_month).items():
-            logger.info("gold 적재 완료: dataset=%s path=%s", dataset, path)
-    finally:
-        if enriched is not None:
-            enriched.unpersist()
-        if driver_metrics is not None:
-            driver_metrics.unpersist()
-        if recommendation is not None:
-            recommendation.unpersist()
+            outputs: dict[str, DataFrame] = {
+                "driver_aggregation": driver_profit,
+                "driver_car_suggestion": recommendation,
+                "monthly_report": report,
+            }
+            # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
+            # 계산 중 실패가 기존 산출물을 남기지 않습니다.
+            frames = {name: frame.toPandas() for name, frame in outputs.items()}
+            if args.dry_run:
+                empty = sorted(name for name, frame in frames.items() if frame.empty)
+                if empty:
+                    raise ValueError(f"dry-run Gold 산출물이 비어 있습니다: {empty}")
+                logger.info(
+                    "dry-run: Gold 적재 생략 year_month=%s rows=%s",
+                    year_month,
+                    {name: len(frame) for name, frame in frames.items()},
+                )
+                return
+            for dataset, path in _write_all_csv(frames, args.output_dir, year_month).items():
+                logger.info("gold 적재 완료: dataset=%s path=%s", dataset, path)
+        finally:
+            if enriched is not None:
+                enriched.unpersist()
+            if driver_metrics is not None:
+                driver_metrics.unpersist()
+            if recommendation is not None:
+                recommendation.unpersist()
 
 
 if __name__ == "__main__":

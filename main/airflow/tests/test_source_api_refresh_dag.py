@@ -2,13 +2,12 @@
 
 1. latest를 찾은 뒤 ETag·Last-Modified를 조건부 HEAD에 함께 전달
 2. 304는 미변경, 200은 변경으로 판정하고 대상 월·version을 반환
-3. 세 원천 latest 월이 다르면 서로 다른 월을 섞지 않고 실패
+3. 원천은 각각 독립으로 감시하므로 latest 월이 서로 달라도 각 월을 그대로 처리
 4. 변경 분기만 하위 DAG를 실행하고 성공한 원천별 상태만 기록
 5. 변경된 하위 DAG를 모두 기다린 뒤 READY Asset을 정확히 한 번 발행
 6. 모두 미변경이거나 하나라도 실패하면 READY Asset을 발행하지 않음
 """
 
-import pytest
 import requests
 from airflow.task.trigger_rule import TriggerRule
 
@@ -119,13 +118,38 @@ def test_조건부_HEAD의_200응답은_변경으로_판정한다(monkeypatch):
     }
 
 
-def test_원천3종_latest월이_다르면_실패한다():
-    with pytest.raises(ValueError, match="latest 월이 다릅니다"):
-        task_module.validate_target_month_task.function(
-            {"year_month": "2026-08"},
-            {"year_month": "2026-08"},
-            {"year_month": "2026-07"},
-        )
+def test_원천별_월이_달라도_변경된_월마다_READY를_발행한다(monkeypatch):
+    """원천 3종은 각각 독립으로 갱신됩니다 (#703).
+
+    전에는 세 latest 월이 다르면 그 자리에서 실패했습니다. 한 원천만 새 월이 나와도
+    전체가 멈추므로, 이제는 월이 갈려도 각각 처리하고 **변경된 월마다** READY 를 냅니다.
+    미변경(short-circuit 으로 False)은 발행 대상이 아닙니다.
+    """
+    published = []
+    monkeypatch.setattr(
+        task_module.assets,
+        "publish_month_partition",
+        lambda outlet_events, asset, year_month: published.append(year_month),
+    )
+
+    class _TaskInstance:
+        def xcom_pull(self, task_ids):
+            return [
+                {"year_month": "2026-08", "changed": True},
+                {"year_month": "2026-07", "changed": True},
+                # 미변경은 두 모습으로 옵니다: short-circuit 이 남긴 False 와,
+                # 검사 결과 자체가 changed=False 인 dict. 둘 다 발행 대상이 아닙니다.
+                {"year_month": "2026-06", "changed": False},
+                False,
+            ]
+
+    task_module.publish_api_refresh_ready_task.function(
+        ["check_and_should_refresh_monthly_taxi_trip"],
+        task_instance=_TaskInstance(),
+        outlet_events=None,
+    )
+
+    assert sorted(published) == ["2026-07", "2026-08"]
 
 
 def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한다():
@@ -141,7 +165,9 @@ def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한�
     ]
 
     for dataset, child_dag_id in SOURCES:
-        gate = source_api_refresh_dag.get_task(f"should_refresh_{dataset}")
+        gate = source_api_refresh_dag.get_task(
+            f"check_and_should_refresh_{dataset}"
+        )
         trigger = source_api_refresh_dag.get_task(f"trigger_{dataset}")
         marker = source_api_refresh_dag.get_task(f"mark_processed_{dataset}")
 

@@ -25,3 +25,10 @@ def publish_month_partition(outlet_events, asset: Asset, year_month: str) -> Non
     """태스크 검증을 통과한 월을 partition-aware Asset 이벤트로 기록합니다."""
     if outlet_events is not None:
         outlet_events[asset].add_partitions(year_month)
+
+
+def disable_outlets_for_dry_run(context: dict) -> None:
+    """성공한 dry-run 태스크가 자동 Asset 이벤트를 만들지 않게 합니다."""
+    task = context.get("task")
+    if task is not None:
+        task.outlets = []

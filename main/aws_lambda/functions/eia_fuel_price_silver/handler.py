@@ -25,6 +25,9 @@ class EiaFuelPriceCombineTransformer(Transformer):
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
+    dry_run = event.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        raise ValueError("dry_run은 boolean이어야 합니다.")
     year_month = event.get("year_month") or os.getenv("YEAR_MONTH")
     if not year_month:
         raise ValueError("year_month 또는 YEAR_MONTH가 필요합니다 (YYYY-MM).")
@@ -35,12 +38,21 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
 
     result = Pipeline(
         build_clean_extractor(storage, silver_dir, bucket, year_month),
-        build_silver_loader(storage, silver_dir, bucket, year_month),
+        build_silver_loader(
+            storage,
+            silver_dir,
+            bucket,
+            year_month,
+            dry_run=dry_run,
+        ),
         EiaFuelPriceCombineTransformer(year_month),
     ).run()
 
-    return {
+    response = {
         "row_count": result.write_result.row_count,
         "locations": [result.write_result.location],
         "year_month": year_month,
     }
+    if dry_run:
+        response["dry_run"] = True
+    return response

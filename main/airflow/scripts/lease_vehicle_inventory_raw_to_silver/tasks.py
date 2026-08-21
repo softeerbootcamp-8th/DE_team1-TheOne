@@ -5,15 +5,21 @@ import logging
 import os
 from pathlib import Path
 
-import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from main.airflow.common import assets
+from main.airflow.common.dry_run import configure_dry_run_event
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from shared.airflow.common.validation import parse_year_month
+from shared.airflow.common.validation import (
+    S3Location,
+    parse_handler_result,
+    parse_location,
+    parse_year_month,
+    read_parquet,
+)
 from main.airflow.common.monthly_bronze import (
-    should_process_silver,
+    silver_version_path,
     validate_monthly_parquet_bronze,
 )
 from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
@@ -21,7 +27,8 @@ from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 
 logger = logging.getLogger(__name__)
 DATASET = "lease_vehicle_inventory"
-DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+# 원천 API 서버(EC2) 주소. 로컬 개발은 SOURCE_API_URL 로 덮어씁니다.
+DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 DEFAULT_BRONZE_DIR = os.getenv(
     "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
 )
@@ -41,13 +48,12 @@ def _silver_transformer():
 
 
 def validate_silver_result(result: dict, expected_rows: int) -> None:
-    locations = result.get("locations")
-    if not isinstance(locations, list) or len(locations) != 1:
-        raise ValueError("보유 차량 Silver 경로는 하나여야 합니다")
-    path = Path(locations[0])
-    if not path.is_file():
+    parsed = parse_handler_result(result, expected_locations=1)
+    path = parsed.locations[0]
+    try:
+        table = read_parquet(path)
+    except FileNotFoundError:
         raise ValueError(f"보유 차량 Silver 파일이 없습니다: {path}")
-    table = pq.ParquetFile(path).read()
     if table.schema != SCHEMA or table.num_rows != expected_rows:
         raise ValueError("보유 차량 Silver 스키마 또는 행 수가 Bronze와 다릅니다")
     # 적재된 파일에 같은 정제 규칙을 다시 적용합니다. 변환이 통과했더라도 적재
@@ -68,11 +74,12 @@ def _collect_bronze(params: dict) -> dict:
         "year": params.get("year"),
         "month": params.get("month"),
     }
+    configure_dry_run_event(event, params)
     logger.info("보유 차량 데이터 Raw→Bronze 수집 시작: %s", event)
     return lambda_handler_for("lease_vehicle_inventory_raw_to_bronze")(event=event)
 
 
-@task.short_circuit(task_id="validate_bronze")
+@task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> dict:
     params = context.get("params", {})
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
@@ -83,12 +90,11 @@ def validate_bronze_task(result: dict, **context) -> dict:
         _, missing = _validate_bronze_result(result, base_dir)
     if missing:
         raise ValueError(f"보유 차량 Bronze 필수 컬럼 누락: {missing}")
-    if not should_process_silver(result):
-        logger.info(
-            "보유 차량 Bronze가 최신 수집본과 동일해 Silver 후속 처리를 건너뜁니다"
-        )
-        return False
-    return result
+    version_path = silver_version_path(
+        params.get("silver_dir") or DEFAULT_SILVER_DIR,
+        result,
+    )
+    return {**result, "silver_version_path": str(version_path)}
 
 
 def _validate_bronze_result(
@@ -100,18 +106,23 @@ def _validate_bronze_result(
         dataset_dir=DATASET,
         base_dir=base_dir,
     )
-    missing = sorted(set(SCHEMA.names) - set(pq.read_schema(path).names))
+    missing = sorted(set(SCHEMA.names) - set(read_parquet(path).schema.names))
     return path, missing
 
 
 @task(task_id="bronze_to_silver")
 def bronze_to_silver_task(result: dict, **context) -> dict:
+    bronze_location = parse_location(result["locations"][0])
     event = {
         "bronze_path": result["locations"][0],
         "year_month": result["year_month"],
+        "silver_file_name": parse_location(result["silver_version_path"]).name,
         "silver_dir": context["params"].get("silver_dir")
         or DEFAULT_SILVER_DIR,
     }
+    if isinstance(bronze_location, S3Location):
+        event.update(storage="s3", bucket=bronze_location.bucket)
+    configure_dry_run_event(event, context["params"])
     logger.info("보유 차량 데이터 Bronze→Silver 정제 시작: %s", event)
     return lambda_handler_for("lease_vehicle_inventory_bronze_to_silver")(event=event)
 
@@ -121,8 +132,20 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
     outlets=[assets.LEASE_VEHICLE_INVENTORY_SILVER],
 )
 def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> None:
-    validate_silver_result(silver_result, raw_result["row_count"])
+    version_path = raw_result["silver_version_path"]
+    if silver_result["locations"] != [version_path]:
+        raise ValueError("보유 차량 Silver 버전 경로가 Bronze와 다릅니다")
     year_month = parse_year_month(raw_result.get("year_month"), field="year_month")
+    if context.get("params", {}).get("dry_run") is True:
+        if (
+            silver_result.get("dry_run") is not True
+            or silver_result.get("row_count") != raw_result["row_count"]
+        ):
+            raise ValueError("보유 차량 dry_run 변환 결과가 Bronze와 다릅니다")
+        assets.disable_outlets_for_dry_run(context)
+        return
+
+    validate_silver_result(silver_result, raw_result["row_count"])
     assets.publish_month_partition(
         context.get("outlet_events"),
         assets.LEASE_VEHICLE_INVENTORY_SILVER,

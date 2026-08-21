@@ -18,8 +18,10 @@ import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from main.airflow.common import assets
+from main.airflow.common.dry_run import configure_dry_run_event
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.airflow.common.validation import parse_handler_result
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
 
 logger = logging.getLogger(__name__)
@@ -153,7 +155,10 @@ def validate_silver(base_dir: str, year_month: str) -> None:
 def check_clean_silver_task(**context) -> str:
     year_month = resolve_year_month(context)
     logger.info("EIA 연료비 대상 월: %s", year_month)
-    require_clean_silver(context["params"]["silver_dir"], year_month)
+    if context["params"].get("dry_run") is True:
+        logger.info("dry-run 입력 확인은 Lambda extractor에서 수행합니다: %s", year_month)
+    else:
+        require_clean_silver(context["params"]["silver_dir"], year_month)
     return year_month
 
 
@@ -162,8 +167,10 @@ def combine_silver_task(**context) -> dict:
     params = context["params"]
     year_month = context["task_instance"].xcom_pull(task_ids="check_clean_silver")
 
+    event = {"year_month": year_month, "silver_dir": params["silver_dir"]}
+    configure_dry_run_event(event, params)
     result = lambda_handler_for("eia_fuel_price_silver")(
-        event={"year_month": year_month, "silver_dir": params["silver_dir"]}
+        event=event
     )
     return {"year_month": year_month, **result}
 
@@ -172,6 +179,22 @@ def combine_silver_task(**context) -> dict:
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="combine_silver")
     year_month = result["year_month"]
+    if context["params"].get("dry_run") is True:
+        if result.get("dry_run") is not True:
+            raise ValueError("EIA 통합 Silver dry-run 결과 표시가 없습니다")
+        expected = month_day_count(year_month)
+        parsed = parse_handler_result(
+            result,
+            expected_locations=1,
+            expected_rows=expected,
+        )
+        assets.disable_outlets_for_dry_run(context)
+        logger.info(
+            "EIA 통합 Silver dry-run 검증 통과: %s rows=%d",
+            parsed.locations[0],
+            parsed.row_count,
+        )
+        return
     validate_silver(context["params"]["silver_dir"], year_month)
     assets.publish_month_partition(
         context.get("outlet_events"), assets.FUEL_PRICE_SILVER, year_month

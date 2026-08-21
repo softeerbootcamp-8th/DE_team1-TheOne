@@ -11,9 +11,15 @@ from datetime import datetime, timezone
 
 from airflow.sdk import task
 
+from main.airflow.common.dry_run import configure_dry_run_event
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from shared.airflow.common.validation import parse_handler_result, require_file
+from shared.airflow.common.validation import (
+    S3Location,
+    location_size,
+    parse_handler_result,
+    require_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,8 +32,11 @@ def _layout():
 
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
+    params = context["params"]
+    event = {"base_dir": params["bronze_dir"]}
+    configure_dry_run_event(event, params)
     result = lambda_handler_for("eia_gas_price_raw_to_bronze")(
-        event={"base_dir": context["params"]["bronze_dir"]}
+        event=event
     )
     logger.info("Raw -> Bronze 완료: %s", result)
     return result
@@ -37,16 +46,34 @@ def raw_to_bronze_task(**context) -> dict:
 def validate_bronze_task(result: dict, **context) -> None:
     """적재 경로가 layout 규칙과 같은지, 파일이 비어 있지 않은지 확인합니다."""
     parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
-    path = require_file(parsed.locations[0])
-
     layout = _layout()
     collected_date = datetime.strptime(result["collected_date"], "%Y-%m-%d").date()
     expected = layout.gas_bronze_file(context["params"]["bronze_dir"], collected_date)
-    if path.resolve() != expected.resolve():
+
+    if context["params"].get("dry_run") is True:
+        if result.get("dry_run") is not True:
+            raise ValueError("EIA 휘발유 Bronze dry-run 결과 표시가 없습니다")
+        location = parsed.locations[0]
+        if isinstance(location, S3Location):
+            if location.key != layout.gas_bronze_key(collected_date):
+                raise ValueError(f"dry-run 예상 S3 경로가 다릅니다: {location}")
+        elif location.resolve() != expected.resolve():
+            raise ValueError(f"dry-run 예상 적재 경로가 다릅니다: {location}")
+        size = result.get("byte_count")
+        if isinstance(size, bool) or not isinstance(size, int) or size < layout.GAS_MIN_BYTES:
+            raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({location})")
+        logger.info("bronze dry-run 검증 통과: %s (%d bytes)", location, size)
+        return
+
+    path = require_file(parsed.locations[0])
+    if isinstance(path, S3Location):
+        if path.key != layout.gas_bronze_key(collected_date):
+            raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
+    elif path.resolve() != expected.resolve():
         raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
 
     # 하한은 수집(lambda)과 같은 값을 씁니다 — 두 곳이 갈라지면 한쪽만 통과합니다.
-    size = path.stat().st_size
+    size = location_size(path)
     if size < layout.GAS_MIN_BYTES:
         raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({path})")
     logger.info("bronze 검증 통과: %s (%d bytes)", path, size)

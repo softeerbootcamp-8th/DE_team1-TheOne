@@ -16,9 +16,11 @@ from pathlib import Path
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
+from main.airflow.common.dry_run import configure_dry_run_event
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.airflow.common.validation import parse_handler_result
 
 logger = logging.getLogger(__name__)
 
@@ -102,13 +104,15 @@ def bronze_to_silver_task(**context) -> dict:
     year_month = resolve_year_month(context)
     logger.info("EIA 충전 단가 대상 월: %s", year_month)
 
+    event = {
+        "year_month": year_month,
+        "bronze_dir": params["bronze_dir"],
+        "silver_dir": params["silver_dir"],
+        "markup": params["markup"],
+    }
+    configure_dry_run_event(event, params)
     result = lambda_handler_for("eia_electricity_price_bronze_to_silver")(
-        event={
-            "year_month": year_month,
-            "bronze_dir": params["bronze_dir"],
-            "silver_dir": params["silver_dir"],
-            "markup": params["markup"],
-        }
+        event=event
     )
     return {"year_month": year_month, **result}
 
@@ -116,4 +120,19 @@ def bronze_to_silver_task(**context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="bronze_to_silver")
+    if context["params"].get("dry_run") is True:
+        if result.get("dry_run") is not True:
+            raise ValueError("EIA 전력 Silver dry-run 결과 표시가 없습니다")
+        expected = month_day_count(result["year_month"])
+        parsed = parse_handler_result(
+            result,
+            expected_locations=1,
+            expected_rows=expected,
+        )
+        logger.info(
+            "EIA 충전 단가 Silver dry-run 검증 통과: %s rows=%d",
+            parsed.locations[0],
+            parsed.row_count,
+        )
+        return
     validate_silver(context["params"]["silver_dir"], result["year_month"])

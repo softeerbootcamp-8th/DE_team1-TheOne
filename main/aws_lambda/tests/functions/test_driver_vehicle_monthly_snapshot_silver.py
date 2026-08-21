@@ -1,9 +1,10 @@
 """기사 차량 월별 스냅샷 Bronze→Silver 정제·적재 시나리오.
 
-1. Extract → 정제 → 원자적 Load 로 월 파티션 파일 하나 생성
-2. 같은 월 재실행은 파일을 늘리지 않고 덮어씀
-3. driver_id 중복·리스료 품질 위반은 적재 전에 실패
-4. 교체 중 실패해도 기존 월 파일이 남음
+1. Extract → 정제 → 원자적 Load 로 수집 버전 파일 하나 생성
+2. 같은 수집 시각 재실행은 같은 임시 파일만 덮어씀
+3. 새 수집 시각은 별도 파일로 보존
+4. driver_id 중복·리스료 품질 위반은 적재 전에 실패
+5. 교체 중 실패해도 기존 월 파일이 남음
 """
 
 from datetime import date, datetime
@@ -21,6 +22,7 @@ from functions.driver_vehicle_monthly_snapshot_bronze_to_silver.loader import (
 
 
 YEAR_MONTH = "2026-08"
+FILE_NAME = "20260821T123456123456Z.parquet"
 
 
 def _rows():
@@ -55,6 +57,7 @@ def _event(tmp_path: Path, bronze: Path) -> dict:
     return {
         "bronze_path": str(bronze),
         "year_month": YEAR_MONTH,
+        "silver_file_name": FILE_NAME,
         "silver_dir": str(tmp_path / "silver"),
     }
 
@@ -68,7 +71,7 @@ def test_정제한_기사차량스냅샷을_월파티션_한파일로_적재한�
 
     path = Path(result["locations"][0])
     assert path == (
-        tmp_path / "silver" / f"year_month={YEAR_MONTH}" / "driver_vehicle_monthly_snapshot.parquet"
+        tmp_path / "silver" / f"year_month={YEAR_MONTH}" / FILE_NAME
     )
     assert result["row_count"] == 1
     assert pq.read_schema(path) == SCHEMA
@@ -79,7 +82,7 @@ def test_정제한_기사차량스냅샷을_월파티션_한파일로_적재한�
     assert written["vehicle_since"] == date(2025, 1, 1)
 
 
-def test_같은월을_다시_정제해도_파일이_늘지않는다(tmp_path):
+def test_같은수집시각을_다시_정제해도_파일이_늘지않는다(tmp_path):
     bronze = _bronze(tmp_path, _rows())
 
     first = lambda_handler(_event(tmp_path, bronze))
@@ -87,6 +90,18 @@ def test_같은월을_다시_정제해도_파일이_늘지않는다(tmp_path):
 
     assert first == second
     assert len(list((tmp_path / "silver").rglob("*.parquet"))) == 1
+
+
+def test_새수집시각은_별도_파일로_적재한다(tmp_path):
+    bronze = _bronze(tmp_path, _rows())
+    first_event = _event(tmp_path, bronze)
+    second_event = {**first_event, "silver_file_name": "20260822T123456123456Z.parquet"}
+
+    first = lambda_handler(first_event)
+    second = lambda_handler(second_event)
+
+    assert first["locations"] != second["locations"]
+    assert len(list((tmp_path / "silver").rglob("*.parquet"))) == 2
 
 
 def test_driver_id가_중복되면_적재하지_않는다(tmp_path):
@@ -140,7 +155,9 @@ def test_교체중_실패해도_기존월파일과_임시파일이_남지않는�
 
 
 def test_Silver스키마가_아닌_테이블은_적재하지_않는다(tmp_path):
-    loader = DriverVehicleMonthlySnapshotSilverLoader(str(tmp_path / "silver"), YEAR_MONTH)
+    loader = DriverVehicleMonthlySnapshotSilverLoader(
+        str(tmp_path / "silver"), YEAR_MONTH, FILE_NAME
+    )
 
     with pytest.raises(ValueError, match="Silver 스키마와 다릅니다"):
         loader.write(pa.Table.from_pylist([{"driver_id": "driver-1"}]))
@@ -153,6 +170,7 @@ def test_Silver스키마가_아닌_테이블은_적재하지_않는다(tmp_path)
     [
         ({"year_month": YEAR_MONTH}, "bronze_path"),
         ({"bronze_path": "bronze.parquet", "year_month": "2026-8"}, "year_month"),
+        ({"bronze_path": "bronze.parquet", "year_month": YEAR_MONTH}, "silver_file_name"),
     ],
 )
 def test_필수_이벤트값이_없으면_읽기전에_실패한다(event, message):

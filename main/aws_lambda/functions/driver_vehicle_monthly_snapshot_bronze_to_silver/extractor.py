@@ -2,10 +2,13 @@
 
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
+
+from shared.common.s3_reader import get_object_bytes
 
 
 logger = logging.getLogger(__name__)
@@ -17,16 +20,26 @@ class DriverVehicleMonthlySnapshotBronzeExtractor(Extractor):
     name = "driver_vehicle_monthly_snapshot_bronze"
 
     def __init__(self, bronze_path: str | Path):
-        self._path = Path(bronze_path)
+        self._source = str(bronze_path)
+        self._path = None if self._source.startswith("s3://") else Path(bronze_path)
 
     def extract(self) -> pa.Table:
-        if not self._path.is_file():
-            raise FileNotFoundError(f"기사 차량 스냅샷 Bronze 파일이 없습니다: {self._path}")
+        if self._path is None:
+            parsed = urlsplit(self._source)
+            body = get_object_bytes(parsed.netloc, parsed.path.lstrip("/"))
+            source = pa.BufferReader(body)
+        else:
+            if not self._path.is_file():
+                raise FileNotFoundError(
+                    f"기사 차량 스냅샷 Bronze 파일이 없습니다: {self._path}"
+                )
+            source = self._path
         try:
-            table = pq.ParquetFile(self._path).read()
+            table = pq.ParquetFile(source).read()
         except (OSError, pa.ArrowInvalid) as exc:
             raise ValueError(
-                f"기사 차량 스냅샷 Bronze가 읽을 수 있는 Parquet이 아닙니다: {self._path}"
+                "기사 차량 스냅샷 Bronze가 읽을 수 있는 Parquet이 아닙니다: "
+                f"{self._source}"
             ) from exc
-        logger.info("bronze_extract done path=%s rows=%d", self._path, table.num_rows)
+        logger.info("bronze_extract done path=%s rows=%d", self._source, table.num_rows)
         return table

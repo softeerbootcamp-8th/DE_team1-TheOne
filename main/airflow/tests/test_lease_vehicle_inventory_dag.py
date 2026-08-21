@@ -12,7 +12,6 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from airflow.providers.standard.operators.python import ShortCircuitOperator
 
 from dags import lease_vehicle_inventory_raw_to_silver_dag as dag_module
 from dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag import driver_vehicle_monthly_snapshot_raw_to_silver_dag
@@ -23,6 +22,16 @@ from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
 
 
 DAG = dag_module.lease_vehicle_inventory_raw_to_silver_dag
+FILE_NAME = "20260821T123456123456Z.parquet"
+
+
+def _raw_result(source_changed: bool = True) -> dict:
+    return {
+        "locations": [f"/bronze/lease_vehicle_inventory/year_month=2026-08/{FILE_NAME}"],
+        "year_month": "2026-08",
+        "row_count": 1,
+        "source_changed": source_changed,
+    }
 
 
 def _rows():
@@ -69,7 +78,6 @@ def test_보유차량은_기사계약과_분리된_DAG에서_Silver까지_처리
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
-    assert isinstance(DAG.get_task("validate_bronze"), ShortCircuitOperator)
 
 
 def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
@@ -125,13 +133,18 @@ def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달
         lambda name: handlers.append(name) or handler,
     )
     DAG.get_task("bronze_to_silver").python_callable(
-        {"locations": ["/bronze/data.parquet"], "year_month": "2026-08"},
+        {
+            "locations": [f"/bronze/{FILE_NAME}"],
+            "year_month": "2026-08",
+            "silver_version_path": f"/silver/year_month=2026-08/{FILE_NAME}",
+        },
         params={"silver_dir": "/silver"},
     )
     assert handlers == ["lease_vehicle_inventory_bronze_to_silver"]
     assert called == {
-        "bronze_path": "/bronze/data.parquet",
+        "bronze_path": f"/bronze/{FILE_NAME}",
         "year_month": "2026-08",
+        "silver_file_name": FILE_NAME,
         "silver_dir": "/silver",
     }
 
@@ -143,11 +156,7 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
             (Path("corrected.parquet"), []),
         ]
     )
-    recollected = {
-        "year_month": "2026-08",
-        "row_count": 1,
-        "source_changed": True,
-    }
+    recollected = _raw_result()
     calls = []
     monkeypatch.setattr(
         task_module,
@@ -160,16 +169,26 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
         lambda params: calls.append(params) or recollected,
     )
 
+    original = _raw_result()
     validated = DAG.get_task("validate_bronze").python_callable(
-        {"year_month": "2026-08", "source_changed": True},
-        params={"base_dir": "/bronze", "api_base_url": "http://source"},
+        original,
+        params={
+            "base_dir": "/bronze",
+            "silver_dir": "/silver",
+            "api_base_url": "http://source",
+        },
     )
 
-    assert validated == recollected
-    assert calls == [{"base_dir": "/bronze", "api_base_url": "http://source"}]
+    assert {key: validated[key] for key in recollected} == recollected
+    assert validated["silver_version_path"].endswith(FILE_NAME)
+    assert calls == [{
+        "base_dir": "/bronze",
+        "silver_dir": "/silver",
+        "api_base_url": "http://source",
+    }]
 
 
-def test_동일한_보유차량_Bronze는_검증후_Silver를_중단한다(monkeypatch):
+def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_path, monkeypatch):
     validated = []
     monkeypatch.setattr(
         task_module,
@@ -177,13 +196,13 @@ def test_동일한_보유차량_Bronze는_검증후_Silver를_중단한다(monke
         lambda result, base_dir: validated.append(result) or (Path("same.parquet"), []),
     )
 
-    result = {"year_month": "2026-08", "source_changed": False}
-    stopped = DAG.get_task("validate_bronze").python_callable(
+    result = _raw_result(source_changed=False)
+    validated_result = DAG.get_task("validate_bronze").python_callable(
         result,
-        params={"base_dir": "/bronze"},
+        params={"base_dir": "/bronze", "silver_dir": str(tmp_path)},
     )
 
-    assert stopped is False
+    assert validated_result["silver_version_path"].endswith(FILE_NAME)
     assert validated == [result]
 
 
