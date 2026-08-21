@@ -441,3 +441,64 @@ def test_버킷이_없으면_무엇을_설정해야_하는지_알려준다(tmp_p
 
     with pytest.raises(ValueError, match="DATA_LAKE_S3_BUCKET"):
         resolve_vehicle_master_path(tmp_path, storage="s3")
+
+
+# --- 버킷 이름 형식 -----------------------------------------------------------
+#
+# 이름이 틀리면 boto3 는 `ClientError: InvalidBucketName` 만 던지고 무엇이 들어왔는지
+# 알려주지 않습니다. 실제로 그 에러를 만나 원인 찾는 데 시간이 걸렸습니다.
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("s3://de-theone", "스킴이 붙어"),
+        ("s3://de-theone/source/curated", "스킴이 붙어"),
+        ("de-theone/source/curated", "경로가 섞여"),
+    ],
+)
+def test_버킷_이름이_아니면_무엇이_틀렸는지_알려준다(tmp_path, value, expected):
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    with pytest.raises(ValueError, match=expected):
+        resolve_vehicle_master_path(tmp_path, storage="s3", bucket=value)
+
+
+def test_버킷_이름_앞뒤_공백은_다듬는다(tmp_path, monkeypatch):
+    """환경변수나 UI 입력에 줄바꿈·공백이 붙는 일이 흔합니다."""
+    import boto3
+    from moto import mock_aws
+
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    monkeypatch.delenv("DATA_LAKE_S3_BUCKET", raising=False)
+    with mock_aws():
+        client = boto3.client("s3", region_name=S3_REGION)
+        client.create_bucket(
+            Bucket=S3_BUCKET,
+            CreateBucketConfiguration={"LocationConstraint": S3_REGION},
+        )
+        client.put_object(
+            Bucket=S3_BUCKET,
+            Key=f"{_VM_PREFIX}collected_date=2026-03-11/city=new-york/vehicle_master.parquet",
+            Body=_vehicle_master_bytes(),
+        )
+
+        path = resolve_vehicle_master_path(tmp_path, storage="s3", bucket=f"  {S3_BUCKET}\n")
+
+    assert path.is_file()
+
+
+def test_공백만_있는_버킷은_없는_것으로_본다(tmp_path, monkeypatch):
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    monkeypatch.delenv("DATA_LAKE_S3_BUCKET", raising=False)
+    monkeypatch.setattr("shared.common.env.load_local_env", lambda: None)
+
+    with pytest.raises(ValueError, match="버킷이 없습니다"):
+        resolve_vehicle_master_path(tmp_path, storage="s3", bucket="   ")
