@@ -29,10 +29,24 @@ RUN /usr/bin/python3.11 -m pip install --no-cache-dir "uv==0.12.2" \
 
 USER hadoop
 
-# bronze_to_silver/hvfhv 등이 저장소 루트의 schema.silver.*/schema.bronze.* 를
-# import 합니다(로컬은 spark/pyproject.toml 의 pythonpath="../.." 로 풀림). jobs/
-# 와 나란히 두어야 import 경로가 로컬 테스트와 같아집니다.
+# job 코드는 저장소 루트 기준 경로 그대로 넣습니다 — import 문(main.spark.jobs.*,
+# shared.spark.*, schema.*)이 로컬 테스트(spark/pyproject.toml 의 pythonpath="../..")와
+# 같은 경로를 봐야 하기 때문입니다.
+#
+# sub/spark 도 같이 넣습니다 — sub/spark 는 자체 pyproject.toml/uv.lock 이 없이 이
+# main/spark 환경을 그대로 쓰므로(aws_lambda 이미지에 sub/aws_lambda 를 합친 것과
+# 같은 이유), 이미지도 나누지 않고 하나로 둡니다.
 COPY schema/ /home/hadoop/schema/
+COPY main/__init__.py /home/hadoop/main/__init__.py
+COPY main/spark/__init__.py /home/hadoop/main/spark/__init__.py
+COPY main/spark/jobs/ /home/hadoop/main/spark/jobs/
+COPY shared/__init__.py /home/hadoop/shared/__init__.py
+COPY shared/spark/ /home/hadoop/shared/spark/
+COPY sub/__init__.py /home/hadoop/sub/__init__.py
+COPY sub/spark/ /home/hadoop/sub/spark/
+COPY sub/generators/ /home/hadoop/sub/generators/
 
-# Spark job 이 생기면 아래 한 줄 추가:
-# COPY jobs/ /home/hadoop/jobs/
+# bronze_to_silver 가 S3 파티션 목록 조회에만 shared/aws_lambda 의 list_keys 를 재사용합니다
+# (전용 파일 하나만 — common/ 전체를 넣으면 spark 에 없는 의존성을 끌고 옵니다).
+COPY shared/aws_lambda/__init__.py /home/hadoop/shared/aws_lambda/__init__.py
+COPY shared/aws_lambda/common/s3_reader.py /home/hadoop/shared/aws_lambda/common/s3_reader.py

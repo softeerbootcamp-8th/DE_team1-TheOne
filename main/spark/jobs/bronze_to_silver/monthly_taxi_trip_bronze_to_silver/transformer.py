@@ -6,7 +6,7 @@ from pipeline_core.transformer import Transformer
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, count, date_format, lit, trim, when
 
-from schema.silver.hvfhv import (
+from schema.silver.monthly_taxi_trip import (
     FINAL_SCHEMA,
     REQUIRED_COLUMNS,
     REQUIRED_NON_NULL_COLUMNS,
@@ -26,7 +26,7 @@ _STRING_COLUMNS = (
 )
 
 
-class HVFHVCleanTransformer(Transformer):
+class MonthlyTaxiTripCleanTransformer(Transformer):
     """타입·필수값·운행 등급을 검증하고 원천 등급을 그대로 전달합니다."""
 
     def __init__(self, error_threshold: float = 0.05):
@@ -106,5 +106,5 @@ __all__ = [
     "FINAL_SCHEMA",
     "REQUIRED_COLUMNS",
     "REQUIRED_NON_NULL_COLUMNS",
-    "HVFHVCleanTransformer",
+    "MonthlyTaxiTripCleanTransformer",
 ]

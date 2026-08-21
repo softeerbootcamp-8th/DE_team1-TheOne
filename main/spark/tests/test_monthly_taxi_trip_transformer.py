@@ -1,4 +1,4 @@
-"""HVFHV Bronze→Silver 새 스키마와 원천 운행 등급 전달 회귀 테스트.
+"""Monthly Taxi Trip Bronze→Silver 새 스키마와 원천 운행 등급 전달 회귀 테스트.
 
 1. 새 14컬럼을 Silver 스키마와 순서·타입까지 맞춰 전달
 2. Uber Comfort와 Lyft Extra Comfort를 추정 없이 보존
@@ -11,9 +11,9 @@ from datetime import datetime
 
 import pytest
 
-from main.spark.jobs.bronze_to_silver.hvfhv.transformer import (
+from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver.transformer import (
     FINAL_SCHEMA,
-    HVFHVCleanTransformer,
+    MonthlyTaxiTripCleanTransformer,
 )
 from pyspark.sql.types import StructType
 from shared.spark.common.session import get_or_create_spark_session
@@ -26,7 +26,7 @@ BRONZE_INPUT_SCHEMA = StructType(
 
 @pytest.fixture(scope="module")
 def spark():
-    session = get_or_create_spark_session("test_hvfhv_transformer")
+    session = get_or_create_spark_session("test_monthly_taxi_trip_transformer")
     yield session
     session.stop()
 
@@ -57,7 +57,7 @@ def test_on_scene_datetime이_전부_NULL이어도_행이_살아남는다(spark)
     전 행 NULL 이어도 불합격 0건이어야 합니다 — 예전 계약에서는 100% 탈락했습니다."""
     rows = [_row(on_scene_datetime=None), _row(taxi_id="taxi-2", on_scene_datetime=None)]
 
-    result = HVFHVCleanTransformer(error_threshold=0.05).transform(
+    result = MonthlyTaxiTripCleanTransformer(error_threshold=0.05).transform(
         spark.createDataFrame(rows, schema=BRONZE_INPUT_SCHEMA)
     )
 
@@ -75,7 +75,7 @@ def test_새_14컬럼과_원천_운행등급을_Silver에_그대로_전달한다
         ),
     ]
 
-    result = HVFHVCleanTransformer(error_threshold=0.5).transform(
+    result = MonthlyTaxiTripCleanTransformer(error_threshold=0.5).transform(
         spark.createDataFrame(rows)
     )
 
@@ -95,14 +95,14 @@ def test_필수컬럼이_누락되면_실패한다(spark):
     del row["estimated_service_tier"]
 
     with pytest.raises(ValueError, match="필수 컬럼"):
-        HVFHVCleanTransformer().transform(spark.createDataFrame([row]))
+        MonthlyTaxiTripCleanTransformer().transform(spark.createDataFrame([row]))
 
 
 def test_license와_등급_조합이_잘못되고_임계치_이상이면_실패한다(spark):
     rows = [_row(), _row(estimated_service_tier="Extra Comfort")]
 
     with pytest.raises(ValueError, match="불합격 비율"):
-        HVFHVCleanTransformer(error_threshold=0.5).transform(
+        MonthlyTaxiTripCleanTransformer(error_threshold=0.5).transform(
             spark.createDataFrame(rows)
         )
 
@@ -114,7 +114,7 @@ def test_임계치_미만의_잘못된_등급_행만_제거한다(spark):
     ]
     rows[-1]["estimated_service_tier"] = "Extra Comfort"
 
-    result = HVFHVCleanTransformer(error_threshold=0.1).transform(
+    result = MonthlyTaxiTripCleanTransformer(error_threshold=0.1).transform(
         spark.createDataFrame(rows)
     )
 

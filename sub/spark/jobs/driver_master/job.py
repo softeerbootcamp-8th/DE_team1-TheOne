@@ -3,7 +3,7 @@
 Spark 세션은 쓰지 않습니다 (numpy/scipy/pandas만 사용) — `spark/` uv 환경의 scipy를
 재사용하려고 이 프로젝트 안에 둡니다.
 
-사용 예 (spark/jobs/bronze_to_silver/hvfhv/job.py와 동일한 PYTHONPATH 패턴):
+사용 예 (spark/jobs/bronze_to_silver/monthly_taxi_trip_bronze_to_silver/job.py와 동일한 PYTHONPATH 패턴):
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m sub.spark.jobs.driver_master.job
 """
 

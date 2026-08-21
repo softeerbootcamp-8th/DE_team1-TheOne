@@ -1,4 +1,4 @@
-"""HVFHV bronze_to_silver `job.py`의 year_month range 파라미터 검증. 이슈 #297.
+"""Monthly Taxi Trip bronze_to_silver `job.py`의 year_month range 파라미터 검증. 이슈 #297.
 
 1. `year_month_range` 가 양끝을 포함해 순서대로 반환, 연도 경계도 처리
 2. `year_month_range` 는 start가 end보다 늦으면 ValueError
@@ -8,20 +8,38 @@
 6. [필수] 없는 파티션이 여러 개면 첫 번째에서 멈추지 않고 전부 모아서 보고
 7. 한 달만 처리할 땐 start_year_month == end_year_month로 호출
 8. start/end 중 하나만 주면 ValueError
+9. `is_s3_path`/`resolve_path`/`latest_partition_file`은 s3://·s3a:// 경로도 처리 (이슈 #646)
+10. `--env local|prod`로 기본 입출력 경로를 고름, `prod`인데 버킷이 없으면 ValueError
 """
 
 from datetime import datetime
 from pathlib import Path
 
+import boto3
 import pytest
+from moto import mock_aws
 
 from shared.spark.common.session import get_or_create_spark_session
-from main.spark.jobs.bronze_to_silver.hvfhv import job
+from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver import job
+
+S3_BUCKET = "test-de-theone"
+S3_REGION = "ap-northeast-2"
+
+
+@pytest.fixture
+def s3_client():
+    with mock_aws():
+        client = boto3.client("s3", region_name=S3_REGION)
+        client.create_bucket(
+            Bucket=S3_BUCKET,
+            CreateBucketConfiguration={"LocationConstraint": S3_REGION},
+        )
+        yield client
 
 
 @pytest.fixture(scope="module")
 def spark():
-    session = get_or_create_spark_session("test_hvfhv_job")
+    session = get_or_create_spark_session("test_monthly_taxi_trip_job")
     yield session
     session.stop()
 
@@ -104,6 +122,64 @@ def test_latest_partition_files는_각_월의_최신파일만_고른다(tmp_path
         str(january_latest),
         str(february_latest),
     ]
+
+
+def test_default_paths는_local이면_로컬_경로를_돌려준다():
+    assert job.default_paths("local", None) == (job.DEFAULT_LOCAL_INPUT, job.DEFAULT_LOCAL_OUTPUT)
+
+
+def test_default_paths는_prod면_S3_경로를_돌려준다():
+    assert job.default_paths("prod", "de-theone") == (
+        "s3://de-theone/bronze/monthly_taxi_trip",
+        "s3://de-theone/silver/monthly_taxi_trip",
+    )
+
+
+def test_default_paths는_prod인데_버킷이_없으면_ValueError():
+    with pytest.raises(ValueError, match="--bucket"):
+        job.default_paths("prod", None)
+
+
+def test_input_output_path를_둘다_명시하면_env_bucket_검증을_안한다(spark, tmp_path):
+    """DAG는 항상 --input_path/--output_path를 명시적으로 넘기므로, --env prod에 --bucket이
+    없어도 이 경로로는 절대 실패하면 안 됩니다."""
+    bronze_dir = tmp_path / "bronze"
+    _write_partition(spark, bronze_dir, "2024-01", [_row()])
+
+    result = job.main([
+        "--env", "prod",
+        "--input_path", str(bronze_dir),
+        "--output_path", str(tmp_path / "silver"),
+        "--error_threshold", "1.0",
+    ])
+
+    assert result is not None
+
+
+@pytest.mark.parametrize("scheme", ["s3", "s3a"])
+def test_is_s3_path는_s3_s3a_스킴만_참이다(scheme):
+    assert job.is_s3_path(f"{scheme}://bucket/prefix")
+    assert not job.is_s3_path("data/bronze/monthly_taxi_trip")
+    assert not job.is_s3_path("/abs/local/path")
+
+
+def test_resolve_path는_S3_경로를_그대로_둔다():
+    assert job.resolve_path("s3://de-theone/bronze/monthly_taxi_trip") == "s3://de-theone/bronze/monthly_taxi_trip"
+
+
+def test_latest_partition_file은_S3에_파티션이_없으면_None(s3_client):
+    assert job.latest_partition_file(f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01") is None
+
+
+def test_latest_partition_file은_S3에서_최신_파일_경로를_반환한다(s3_client):
+    prefix = "bronze/monthly_taxi_trip/year_month=2024-01"
+    s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/part-0.parquet", Body=b"x")
+    s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/part-1.parquet", Body=b"x")
+    s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/_SUCCESS", Body=b"")
+
+    result = job.latest_partition_file(f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01")
+
+    assert result == f"s3://{S3_BUCKET}/{prefix}/part-1.parquet"
 
 
 def test_range로_여러_달_파티션을_한번에_읽어_silver로_적재한다(spark, tmp_path):

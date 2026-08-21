@@ -21,12 +21,17 @@ dependencies = [
     "shapely==2.1.2",
     "requests==2.34.2",
     "pipeline-core",
+    # S3 파티션 목록 조회(list_keys)에만 씀. EMR 7.13 이미지 실측값으로 고정
+    # (docker run --rm --entrypoint /usr/bin/python3.11
+    #   public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest -m pip list --format=freeze).
+    "boto3==1.42.78",
 ]
 
 [dependency-groups]
 dev = [
     "pyspark==3.5.6",   # EMR 7.13의 Spark 버전과 일치
     "pytest==9.1.1",
+    "moto==5.2.2",   # AWS 모킹 (S3 파티션 탐색 테스트)
 ]
 
 [tool.uv.sources]
