@@ -8,6 +8,8 @@
 5. 렌더한 결과의 시도 표기가 분자·분모 같은 축을 씀 — clear 후 재실행에서
    `2 / 1` 이 나가던 문제 (#550)
 6. 실패 사유를 싣되 길면 자름. 없으면 `None` 이 아니라 `(사유 없음)`
+7. Block Kit은 상태·실행 유형·원인·조치를 먼저, 기술 식별자를 나중에 표시
+8. Gold 성공은 대상 연월과 Asset 실행 유형을 표시
 """
 
 import importlib
@@ -18,8 +20,11 @@ import pytest
 
 from shared.airflow.common.slack_failure_callback import (
     REASON_MAX_CHARS,
+    SLACK_FAILURE_BLOCKS,
     SLACK_FAILURE_TEXT,
+    SLACK_RETRY_ALERT_BLOCKS,
     SLACK_RETRY_ALERT_TEXT,
+    SLACK_SUCCESS_BLOCKS,
     SLACK_SUCCESS_TEXT,
     SLACK_WEBHOOK_CONN_ID,
     slack_failure_callback,
@@ -59,8 +64,8 @@ DAG_MODULES = {
 @pytest.mark.parametrize(
     ("text", "heading"),
     [
-        (SLACK_RETRY_ALERT_TEXT, ":warning: *Airflow Task Alert*"),
-        (SLACK_FAILURE_TEXT, ":red_circle: *Airflow Task Fail*"),
+        (SLACK_RETRY_ALERT_TEXT, "⏳ *Airflow 태스크 재시도 예정*"),
+        (SLACK_FAILURE_TEXT, "🚨 *Airflow 파이프라인 최종 실패*"),
     ],
 )
 def test_Slack_알림은_상태와_실행_정보를_표시한다(text, heading):
@@ -68,7 +73,7 @@ def test_Slack_알림은_상태와_실행_정보를_표시한다(text, heading):
     for expected in (
         "{{ dag.dag_id }}",
         "{{ ti.task_id }}",
-        "{{ run_id }}",
+        "run_id",
         "{{ ti.try_number }}",
         "{{ ti.max_tries + 1 }}",
         "{{ ti.log_url }}",
@@ -84,12 +89,10 @@ def test_Retry_Fail_GoldSuccess는_서로_다른_콜백이다():
 
 
 def test_Gold_Success_알림은_실행정보를_표시한다():
-    assert ":white_check_mark: *Airflow Gold Success*" in SLACK_SUCCESS_TEXT
-    assert "`Gold 생성 완료`" in SLACK_SUCCESS_TEXT
+    assert "✅ *Gold 생성 완료*" in SLACK_SUCCESS_TEXT
     for expected in (
         "{{ dag.dag_id }}",
-        "{{ ti.task_id }}",
-        "{{ run_id }}",
+        "run_id",
         "{{ ti.log_url }}",
     ):
         assert expected in SLACK_SUCCESS_TEXT
@@ -165,11 +168,13 @@ ALERT_TEXTS = [SLACK_RETRY_ALERT_TEXT, SLACK_FAILURE_TEXT]
 
 
 def _ti(try_number: int = 1, max_tries: int = 0):
-    return type(
+    task_instance = type(
         "TI", (),
         {"task_id": "validate_inputs", "try_number": try_number,
          "max_tries": max_tries, "log_url": "http://airflow/log"},
-    )
+    )()
+    task_instance.xcom_pull = lambda **kwargs: {"year_month": "2026-08"}
+    return task_instance
 
 
 def _render(text: str, **overrides) -> str:
@@ -183,6 +188,58 @@ def _render(text: str, **overrides) -> str:
     }
     context.update(overrides)
     return Template(text).render(**context)
+
+
+def _render_blocks(blocks, **overrides) -> str:
+    def text_values(value):
+        if isinstance(value, str):
+            yield _render(value, **overrides)
+        elif isinstance(value, dict):
+            for nested in value.values():
+                yield from text_values(nested)
+        elif isinstance(value, list):
+            for nested in value:
+                yield from text_values(nested)
+
+    return "\n".join(text_values(blocks))
+
+
+def test_최종실패_Block은_원인과_조치를_먼저_보여준다():
+    rendered = _render_blocks(
+        SLACK_FAILURE_BLOCKS,
+        ti=_ti(try_number=3, max_tries=2),
+        exception=ValueError("입력 파티션이 없습니다: year_month=2150-05"),
+    )
+
+    for expected in (
+        "🚨 파이프라인 최종 실패",
+        "입력 파티션이 없습니다: year_month=2150-05",
+        "입력·파라미터 확인 후 재실행",
+        "수동 실행",
+        "3 / 3",
+        "hvfhv_driver_trip_silver_pipeline",
+        "http://airflow/log",
+    ):
+        assert expected in rendered
+    assert ":red_circle:" not in rendered
+
+
+def test_Gold성공_Block은_대상연월과_Asset실행을_보여준다():
+    rendered = _render_blocks(
+        SLACK_SUCCESS_BLOCKS,
+        run_id="asset_triggered__2026-08-20T09:22:58",
+    )
+
+    assert "✅ Gold 생성 완료" in rendered
+    assert "2026-08" in rendered
+    assert "Asset 트리거" in rendered
+    assert "http://airflow/log" in rendered
+
+
+def test_notifier에_각상태_Block이_연결된다():
+    assert slack_retry_alert_callback.blocks == SLACK_RETRY_ALERT_BLOCKS
+    assert slack_failure_callback.blocks == SLACK_FAILURE_BLOCKS
+    assert slack_success_callback.blocks == SLACK_SUCCESS_BLOCKS
 
 
 @pytest.mark.parametrize("text", ALERT_TEXTS)
@@ -210,7 +267,7 @@ def test_긴_예외는_잘라서_싣는다(text):
     """Spark `Py4JJavaError` 는 수백 줄입니다. 그대로 실으면 Slack 이 거부합니다."""
     rendered = _render(text, exception=RuntimeError("스택" * 1000))
 
-    reason = next(line for line in rendered.splitlines() if line.startswith("*사유*"))
+    reason = next(line for line in rendered.splitlines() if line.startswith("*원인*"))
     assert len(reason) < REASON_MAX_CHARS + 50
     assert reason.endswith("...`")
 
