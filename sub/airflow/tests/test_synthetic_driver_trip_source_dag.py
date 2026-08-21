@@ -64,6 +64,7 @@ def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다()
         "--zone_lookup_path",
         "--vehicle_master_path",
         "--state_output_dir",
+        "--attribution_output_dir",
         "--release_output_dir",
         "--year_month",
         # 조건부 플래그입니다. Param 을 비우면 렌더링 후 사라지지만, 템플릿 원문에는
@@ -71,6 +72,7 @@ def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다()
         "--seed",
         "--bucket_size",
         "--test_row_limit",
+        "--storage",
     ):
         assert option in command
     assert "bronze_trips" not in command
@@ -90,15 +92,18 @@ class _StubTaskInstance:
         }
 
 
-def _render_build_command(seed=None, bucket_size=None) -> str:
+def _render_build_command(seed=None, bucket_size=None, storage="local", bucket="") -> str:
     task = DAG.get_task("build_source_release")
     return DAG.get_template_env().from_string(task.bash_command).render(
         params={
             "seed": seed,
             "bucket_size": bucket_size,
             "state_output_dir": "S",
+            "attribution_output_dir": "A",
             "release_output_dir": "R",
             "test_row_limit": 0,
+            "storage": storage,
+            "bucket": bucket,
         },
         task_instance=_StubTaskInstance(),
     )
@@ -123,6 +128,20 @@ def test_bucket_size_Param을_비우면_플래그가_렌더링되지_않는다()
 
 def test_bucket_size_Param을_주면_CLI로_전달된다():
     assert "--bucket_size 20" in _render_build_command(bucket_size=20)
+
+
+def test_storage_Param은_항상_렌더링된다():
+    """seed/bucket_size와 달리 storage는 CLI 쪽에도 기본값(local)이 있어 항상 실립니다."""
+    assert "--storage local" in _render_build_command(storage="local")
+    assert "--storage s3" in _render_build_command(storage="s3")
+
+
+def test_bucket_Param을_비우면_플래그가_렌더링되지_않는다():
+    assert "--bucket" not in _render_build_command(bucket="")
+
+
+def test_bucket_Param을_주면_CLI로_전달된다():
+    assert "--bucket my-bucket" in _render_build_command(storage="s3", bucket="my-bucket")
 
 
 def test_임시행제한은_프로덕션과_분리된_경로를_사용한다(tmp_path):

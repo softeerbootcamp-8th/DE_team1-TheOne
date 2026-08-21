@@ -68,6 +68,10 @@ default_args = {
             ),
         ),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
+        "storage": Param(
+            "local", enum=["local", "s3"], description="attribution·published를 어디에 쓸지"
+        ),
+        "bucket": Param("", type="string", description="storage=s3일 때. 비우면 DATA_LAKE_S3_BUCKET"),
     },
 )
 def synthetic_driver_trip_source_pipeline():
@@ -82,12 +86,15 @@ def synthetic_driver_trip_source_pipeline():
             + "--vehicle_master_path "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['vehicle_master_path'] }} "
             + "--state_output_dir {{ params.state_output_dir }} "
+            + "--attribution_output_dir {{ params.attribution_output_dir }} "
             + "--release_output_dir {{ params.release_output_dir }} "
             + "--year_month "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
             + "{% if params.seed is not none %}--seed {{ params.seed }} {% endif %}"
             + "{% if params.bucket_size is not none %}--bucket_size {{ params.bucket_size }} {% endif %}"
-            + "--test_row_limit {{ params.test_row_limit }}"
+            + "--test_row_limit {{ params.test_row_limit }} "
+            + "--storage {{ params.storage }} "
+            + "{% if params.bucket %}--bucket {{ params.bucket }}{% endif %}"
         ),
         env={
             **os.environ,

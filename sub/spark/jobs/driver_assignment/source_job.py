@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import uuid
 from collections import Counter
@@ -475,12 +476,60 @@ def _write_one_parquet(frame: DataFrame, path: Path) -> None:
     shutil.rmtree(temporary)
 
 
+def _write_one_parquet_s3(frame: DataFrame, *, bucket: str, key: str) -> None:
+    """`_write_one_parquet()`의 S3 대응. Hadoop S3A의 `rename()`으로 공개합니다.
+
+    S3에는 디렉터리 rename이 없어 로컬의 `Path.rename()` 트릭이 안 통합니다.
+    이미 SparkSession이 있으므로 boto3 대신 Spark가 쓰는 Hadoop FileSystem의
+    `rename()`(내부적으로 copy+delete)을 그대로 씁니다 — Spark/Hadoop 세계 밖으로
+    안 나가는 유일한 방법입니다.
+    """
+    staging_uri = f"s3a://{bucket}/.staging/{uuid.uuid4().hex}/"
+    final_uri = f"s3a://{bucket}/{key}"
+    frame.coalesce(1).write.mode("overwrite").parquet(staging_uri)
+
+    jvm = frame.sparkSession._jvm
+    hadoop_path = jvm.org.apache.hadoop.fs.Path
+    staging_path = hadoop_path(staging_uri)
+    fs = staging_path.getFileSystem(frame.sparkSession._jsc.hadoopConfiguration())
+
+    parts = [
+        status.getPath()
+        for status in fs.listStatus(staging_path)
+        if status.getPath().getName().startswith("part-")
+    ]
+    if len(parts) != 1:
+        raise ValueError(f"단일 Parquet 파일을 만들지 못했습니다: {staging_uri}")
+    fs.rename(parts[0], hadoop_path(final_uri))
+    fs.delete(staging_path, True)
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def write_attribution(assignments: DataFrame, *, output_dir: str | Path, year_month: str) -> Path:
+    """배정 결과(`assignments`)를 그대로 영속화합니다.
+
+    PUBLISHED(`build_trip_source`)는 여기서 taxi_id만 가져다 쓰고 driver_id는
+    빼므로, "누가 배정됐는가"의 원자료는 이것뿐입니다 — 전에는 어디에도 저장되지
+    않고 메모리에서만 존재하다 사라졌습니다.
+    """
+    final_dir = Path(output_dir) / f"year_month={year_month}"
+    final_dir.mkdir(parents=True, exist_ok=True)
+    _write_one_parquet(assignments, final_dir / "attribution.parquet")
+    return final_dir
+
+
+def write_attribution_s3(assignments: DataFrame, *, bucket: str, year_month: str) -> str:
+    """`write_attribution()`의 S3 대응. `source/attribution/year_month=.../attribution.parquet`."""
+    key = f"source/attribution/year_month={year_month}/attribution.parquet"
+    _write_one_parquet_s3(assignments, bucket=bucket, key=key)
+    return f"s3://{bucket}/{key}"
 
 
 def write_source_release(
@@ -546,6 +595,66 @@ def write_source_release(
         return final
     finally:
         shutil.rmtree(staging, ignore_errors=True)
+
+
+def write_source_release_s3(
+    trips: DataFrame,
+    snapshots: DataFrame,
+    inventory: DataFrame,
+    *,
+    bucket: str,
+    run: RunContext,
+    input_scope: str,
+) -> str:
+    """`write_source_release()`의 S3 대응 — PUBLISHED 3종을 `source/published/`에 공개합니다.
+
+    로컬의 "staging 디렉터리 + rename" 같은 디렉터리 단위 원자성이 S3에는 없습니다.
+    대신 데이터셋마다 `_write_one_parquet_s3()`가 개별 원자성(rename)을 갖고,
+    manifest는 셋을 다 쓴 뒤 마지막에 씁니다.
+
+    ★ `source_api`의 S3 서빙(`S3DatasetStorage`)은 이미 manifest 없이 Parquet을
+      직접 읽도록 단순화돼 있습니다(#547) — 이 manifest는 읽기 게이트가 아니라
+      계보 기록용입니다. 그래서 로컬 manifest와 달리 row_count만 남기고
+      sha256은 뺐습니다.
+    # ponytail: checksum 없이 row_count만 기록. 계보 대조가 필요해지면 각
+    # `_write_one_parquet_s3()` 호출 뒤 해당 키를 다시 읽어 sha256을 붙이세요.
+    """
+    import boto3
+
+    _validate_temporal_links(trips, snapshots)
+    year_month = run.target_month
+    prefix = "source/published"
+    datasets = {
+        "hvfhv_taxi_trips": trips,
+        "driver_vehicle_monthly_snapshot": snapshots,
+        "lease_vehicle_inventory": inventory,
+    }
+    manifest_datasets = {}
+    for name, frame in datasets.items():
+        key = f"{prefix}/{name}/year_month={year_month}/data.parquet"
+        _write_one_parquet_s3(frame, bucket=bucket, key=key)
+        manifest_datasets[name] = {"key": key, "row_count": frame.count()}
+
+    manifest = {
+        "release_id": f"{year_month}-seed-{run.config.global_seed}",
+        "year_month": year_month,
+        "seed": run.config.global_seed,
+        "run_id": run.run_id,
+        "config_hash": run.config_hash,
+        "created_at": run.created_at,
+        "schema_version": SCHEMA_VERSION,
+        "input_scope": input_scope,
+        "provenance": PROVENANCE,
+        "datasets": manifest_datasets,
+    }
+    manifest_key = f"{prefix}/_manifests/year_month={year_month}.json"
+    boto3.client("s3").put_object(
+        Bucket=bucket,
+        Key=manifest_key,
+        Body=json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"),
+        ServerSideEncryption="AES256",
+    )
+    return f"s3://{bucket}/{prefix}"
 
 
 def _capacity_drive_minutes(preferences: DataFrame, service_dates: list[date]) -> int:
@@ -614,19 +723,23 @@ def _quality_report(
     }
 
 
-def main(args_list: list[str] | None = None) -> Path:
+def main(args_list: list[str] | None = None) -> Path | str:
     parser = argparse.ArgumentParser(description="월별 가짜 기사-운행 원천 릴리스 생성")
     parser.add_argument("--hvfhv_input_path", required=True)
     parser.add_argument("--zone_lookup_path", required=True)
     parser.add_argument("--vehicle_master_path", required=True)
     parser.add_argument("--state_output_dir", required=True)
     parser.add_argument("--release_output_dir", required=True)
+    parser.add_argument("--attribution_output_dir", required=True)
     parser.add_argument("--year_month", required=True)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--bucket_size", type=int, default=5)
     parser.add_argument("--spark_memory", default="4g")
     parser.add_argument("--test_row_limit", type=int, default=0)
+    parser.add_argument("--storage", choices=("local", "s3"), default="local")
+    parser.add_argument("--bucket", default=None, help="storage=s3일 때. 비우면 DATA_LAKE_S3_BUCKET")
     args = parser.parse_args(args_list)
+    bucket = args.bucket or (os.environ["DATA_LAKE_S3_BUCKET"] if args.storage == "s3" else None)
 
     # lifecycle(join/exit/vehicle_change) 비율은 이제 `--change_rate` 가 아니라
     # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).
@@ -685,6 +798,14 @@ def main(args_list: list[str] | None = None) -> Path:
     assignments, allocation_rejects = allocate_trips(candidates, build_travel_times(trips))
     assignment_count = assignments.count()
     candidates.unpersist(blocking=True)
+    if args.storage == "s3":
+        write_attribution_s3(assignments, bucket=bucket, year_month=args.year_month)
+    else:
+        write_attribution(
+            assignments,
+            output_dir=_test_scoped_root(args.attribution_output_dir, args.test_row_limit),
+            year_month=args.year_month,
+        )
     # 릴리스 계보가 아니라 진단용입니다 — manifest 에는 싣지 않습니다(#644).
     print(f"배정 탈락 사유: {dict(candidate_rejects, **allocation_rejects)}")
     quality_report = _quality_report(
@@ -714,17 +835,35 @@ def main(args_list: list[str] | None = None) -> Path:
         current_driver_vehicle, vehicle_master
     ).persist(StorageLevel.DISK_ONLY)
     try:
-        final = write_source_release(
-            trip_source,
-            snapshot_source,
-            inventory_source,
-            output_dir=release_output_dir,
-            run=run,
-            input_scope=input_scope,
-        )
-        (final / "quality_report.json").write_text(
-            json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
+        if args.storage == "s3":
+            final = write_source_release_s3(
+                trip_source,
+                snapshot_source,
+                inventory_source,
+                bucket=bucket,
+                run=run,
+                input_scope=input_scope,
+            )
+            import boto3
+
+            boto3.client("s3").put_object(
+                Bucket=bucket,
+                Key=f"source/published/_quality_reports/year_month={args.year_month}.json",
+                Body=json.dumps(quality_report, ensure_ascii=False, indent=2).encode("utf-8"),
+                ServerSideEncryption="AES256",
+            )
+        else:
+            final = write_source_release(
+                trip_source,
+                snapshot_source,
+                inventory_source,
+                output_dir=release_output_dir,
+                run=run,
+                input_scope=input_scope,
+            )
+            (final / "quality_report.json").write_text(
+                json.dumps(quality_report, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
         return final
     finally:
         for frame in (

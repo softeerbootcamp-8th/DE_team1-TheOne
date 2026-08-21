@@ -8,6 +8,7 @@
 """
 
 from datetime import date, datetime
+from unittest.mock import MagicMock
 
 import numpy as np
 import pandas as pd
@@ -36,6 +37,7 @@ from sub.spark.jobs.driver_assignment.source_job import (
     _apply_test_row_limit,
     _quality_report,
     _test_scoped_root,
+    _write_one_parquet_s3,
     add_trip_keys,
     build_driver_vehicle_monthly_snapshot,
     build_lease_vehicle_inventory,
@@ -507,3 +509,65 @@ def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_�
     assert spark.read.parquet(str(first / "driver_vehicle_monthly_snapshot.parquet")).count() == 1
     assert spark.read.parquet(str(first / "lease_vehicle_inventory.parquet")).count() == 1
     assert (first / "manifest.json").is_file()
+
+
+def _fake_hadoop_path(uri, *, fs=None):
+    """`org.apache.hadoop.fs.Path` 인스턴스 흉내. `fs`가 있으면 `getFileSystem()`이 그걸 돌려줌."""
+    path = MagicMock(name=f"Path<{uri}>")
+    path.getFileSystem.return_value = fs
+    path.getName.return_value = uri.rstrip("/").rsplit("/", 1)[-1]
+    return path
+
+
+def test_write_one_parquet_s3는_유일한_part_파일만_최종_key로_옮기고_스테이징을_지운다():
+    """`_write_one_parquet_s3()`는 JRE가 있어야 도는 실제 Spark 대신, 그게 건드리는
+    Hadoop FileSystem 표면만 흉내내 로컬에서(JRE 없이) 검증한다."""
+    fs = MagicMock(name="fs")
+    frame = MagicMock(name="frame")
+    written_uris = []
+    frame.coalesce.return_value.write.mode.return_value.parquet.side_effect = written_uris.append
+
+    path_registry: dict[str, MagicMock] = {}
+
+    def path_factory(uri):
+        return path_registry.setdefault(uri, _fake_hadoop_path(uri, fs=fs))
+
+    frame.sparkSession._jvm.org.apache.hadoop.fs.Path.side_effect = path_factory
+    frame.sparkSession._jsc.hadoopConfiguration.return_value = "hadoop-conf"
+
+    success_status = MagicMock()
+    success_status.getPath.return_value.getName.return_value = "_SUCCESS"
+    part_status = MagicMock()
+    part_status.getPath.return_value = _fake_hadoop_path("part-00000-abc.snappy.parquet")
+    fs.listStatus.return_value = [success_status, part_status]
+
+    _write_one_parquet_s3(
+        frame, bucket="my-bucket", key="source/attribution/year_month=2026-08/attribution.parquet"
+    )
+
+    assert len(written_uris) == 1
+    staging_uri = written_uris[0]
+    assert staging_uri.startswith("s3a://my-bucket/.staging/")
+    assert staging_uri.endswith("/")
+
+    final_uri = "s3a://my-bucket/source/attribution/year_month=2026-08/attribution.parquet"
+    fs.listStatus.assert_called_once_with(path_registry[staging_uri])
+    # _SUCCESS는 걸러지고 part- 파일만 최종 key로 rename됩니다.
+    fs.rename.assert_called_once_with(part_status.getPath.return_value, path_registry[final_uri])
+    fs.delete.assert_called_once_with(path_registry[staging_uri], True)
+
+
+def test_write_one_parquet_s3는_part_파일이_하나가_아니면_실패한다():
+    fs = MagicMock(name="fs")
+    frame = MagicMock(name="frame")
+    frame.sparkSession._jvm.org.apache.hadoop.fs.Path.side_effect = (
+        lambda uri: _fake_hadoop_path(uri, fs=fs)
+    )
+    part_a = MagicMock()
+    part_a.getPath.return_value = _fake_hadoop_path("part-00000-a.snappy.parquet")
+    part_b = MagicMock()
+    part_b.getPath.return_value = _fake_hadoop_path("part-00001-b.snappy.parquet")
+    fs.listStatus.return_value = [part_a, part_b]
+
+    with pytest.raises(ValueError, match="단일 Parquet 파일을 만들지 못했습니다"):
+        _write_one_parquet_s3(frame, bucket="my-bucket", key="k")
