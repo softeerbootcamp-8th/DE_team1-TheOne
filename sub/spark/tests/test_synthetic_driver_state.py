@@ -1,11 +1,10 @@
-"""`sub/generators/synthetic_driver_state`의 순수 로직 동등성과 체크포인트 계약.
+"""`sub/generators/synthetic_driver_state`의 체크포인트 계약.
 
-붙잡는 것 두 가지다.
+config_hash가 다른 전월은 이어받지 않고, 임의 과거 월부터 재개 가능해야
+한다 (blue_print.md 4.3).
 
-  1. `sub/prototype/synthesize.py`와의 동등성 — 같은 config/seed/input이면
-     events/current/profiles/noise가 완전히 같아야 한다 (#605 완료 조건).
-  2. 체크포인트 계약 — config_hash가 다른 전월은 이어받지 않고, 임의 과거
-     월부터 재개 가능해야 한다 (blue_print.md 4.3).
+`sub/prototype/synthesize.py`와의 동등성 테스트는 마이그레이션 검증(#605,
+#609) 완료 후 prototype과 함께 제거했다.
 """
 
 from __future__ import annotations
@@ -18,9 +17,8 @@ import pytest
 from conftest import TEST_CONFIG_DATA
 
 from sub.config import build_config
-from sub.generators.synthetic_driver_state import adapters, checkpoint, fleet
+from sub.generators.synthetic_driver_state import adapters, checkpoint, events, fleet
 from sub.generators.synthetic_driver_state.lifecycle import synthesize_month
-from sub.prototype import synthesize as prototype_synthesize
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.candidates import REQUIRED as CANDIDATES_REQUIRED
 from sub.spark.jobs.driver_master.preference import PREFERENCE_COLUMNS
@@ -57,62 +55,7 @@ def _vehicle_master() -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
-def _run_both(config, master, *, months: int = 1):
-    """prototype과 새 모듈을 같은 입력으로 나란히 돌립니다."""
-    proto = None
-    new = None
-    proto_prev = (None, None, None)
-    new_prev = (None, None, None)
-    for i in range(months):
-        month = f"2024-{i + 1:02d}"
-        proto = prototype_synthesize.synthesize_month(
-            target_month=month, config=config, vehicle_master=master, trip_pool=POOL,
-            previous_current=proto_prev[0], previous_events=proto_prev[1],
-            previous_noise=proto_prev[2], fuel=FUEL,
-        )
-        new = synthesize_month(
-            target_month=month, config=config, vehicle_master=master, trip_pool=POOL,
-            previous_current=new_prev[0], previous_events=new_prev[1],
-            previous_noise=new_prev[2], fuel=FUEL,
-        )
-        proto_prev = (proto.current, proto.events, proto.noise_state)
-        new_prev = (new.current, new.events, new.noise_state)
-    return proto, new
-
-
-# ── 1. prototype과의 동등성 ──────────────────────────────────────────────
-
-
-def test_초기_스냅샷이_prototype과_완전히_같다():
-    config, master = _config(), _vehicle_master()
-    proto, new = _run_both(config, master, months=1)
-
-    pd.testing.assert_frame_equal(proto.events, new.events)
-    pd.testing.assert_frame_equal(proto.current, new.current)
-    pd.testing.assert_frame_equal(proto.profiles, new.profiles)
-    pd.testing.assert_frame_equal(proto.noise_state, new.noise_state)
-    assert proto.clip_rate == new.clip_rate
-
-
-def test_lifecycle_두달째도_prototype과_완전히_같다():
-    """join/exit/vehicle_change가 실제로 섞인 두 번째 달까지 동등성을 본다."""
-    config, master = _config(), _vehicle_master()
-    proto, new = _run_both(config, master, months=2)
-
-    pd.testing.assert_frame_equal(proto.events, new.events)
-    pd.testing.assert_frame_equal(proto.current, new.current)
-    pd.testing.assert_frame_equal(proto.profiles, new.profiles)
-    pd.testing.assert_frame_equal(proto.noise_state, new.noise_state)
-    # 실제로 유출·유입·교체가 있었는지 확인 — 아무 일도 안 일어나면 동등성이
-    # events fold 정도만 검증하고 lifecycle 분기는 못 잡는다.
-    assert set(new.events["event_type"]) == {
-        prototype_synthesize.EVENT_JOIN,
-        prototype_synthesize.EVENT_EXIT,
-        prototype_synthesize.EVENT_VEHICLE_CHANGE,
-    }
-
-
-# ── 2. 체크포인트 계약 (blue_print.md 4.3) ──────────────────────────────
+# ── 1. 체크포인트 계약 (blue_print.md 4.3) ──────────────────────────────
 
 
 def test_체크포인트를_쓰고_그대로_읽는다(tmp_path):
@@ -244,11 +187,11 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     pd.testing.assert_frame_equal(current, second.current)
     # events_all에서 재생(fold_events)해도 같은 current가 나와야 재개 후 이어지는
     # 월들이 올바른 역사를 봅니다.
-    pd.testing.assert_frame_equal(prototype_synthesize.fold_events(events_all), second.current)
+    pd.testing.assert_frame_equal(events.fold_events(events_all), second.current)
     assert len(events_all) == len(first.events) + len(second.events)
 
 
-# ── 3. 기존 Spark 경로용 뷰 변환 (#606, #609) ──────────────────────────────
+# ── 2. 기존 Spark 경로용 뷰 변환 (#606, #609) ──────────────────────────────
 
 
 def _vehicle_pool_no_model_id() -> pd.DataFrame:
@@ -335,7 +278,7 @@ def test_preferences_뷰가_candidates_필수컬럼을_전부_채운다():
         assert preferences_by_driver.loc[driver_id, "time_block_mask"] == time_block_mask
 
 
-# ── 4. 실측 Silver 변환 (#628) ──────────────────────────────────────────
+# ── 3. 실측 Silver 변환 (#628) ──────────────────────────────────────────
 
 
 def _silver_vehicle_master() -> pd.DataFrame:
