@@ -98,6 +98,8 @@ def prepare_monthly_state(
     snapshot_date: date,
     config: GenerationConfig,
     vehicle_master_path: str | Path,
+    storage: str = "local",
+    bucket: str | None = None,
 ) -> MonthlyStatePaths:
     """전월 체크포인트를 한 달 진화시켜 완결된 디렉터리로 원자적으로 공개합니다."""
     if snapshot_date.day != 1:
@@ -122,7 +124,9 @@ def prepare_monthly_state(
         sample_per_month=config.bootstrap.sample_per_month,
         seed=config.global_seed,
     )
-    fuel = fleet.load_fuel_prices()
+    # EC2 는 산출물을 S3 에 쓰고 컨테이너에 바인드 마운트가 없습니다. storage 를
+    # 넘기지 않으면 로컬 빈 디스크를 보게 됩니다.
+    fuel = fleet.load_fuel_prices(storage=storage, bucket=bucket)
 
     result = synthesize_month(
         target_month=target_month,

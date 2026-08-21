@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import numpy as np
@@ -37,17 +38,86 @@ def _read_parquet_dir(path: Path) -> pd.DataFrame:
     return pd.concat((pd.read_parquet(f) for f in files), ignore_index=True)
 
 
-def load_fuel_prices(*, data_dir: str | Path | None = None) -> dict:
-    """실측 유가·전기요금. 합성이 아닙니다 (D5 — 배정 비용의 입력)."""
-    data = Path(data_dir) if data_dir else _PROJECT_ROOT / "data"
-    gas = _read_parquet_dir(_latest_partition(data / "silver" / "gas_price", "collected_month"))
-    ev = _read_parquet_dir(
-        _latest_partition(data / "silver" / "ev_charging_price", "collected_month")
-    )
+# 연료비 Silver 의 위치·이름. 생산자는 `eia_fuel_price_silver_pipeline` 하나입니다.
+# 전에는 크롤링이 만든 `gas_price`·`ev_charging_price` 를 각각 읽었는데, 크롤링 경로를
+# 걷어내며(#462) 생산자가 사라져 이 함수만 없는 데이터셋을 찾고 있었습니다.
+FUEL_PRICE_DATASET = "gas_ev_price"
+FUEL_PRICE_PARTITION_KEY = "year_month"
+FUEL_PRICE_FILE_NAME = "gas_ev_price.parquet"
+
+
+def load_fuel_prices(
+    *,
+    data_dir: str | Path | None = None,
+    storage: str = "local",
+    bucket: str | None = None,
+) -> dict:
+    """실측 유가·전기요금. 합성이 아닙니다 (D5 — 배정 비용의 입력).
+
+    `storage="s3"` 이면 S3 에서 최신 `year_month=` 을 읽습니다. EC2 컨테이너는
+    바인드 마운트가 없어 로컬 `data/` 가 비어 있으므로, 로컬만 보면 S3 에 산출물이
+    있어도 못 찾습니다 (#720 과 같은 원인).
+    """
+    if storage == "s3":
+        frame = _read_latest_from_s3(bucket)
+    elif storage == "local":
+        data = Path(data_dir) if data_dir else _PROJECT_ROOT / "data"
+        root = data / "silver" / FUEL_PRICE_DATASET
+        frame = _read_parquet_dir(_latest_partition(root, FUEL_PRICE_PARTITION_KEY))
+    else:
+        raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
+
+    return _fuel_prices_from_frame(frame)
+
+
+def _fuel_prices_from_frame(frame: pd.DataFrame) -> dict:
+    """일별 행을 배정 비용이 쓰는 단가 두 개로 줄입니다.
+
+    한 달치 일별 행이라 평균을 씁니다. 컬럼 이름을 여기서 한 번만 다루는 이유는
+    스키마(`schema/silver` 의 `CLEAN_FUEL_PRICE_SCHEMA`)가 바뀔 때 고칠 자리를
+    하나로 두기 위해서입니다.
+    """
+    missing = {"gas_price", "ev_price"} - set(frame.columns)
+    if missing:
+        raise ValueError(
+            f"연료비 Silver 에 컬럼이 없습니다: {sorted(missing)} "
+            f"(있는 것: {sorted(frame.columns)})"
+        )
     return {
-        "gallon_usd": float(gas["price_usd_per_gallon"].mean()),
-        "kwh_usd": float(ev["average_price_usd_per_kwh"].mean()),
+        "gallon_usd": float(frame["gas_price"].mean()),
+        "kwh_usd": float(frame["ev_price"].mean()),
     }
+
+
+def _read_latest_from_s3(bucket: str | None) -> pd.DataFrame:
+    """S3 의 최신 `year_month=` 파티션을 DataFrame 으로 읽습니다.
+
+    `s3://` 를 pandas 에 그대로 넘기지 않는 이유는 `s3fs` 가 필요하고, 그것이
+    `aiobotocore` 를 끌고 와 airflow 의 `boto3` 핀과 충돌하기 때문입니다. bytes 로
+    받아 메모리에서 읽습니다 — 한 달치 일별 행이라 작습니다.
+    """
+    import io
+
+    from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
+    from shared.common.env import load_local_env
+    from shared.common.s3_reader import get_object_bytes, list_keys
+
+    load_local_env()
+    bucket = (bucket or os.environ.get(BUCKET_ENV_VAR) or "").strip()
+    if not bucket:
+        raise ValueError(
+            f"storage=s3 인데 버킷이 없습니다. bucket 을 넘기거나 {BUCKET_ENV_VAR} 를 설정하세요."
+        )
+
+    prefix = f"silver/{FUEL_PRICE_DATASET}/"
+    keys = [k for k in list_keys(bucket, prefix) if k.endswith(FUEL_PRICE_FILE_NAME)]
+    if not keys:
+        raise FileNotFoundError(
+            f"연료비 Silver 가 없습니다: s3://{bucket}/{prefix} — "
+            "eia_fuel_price_silver DAG 를 먼저 돌리세요."
+        )
+    # 키에 `year_month=YYYY-MM` 이 들어가고 ISO 라 문자열 정렬이 곧 시간 정렬입니다.
+    return pd.read_parquet(io.BytesIO(get_object_bytes(bucket, max(keys))))
 
 
 def build_fleet_stock(vehicle_master: pd.DataFrame, *, driver_count: int) -> pd.DataFrame:

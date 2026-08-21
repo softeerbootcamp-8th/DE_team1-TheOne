@@ -321,13 +321,99 @@ def test_실측_vehicle_master의_min_max_제원을_중앙값_하나로_합친�
     assert len(pool) == pool["vehicle_model_id"].nunique()
 
 
+def _write_fuel_price(root, year_month: str, gas: list[float], ev: list[float]):
+    """생산자(`eia_fuel_price_silver_pipeline`)와 같은 자리·같은 컬럼으로 씁니다."""
+    partition = root / "silver" / "gas_ev_price" / f"year_month={year_month}"
+    partition.mkdir(parents=True)
+    pd.DataFrame({"gas_price": gas, "ev_price": ev}).to_parquet(
+        partition / "gas_ev_price.parquet"
+    )
+
+
 def test_실측_유가_전기요금을_평균낸다(tmp_path):
-    gas_dir = tmp_path / "silver" / "gas_price" / "collected_month=2026-08"
-    ev_dir = tmp_path / "silver" / "ev_charging_price" / "collected_month=2026-08"
-    gas_dir.mkdir(parents=True)
-    ev_dir.mkdir(parents=True)
-    pd.DataFrame({"price_usd_per_gallon": [4.0, 4.2]}).to_parquet(gas_dir / "p.parquet")
-    pd.DataFrame({"average_price_usd_per_kwh": [0.40, 0.42]}).to_parquet(ev_dir / "p.parquet")
+    # 전에는 없는 데이터셋(gas_price·ev_charging_price / collected_month=)을 만들어
+    # 두고 통과했습니다. 크롤링 제거(#462)로 생산자가 사라진 뒤에도 초록불이라
+    # EC2 에서 터질 때까지 몰랐습니다.
+    _write_fuel_price(tmp_path, "2026-01", [4.0, 4.2], [0.40, 0.42])
 
     prices = fleet.load_fuel_prices(data_dir=tmp_path)
+
     assert prices == {"gallon_usd": pytest.approx(4.1), "kwh_usd": pytest.approx(0.41)}
+
+
+def test_여러_달이_있으면_최신_달을_쓴다(tmp_path):
+    _write_fuel_price(tmp_path, "2025-12", [3.0], [0.30])
+    _write_fuel_price(tmp_path, "2026-01", [4.0], [0.40])
+
+    prices = fleet.load_fuel_prices(data_dir=tmp_path)
+
+    assert prices == {"gallon_usd": pytest.approx(4.0), "kwh_usd": pytest.approx(0.40)}
+
+
+def test_연료비_Silver_가_없으면_실패한다(tmp_path):
+    with pytest.raises(FileNotFoundError, match="year_month 파티션이 없습니다"):
+        fleet.load_fuel_prices(data_dir=tmp_path)
+
+
+def test_컬럼이_바뀌면_무엇이_없는지_알려준다(tmp_path):
+    """스키마가 갈렸을 때 KeyError 대신 무엇이 없는지 말해야 합니다."""
+    partition = tmp_path / "silver" / "gas_ev_price" / "year_month=2026-01"
+    partition.mkdir(parents=True)
+    pd.DataFrame({"price_usd_per_gallon": [4.0]}).to_parquet(
+        partition / "gas_ev_price.parquet"
+    )
+
+    with pytest.raises(ValueError, match="ev_price"):
+        fleet.load_fuel_prices(data_dir=tmp_path)
+
+
+def test_알_수_없는_storage는_거부한다(tmp_path):
+    with pytest.raises(ValueError, match="알 수 없는 storage"):
+        fleet.load_fuel_prices(data_dir=tmp_path, storage="gcs")
+
+
+def test_S3에서_최신_달을_읽는다(monkeypatch):
+    """EC2 는 산출물을 S3 에 쓰고 컨테이너에 바인드 마운트가 없습니다."""
+    import io
+
+    import boto3
+    from moto import mock_aws
+
+    bucket, region = "test-de-theone", "ap-northeast-2"
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", bucket)
+
+    def body(gas, ev):
+        buffer = io.BytesIO()
+        pd.DataFrame({"gas_price": gas, "ev_price": ev}).to_parquet(buffer)
+        return buffer.getvalue()
+
+    with mock_aws():
+        client = boto3.client("s3", region_name=region)
+        client.create_bucket(
+            Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": region}
+        )
+        for year_month, gas, ev in [("2025-12", [3.0], [0.30]), ("2026-01", [4.0], [0.40])]:
+            client.put_object(
+                Bucket=bucket,
+                Key=f"silver/gas_ev_price/year_month={year_month}/gas_ev_price.parquet",
+                Body=body(gas, ev),
+            )
+
+        prices = fleet.load_fuel_prices(storage="s3")
+
+    assert prices == {"gallon_usd": pytest.approx(4.0), "kwh_usd": pytest.approx(0.40)}
+
+
+def test_S3에_없으면_어느_DAG를_돌릴지_알려준다(monkeypatch):
+    import boto3
+    from moto import mock_aws
+
+    bucket, region = "test-de-theone", "ap-northeast-2"
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", bucket)
+
+    with mock_aws():
+        boto3.client("s3", region_name=region).create_bucket(
+            Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": region}
+        )
+        with pytest.raises(FileNotFoundError, match="eia_fuel_price_silver"):
+            fleet.load_fuel_prices(storage="s3")
