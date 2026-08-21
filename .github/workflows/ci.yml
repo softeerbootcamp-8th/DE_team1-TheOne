@@ -55,6 +55,8 @@ jobs:
               - 'shared/airflow/**'
               - 'schema/**'
               - 'libs/pipeline_core/**'
+              # 생성 파라미터의 값 소유자. 이미지에 들어가므로 바뀌면 다시 구워야 합니다.
+              - 'config/**'
               - 'Makefile'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
@@ -65,6 +67,8 @@ jobs:
               - 'shared/spark/**'
               - 'shared/common/**'
               - 'libs/pipeline_core/**'
+              # 생성 파라미터의 값 소유자. 이미지에 들어가므로 바뀌면 다시 구워야 합니다.
+              - 'config/**'
               - 'Makefile'
               - '.dockerignore'
               - '.github/workflows/ci.yml'

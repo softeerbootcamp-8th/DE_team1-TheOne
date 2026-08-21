@@ -36,3 +36,8 @@ COPY --chown=airflow:root sub/ /opt/airflow/project-root/sub/
 COPY --chown=airflow:root shared/ /opt/airflow/project-root/shared/
 COPY --chown=airflow:root schema/ /opt/airflow/project-root/schema/
 COPY --chown=airflow:root libs/ /opt/airflow/project-root/libs/
+
+# 생성 파라미터의 값 소유자입니다 (`sub/config.py` 의 DEFAULT_CONFIG_PATH 가 여기를
+# 가리킵니다). BashOperator 로 도는 sub/spark/jobs/.../source_job.py 가 load_config()
+# 를 부르므로, 없으면 그 task 가 "설정 파일이 없습니다" 로 죽습니다.
+COPY --chown=airflow:root config/ /opt/airflow/project-root/config/

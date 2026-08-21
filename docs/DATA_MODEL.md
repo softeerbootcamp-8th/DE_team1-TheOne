@@ -77,10 +77,24 @@
 data/bronze/<dataset>/year_month=YYYY-MM/YYYYMMDDTHHMMSSffffffZ.parquet
 ```
 
-Spark 기반 Silver 쓰기는 `partitionOverwriteMode=dynamic` 입니다 ([shared/spark/common/io.py](../shared/spark/common/io.py)).
-재실행하면 **해당 파티션만** 덮어쓰고 다른 달은 그대로 둡니다 —
-이 옵션이 없으면 `mode("overwrite")` 가 데이터셋 디렉터리 전체를 지우고 다시 씁니다.
-월 배치가 재시도될 때 지난달이 통째로 사라지는 사고가 여기서 납니다.
+원천 API 3종의 Silver도 Bronze와 같은 수집 시각 파일명으로 버전을 보존합니다.
+
+```text
+data/silver/<dataset>/year_month=YYYY-MM/YYYYMMDDTHHMMSSffffffZ.parquet
+```
+
+Spark/Lambda writer는 내부 임시 경로에 쓴 뒤 최종 `collected_at.parquet` 파일로
+원자적으로 교체합니다. Airflow는 최종 파일을 다시 읽어 스키마·행 수·품질을 검증합니다.
+같은 수집본 재시도는 같은 버전만 교체하고 이전 수집 버전은 남깁니다. Gold는 각 API
+Silver의 가장 최신 파일만 읽습니다.
+
+HVFHV는 월 2,040만 행을 `coalesce(1)`로 단일 Parquet에 적재하므로 마지막 쓰기 단계는
+단일 executor 병목입니다. 버전당 파일 하나라는 운영 계약을 위해 선택한 제약이며,
+처리 시간이 SLA를 넘으면 버전 디렉터리 아래 여러 part 파일 구조로 되돌려야 합니다.
+
+그 밖의 Spark Silver 쓰기는 `partitionOverwriteMode=dynamic` 입니다
+([shared/spark/common/io.py](../shared/spark/common/io.py)). 재실행하면 **해당 파티션만**
+덮어쓰고 다른 달은 그대로 둡니다.
 
 ---
 

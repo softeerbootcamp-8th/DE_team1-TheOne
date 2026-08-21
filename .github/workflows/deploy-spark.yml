@@ -34,11 +34,18 @@ on:
       - 'sub/__init__.py'
       - 'sub/spark/**'
       - 'sub/generators/**'
+      # 이미지가 COPY 하는 sub/ 최상위 모듈. 디렉터리 패턴에 안 걸립니다.
+      - 'sub/config.py'
+      - 'sub/run_context.py'
+      - 'sub/seeds.py'
       - 'shared/__init__.py'
       - 'shared/spark/**'
       - 'shared/common/**'
       - 'schema/**'
       - 'libs/pipeline_core/**'
+      # 이미지가 COPY 하는 생성 파라미터. 값이 바뀌면 다시 굽고 배포해야
+      # EC2·EMR 이 새 값으로 돕니다.
+      - 'config/**'
       - 'Makefile'
       - '.dockerignore'
       - '.github/workflows/deploy-spark.yml'

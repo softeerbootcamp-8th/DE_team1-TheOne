@@ -45,6 +45,12 @@ COPY shared/spark/ /home/hadoop/shared/spark/
 COPY sub/__init__.py /home/hadoop/sub/__init__.py
 COPY sub/spark/ /home/hadoop/sub/spark/
 COPY sub/generators/ /home/hadoop/sub/generators/
+# sub/ 최상위 모듈. jobs·generators 가 `from sub.config import ...` 로 절대 import 하는데
+# 디렉터리만 복사하면 이 파일들이 빠져 실행 시점에 ModuleNotFoundError 가 납니다.
+COPY sub/config.py sub/run_context.py sub/seeds.py /home/hadoop/sub/
+
+# 생성 파라미터의 값 소유자. sub/config.py 의 DEFAULT_CONFIG_PATH 가 여기를 가리킵니다.
+COPY config/ /home/hadoop/config/
 
 # bronze_to_silver 가 S3 파티션 목록 조회에만 shared/common 의 list_keys 를 재사용합니다
 # (전용 파일 하나만 — env.py 는 spark 에 없는 dotenv 의존성을 끌고 옵니다).

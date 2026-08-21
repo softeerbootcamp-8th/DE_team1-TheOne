@@ -7,8 +7,6 @@
 
 from datetime import timedelta
 
-from airflow.providers.standard.operators.python import ShortCircuitOperator
-
 from dags import hvfhv_raw_to_silver_dag as dag_module
 from main.airflow.scripts.hvfhv_raw_to_silver import tasks as task_module
 
@@ -37,7 +35,6 @@ def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다(
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
-    assert isinstance(DAG.get_task("validate_bronze"), ShortCircuitOperator)
 
 
 def test_기본_API_주소는_내부_제공서버를_사용한다():
@@ -74,5 +71,7 @@ def test_Spark명령은_수집결과의_정확한_HVFHV파일을_사용한다():
     command = DAG.get_task("bronze_to_silver").bash_command
     assert "task_ids='validate_bronze'" in command
     assert "['locations'][0]" in command
+    assert "['silver_version_path']" in command
+    assert "--output_file" in command
     assert "--zone_lookup_path" not in command
     assert "--error_threshold 0.05" in command

@@ -10,6 +10,7 @@ import pandas as pd
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.sdk import task
 
+from main.airflow.common.monthly_bronze import TIMESTAMP_FILE_PATTERN
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.common.s3_reader import list_keys
 
@@ -49,6 +50,38 @@ def available_year_months(monthly_taxi_trip_path: str | Path) -> list[str]:
         partition.name.removeprefix("year_month=")
         for partition in Path(monthly_taxi_trip_path).glob("year_month=*")
         if partition.is_dir()
+        and (
+            _latest_version(partition) is not None
+            or any(partition.glob("part-*.parquet"))
+        )
+    )
+
+
+def _latest_version(partition: Path) -> Path | None:
+    versions = [
+        path
+        for path in partition.glob("*.parquet")
+        if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
+    ]
+    return sorted(versions)[-1] if versions else None
+
+
+def _resolve_versioned_file(
+    root: str | Path,
+    year_month: str,
+    *,
+    legacy_file_name: str,
+    upstream_dag: str,
+) -> str:
+    partition = Path(root) / f"year_month={year_month}"
+    latest = _latest_version(partition)
+    if latest is not None:
+        return str(latest)
+    legacy = partition / legacy_file_name
+    if legacy.is_file():
+        return str(legacy)
+    raise FileNotFoundError(
+        f"Silver 버전이 없습니다: {partition}. {upstream_dag} 을 먼저 돌리세요."
     )
 
 
@@ -178,14 +211,23 @@ def resolve_input_paths_for_env(
     if job_env != "local":
         raise ValueError(f"알 수 없는 SPARK_JOB_ENV: {job_env!r}")
 
-    monthly_taxi_trip = Path(params["monthly_taxi_trip_path"]) / f"year_month={year_month}"
-    if not monthly_taxi_trip.is_dir() or not any(monthly_taxi_trip.glob("*.parquet")):
+    monthly_taxi_trip_partition = (
+        Path(params["monthly_taxi_trip_path"]) / f"year_month={year_month}"
+    )
+    latest_monthly_taxi_trip = _latest_version(monthly_taxi_trip_partition)
+    if latest_monthly_taxi_trip is not None:
+        monthly_taxi_trip = str(latest_monthly_taxi_trip)
+    elif any(monthly_taxi_trip_partition.glob("part-*.parquet")):
+        # 구 레이아웃의 Spark part 파일만 읽습니다. 같은 디렉터리의 미완료
+        # collected_at 파일이 섞이지 않도록 디렉터리 자체를 넘기지 않습니다.
+        monthly_taxi_trip = str(monthly_taxi_trip_partition / "part-*.parquet")
+    else:
         raise FileNotFoundError(
-            f"월별 택시 운행 기록 Silver 파티션이 없거나 비어 있습니다: {monthly_taxi_trip}. "
+            f"월별 택시 운행 기록 Silver 버전이 없습니다: {monthly_taxi_trip_partition}. "
             "hvfhv_raw_to_silver_pipeline 을 먼저 돌리세요."
         )
 
-    monthly_files = {
+    versioned_files = {
         "driver_vehicle_monthly_snapshot_path": (
             "driver_vehicle_monthly_snapshot.parquet",
             "driver_vehicle_monthly_snapshot_raw_to_silver_pipeline",
@@ -194,25 +236,33 @@ def resolve_input_paths_for_env(
             "lease_vehicle_inventory.parquet",
             "lease_vehicle_inventory_raw_to_silver_pipeline",
         ),
-        "fuel_price_path": (
-            "gas_ev_price.parquet",
-            "eia_fuel_price_silver_pipeline",
-        ),
     }
     resolved_files = {}
-    for key, (file_name, upstream_dag) in monthly_files.items():
-        path = Path(params[key]) / f"year_month={year_month}" / file_name
-        if not path.is_file():
-            raise FileNotFoundError(
-                f"Silver 파일이 없습니다: {path}. {upstream_dag} 을 먼저 돌리세요."
-            )
-        resolved_files[key] = str(path)
+    for key, (file_name, upstream_dag) in versioned_files.items():
+        resolved_files[key] = _resolve_versioned_file(
+            params[key],
+            year_month,
+            legacy_file_name=file_name,
+            upstream_dag=upstream_dag,
+        )
+
+    fuel_path = (
+        Path(params["fuel_price_path"])
+        / f"year_month={year_month}"
+        / "gas_ev_price.parquet"
+    )
+    if not fuel_path.is_file():
+        raise FileNotFoundError(
+            f"Silver 파일이 없습니다: {fuel_path}. "
+            "eia_fuel_price_silver_pipeline 을 먼저 돌리세요."
+        )
+    resolved_files["fuel_price_path"] = str(fuel_path)
 
     resolved = {
         "year_month": year_month,
         "year": year_month.split("-")[0],
         "month": str(int(year_month.split("-")[1])),
-        "monthly_taxi_trip_path": str(monthly_taxi_trip),
+        "monthly_taxi_trip_path": monthly_taxi_trip,
         **resolved_files,
     }
     logger.info("Gold 입력 확정: %s", resolved)

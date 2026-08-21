@@ -74,6 +74,8 @@ def hvfhv_raw_to_silver_pipeline():
             "--input_path \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
+            "--output_file \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
+            "['silver_version_path'] }}\" "
             f"--error_threshold {HVFHV_ERROR_THRESHOLD}"
         ),
         env={
