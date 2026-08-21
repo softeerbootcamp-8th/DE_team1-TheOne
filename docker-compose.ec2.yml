@@ -60,9 +60,15 @@ services:
       #     2) 인스턴스에 공인 IP 없음
       #     ALB 를 붙이거나 공인 IP 를 주는 순간 이 설정은 인증 없는 공개가 됩니다.
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
-      # 이 두 개가 없으면 Lambda 핸들러 계열 산출물이 S3 가 아니라 컨테이너 디스크에
-      # 쌓입니다(핸들러의 기본값이 local). 배포된 Lambda 9개와 같은 값입니다.
+      # 없으면 Lambda 핸들러 계열 산출물이 S3 가 아니라 컨테이너 디스크에 쌓입니다
+      # (핸들러의 기본값이 local). 그 디스크는 배포마다 지워집니다.
+      #
+      # ★ 스위치가 두 개입니다. 핸들러마다 보는 이름이 달라서 둘 다 켜야 합니다.
+      #   RAW_STORAGE     8개  (source_to_raw / raw_to_curated 계열)
+      #   BRONZE_STORAGE 11개  (raw_to_bronze / bronze_to_silver 계열 + vehicle_master)
+      # 하나만 켜면 생산자는 S3 에 쓰고 소비자는 로컬을 읽어 FileNotFoundError 가 납니다.
       RAW_STORAGE: s3
+      BRONZE_STORAGE: s3
       DATA_LAKE_S3_BUCKET: de-theone
       AWS_DEFAULT_REGION: ap-northeast-2
     volumes:
