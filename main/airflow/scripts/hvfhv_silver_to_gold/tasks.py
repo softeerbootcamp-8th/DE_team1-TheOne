@@ -15,9 +15,9 @@ logger = logging.getLogger(__name__)
 ROOT = PROJECT_ROOT
 SILVER = ROOT / "data" / "silver"
 DEFAULT_PATHS = {
-    "hvfhv_path": str(SILVER / "hvfhv"),
-    "driver_snapshot_path": str(SILVER / "driver_vehicle_monthly_snapshot"),
-    "inventory_path": str(SILVER / "lease_vehicle_inventory"),
+    "monthly_taxi_trip_path": str(SILVER / "monthly_taxi_trip"),
+    "driver_vehicle_monthly_snapshot_path": str(SILVER / "driver_vehicle_monthly_snapshot"),
+    "lease_vehicle_inventory_path": str(SILVER / "lease_vehicle_inventory"),
     "fuel_price_path": str(SILVER / "gas_ev_price"),
     "output_dir": str(ROOT / "data" / "gold"),
 }
@@ -39,11 +39,11 @@ REQUIRED_COLUMNS = {
 }
 
 
-def available_year_months(hvfhv_path: str | Path) -> list[str]:
-    """HVFHV Silver에 실제로 있는 `year_month=` 파티션 목록입니다."""
+def available_year_months(monthly_taxi_trip_path: str | Path) -> list[str]:
+    """월별 택시 운행 기록 Silver에 실제로 있는 `year_month=` 파티션 목록입니다."""
     return sorted(
         partition.name.removeprefix("year_month=")
-        for partition in Path(hvfhv_path).glob("year_month=*")
+        for partition in Path(monthly_taxi_trip_path).glob("year_month=*")
         if partition.is_dir()
     )
 
@@ -51,7 +51,7 @@ def available_year_months(hvfhv_path: str | Path) -> list[str]:
 def resolve_target_year_month(
     logical_date: datetime,
     params: dict,
-    hvfhv_path: str,
+    monthly_taxi_trip_path: str,
     partition_key: str | None = None,
 ) -> str:
     """대상 연월. 수동 파라미터, Asset 파티션 키, HVFHV 최신 월 순으로 고릅니다.
@@ -74,10 +74,10 @@ def resolve_target_year_month(
     if logical_date.tzinfo is None:
         logical_date = logical_date.replace(tzinfo=timezone.utc)
     limit = f"{logical_date.year:04d}-{logical_date.month:02d}"
-    candidates = [ym for ym in available_year_months(hvfhv_path) if ym <= limit]
+    candidates = [ym for ym in available_year_months(monthly_taxi_trip_path) if ym <= limit]
     if not candidates:
         raise FileNotFoundError(
-            f"기준일({limit}) 이하의 HVFHV Silver 파티션이 없습니다: {hvfhv_path}. "
+            f"기준일({limit}) 이하의 월별 택시 운행 기록 Silver 파티션이 없습니다: {monthly_taxi_trip_path}. "
             "hvfhv_raw_to_silver_pipeline 을 먼저 돌리세요."
         )
     return candidates[-1]
@@ -87,19 +87,19 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
     """Spark 잡에 넘길 같은 달의 Silver 4종 경로를 확인합니다."""
     datetime.strptime(year_month, "%Y-%m")
 
-    hvfhv = Path(params["hvfhv_path"]) / f"year_month={year_month}"
-    if not hvfhv.is_dir() or not any(hvfhv.glob("*.parquet")):
+    monthly_taxi_trip = Path(params["monthly_taxi_trip_path"]) / f"year_month={year_month}"
+    if not monthly_taxi_trip.is_dir() or not any(monthly_taxi_trip.glob("*.parquet")):
         raise FileNotFoundError(
-            f"HVFHV Silver 파티션이 없거나 비어 있습니다: {hvfhv}. "
+            f"월별 택시 운행 기록 Silver 파티션이 없거나 비어 있습니다: {monthly_taxi_trip}. "
             "hvfhv_raw_to_silver_pipeline 을 먼저 돌리세요."
         )
 
     monthly_files = {
-        "driver_snapshot_path": (
+        "driver_vehicle_monthly_snapshot_path": (
             "driver_vehicle_monthly_snapshot.parquet",
             "driver_vehicle_monthly_snapshot_raw_to_silver_pipeline",
         ),
-        "inventory_path": (
+        "lease_vehicle_inventory_path": (
             "lease_vehicle_inventory.parquet",
             "lease_vehicle_inventory_raw_to_silver_pipeline",
         ),
@@ -121,7 +121,7 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
         "year_month": year_month,
         "year": year_month.split("-")[0],
         "month": str(int(year_month.split("-")[1])),
-        "hvfhv_path": str(hvfhv),
+        "monthly_taxi_trip_path": str(monthly_taxi_trip),
         **resolved_files,
     }
     logger.info("Gold 입력 확정: %s", resolved)
@@ -154,7 +154,7 @@ def validate_inputs_task(**context) -> dict:
     year_month = resolve_target_year_month(
         logical_date,
         params,
-        params["hvfhv_path"],
+        params["monthly_taxi_trip_path"],
         partition_key,
     )
     logger.info("Gold 대상 연월: %s", year_month)

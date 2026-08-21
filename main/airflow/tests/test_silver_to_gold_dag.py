@@ -31,9 +31,9 @@ GOLD_DAG = importlib.import_module(
 
 def _params(root: Path, **overrides) -> dict:
     params = {
-        "hvfhv_path": str(root / "hvfhv"),
-        "driver_snapshot_path": str(root / "driver_vehicle_monthly_snapshot"),
-        "inventory_path": str(root / "lease_vehicle_inventory"),
+        "monthly_taxi_trip_path": str(root / "monthly_taxi_trip"),
+        "driver_vehicle_monthly_snapshot_path": str(root / "driver_vehicle_monthly_snapshot"),
+        "lease_vehicle_inventory_path": str(root / "lease_vehicle_inventory"),
         "fuel_price_path": str(root / "gas_ev_price"),
         "year": None,
         "month": None,
@@ -47,9 +47,9 @@ def _logical_date(year: int, month: int) -> datetime:
 
 
 def _write_inputs(root: Path, year_month: str) -> None:
-    hvfhv = root / "hvfhv" / f"year_month={year_month}"
-    hvfhv.mkdir(parents=True)
-    (hvfhv / "part-00000.parquet").touch()
+    monthly_taxi_trip = root / "monthly_taxi_trip" / f"year_month={year_month}"
+    monthly_taxi_trip.mkdir(parents=True)
+    (monthly_taxi_trip / "part-00000.parquet").touch()
 
     files = {
         "driver_vehicle_monthly_snapshot": "driver_vehicle_monthly_snapshot.parquet",
@@ -137,7 +137,7 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
     resolved = dag_module.resolve_target_year_month(
         _logical_date(2026, 8),
         _params(tmp_path),
-        str(tmp_path / "hvfhv"),
+        str(tmp_path / "monthly_taxi_trip"),
         partition_key="2026-05",
     )
 
@@ -146,10 +146,10 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
 
 def test_대상연월은_기준일_이하_최신_HVFHV_파티션이다(tmp_path):
     for year_month in ("2026-03", "2026-05", "2026-09"):
-        (tmp_path / "hvfhv" / f"year_month={year_month}").mkdir(parents=True)
+        (tmp_path / "monthly_taxi_trip" / f"year_month={year_month}").mkdir(parents=True)
 
     resolved = dag_module.resolve_target_year_month(
-        _logical_date(2026, 6), _params(tmp_path), str(tmp_path / "hvfhv")
+        _logical_date(2026, 6), _params(tmp_path), str(tmp_path / "monthly_taxi_trip")
     )
 
     assert resolved == "2026-05"
@@ -159,7 +159,7 @@ def test_year_month_파라미터가_파티션보다_우선한다(tmp_path):
     resolved = dag_module.resolve_target_year_month(
         _logical_date(2026, 6),
         _params(tmp_path, year="2025", month="7"),
-        str(tmp_path / "hvfhv"),
+        str(tmp_path / "monthly_taxi_trip"),
     )
 
     assert resolved == "2025-07"
@@ -171,11 +171,11 @@ def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
     resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
 
     assert resolved["year"] == "2026" and resolved["month"] == "5"
-    assert resolved["hvfhv_path"].endswith("hvfhv/year_month=2026-05")
-    assert resolved["driver_snapshot_path"].endswith(
+    assert resolved["monthly_taxi_trip_path"].endswith("monthly_taxi_trip/year_month=2026-05")
+    assert resolved["driver_vehicle_monthly_snapshot_path"].endswith(
         "year_month=2026-05/driver_vehicle_monthly_snapshot.parquet"
     )
-    assert resolved["inventory_path"].endswith(
+    assert resolved["lease_vehicle_inventory_path"].endswith(
         "year_month=2026-05/lease_vehicle_inventory.parquet"
     )
     assert resolved["fuel_price_path"].endswith(
@@ -203,7 +203,7 @@ def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp
 
 
 def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
-    with pytest.raises(FileNotFoundError, match="HVFHV Silver"):
+    with pytest.raises(FileNotFoundError, match="월별 택시 운행 기록 Silver"):
         dag_module.validate_inputs_task.function(
             params=_params(tmp_path, year="2026", month="5"),
             logical_date=_logical_date(2026, 5),

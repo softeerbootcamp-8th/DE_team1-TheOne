@@ -1,14 +1,14 @@
 """원천 Silver 4종을 직접 읽어 Gold 3종을 만듭니다.
 
-input: hvfhv, driver_vehicle_monthly_snapshot, lease_vehicle_inventory,
-       gas_ev_price (Silver)
+input: monthly_taxi_trip, driver_vehicle_monthly_snapshot, lease_vehicle_inventory,
+       fuel_price (Silver)
 output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
 
 사용 예:
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
-      --hvfhv_path ../data/silver/hvfhv/year_month=2026-01 \
-      --driver_snapshot_path ../data/silver/driver_vehicle_monthly_snapshot/year_month=2026-01 \
-      --inventory_path ../data/silver/lease_vehicle_inventory/year_month=2026-01 \
+      --monthly_taxi_trip_path ../data/silver/monthly_taxi_trip/year_month=2026-01 \
+      --driver_vehicle_monthly_snapshot_path ../data/silver/driver_vehicle_monthly_snapshot/year_month=2026-01 \
+      --lease_vehicle_inventory_path ../data/silver/lease_vehicle_inventory/year_month=2026-01 \
       --fuel_price_path ../data/silver/gas_ev_price/year_month=2026-01/gas_ev_price.parquet \
       --year 2026 --month 1 --threshold_profit_increase 600 --output_dir ../data/gold
 """
@@ -74,14 +74,16 @@ def _write_all_csv(
 
 def main(args_list: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="원천 Silver 4종 → Gold 3종 산출")
-    parser.add_argument("--hvfhv_path", required=True, help="HVFHV Silver 월 파티션")
     parser.add_argument(
-        "--driver_snapshot_path",
+        "--monthly_taxi_trip_path", required=True, help="월별 택시 운행 기록 Silver 파티션"
+    )
+    parser.add_argument(
+        "--driver_vehicle_monthly_snapshot_path",
         required=True,
         help="기사 차량 월 스냅샷 Silver 파티션",
     )
     parser.add_argument(
-        "--inventory_path", required=True, help="리스 업체 보유 차량 Silver 파티션"
+        "--lease_vehicle_inventory_path", required=True, help="리스 업체 보유 차량 Silver 파티션"
     )
     parser.add_argument(
         "--fuel_price_path", required=True, help="통합 연료비 Silver 파일 또는 파티션"
@@ -99,9 +101,9 @@ def main(args_list: list[str] | None = None) -> None:
 
     year_month = f"{args.year:04d}-{args.month:02d}"
     spark = get_or_create_spark_session("hvfhv_silver_to_gold")
-    hvfhv: DataFrame = spark.read.parquet(args.hvfhv_path)
-    driver_snapshot: DataFrame = spark.read.parquet(args.driver_snapshot_path)
-    inventory: DataFrame = spark.read.parquet(args.inventory_path)
+    monthly_taxi_trip: DataFrame = spark.read.parquet(args.monthly_taxi_trip_path)
+    driver_snapshot: DataFrame = spark.read.parquet(args.driver_vehicle_monthly_snapshot_path)
+    inventory: DataFrame = spark.read.parquet(args.lease_vehicle_inventory_path)
     fuel_price: DataFrame = spark.read.parquet(args.fuel_price_path)
 
     enriched: DataFrame | None = None
@@ -109,7 +111,7 @@ def main(args_list: list[str] | None = None) -> None:
     recommendation: DataFrame | None = None
     try:
         enriched = enrich_trips_with_fuel_cost(
-            hvfhv,
+            monthly_taxi_trip,
             driver_snapshot,
             inventory,
             fuel_price,
