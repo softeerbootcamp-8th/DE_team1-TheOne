@@ -309,3 +309,135 @@ def test_스키마에_없는_컬럼이_빠지면_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="lease_ended_on"):
         write_snapshot(tables, tmp_path, TEST_SNAPSHOT_DATE)
+
+
+# --- vehicle_master 입력 조회 (로컬 / S3) -----------------------------------
+#
+# EC2 컨테이너는 바인드 마운트가 없고 원천을 S3 에 씁니다. 조회가 로컬로만 굳어 있으면
+# S3 에 데이터가 있어도 "vehicle_master Curated 가 없습니다" 로 매번 실패합니다.
+
+S3_BUCKET = "test-de-theone"
+S3_REGION = "ap-northeast-2"
+_VM_PREFIX = "source/curated/vehicle_master/"
+
+
+def _vehicle_master_bytes() -> bytes:
+    import io
+
+    buffer = io.BytesIO()
+    _vehicle_pool().to_parquet(buffer, index=False)
+    return buffer.getvalue()
+
+
+def test_로컬에_없으면_어느_DAG를_돌릴지_알려준다(tmp_path):
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    with pytest.raises(FileNotFoundError, match="vehicle_master_curated_to_curated"):
+        resolve_vehicle_master_path(tmp_path)
+
+
+def test_알_수_없는_storage는_거부한다(tmp_path):
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    with pytest.raises(ValueError, match="알 수 없는 storage"):
+        resolve_vehicle_master_path(tmp_path, storage="gcs")
+
+
+def test_S3에서_최신_수집분을_내려받아_로컬경로를_돌려준다(tmp_path, monkeypatch):
+    """`s3://` 를 그대로 넘기면 하류가 못 읽습니다.
+
+    Spark 는 `s3a://` + hadoop-aws jar 가, pandas 는 `s3fs` 가 필요합니다. 그래서
+    파일 하나를 내려받고 **로컬 경로**를 돌려주는 계약입니다.
+    """
+    import boto3
+    from moto import mock_aws
+
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", S3_BUCKET)
+    body = _vehicle_master_bytes()
+
+    with mock_aws():
+        client = boto3.client("s3", region_name=S3_REGION)
+        client.create_bucket(
+            Bucket=S3_BUCKET,
+            CreateBucketConfiguration={"LocationConstraint": S3_REGION},
+        )
+        # 최신이 아닌 것도 함께 둡니다 — 최신을 고르는지 봐야 합니다.
+        for collected in ("2026-01-05", "2026-03-11"):
+            client.put_object(
+                Bucket=S3_BUCKET,
+                Key=f"{_VM_PREFIX}collected_date={collected}/city=new-york/vehicle_master.parquet",
+                Body=body,
+            )
+
+        path = resolve_vehicle_master_path(tmp_path, storage="s3")
+
+    assert path.is_file()
+    assert "collected_date=2026-03-11" in str(path)
+    # 로컬 파티션 구조를 그대로 재현해야 storage=local 과 경로 모양이 같아집니다.
+    assert path.parent.name == "city=new-york"
+    assert pd.read_parquet(path).shape == _vehicle_pool().shape
+
+
+def test_S3에_없으면_어느_DAG를_돌릴지_알려준다(tmp_path, monkeypatch):
+    import boto3
+    from moto import mock_aws
+
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", S3_BUCKET)
+    with mock_aws():
+        boto3.client("s3", region_name=S3_REGION).create_bucket(
+            Bucket=S3_BUCKET,
+            CreateBucketConfiguration={"LocationConstraint": S3_REGION},
+        )
+        with pytest.raises(FileNotFoundError, match="vehicle_master_curated_to_curated"):
+            resolve_vehicle_master_path(tmp_path, storage="s3")
+
+
+def test_도시가_여러개면_조용히_고르지_않는다(tmp_path, monkeypatch):
+    import boto3
+    from moto import mock_aws
+
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", S3_BUCKET)
+    body = _vehicle_master_bytes()
+    with mock_aws():
+        client = boto3.client("s3", region_name=S3_REGION)
+        client.create_bucket(
+            Bucket=S3_BUCKET,
+            CreateBucketConfiguration={"LocationConstraint": S3_REGION},
+        )
+        for city in ("new-york", "chicago"):
+            client.put_object(
+                Bucket=S3_BUCKET,
+                Key=f"{_VM_PREFIX}collected_date=2026-03-11/city={city}/vehicle_master.parquet",
+                Body=body,
+            )
+        with pytest.raises(ValueError, match="도시가 여러 개"):
+            resolve_vehicle_master_path(tmp_path, storage="s3")
+
+
+def test_버킷이_없으면_무엇을_설정해야_하는지_알려준다(tmp_path, monkeypatch):
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    monkeypatch.delenv("DATA_LAKE_S3_BUCKET", raising=False)
+    # .env 를 읽어 되살아나지 않도록 무력화합니다.
+    monkeypatch.setattr("shared.common.env.load_local_env", lambda: None)
+
+    with pytest.raises(ValueError, match="DATA_LAKE_S3_BUCKET"):
+        resolve_vehicle_master_path(tmp_path, storage="s3")
