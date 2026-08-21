@@ -32,7 +32,7 @@ REQUIRED_COLUMNS = ("PULocationID", "DOLocationID", "trip_time")
 # 그 값이 크면 해당 구역쌍으로 이어지는 배정이 전부 막힙니다.
 DEFAULT_MIN_TRIPS = 5
 
-# 이 범위를 벗어난 트립은 이동시간 표본에서 뺍니다. Curated 정제가 이미 0 < trip_time
+# 이 범위를 벗어난 트립은 이동시간 표본에서 뺍니다. Silver 정제가 이미 0 < trip_time
 # <= 86400 을 걸렀지만, 6시간짜리 구역 간 이동은 대표값으로 쓸 수 없습니다.
 MAX_TRIP_MINUTES = 180.0
 
@@ -40,10 +40,10 @@ MAX_TRIP_MINUTES = 180.0
 def build_travel_times(
     trips: DataFrame, min_trips: int = DEFAULT_MIN_TRIPS
 ) -> DataFrame:
-    """구역쌍별 이동시간 중앙값. 입력은 HVFHV Curated 입니다."""
+    """구역쌍별 이동시간 중앙값. 입력은 HVFHV Silver 입니다."""
     missing = [name for name in REQUIRED_COLUMNS if name not in trips.columns]
     if missing:
-        raise ValueError(f"HVFHV Curated 에 필수 컬럼이 없습니다: {missing}")
+        raise ValueError(f"HVFHV Silver 에 필수 컬럼이 없습니다: {missing}")
     if min_trips < 1:
         raise ValueError(f"min_trips 는 1 이상이어야 합니다: {min_trips}")
 

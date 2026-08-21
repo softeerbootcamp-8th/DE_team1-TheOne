@@ -1,4 +1,4 @@
-"""구역쌍 이동시간 Curated 시나리오. 이슈 #348.
+"""구역쌍 이동시간 Silver 시나리오. 이슈 #348.
 
 1. 구역쌍별 중앙값을 분 단위로 계산
 2. 대표값이 평균이 아니라 중앙값 — 이상치가 이동시간을 부풀리면 배정이 조용히 줄어듦
@@ -23,7 +23,7 @@ def spark():
 
 
 def trips(spark, rows):
-    """(PULocationID, DOLocationID, trip_time 초) 목록을 HVFHV Curated 모양으로."""
+    """(PULocationID, DOLocationID, trip_time 초) 목록을 HVFHV Silver 모양으로."""
     return spark.createDataFrame(
         [
             {"PULocationID": pu, "DOLocationID": do, "trip_time": trip_time}

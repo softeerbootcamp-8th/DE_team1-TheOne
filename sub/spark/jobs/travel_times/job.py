@@ -1,8 +1,8 @@
-"""구역쌍 이동시간 Curated 생성 CLI.
+"""구역쌍 이동시간 Silver 생성 CLI.
 
-HVFHV Curated 전체(또는 지정한 월)를 읽어 구역쌍별 이동시간 중앙값을 만듭니다.
+HVFHV Silver 전체(또는 지정한 월)를 읽어 구역쌍별 이동시간 중앙값을 만듭니다.
 기사 배정은 이 표를 `jobs/travel_times/transformer.py::build_travel_times` 로 그때그때
-만들어 씁니다(`jobs/driver_assignment/source_job.py`). 이 CLI 는 그 결과를 Curated 로
+만들어 씁니다(`jobs/driver_assignment/source_job.py`). 이 CLI 는 그 결과를 Silver 로
 따로 떨어뜨려 들여다볼 때 씁니다 — 정기 DAG 은 없습니다.
 
 사용 예:
@@ -21,8 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 def main(args_list: list[str] | None = None):
-    parser = argparse.ArgumentParser(description="구역쌍 이동시간 Curated Spark job")
-    parser.add_argument("--trips_path", required=True, help="HVFHV Curated 경로")
+    parser = argparse.ArgumentParser(description="구역쌍 이동시간 Silver Spark job")
+    parser.add_argument("--trips_path", required=True, help="HVFHV Silver 경로")
     parser.add_argument("--output_path", required=True)
     parser.add_argument(
         "--min_trips",
