@@ -33,6 +33,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "year": payload["year_month"][:4],
         "month": payload["year_month"][5:],
         "row_count": result.write_result.row_count,
+        "source_changed": loader.source_changed,
         "locations": [result.write_result.location],
         "file_size_bytes": len(payload["content"]),
     }

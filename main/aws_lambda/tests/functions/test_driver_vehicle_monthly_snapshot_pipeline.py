@@ -88,4 +88,5 @@ def test_기사차량스냅샷Parquet만_직접받아_footer행수와함께_Bron
     assert path.name == "20260820T101531123456Z.parquet"
     assert result["collected_at"] == "2026-08-20T10:15:31.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
+    assert result["source_changed"] is True
     assert "sha256" not in result and "marker_location" not in result

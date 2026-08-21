@@ -8,6 +8,14 @@ import pyarrow.parquet as pq
 from shared.airflow.common.validation import parse_handler_result, parse_year_month
 
 
+def should_process_silver(result: dict) -> bool:
+    """Lambda가 확정한 Bronze 변경 여부를 엄격하게 확인합니다."""
+    source_changed = result.get("source_changed")
+    if not isinstance(source_changed, bool):
+        raise ValueError("Bronze 수집 결과에 source_changed bool이 없습니다")
+    return source_changed
+
+
 def validate_monthly_parquet_bronze(
     result: dict,
     *,

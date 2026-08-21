@@ -74,6 +74,7 @@ def test_S3_loader는_변경된_원본을_수집시각_키로_append한다(s3_cl
     ]
     assert first.location == f"s3://{S3_BUCKET}/{prefix}{FIRST_FILE}"
     assert second.location == f"s3://{S3_BUCKET}/{prefix}{SECOND_FILE}"
+    assert loader.source_changed is True
     assert keys == [f"{prefix}{FIRST_FILE}", f"{prefix}{SECOND_FILE}"]
     assert (
         s3_client.get_object(Bucket=S3_BUCKET, Key=keys[-1])["Body"].read()
@@ -89,6 +90,7 @@ def test_S3_loader는_동일한_최신원본을_재사용한다(s3_client):
     second = loader.write(_payload(content, SECOND_COLLECTED_AT))
 
     assert second.location == first.location
+    assert loader.source_changed is False
     assert loader.payload["collected_at"] == FIRST_COLLECTED_AT
     response = s3_client.list_objects_v2(
         Bucket=S3_BUCKET,
