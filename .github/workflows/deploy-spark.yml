@@ -1,17 +1,23 @@
 # =============================================================================
-# Spark 컨테이너 이미지 배포.
+# Spark 컨테이너 이미지 배포 + EMR Serverless Application 이미지 갱신.
 #
-#   지금은 ECR 이미지를 새로 빌드해서 push 하는 것까지만 합니다. EMR Serverless
-#   Application/Job Run 을 이 이미지로 갈아끼우는 단계는 별도 이슈로 미룹니다
-#   (권한 이슈로 EMR Serverless 애플리케이션 생성이 막혀 있었음 — #659 참고).
+#   Job Run 제출은 하지 않습니다 — Job Run은 일회성이라(#646 참고) DAG나 사람이
+#   그때그때 제출하는 게 맞고, 여기서는 그 다음 Job Run이 새 이미지를 쓰도록
+#   Application 의 imageConfiguration 만 갱신합니다.
 #
 # 자격증명을 저장하지 않습니다 (OIDC) — deploy-lambda.yml 과 동일한 방식입니다.
 #
-# 사전 준비 (AWS 콘솔 — 1회)
+# 사전 준비 (AWS 콘솔 — 1회, 완료됨)
 #   1. IAM Identity provider 로 token.actions.githubusercontent.com 등록 (lambda 배포와 공유 가능)
-#   2. Role `theone-github-actions-spark-deploy` 생성 (ECR push 권한만, 신뢰관계에 repo·branch 조건)
-#   3. ECR 리포지토리 `theone-spark` 생성
-#   4. GitHub Variables: AWS_REGION(공유) / AWS_ROLE_ARN_SPARK / ECR_REPOSITORY_SPARK
+#   2. Role `theone-github-actions-spark-deploy` 생성. ECR 은 theone-spark 만,
+#      EMR 은 emr-serverless:UpdateApplication(해당 Application ARN 로 제한)
+#   3. ECR 리포지토리 `theone-spark` 생성 + 리포지토리 정책으로
+#      emr-serverless.amazonaws.com 의 이미지 pull 허용(BatchGetImage·
+#      GetDownloadUrlForLayer·DescribeImages)
+#   4. EMR Serverless Application `theone-spark` 생성 (release emr-7.13.0, x86_64) —
+#      상세는 shared/spark/README.md 참고
+#   5. GitHub Variables: AWS_REGION(공유) / AWS_ROLE_ARN_SPARK / ECR_REPOSITORY_SPARK /
+#      EMR_APPLICATION_ID
 # =============================================================================
 name: Deploy Spark
 
@@ -84,14 +90,24 @@ jobs:
       - name: 이미지 푸시
         run: docker push "${{ steps.image.outputs.uri }}"
 
+      # Job Run 은 일회성이라 여기서 제출하지 않습니다 — 다음에 제출되는 Job Run부터
+      # 이 이미지를 쓰도록 Application 설정만 갱신합니다.
+      - name: EMR Serverless 이미지 갱신
+        run: |
+          aws emr-serverless update-application \
+            --application-id "${{ vars.EMR_APPLICATION_ID }}" \
+            --image-configuration "{\"imageUri\":\"${{ steps.image.outputs.uri }}\"}" \
+            --region "${{ vars.AWS_REGION }}"
+
       - name: 요약
         run: |
           {
-            echo "### Spark 이미지 push 완료"
+            echo "### Spark 이미지 push + EMR 갱신 완료"
             echo ""
             echo '```'
             echo "이미지: ${{ steps.image.outputs.uri }}"
+            echo "Application: ${{ vars.EMR_APPLICATION_ID }}"
             echo '```'
             echo ""
-            echo "EMR Serverless Application/Job Run 갈아끼우는 건 아직 수동입니다."
+            echo "Job Run 제출은 별도입니다 — shared/spark/README.md 참고."
           } >> "$GITHUB_STEP_SUMMARY"
