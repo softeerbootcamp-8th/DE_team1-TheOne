@@ -16,7 +16,7 @@ import pyarrow.parquet as pq
 from botocore.exceptions import ClientError
 from pipeline_core.extractor import Extractor
 
-from shared.aws_lambda.common.s3_reader import get_object_bytes
+from shared.common.s3_reader import get_object_bytes
 
 logger = logging.getLogger(__name__)
 

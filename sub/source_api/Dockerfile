@@ -11,7 +11,7 @@ RUN pip install --no-cache-dir "boto3==1.43.65" "python-dotenv==1.2.1"
 COPY sub/__init__.py sub/__init__.py
 COPY sub/source_api/ sub/source_api/
 COPY shared/__init__.py shared/__init__.py
-COPY shared/aws_lambda/ shared/aws_lambda/
+COPY shared/common/ shared/common/
 
 ENV SOURCE_API_ENV=prod
 ENV SOURCE_API_HOST=0.0.0.0

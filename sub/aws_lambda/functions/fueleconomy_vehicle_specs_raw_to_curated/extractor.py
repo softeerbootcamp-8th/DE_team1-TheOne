@@ -11,9 +11,9 @@ import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
 from sub.aws_lambda.common import vehicle_specs_layout as layout
-from shared.aws_lambda.common.env import load_local_env
+from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
-from shared.aws_lambda.common.s3_reader import get_object_bytes, list_keys
+from shared.common.s3_reader import get_object_bytes, list_keys
 
 logger = logging.getLogger(__name__)
 

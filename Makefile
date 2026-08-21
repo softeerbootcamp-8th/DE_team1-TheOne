@@ -73,8 +73,8 @@ test:
 # 저장소 루트를 직접 넘겨줍니다.
 	@echo "==> testing sub/airflow"; \
 	(cd main/airflow && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/airflow/tests) || exit 1
-	@echo "==> testing sub/aws_lambda and shared/aws_lambda"; \
-	(cd main/aws_lambda && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/aws_lambda/tests ../../shared/aws_lambda/tests) || exit 1
+	@echo "==> testing sub/aws_lambda, shared/aws_lambda and shared/common"; \
+	(cd main/aws_lambda && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/aws_lambda/tests ../../shared/aws_lambda/tests ../../shared/common/tests) || exit 1
 	@echo "==> testing sub/spark"; \
 	(cd main/spark && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/spark/tests) || exit 1
 
@@ -118,12 +118,13 @@ build:
 		exit 1; \
 	fi
 	@for r in $(RUNTIMES); do \
-		name=$$(basename $$r); \
+		dirname=$$(basename $$r); \
+		name=$$dirname; \
 		if [ "$$name" = "aws_lambda" ]; then name="lambda"; fi; \
 		image="$(IMAGE_PREFIX)$$name"; \
 		if [ -n "$(IMAGE_NAME)" ]; then image="$(IMAGE_NAME)"; fi; \
 		echo "==> building $(REGISTRY)$$image:$(GIT_SHA)"; \
-		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f $$r/Dockerfile \
+		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f shared/$$dirname/Dockerfile \
 			-t $(REGISTRY)$$image:$(GIT_SHA) . || exit 1; \
 	done
 

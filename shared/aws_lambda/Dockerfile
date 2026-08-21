@@ -33,6 +33,7 @@ COPY sub/__init__.py ${LAMBDA_TASK_ROOT}/sub/__init__.py
 COPY sub/aws_lambda/ ${LAMBDA_TASK_ROOT}/sub/aws_lambda/
 COPY shared/__init__.py ${LAMBDA_TASK_ROOT}/shared/__init__.py
 COPY shared/aws_lambda/ ${LAMBDA_TASK_ROOT}/shared/aws_lambda/
+COPY shared/common/ ${LAMBDA_TASK_ROOT}/shared/common/
 
 # main·sub 여러 함수가 저장소 루트의 schema.* (bronze/silver/source) 를 절대 import 합니다
 # (로컬은 aws_lambda/pyproject.toml 의 pythonpath="../.." 로 풀림). 이미지에 안 넣으면

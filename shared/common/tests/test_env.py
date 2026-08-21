@@ -7,7 +7,7 @@
 
 from pathlib import Path
 
-from shared.aws_lambda.common import env
+from shared.common import env
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
