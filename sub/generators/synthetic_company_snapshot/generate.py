@@ -19,6 +19,7 @@ from sub.generators.synthetic_company_snapshot.snapshot import (
     evolve_company_snapshot,
     read_snapshot,
     write_snapshot,
+    write_snapshot_s3,
 )
 
 # 실행 위치가 아니라 이 파일 위치로 저장소 루트를 확정합니다. Makefile은
@@ -70,6 +71,10 @@ def main(args_list: list[str] | None = None):
         help=f"비우면 {_VEHICLE_MASTER_DIR} 의 최신 collected_date 파티션을 씁니다",
     )
     parser.add_argument("--output_dir", default="../data/source/company")
+    parser.add_argument(
+        "--storage", choices=("local", "s3"), default="local", help="local이면 --output_dir, s3면 DATA_LAKE_S3_BUCKET"
+    )
+    parser.add_argument("--bucket", default=None, help="비우면 DATA_LAKE_S3_BUCKET 환경변수")
     parser.add_argument(
         "--config", default=None, help=f"비우면 {DEFAULT_CONFIG_PATH}"
     )
@@ -130,7 +135,10 @@ def main(args_list: list[str] | None = None):
             snapshot_date=snapshot_date,
             lease_start_min=lease_start_min,
         )
-    paths = write_snapshot(tables, args.output_dir, snapshot_date)
+    if args.storage == "s3":
+        paths = write_snapshot_s3(tables, snapshot_date, bucket=args.bucket)
+    else:
+        paths = write_snapshot(tables, args.output_dir, snapshot_date)
     print(f"합성 회사 원천 스냅샷 생성 완료: {', '.join(map(str, paths))}")
     return paths
 

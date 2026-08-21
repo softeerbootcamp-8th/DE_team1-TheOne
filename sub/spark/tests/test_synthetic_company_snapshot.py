@@ -24,6 +24,7 @@ from sub.generators.synthetic_company_snapshot.snapshot import (
     evolve_company_snapshot,
     read_snapshot,
     write_snapshot,
+    write_snapshot_s3,
 )
 
 
@@ -166,6 +167,29 @@ def test_저장한_세_스냅샷의_pk_fk와_스키마가_보존된다(tmp_path)
     assert set(written["taxi"].columns) >= {
         "taxi_id", "make_key", "model_key", "model_year", "vehicle_group", "snapshot_date"
     }
+
+
+def test_S3로_쓰면_source_synthesize_경로에_세_파일을_올린다(monkeypatch):
+    import boto3
+    from unittest.mock import MagicMock
+
+    tables = build_company_snapshot(_driver_ids(), _vehicle_pool(), **_snapshot_kwargs())
+    mock_client = MagicMock()
+    monkeypatch.setattr(boto3, "client", lambda service: mock_client)
+
+    locations = write_snapshot_s3(tables, TEST_SNAPSHOT_DATE, bucket="test-bucket")
+
+    expected_keys = {
+        f"source/synthesize/snapshot_date={TEST_SNAPSHOT_DATE.isoformat()}/{name}.parquet"
+        for name in ("customer", "taxi", "lease_contract")
+    }
+    assert set(locations) == {f"s3://test-bucket/{key}" for key in expected_keys}
+    assert mock_client.put_object.call_count == 3
+    calls = {call.kwargs["Key"]: call.kwargs for call in mock_client.put_object.call_args_list}
+    assert set(calls) == expected_keys
+    for kwargs in calls.values():
+        assert kwargs["Bucket"] == "test-bucket"
+        assert kwargs["ServerSideEncryption"] == "AES256"
 
 
 def test_월별로_계약을_1퍼센트_해지하고_같은_수의_신규계약을_생성한다():
