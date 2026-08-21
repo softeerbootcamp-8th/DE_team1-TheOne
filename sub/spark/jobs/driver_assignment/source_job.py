@@ -765,6 +765,8 @@ def main(args_list: list[str] | None = None) -> Path | str:
         snapshot_date=snapshot_date,
         config=config,
         vehicle_master_path=args.vehicle_master_path,
+        storage=args.storage,
+        bucket=args.bucket,
     )
 
     spark = get_or_create_spark_session(

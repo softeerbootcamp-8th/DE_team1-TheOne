@@ -129,7 +129,7 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
     """
     monkeypatch.setattr(monthly, "load_bootstrap_pools", lambda **_: _bootstrap_pools())
     monkeypatch.setattr(
-        monthly.fleet, "load_fuel_prices", lambda: {"gallon_usd": 4.0, "kwh_usd": 0.4}
+        monthly.fleet, "load_fuel_prices", lambda **_: {"gallon_usd": 4.0, "kwh_usd": 0.4}
     )
     vehicle_master_path = tmp_path / "vehicle_master.parquet"
     _vehicle_master_silver().to_parquet(vehicle_master_path, index=False)
