@@ -25,10 +25,10 @@ from sub.generators.synthetic_company_snapshot.snapshot import (
 # main/spark에서 실행하므로 상대경로를 쓰면 main/data를 보게 됩니다.
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 
-# vehicle_master 는 네 개 Silver 를 조인해 만드는 파생 Silver 라 Bronze 가 없습니다
+# vehicle_master 는 네 개 Curated 를 조인해 만드는 파생 Curated 라 Raw 가 없습니다
 # (lambda/functions/common/vehicle_master_layout.py 참고). 경로에 생성일이 들어가서
 # 고정값으로 두면 다음 수집일에 낡으므로, 데이터셋 디렉터리에서 최신을 골라 씁니다.
-_VEHICLE_MASTER_DIR = PROJECT_ROOT / "data" / "silver" / "vehicle_master"
+_VEHICLE_MASTER_DIR = PROJECT_ROOT / "data" / "source" / "curated" / "vehicle_master"
 _VEHICLE_MASTER_FILE = "vehicle_master.parquet"
 
 
@@ -41,7 +41,7 @@ def resolve_vehicle_master_path(dataset_dir: str | Path) -> Path:
     partitions = sorted(Path(dataset_dir).glob("collected_date=*"))
     if not partitions:
         raise FileNotFoundError(
-            f"vehicle_master Silver 가 없습니다: {dataset_dir}. "
+            f"vehicle_master Curated 가 없습니다: {dataset_dir}. "
             "vehicle_master_silver DAG 를 먼저 돌리거나 --vehicle_master_path 로 직접 지정하세요."
         )
 

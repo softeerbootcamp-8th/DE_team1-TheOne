@@ -29,7 +29,7 @@ ROOT = PROJECT_ROOT
 SOURCE_ROOT = ROOT / "data" / "source"
 DEFAULT_PATHS = {
     "source_input_dir": str(SOURCE_ROOT / "synthetic_driver_trip_inputs"),
-    "vehicle_master_dir": str(ROOT / "data" / "silver" / "vehicle_master"),
+    "vehicle_master_dir": str(ROOT / "data" / "source" / "curated" / "vehicle_master"),
     "state_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_state"),
     "release_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_api"),
 }

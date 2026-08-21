@@ -17,7 +17,7 @@ from shared.airflow.common.validation import parse_handler_result, parse_iso_dat
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_SILVER_DIR = os.getenv("SILVER_DIR", str(PROJECT_ROOT / "data" / "silver"))
+DEFAULT_CURATED_DIR = os.getenv("CURATED_DIR", str(PROJECT_ROOT / "data" / "source" / "curated"))
 
 MAX_SOURCE_AGE_DAYS = {
     "vehicle_catalog": 14,
@@ -31,12 +31,12 @@ MAX_SOURCE_AGE_DAYS = {
 def build_vehicle_master_task(**context) -> dict:
     """원천 4개의 최신 파티션을 읽어 차량 마스터를 조립합니다."""
     params = context.get("params", {})
-    event = {"silver_dir": params.get("silver_dir") or DEFAULT_SILVER_DIR}
+    event = {"curated_dir": params.get("silver_dir") or DEFAULT_CURATED_DIR}
     collected_date = (params.get("collected_date") or "").strip()
     if collected_date:
         event["collected_date"] = collected_date
 
-    result = lambda_handler_for("vehicle_master_silver", package="sub.aws_lambda.functions")(event=event)
+    result = lambda_handler_for("vehicle_master_curated_to_curated", package="sub.aws_lambda.functions")(event=event)
     logger.info("차량 마스터 조립 완료: %s", result)
     return result
 
@@ -51,9 +51,9 @@ def build_vehicle_master_task(**context) -> dict:
 def validate_silver_task(result: dict, **context) -> None:
     """도시별 파일이 layout 규칙·스키마와 맞는지, 원천이 낡지 않았는지 봅니다."""
     params = context.get("params", {})
-    silver_dir = params.get("silver_dir") or DEFAULT_SILVER_DIR
+    curated_dir = params.get("silver_dir") or DEFAULT_CURATED_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_master_layout")
-    loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_silver.loader")
+    loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader")
 
     parsed = parse_handler_result(result)
     collected_date = parse_iso_date(result.get("collected_date"))
@@ -66,7 +66,7 @@ def validate_silver_task(result: dict, **context) -> None:
             raise ValueError(f"같은 도시가 두 번 적재됐습니다: {city}")
         seen_cities.add(city)
 
-        expected = layout.silver_file(silver_dir, collected_date, city)
+        expected = layout.curated_file(curated_dir, collected_date, city)
         if path.resolve() != expected.resolve():
             raise ValueError(
                 f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}"
