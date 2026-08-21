@@ -1,4 +1,4 @@
-"""차량 마스터 Silver DAG의 실행·검증 함수."""
+"""차량 마스터 Curated DAG의 실행·검증 함수."""
 
 import importlib
 import logging
@@ -31,7 +31,7 @@ MAX_SOURCE_AGE_DAYS = {
 def build_vehicle_master_task(**context) -> dict:
     """원천 4개의 최신 파티션을 읽어 차량 마스터를 조립합니다."""
     params = context.get("params", {})
-    event = {"curated_dir": params.get("silver_dir") or DEFAULT_CURATED_DIR}
+    event = {"curated_dir": params.get("curated_dir") or DEFAULT_CURATED_DIR}
     collected_date = (params.get("collected_date") or "").strip()
     if collected_date:
         event["collected_date"] = collected_date
@@ -42,16 +42,16 @@ def build_vehicle_master_task(**context) -> dict:
 
 
 @task(
-    task_id="validate_silver",
+    task_id="validate_curated",
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
-    outlets=[assets.VEHICLE_MASTER_SILVER],
+    outlets=[assets.VEHICLE_MASTER_CURATED],
 )
-def validate_silver_task(result: dict, **context) -> None:
+def validate_curated_task(result: dict, **context) -> None:
     """도시별 파일이 layout 규칙·스키마와 맞는지, 원천이 낡지 않았는지 봅니다."""
     params = context.get("params", {})
-    curated_dir = params.get("silver_dir") or DEFAULT_CURATED_DIR
+    curated_dir = params.get("curated_dir") or DEFAULT_CURATED_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_master_layout")
     loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader")
 
@@ -74,7 +74,7 @@ def validate_silver_task(result: dict, **context) -> None:
 
         table = read_parquet(path)
         if table.schema != loader.SCHEMA:
-            raise ValueError(f"Silver 스키마가 loader.SCHEMA 와 다릅니다: {path}")
+            raise ValueError(f"Curated 스키마가 loader.SCHEMA 와 다릅니다: {path}")
         if table.num_rows == 0:
             raise ValueError(f"도시 파일에 행이 없습니다: {city}")
         # 스키마 검사는 이름과 타입만 봅니다. nullable 컬럼이 전 행 NULL 이어도
@@ -89,12 +89,12 @@ def validate_silver_task(result: dict, **context) -> None:
 
     if total_rows != parsed.row_count:
         raise ValueError(
-            f"Silver 행 수 합계가 row_count 와 다릅니다: "
+            f"Curated 행 수 합계가 row_count 와 다릅니다: "
             f"{total_rows} != {parsed.row_count}"
         )
 
     _require_fresh_sources(result.get("source_collected_dates"), collected_date)
-    logger.info("Silver 검증 통과: cities=%d rows=%d", len(seen_cities), total_rows)
+    logger.info("Curated 검증 통과: cities=%d rows=%d", len(seen_cities), total_rows)
 
 
 def _require_fresh_sources(source_collected_dates: object, as_of) -> None:

@@ -108,7 +108,7 @@ class VehicleMasterCuratedExtractor(Extractor):
         """`collected_date=*/<sub_key>=*/<데이터셋>.parquet` 을 전부 읽습니다.
 
         Curated 파일명은 데이터셋마다 고정이라 같은 파티션에 여러 파일이 쌓이지
-        않습니다. Bronze 처럼 최신 파일을 고를 필요가 없습니다.
+        않습니다. Raw 처럼 최신 파일을 고를 필요가 없습니다.
         """
         dataset_dir = source_layout.dataset_path(self._base_dir)
         collected_date, partition = layout.latest_date_partition(dataset_dir, self.as_of)

@@ -1,7 +1,7 @@
 """크롤러 4종이 지정 일자로 적재하는지 확인합니다 (#585).
 
 전에는 `datetime.now()` 로 고정이라 과거 파티션을 되살릴 수 없었습니다. 파티션 경로와
-행의 `collected_at`, 반환 `collected_date` 가 **셋 다** 지정 일자여야 합니다 — Bronze
+행의 `collected_at`, 반환 `collected_date` 가 **셋 다** 지정 일자여야 합니다 — Raw
 검증이 행에서 뽑은 날짜와 파티션 날짜가 같은지 보기 때문에 하나만 움직이면 죽습니다.
 
 네 크롤러가 같은 실수를 하기 쉬워(각자 now() 를 부르던 자리) 한 파일에서 함께 봅니다.
@@ -62,7 +62,7 @@ def test_지정_일자로_파티션과_행이_함께_간다(
     assert f"collected_date={COLLECTED_DATE}" in str(location)
 
     written = pq.ParquetFile(location).read().to_pylist()
-    # 행의 collected_at 이 파티션과 다른 날이면 Bronze 검증이 죽습니다.
+    # 행의 collected_at 이 파티션과 다른 날이면 Raw 검증이 죽습니다.
     assert {row["collected_at"].strftime("%Y-%m-%d") for row in written} == {COLLECTED_DATE}
 
 

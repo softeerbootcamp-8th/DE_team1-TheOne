@@ -37,7 +37,7 @@ def run_gx_bronze_validation(
     max_model_year: int,
     max_skip_ratio: float,
 ) -> None:
-    """Bronze의 Silver 입력 컬럼과 변환 가능한 행 비율을 검증합니다."""
+    """Bronze의 Curated 입력 컬럼과 변환 가능한 행 비율을 검증합니다."""
     import great_expectations as gx
     import pandas as pd
 
@@ -242,13 +242,13 @@ def run_gx_silver_validation(
     )
 
 
-@task(task_id="raw_to_bronze")
-def raw_to_bronze_task(**context) -> dict:
+@task(task_id="source_to_raw")
+def source_to_raw_task(**context) -> dict:
     """벌크 CSV 를 받아 원본 컬럼 그대로 Raw 에 적재합니다."""
     params = context.get("params", {})
     result = lambda_handler_for("fueleconomy_vehicle_specs_source_to_raw", package="sub.aws_lambda.functions")(
         event={
-            "base_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
+            "base_dir": params.get("raw_dir") or DEFAULT_RAW_DIR,
             "collected_date": params.get("collected_date"),
         }
     )
@@ -256,8 +256,8 @@ def raw_to_bronze_task(**context) -> dict:
     return result
 
 
-@task(task_id="bronze_to_silver")
-def bronze_to_silver_task(raw_result: dict, **context) -> dict:
+@task(task_id="raw_to_curated")
+def raw_to_curated_task(raw_result: dict, **context) -> dict:
     """Raw 제원의 조인 키와 연비/전비를 정제해 Curated 로 적재합니다."""
     params = context.get("params", {})
     collected_date = (params.get("collected_date") or "").strip() or raw_result[
@@ -266,8 +266,8 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
     result = lambda_handler_for("fueleconomy_vehicle_specs_raw_to_curated", package="sub.aws_lambda.functions")(
         event={
             "collected_date": collected_date,
-            "raw_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
-            "curated_dir": params.get("silver_dir") or DEFAULT_CURATED_DIR,
+            "raw_dir": params.get("raw_dir") or DEFAULT_RAW_DIR,
+            "curated_dir": params.get("curated_dir") or DEFAULT_CURATED_DIR,
         }
     )
     logger.info("Raw -> Curated 완료: %s", result)
@@ -275,15 +275,15 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
 
 
 @task(
-    task_id="validate_bronze",
+    task_id="validate_raw",
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_bronze_task(result: dict, **context) -> None:
+def validate_raw_task(result: dict, **context) -> None:
     """Raw 적재 경계를 확인한 뒤 Curated 입력 품질을 GX로 검증합니다."""
     params = context.get("params", {})
-    raw_dir = params.get("bronze_dir") or DEFAULT_RAW_DIR
+    raw_dir = params.get("raw_dir") or DEFAULT_RAW_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_specs_layout")
     extractor = importlib.import_module(
         "sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_curated.extractor"
@@ -324,20 +324,20 @@ def validate_bronze_task(result: dict, **context) -> None:
         transformer.MAX_MODEL_YEAR,
         transformer.MAX_SKIP_RATIO,
     )
-    logger.info("Bronze 검증 통과: source=%s rows=%d", source, parsed.row_count)
+    logger.info("Raw 검증 통과: source=%s rows=%d", source, parsed.row_count)
 
 
 @task(
-    task_id="validate_silver",
-    outlets=[assets.FUELECONOMY_VEHICLE_SPECS_SILVER],
+    task_id="validate_curated",
+    outlets=[assets.FUELECONOMY_VEHICLE_SPECS_CURATED],
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_silver_task(result: dict, **context) -> None:
+def validate_curated_task(result: dict, **context) -> None:
     """Curated 는 출처별로 파일을 씁니다. 그중 하나가 비어도 잡아냅니다."""
     params = context.get("params", {})
-    curated_dir = params.get("silver_dir") or DEFAULT_CURATED_DIR
+    curated_dir = params.get("curated_dir") or DEFAULT_CURATED_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_specs_layout")
     loader = importlib.import_module(
         "sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_curated.loader"
@@ -374,7 +374,7 @@ def validate_silver_task(result: dict, **context) -> None:
 
     if total_rows != parsed.row_count:
         raise ValueError(
-            "Silver 행 수 합계가 row_count 와 다릅니다: "
+            "Curated 행 수 합계가 row_count 와 다릅니다: "
             f"{total_rows} != {parsed.row_count}"
         )
-    logger.info("Silver 검증 통과: sources=%d rows=%d", len(seen_sources), total_rows)
+    logger.info("Curated 검증 통과: sources=%d rows=%d", len(seen_sources), total_rows)
