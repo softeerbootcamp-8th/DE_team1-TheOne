@@ -82,6 +82,11 @@ def write_bronze(
 
 def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
     parquet = pq.ParquetFile(path)
+    version = (
+        Path(task_module.DEFAULT_SILVER_DIR)
+        / f"year_month={year_month}"
+        / Path(path).name
+    )
     return {
         "row_count": parquet.metadata.num_rows,
         "locations": [path],
@@ -89,6 +94,7 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
         "collected_at": "2026-08-11T08:53:54.000000Z",
         "file_size_bytes": Path(path).stat().st_size,
         "source_changed": True,
+        "silver_version_path": str(version),
     }
 
 
@@ -118,21 +124,25 @@ def test_정상_적재는_통과한다(tmp_path):
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
-def test_동일한_Bronze도_검증한_뒤_Silver후속처리를_중단한다(tmp_path):
+def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     path = write_bronze(tmp_path)
     result = result_for(path)
     result["source_changed"] = False
 
-    assert validate_bronze(result, params=bronze_params(tmp_path)) is False
+    assert validate_bronze(result, params=bronze_params(tmp_path))["silver_version_path"].endswith(
+        Path(path).name
+    )
 
 
-def test_Bronze_변경여부_신호가_없으면_조용히_skip하지않고_실패한다(tmp_path):
+def test_Bronze_변경여부_신호가_없어도_감시DAG호출이면_처리한다(tmp_path):
     path = write_bronze(tmp_path)
     result = result_for(path)
     result.pop("source_changed")
 
-    with pytest.raises(ValueError, match="source_changed"):
-        validate_bronze(result, params=bronze_params(tmp_path))
+    assert validate_bronze(result, params=bronze_params(tmp_path))["silver_version_path"].endswith(
+        Path(path).name
+    )
 
 
 def test_필수컬럼보다_컬럼이_많으면_경고후_통과한다(tmp_path, monkeypatch):
@@ -266,9 +276,13 @@ def test_Spark_필수_컬럼이_누락되면_원천부터_다시_수집한다(
     assert len(calls) == 1
     # 재수집 결과를 그대로 넘깁니다. `silver_partitions_before` 는 #165 감시용으로
     # validate_bronze 가 덧붙이는 값이라 비교에서 뺍니다 (#532).
-    assert {k: v for k, v in refreshed.items() if k != "silver_partitions_before"} == (
-        refreshed_results[0]
-    )
+    generated = {
+        "silver_version_path",
+        "silver_partitions_before",
+    }
+    assert {k: v for k, v in refreshed.items() if k not in generated} == {
+        k: v for k, v in refreshed_results[0].items() if k not in generated
+    }
     assert "silver_partitions_before" in refreshed
 
 
@@ -392,10 +406,8 @@ def write_silver(
     records = silver_rows(rows, schema) if records is None else records
     partition = Path(silver_dir) / f"year_month={year_month}"
     partition.mkdir(parents=True, exist_ok=True)
-    pq.write_table(
-        pa.Table.from_pylist(records, schema=schema),
-        partition / "part-0.parquet",
-    )
+    target = partition / "20260811T085354000000Z.parquet"
+    pq.write_table(pa.Table.from_pylist(records, schema=schema), target)
     return partition
 
 
@@ -404,14 +416,17 @@ def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", rows=5)
 
-    validate_silver(result_for(bronze_path))
+    result = result_for(bronze_path)
+    validate_silver(result)
+
+    assert Path(result["silver_version_path"]).is_file()
 
 
 def test_silver_파티션에_파일이_없으면_막는다(tmp_path, monkeypatch):
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
 
-    with pytest.raises(ValueError, match="Parquet 파일이 없습니다"):
+    with pytest.raises(ValueError, match="Silver 버전 파일이 없습니다"):
         validate_silver(result_for(bronze_path))
 
 

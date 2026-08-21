@@ -10,12 +10,15 @@
 8. start/end 중 하나만 주면 ValueError
 9. `is_s3_path`/`resolve_path`/`latest_partition_file`은 s3://·s3a:// 경로도 처리 (이슈 #646)
 10. `--env local|prod`로 기본 입출력 경로를 고름, `prod`인데 버킷이 없으면 ValueError
+11. 단일 Silver 버전은 coalesce(1) 후 collected_at 파일로 원자적 교체
 """
 
 from datetime import datetime
 from pathlib import Path
 
 import boto3
+import pyarrow as pa
+import pyarrow.parquet as pq
 import pytest
 from moto import mock_aws
 
@@ -277,6 +280,86 @@ def test_start와_end가_같으면_한_달만_처리한다(spark, tmp_path):
 
     result = spark.read.parquet(str(silver_dir))
     assert {row["year_month"] for row in result.collect()} == {"2024-05"}
+
+
+def test_단일버전은_coalesce한_collected_at_Parquet하나로_적재한다(spark, tmp_path):
+    file_name = "20260821T123456123456Z.parquet"
+    bronze = tmp_path / "bronze" / "year_month=2024-03" / file_name
+    bronze.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist([_row()]), bronze)
+    final = tmp_path / "silver" / "year_month=2024-03" / file_name
+
+    job.main([
+        "--input_path", str(bronze),
+        "--output_path", str(tmp_path / "silver"),
+        "--output_file", str(final),
+        "--error_threshold", "1.0",
+    ])
+
+    assert spark.read.parquet(str(final)).count() == 1
+    assert not list(final.parent.glob(f".{final.name}.*.tmp"))
+
+
+def test_단일버전_loader는_coalesce_1후_최종파일로_교체한다(tmp_path):
+    final = tmp_path / "20260821T123456123456Z.parquet"
+    calls = []
+
+    class FakeWriter:
+        def mode(self, value):
+            calls.append(("mode", value))
+            return self
+
+        def parquet(self, path):
+            calls.append(("parquet", path))
+            target = Path(path)
+            target.mkdir(parents=True)
+            (target / "part-00000.parquet").touch()
+
+    class FakeDataFrame:
+        write = FakeWriter()
+
+        def count(self):
+            return 7
+
+        def coalesce(self, partitions):
+            calls.append(("coalesce", partitions))
+            return self
+
+    result = job.SingleParquetFileLoader(str(final)).write(FakeDataFrame())
+
+    assert calls[:2] == [("coalesce", 1), ("mode", "overwrite")]
+    assert calls[2][0] == "parquet"
+    assert calls[2][1] != str(final)
+    assert final.is_file()
+    assert result.location == str(final)
+    assert result.row_count == 7
+
+
+def test_단일버전_쓰기실패는_기존최종파일을_보존한다(tmp_path):
+    final = tmp_path / "20260821T123456123456Z.parquet"
+    final.write_bytes(b"previous")
+
+    class FailingWriter:
+        def mode(self, value):
+            return self
+
+        def parquet(self, path):
+            raise OSError("Spark 쓰기 실패")
+
+    class FakeDataFrame:
+        write = FailingWriter()
+
+        def count(self):
+            return 7
+
+        def coalesce(self, partitions):
+            return self
+
+    with pytest.raises(OSError, match="Spark 쓰기 실패"):
+        job.SingleParquetFileLoader(str(final)).write(FakeDataFrame())
+
+    assert final.read_bytes() == b"previous"
+    assert not list(tmp_path.glob(f".{final.name}.*.tmp"))
 
 
 def test_존재하지_않는_단일_월은_FileNotFoundError(tmp_path):

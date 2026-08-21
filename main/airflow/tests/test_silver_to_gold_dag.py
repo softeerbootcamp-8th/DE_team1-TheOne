@@ -8,6 +8,7 @@
 6. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
 7. Gold 검증 성공 태스크에만 Slack 완료 알림 연결
 8. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
+9. API Silver는 최신 collected_at 파일만 선택
 """
 
 import importlib
@@ -60,6 +61,13 @@ def _write_inputs(root: Path, year_month: str) -> None:
         partition = root / dataset / f"year_month={year_month}"
         partition.mkdir(parents=True)
         (partition / file_name).touch()
+
+
+def _write_version(root: Path, dataset: str, year_month: str, file_name: str) -> Path:
+    path = root / dataset / f"year_month={year_month}" / file_name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.touch()
+    return path
 
 
 def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된다():
@@ -144,7 +152,9 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
 
 def test_대상연월은_기준일_이하_최신_HVFHV_파티션이다(tmp_path):
     for year_month in ("2026-03", "2026-05", "2026-09"):
-        (tmp_path / "monthly_taxi_trip" / f"year_month={year_month}").mkdir(parents=True)
+        partition = tmp_path / "monthly_taxi_trip" / f"year_month={year_month}"
+        partition.mkdir(parents=True)
+        (partition / "part-00000.parquet").touch()
 
     resolved = dag_module.resolve_target_year_month(
         _logical_date(2026, 6), _params(tmp_path), str(tmp_path / "monthly_taxi_trip")
@@ -169,7 +179,9 @@ def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
     resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
 
     assert resolved["year"] == "2026" and resolved["month"] == "5"
-    assert resolved["monthly_taxi_trip_path"].endswith("monthly_taxi_trip/year_month=2026-05")
+    assert resolved["monthly_taxi_trip_path"].endswith(
+        "monthly_taxi_trip/year_month=2026-05/part-*.parquet"
+    )
     assert resolved["driver_vehicle_monthly_snapshot_path"].endswith(
         "year_month=2026-05/driver_vehicle_monthly_snapshot.parquet"
     )
@@ -179,6 +191,25 @@ def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
     assert resolved["fuel_price_path"].endswith(
         "year_month=2026-05/gas_ev_price.parquet"
     )
+
+
+def test_API_Silver는_가장최신_collected_at_파일만_선택한다(tmp_path):
+    _write_inputs(tmp_path, "2026-05")
+    older = "20260820T123456123456Z.parquet"
+    latest = "20260821T123456123456Z.parquet"
+    for dataset in (
+        "monthly_taxi_trip",
+        "driver_vehicle_monthly_snapshot",
+        "lease_vehicle_inventory",
+    ):
+        _write_version(tmp_path, dataset, "2026-05", older)
+        _write_version(tmp_path, dataset, "2026-05", latest)
+
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+
+    assert Path(resolved["monthly_taxi_trip_path"]).name == latest
+    assert Path(resolved["driver_vehicle_monthly_snapshot_path"]).name == latest
+    assert Path(resolved["lease_vehicle_inventory_path"]).name == latest
 
 
 def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):
