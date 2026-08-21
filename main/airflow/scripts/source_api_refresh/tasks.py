@@ -1,4 +1,4 @@
-"""원천 API 3종을 본문 다운로드 없이 검사하고 처리 상태를 기록합니다."""
+"""원천 API를 본문 다운로드 없이 독립적으로 검사하고 처리 상태를 기록합니다."""
 
 import hashlib
 import logging
@@ -137,8 +137,11 @@ def inspect_source(
     }
 
 
-@task(task_id="check_source")
-def check_source_task(dataset: str, **context) -> dict:
+@task.short_circuit(
+    task_id="check_and_should_refresh",
+    ignore_downstream_trigger_rules=False,
+)
+def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
     params = context["params"]
     previous = Variable.get(
         f"{STATE_KEY_PREFIX}{dataset}",
@@ -160,29 +163,6 @@ def check_source_task(dataset: str, **context) -> dict:
         result["changed"],
         result["etag"],
     )
-    return result
-
-
-@task(task_id="validate_target_month")
-def validate_target_month_task(
-    monthly_taxi_trip: dict,
-    driver_snapshot: dict,
-    lease_inventory: dict,
-) -> str:
-    months = {
-        monthly_taxi_trip["year_month"],
-        driver_snapshot["year_month"],
-        lease_inventory["year_month"],
-    }
-    if len(months) != 1:
-        raise ValueError(f"원천 3종 latest 월이 다릅니다: {sorted(months)}")
-    return months.pop()
-
-
-@task.short_circuit(ignore_downstream_trigger_rules=False)
-def should_refresh_task(result: dict, target_month: str) -> dict | bool:
-    if result["year_month"] != target_month:
-        raise ValueError("원천 월이 감시 DAG 대상 월과 다릅니다")
     return result if result["changed"] else False
 
 
@@ -205,12 +185,16 @@ def mark_processed_task(result: dict) -> None:
     outlets=[assets.API_SILVER_REFRESH_READY],
     trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
 )
-def publish_api_refresh_ready_task(**context) -> None:
-    year_month = context["task_instance"].xcom_pull(
-        task_ids="validate_target_month"
-    )
-    assets.publish_month_partition(
-        context.get("outlet_events"),
-        assets.API_SILVER_REFRESH_READY,
-        year_month,
-    )
+def publish_api_refresh_ready_task(check_task_ids: list[str], **context) -> None:
+    results = context["task_instance"].xcom_pull(task_ids=check_task_ids)
+    year_months = {
+        result["year_month"]
+        for result in results
+        if isinstance(result, dict) and result.get("changed")
+    }
+    for year_month in year_months:
+        assets.publish_month_partition(
+            context.get("outlet_events"),
+            assets.API_SILVER_REFRESH_READY,
+            year_month,
+        )
