@@ -244,17 +244,30 @@ def run_gx_validation(
             result_format="SUMMARY",
         )
 
-        failures = [result for result in validation.results if not result.success]
-        for failure in failures:
+        failed_results = [
+            result for result in validation.results if not result.success
+        ]
+        warning_failures = [
+            result
+            for result in failed_results
+            if result.expectation_config.meta.get("severity") == "warning"
+        ]
+        failures = [
+            result for result in failed_results if result not in warning_failures
+        ]
+        for failure in failed_results:
             result = dict(failure.result)
             observed_value = result.get("observed_value")
             if observed_value is None:
                 observed_value = result.get("partial_unexpected_list")
             if observed_value is None:
                 observed_value = "unavailable"
-            logger.error(
-                "gx_validation failed layer=%s expectation=%s column=%s "
+            is_warning = failure in warning_failures
+            log = logger.warning if is_warning else logger.error
+            log(
+                "gx_validation %s layer=%s expectation=%s column=%s "
                 "unexpected_count=%s observed_value=%s",
+                "warning" if is_warning else "failed",
                 layer,
                 failure.expectation_config.type,
                 _failure_column(failure),
@@ -279,7 +292,8 @@ def run_gx_validation(
             raise ValueError(f"GX 검증 실패 layer={layer}: {rules}")
 
         logger.info(
-            "gx_validation passed layer=%s expectations=%s",
+            "gx_validation passed layer=%s expectations=%s warnings=%s",
             layer,
             validation.statistics["evaluated_expectations"],
+            len(warning_failures),
         )
