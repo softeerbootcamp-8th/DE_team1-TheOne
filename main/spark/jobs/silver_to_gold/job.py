@@ -26,6 +26,7 @@ from uuid import uuid4
 import pandas as pd
 from pyspark.sql import DataFrame
 
+from main.spark.jobs.silver_to_gold.postgres_loader import write_gold_to_postgres
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
@@ -184,6 +185,10 @@ def main(args_list: list[str] | None = None) -> None:
         help="차량 교체 추천 기준 순수익 증가액 (USD)",
     )
     parser.add_argument("--output_dir", default="data/gold")
+    parser.add_argument(
+        "--gold_dsn", default=os.getenv("GOLD_DATABASE_URL"),
+        help="--env prod일 때 Gold 3종을 적재할 PostgreSQL DSN (기본 GOLD_DATABASE_URL 환경변수)",
+    )
     args = parser.parse_args(args_list)
 
     year_month = f"{args.year:04d}-{args.month:02d}"
@@ -253,8 +258,17 @@ def main(args_list: list[str] | None = None) -> None:
         # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
         # 계산 중 실패가 기존 산출물을 남기지 않습니다.
         frames = {name: frame.toPandas() for name, frame in outputs.items()}
-        for dataset, path in _write_all_csv(frames, args.output_dir, year_month).items():
-            logger.info("gold 적재 완료: dataset=%s path=%s", dataset, path)
+        if args.env == "prod":
+            if not args.gold_dsn:
+                raise ValueError(
+                    "--env prod는 --gold_dsn(또는 GOLD_DATABASE_URL 환경변수)이 필요합니다"
+                )
+            written = write_gold_to_postgres(frames, args.gold_dsn, year_month)
+            for dataset, rows in written.items():
+                logger.info("gold 적재 완료: dataset=%s rows=%d", dataset, rows)
+        else:
+            for dataset, path in _write_all_csv(frames, args.output_dir, year_month).items():
+                logger.info("gold 적재 완료: dataset=%s path=%s", dataset, path)
     finally:
         if enriched is not None:
             enriched.unpersist()

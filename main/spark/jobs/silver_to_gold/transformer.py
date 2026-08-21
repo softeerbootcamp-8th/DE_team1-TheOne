@@ -21,7 +21,9 @@ PREMIUM_TIER_TRIP_SHARE = 0.4
 
 
 def _columns(model: type) -> list[str]:
-    return [field.name for field in fields(model)]
+    """`version`은 DB 적재 시점(기존 버전 + 1)에 결정되는 값이라 Spark 산출물에는
+    포함하지 않습니다."""
+    return [field.name for field in fields(model) if field.name != "version"]
 
 
 def _validate_year_month(year_month: str) -> None:
