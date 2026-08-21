@@ -56,6 +56,13 @@ services:
       RAW_STORAGE: s3
       DATA_LAKE_S3_BUCKET: de-theone
       AWS_DEFAULT_REGION: ap-northeast-2
+      # 원천 API(source_api)는 Airflow 와 **다른 인스턴스**에 있습니다. 이 값이 없으면
+      # DAG 는 로컬 개발용 기본값(host.docker.internal:8091)으로 붙는데, 리눅스
+      # 컨테이너에서는 그 이름이 해석되지 않아 감시·수집 DAG 가 전부 실패합니다.
+      # 값은 ~/airflow/.env 에 있고 deploy-airflow 가 GitHub Variable
+      # SOURCE_API_URL 로 매 배포마다 다시 씁니다 (예: http://10.0.1.23:8091).
+      # 비어 있으면 조용히 잘못된 주소로 붙는 대신 여기서 바로 멈춥니다.
+      SOURCE_API_URL: ${SOURCE_API_URL:?~/airflow/.env 의 SOURCE_API_URL 이 필요합니다 (원천 API 인스턴스의 http://<private-ip>:8091)}
     volumes:
       # 이미지에 이미 있는 경로라 named volume 이 소유권을 물려받습니다. 이미지에 없는
       # 경로에 볼륨을 붙이면 마운트 지점이 root 소유로 생겨 uid 50000 이 쓰지 못합니다.

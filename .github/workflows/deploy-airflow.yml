@@ -18,7 +18,9 @@
 # 사전 준비 (1회, 완료됨)
 #   IAM 역할  theone-github-actions-airflow-deploy
 #             ECR 은 theone-airflow 만, SSM 은 인스턴스 1대 + AWS-RunShellScript 만
-#   Variables AWS_ROLE_ARN_AIRFLOW / ECR_REPOSITORY_AIRFLOW / AIRFLOW_INSTANCE_ID
+#   Variables AWS_ROLE_ARN_AIRFLOW / ECR_REPOSITORY_AIRFLOW / AIRFLOW_INSTANCE_ID /
+#             EC2_HOST_SERVER (원천 API 인스턴스 IP — 여기서 SOURCE_API_URL 을 조립합니다.
+#             SOURCE_API_URL 을 직접 두면 그 값이 우선입니다)
 #   EC2       ~/airflow/.env (compose 가 자동으로 읽음), /root/.docker/config.json
 #             (SSM 명령은 root 로 실행돼 ubuntu 의 credential helper 설정을 못 봅니다)
 # =============================================================================
@@ -96,8 +98,20 @@ jobs:
         env:
           IMAGE_URI: ${{ steps.image.outputs.uri }}
           INSTANCE: ${{ vars.AIRFLOW_INSTANCE_ID }}
+          # 원천 API 주소. SOURCE_API_URL 이 있으면 그대로 쓰고, 없으면 원천 서버
+          # 인스턴스 IP(EC2_HOST_SERVER)로 조립합니다. 8091 은 deploy-server 가
+          # 컨테이너에 고정으로 매핑하는 포트입니다.
+          SOURCE_API_URL: ${{ vars.SOURCE_API_URL }}
+          SERVER_HOST: ${{ vars.EC2_HOST_SERVER }}
         run: |
           set -euo pipefail
+          export SOURCE_API_URL="${SOURCE_API_URL:-http://${SERVER_HOST}:8091}"
+          # 주소 없이 배포하면 compose 가 EC2 에서 멈춰 Airflow 가 안 뜹니다. 먼저 잡습니다.
+          if [ "$SOURCE_API_URL" = "http://:8091" ]; then
+            echo "::error::원천 API 주소가 없습니다 — GitHub Variable EC2_HOST_SERVER(또는 SOURCE_API_URL)를 설정하세요"
+            exit 1
+          fi
+          echo "원천 API: $SOURCE_API_URL"
           # compose 파일도 함께 밀어 저장소와 EC2 가 어긋나지 않게 합니다.
           # 셸 따옴표로 JSON 을 조립하면 깨지기 쉬워 파일로 만들어 넘깁니다.
           python3 - <<'PY' > /tmp/params.json
@@ -108,6 +122,9 @@ jobs:
             "cd /home/ubuntu/airflow",
             f"echo {compose} | base64 -d > docker-compose.ec2.yml",
             f"echo AIRFLOW_IMAGE={os.environ['IMAGE_URI']} > .env",
+            # `>` 로 .env 를 새로 쓰므로, 손으로 넣어둔 값은 배포마다 날아갑니다.
+            # 원천 API 주소도 여기서 같이 적어 재부팅 후에도 같은 주소로 올라옵니다.
+            f"echo SOURCE_API_URL={os.environ['SOURCE_API_URL']} >> .env",
             "chown ubuntu:ubuntu docker-compose.ec2.yml .env",
             "docker compose -f docker-compose.ec2.yml up -d --pull always --force-recreate airflow",
           ]
