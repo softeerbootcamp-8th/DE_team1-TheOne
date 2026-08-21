@@ -6,6 +6,8 @@
 4. 성공한 원천만 상태를 기록하고 실패한 분기는 다음 실행에 남김
 5. 변경된 하위 DAG를 모두 기다린 뒤 READY Asset을 정확히 한 번 발행
 6. 모두 미변경이거나 하나라도 실패하면 READY Asset을 발행하지 않음
+7. 확정된 연월과 API 주소를 하위 DAG trigger conf로 전달
+8. refresh DAG가 내부 Source API 기본 주소를 사용
 """
 
 import requests
@@ -118,6 +120,32 @@ def test_조건부_HEAD의_200응답은_변경으로_판정한다(monkeypatch):
     }
 
 
+def test_수동_연월은_정규화한_URL과_trigger값으로_반환한다(monkeypatch):
+    dataset = "monthly_taxi_trip"
+    calls = []
+
+    def head(url, **kwargs):
+        calls.append((url, kwargs))
+        return _response(
+            200,
+            url,
+            {"ETag": ETAG, "Last-Modified": LAST_MODIFIED},
+        )
+
+    monkeypatch.setattr(task_module.requests, "head", head)
+
+    result = task_module.inspect_source(
+        API_BASE_URL,
+        dataset,
+        year="2026",
+        month="8",
+    )
+
+    assert calls[0][0] == f"{API_BASE_URL}/v1/data/2026-08/datasets/{dataset}"
+    assert result["year_month"] == "2026-08"
+    assert (result["year"], result["month"]) == ("2026", "08")
+
+
 def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한다():
     assert source_api_refresh_dag.schedule == "@daily"
     assert source_api_refresh_dag.max_active_runs == 1
@@ -147,6 +175,24 @@ def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한�
         assert trigger.wait_for_completion is True
         assert trigger.deferrable is True
         assert trigger.reset_dag_run is True
+
+
+def test_하위DAG_trigger는_확정된_연월과_API주소를_conf로_전달한다():
+    for dataset, _ in SOURCES:
+        gate_task_id = f"check_and_should_refresh_{dataset}"
+        trigger = source_api_refresh_dag.get_task(f"trigger_{dataset}")
+
+        assert trigger.conf == {
+            "year": f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] }}}}",
+            "month": f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['month'] }}}}",
+            "api_base_url": (
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] }}}}"
+            ),
+        }
+
+
+def test_refresh_DAG는_내부_Source_API_기본주소를_사용한다():
+    assert source_api_refresh_dag.params["api_base_url"] == "http://10.0.10.81:8091"
 
 
 def test_같은월에_여러원천이_변경돼도_READY_파티션은_한번만_발행한다():

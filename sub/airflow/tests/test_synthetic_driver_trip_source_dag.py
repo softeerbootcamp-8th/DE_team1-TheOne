@@ -394,3 +394,25 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+# --- 트리거 폼에서 비워둘 수 있어야 하는 파라미터 -----------------------------
+
+def test_bucket_은_비워둘_수_있다():
+    """`type` 에 "null" 이 없으면 UI 트리거 폼이 필수 입력으로 취급합니다.
+
+    버킷은 드물게 쓰는 재정의값이고, 비우면 DATA_LAKE_S3_BUCKET 을 쓰는 것이 정상
+    경로입니다(다른 DAG 들은 파라미터 없이 환경변수만 씁니다). 필수가 되면 EC2 에서
+    매번 손으로 넣어야 하고, 그러다 `s3://버킷` 처럼 잘못 넣으면 조회가 깨집니다.
+    """
+    param = DAG.params.get_param("bucket")
+
+    assert param.resolve(None) is None
+    assert param.resolve("de-theone") == "de-theone"
+
+
+def test_bucket_을_비우면_spark_명령에_플래그가_안_붙는다():
+    # 빈 값으로 `--bucket ` 만 붙으면 argparse 가 다음 인자를 값으로 삼습니다.
+    command = DAG.get_task("build_source_release").bash_command
+
+    assert "{% if params.bucket %}--bucket" in command
