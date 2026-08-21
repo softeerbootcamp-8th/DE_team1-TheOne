@@ -31,6 +31,7 @@ DEFAULT_PATHS = {
     "source_input_dir": str(SOURCE_ROOT / "synthetic_driver_trip_inputs"),
     "vehicle_master_dir": str(ROOT / "data" / "silver" / "vehicle_master"),
     "state_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_state"),
+    "attribution_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_attribution"),
     "release_output_dir": str(SOURCE_ROOT / "synthetic_driver_trip_api"),
 }
 ZONE_LOOKUP_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
