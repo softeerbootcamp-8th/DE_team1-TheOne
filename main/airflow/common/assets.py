@@ -14,14 +14,11 @@ DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER = Asset(
 )
 LEASE_VEHICLE_INVENTORY_SILVER = Asset("silver://lease_vehicle_inventory")
 FUEL_PRICE_SILVER = Asset("silver://gas_ev_price")
+API_SILVER_REFRESH_READY = Asset("silver://api_refresh_ready")
 
-# ponytail: Asset 이벤트를 변경으로 간주. 중복 실행 비용이 커질 때 입력 해시로 승격.
-GOLD_INPUTS = (
-    HVFHV_SILVER
-    | DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER
-    | LEASE_VEHICLE_INVENTORY_SILVER
-    | FUEL_PRICE_SILVER
-)
+# API 3종은 감시 DAG가 변경된 Silver 실행을 모두 기다린 뒤 한 번만
+# READY를 냅니다. 개별 Silver Asset은 lineage용이고 Gold를 직접 깨우지 않습니다.
+GOLD_INPUTS = API_SILVER_REFRESH_READY | FUEL_PRICE_SILVER
 
 
 def publish_month_partition(outlet_events, asset: Asset, year_month: str) -> None:

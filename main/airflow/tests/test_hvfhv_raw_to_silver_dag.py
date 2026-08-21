@@ -1,6 +1,6 @@
 """HVFHV+taxi_id 데이터 Raw→Bronze→Silver DAG 계약.
 
-1. 기존 월 스케줄과 네 단계 의존성 유지
+1. 감시 DAG만 스케줄을 갖고 이 DAG는 요청받은 월의 네 단계를 처리
 2. 데이터 제공 주소와 선택적 연월을 기존 HVFHV 수집 핸들러에 전달
 3. Spark 명령은 검증 또는 재수집된 월만 정제
 """
@@ -18,7 +18,7 @@ DAG = dag_module.hvfhv_dag
 
 def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다():
     assert DAG.dag_id == "hvfhv_raw_to_silver_pipeline"
-    assert DAG.schedule == "@daily"
+    assert DAG.schedule is None
     assert set(DAG.task_ids) == {
         "raw_to_bronze",
         "validate_bronze",

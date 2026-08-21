@@ -1,6 +1,6 @@
 """기사 차량 월별 스냅샷 Raw→Bronze→Silver DAG 계약.
 
-1. HVFHV와 분리된 네 단계 월별 DAG
+1. HVFHV와 분리되고 감시 DAG가 호출하는 네 단계 월별 DAG
 2. 수집·정제 Lambda 에 파라미터 전달
 3. 필수 컬럼 누락 시 원천부터 한 번 재수집
 4. Bronze 행 수·스키마·driver_id 중복 규칙으로 Silver 확인
@@ -53,7 +53,7 @@ def _silver_file(tmp_path: Path, rows: list[dict]) -> dict:
 
 def test_DAG는_HVFHV와_분리되어_기사차량스냅샷만_Silver까지_처리한다():
     assert DAG.dag_id == "driver_vehicle_monthly_snapshot_raw_to_silver_pipeline"
-    assert DAG.schedule == "@daily"
+    assert DAG.schedule is None
     assert set(DAG.task_ids) == {
         "raw_to_bronze",
         "validate_bronze",

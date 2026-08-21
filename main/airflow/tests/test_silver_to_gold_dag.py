@@ -1,6 +1,6 @@
-"""Silver → Gold DAG의 현재 4입력 계약과 산출물 검증 시나리오.
+"""Silver → Gold DAG의 2개 실행 Asset 계약과 산출물 검증 시나리오.
 
-1. Gold 스케줄은 같은 파티션 키의 Silver 4종 OR Asset
+1. Gold 스케줄은 API 3종 완료 READY와 Fuel Silver의 OR Asset
 2. Silver Asset 은 적재가 아닌 검증 태스크에서 월 파티션으로 발행
 3. Asset 으로 실행된 Gold 는 해당 파티션 키를 대상 월로 사용
 4. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
@@ -62,15 +62,13 @@ def _write_inputs(root: Path, year_month: str) -> None:
         (partition / file_name).touch()
 
 
-def test_Gold_DAG은_같은_월_Silver_4종중_어느_Asset이든_실행된다():
+def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된다():
     timetable = GOLD_DAG.timetable
 
     assert isinstance(timetable, PartitionedAssetTimetable)
     assert type(timetable.asset_condition).__name__ == "SerializedAssetAny"
     assert {item.name for item in timetable.asset_condition.objects} == {
-        assets.HVFHV_SILVER.name,
-        assets.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER.name,
-        assets.LEASE_VEHICLE_INVENTORY_SILVER.name,
+        assets.API_SILVER_REFRESH_READY.name,
         assets.FUEL_PRICE_SILVER.name,
     }
     assert isinstance(timetable.default_partition_mapper, IdentityMapper)
