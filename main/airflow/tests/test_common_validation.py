@@ -5,7 +5,8 @@
 3. 단일·복합 컬럼 규칙의 대상을 표준 형식으로 표시한다.
 4. 여러 DAG의 Suite와 Validation 결과를 같은 Data Docs에 누적한다.
 5. Data Docs 빌드 실패 시 데이터 검증 결과를 우선해 예외를 전달한다.
-6. Suite에 저장할 날짜 InSet 값은 ISO 문자열로 왕복한다.
+6. 경고 severity GX 실패는 Data Docs에 남기되 파이프라인을 중단하지 않는다.
+7. Suite에 저장할 날짜 InSet 값은 ISO 문자열로 왕복한다.
 """
 
 import json
@@ -126,6 +127,33 @@ def test_GX_실패는_표준_로그와_예외와_실패_Data_Docs를_남긴다(
     assert "observed_value=2" in caplog.text
     assert (docs / "index.html").is_file()
     assert "common_failure_suite" in _html_text(docs)
+
+
+def test_GX_경고규칙_실패는_로그와_Data_Docs를_남기고_계속한다(
+    tmp_path, caplog
+):
+    import great_expectations as gx
+
+    docs = tmp_path / "docs"
+    with caplog.at_level(logging.WARNING, logger="common.validation"):
+        run_gx_validation(
+            pd.DataFrame({"invalid_ratio": [0.023]}),
+            [
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="invalid_ratio",
+                    max_value=0.01,
+                    strict_max=True,
+                    meta={"severity": "warning"},
+                )
+            ],
+            suite_name="common_warning_suite",
+            layer="bronze",
+            data_docs_dir=docs,
+        )
+
+    assert "gx_validation warning layer=bronze" in caplog.text
+    assert "observed_value=[0.023]" in caplog.text
+    assert "common_warning_suite" in _html_text(docs)
 
 
 def test_GX_실패_규칙의_대상_컬럼을_표준_형식으로_표시한다(tmp_path):

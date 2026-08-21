@@ -11,13 +11,14 @@ import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from main.airflow.common import assets
-from shared.airflow.common.lambda_runtime import lambda_handler_for
-from shared.airflow.common.project_paths import PROJECT_ROOT
-from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from main.airflow.common.monthly_bronze import (
     should_process_silver,
     validate_monthly_parquet_bronze,
 )
+from shared.airflow.common.lambda_runtime import lambda_handler_for
+from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.airflow.common.slack_failure_callback import slack_failure_callback
+from shared.airflow.common.slack_quality_warning import send_quality_warning
 from shared.airflow.common.validation import (
     parse_handler_result,
     parse_year_month,
@@ -49,6 +50,7 @@ DEFAULT_SILVER_DIR = os.getenv(
 # 0.2 는 초기 관측치를 넉넉히 감싸려고 둔 값이라, 원천 스키마가 통째로 어긋나도
 # 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
 HVFHV_ERROR_THRESHOLD = 0.05
+HVFHV_WARNING_THRESHOLD = 0.01
 DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
 
 
@@ -79,28 +81,55 @@ def _bronze_quality_summary(parquet_file, required_columns):
     schema = parquet_file.schema_arrow
     row_count = parquet_file.metadata.num_rows
     missing_columns = [name for name in required_columns if name not in schema.names]
+    extra_columns = sorted(set(schema.names) - set(required_columns))
     invalid_rows = 0
 
     if row_count and not missing_columns:
         for batch in parquet_file.iter_batches(columns=required_columns):
             frame = batch.to_pandas()
+            pickup = pd.to_datetime(frame["pickup_datetime"], errors="coerce")
+            dropoff = pd.to_datetime(frame["dropoff_datetime"], errors="coerce")
+            pickup_location = pd.to_numeric(frame["PULocationID"], errors="coerce")
+            dropoff_location = pd.to_numeric(frame["DOLocationID"], errors="coerce")
             trip_miles = pd.to_numeric(frame["trip_miles"], errors="coerce")
             trip_time = pd.to_numeric(frame["trip_time"], errors="coerce")
             driver_pay = pd.to_numeric(frame["driver_pay"], errors="coerce")
-            valid = (
-                pd.to_datetime(frame["pickup_datetime"], errors="coerce").notna()
-                & pd.to_datetime(
-                    frame["dropoff_datetime"], errors="coerce"
-                ).notna()
+            tips = pd.to_numeric(frame["tips"], errors="coerce")
+            required_non_null = [
+                name for name in required_columns if name in SILVER_REQUIRED_NON_NULL
+            ]
+            present = frame[required_non_null].notna().all(axis=1)
+            for name in (
+                "taxi_id",
+                "hvfhs_license_num",
+                "pickup_zone",
+                "dropoff_zone",
+                "estimated_service_tier",
+            ):
+                present &= frame[name].astype("string").str.strip().ne("").fillna(False)
+            valid_time = pickup.notna() & dropoff.notna() & pickup.lt(dropoff)
+            valid_range = (
+                pickup_location.notna()
+                & dropoff_location.notna()
                 & trip_miles.gt(0)
                 & trip_miles.le(1000)
                 & trip_time.gt(0)
                 & trip_time.le(86400)
                 & driver_pay.ge(0)
                 & driver_pay.le(5000)
-                & frame["taxi_id"].notna()
-                & frame["taxi_id"].ne("")
+                & tips.ge(0)
+                & tips.le(5000)
             )
+            valid_service_tier = (
+                frame["hvfhs_license_num"].eq("HV0003")
+                & frame["estimated_service_tier"].isin(["Standard", "Comfort"])
+            ) | (
+                frame["hvfhs_license_num"].eq("HV0005")
+                & frame["estimated_service_tier"].isin(
+                    ["Standard", "Extra Comfort"]
+                )
+            )
+            valid = present & valid_time & valid_range & valid_service_tier
             invalid_rows += int((~valid).sum())
 
     return pd.DataFrame(
@@ -109,6 +138,8 @@ def _bronze_quality_summary(parquet_file, required_columns):
                 "row_count": row_count,
                 "schema_signature": _schema_signature(schema),
                 "missing_required_columns": ",".join(missing_columns),
+                "extra_columns": ",".join(extra_columns),
+                "invalid_required_row_count": invalid_rows,
                 "invalid_required_row_ratio": (
                     invalid_rows / row_count
                     if row_count and not missing_columns
@@ -219,20 +250,50 @@ def validate_bronze_task(result: dict, **context) -> dict:
         ),
     ]
     if summary["invalid_required_row_ratio"].notna().all():
-        expectations.append(
-            gx.expectations.ExpectColumnValuesToBeBetween(
-                column="invalid_required_row_ratio",
-                min_value=0,
-                max_value=HVFHV_ERROR_THRESHOLD,
-                strict_max=True,
-            )
+        expectations.extend(
+            [
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="invalid_required_row_ratio",
+                    min_value=0,
+                    max_value=HVFHV_WARNING_THRESHOLD,
+                    strict_max=True,
+                    meta={"severity": "warning"},
+                ),
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="invalid_required_row_ratio",
+                    min_value=0,
+                    max_value=HVFHV_ERROR_THRESHOLD,
+                    strict_max=True,
+                ),
+            ]
         )
+    expectations.append(
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="extra_columns",
+            value_set=[""],
+            meta={"severity": "warning"},
+        )
+    )
     run_gx_validation(
         summary,
         expectations,
         suite_name="hvfhv_bronze_suite",
         layer="bronze",
     )
+    invalid_ratio = float(summary.at[0, "invalid_required_row_ratio"])
+    extra_columns = [
+        column for column in summary.at[0, "extra_columns"].split(",") if column
+    ]
+    if invalid_ratio >= HVFHV_WARNING_THRESHOLD or extra_columns:
+        send_quality_warning(
+            context,
+            dataset="monthly_taxi_trip",
+            year_month=result["year_month"],
+            invalid_rows=int(summary.at[0, "invalid_required_row_count"]),
+            row_count=int(summary.at[0, "row_count"]),
+            invalid_ratio=invalid_ratio,
+            extra_columns=extra_columns,
+        )
     if not should_process_silver(result):
         logger.info(
             "Bronze 원본이 최신 수집본과 동일해 Silver 후속 처리를 건너뜁니다: %s",

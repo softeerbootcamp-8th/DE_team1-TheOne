@@ -19,6 +19,7 @@ import pytest
 
 from dags import hvfhv_raw_to_silver_dag as dag_module
 from main.airflow.scripts.hvfhv_raw_to_silver import tasks as task_module
+from shared.airflow.common.slack_quality_warning import build_quality_warning
 
 DAG = dag_module.hvfhv_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
@@ -49,6 +50,13 @@ def bronze_rows(count: int = 3, schema=None) -> list[dict]:
         else "x"
         for field in schema
     }
+    row.update(
+        {
+            "hvfhs_license_num": "HV0003",
+            "estimated_service_tier": "Standard",
+            "dropoff_datetime": datetime(2026, 8, 11, 9, 3, 54, tzinfo=timezone.utc),
+        }
+    )
     return [row.copy() for _ in range(count)]
 
 
@@ -88,6 +96,17 @@ def bronze_params(base_dir) -> dict:
     return {"base_dir": str(base_dir)}
 
 
+def test_품질경고메시지는_판정근거와_처리결과를_표시한다():
+    text = build_quality_warning(
+        dataset="monthly_taxi_trip", year_month="2026-08",
+        invalid_rows=23, row_count=1000, invalid_ratio=0.023,
+        extra_columns=["airport_fee", "congestion_fee"],
+    )
+
+    for expected in ("23 / 1,000", "2.3%", "airport_fee, congestion_fee", "Silver 진행"):
+        assert expected in text
+
+
 def test_Validation_Task에_Slack_실패_콜백이_연결된다():
     for task_id in ("validate_bronze", "validate_silver"):
         validation_task = DAG.get_task(task_id)
@@ -116,7 +135,7 @@ def test_Bronze_변경여부_신호가_없으면_조용히_skip하지않고_실�
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
-def test_필수컬럼보다_컬럼이_많아도_통과한다(tmp_path):
+def test_필수컬럼보다_컬럼이_많으면_경고후_통과한다(tmp_path, monkeypatch):
     """원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다 컬럼이 많아도(TLC 원본처럼) 막지 않습니다.
 
     물리 스키마 전체 일치는 더 이상 보지 않습니다(#529) — 필수 컬럼만 있으면 통과합니다.
@@ -126,7 +145,25 @@ def test_필수컬럼보다_컬럼이_많아도_통과한다(tmp_path):
     )
     path = write_bronze(tmp_path, schema=extra_schema)
 
+    warnings = []
+    monkeypatch.setattr(
+        task_module,
+        "send_quality_warning",
+        lambda context, **values: warnings.append(values),
+    )
+
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+    assert warnings == [
+        {
+            "dataset": "monthly_taxi_trip",
+            "year_month": YEAR_MONTH,
+            "invalid_rows": 0,
+            "row_count": 3,
+            "invalid_ratio": 0.0,
+            "extra_columns": ["source_trace_id"],
+        }
+    ]
 
 
 def test_파일이_없으면_막는다(tmp_path):
@@ -243,21 +280,74 @@ def test_행_수가_0이면_막는다(tmp_path):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
-def test_필수값_NULL_행이_5퍼센트_미만이면_통과한다(tmp_path):
-    records = bronze_rows(100)
-    for row in records[:4]:
-        row["pickup_datetime"] = None
+def test_필수값_불량률이_1퍼센트_미만이면_경고없이_통과한다(
+    tmp_path, monkeypatch
+):
+    records = bronze_rows(200)
+    records[0]["pickup_datetime"] = None
     path = write_bronze(tmp_path, records=records)
+    warnings = []
+    monkeypatch.setattr(
+        task_module,
+        "send_quality_warning",
+        lambda context, **values: warnings.append(values),
+    )
 
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
+    assert warnings == []
+
+
+def test_한레코드의_복수위반은_한건으로_세고_1퍼센트부터_경고한다(
+    tmp_path, monkeypatch
+):
+    records = bronze_rows(100)
+    records[0]["pickup_datetime"] = None
+    records[0]["trip_miles"] = -1
+    path = write_bronze(tmp_path, records=records)
+    warnings = []
+    monkeypatch.setattr(
+        task_module,
+        "send_quality_warning",
+        lambda context, **values: warnings.append(values),
+    )
+
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+    assert warnings[0]["invalid_rows"] == 1
+    assert warnings[0]["invalid_ratio"] == 0.01
+
+
+def test_Spark서비스등급규칙_위반도_레코드불량으로_집계한다(
+    tmp_path, monkeypatch
+):
+    records = bronze_rows(100)
+    records[0]["estimated_service_tier"] = "Unknown"
+    path = write_bronze(tmp_path, records=records)
+    warnings = []
+    monkeypatch.setattr(
+        task_module,
+        "send_quality_warning",
+        lambda context, **values: warnings.append(values),
+    )
+
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+    assert warnings[0]["invalid_rows"] == 1
+
 
 def test_필수값_NULL_행이_정확히_5퍼센트면_GX가_실패한다(
-    tmp_path, caplog
+    tmp_path, caplog, monkeypatch
 ):
     records = bronze_rows(20)
     records[0]["pickup_datetime"] = None
     path = write_bronze(tmp_path, records=records)
+    warnings = []
+    monkeypatch.setattr(
+        task_module,
+        "send_quality_warning",
+        lambda context, **values: warnings.append(values),
+    )
 
     with caplog.at_level("ERROR"), pytest.raises(
         ValueError,
@@ -268,6 +358,7 @@ def test_필수값_NULL_행이_정확히_5퍼센트면_GX가_실패한다(
     assert "gx_validation failed layer=bronze" in caplog.text
     assert "column=invalid_required_row_ratio" in caplog.text
     assert "observed_value=[0.05]" in caplog.text
+    assert warnings == []
 
 
 # --- validate_silver -------------------------------------------------------
