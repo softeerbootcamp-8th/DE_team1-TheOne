@@ -69,7 +69,14 @@ services:
       # 하나만 켜면 생산자는 S3 에 쓰고 소비자는 로컬을 읽어 FileNotFoundError 가 납니다.
       RAW_STORAGE: s3
       BRONZE_STORAGE: s3
+      # Gold DAG만 운영에서 공용 EMR Serverless Application으로 제출합니다.
+      # 로컬 compose는 이 값을 두지 않아 기존 BashOperator·CSV 경로를 유지합니다.
+      SPARK_JOB_ENV: prod
       DATA_LAKE_S3_BUCKET: de-theone
+      EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:?~/airflow/.env 의 EMR_APPLICATION_ID가 필요합니다}
+      EMR_EXECUTION_ROLE_ARN: ${EMR_EXECUTION_ROLE_ARN:?~/airflow/.env 의 EMR_EXECUTION_ROLE_ARN이 필요합니다}
+      GOLD_DATABASE_SECRET_ID: ${GOLD_DATABASE_SECRET_ID:?~/airflow/.env 의 GOLD_DATABASE_SECRET_ID가 필요합니다}
+      # RDS 비밀번호는 compose에 넣지 않고 EMR이 Secrets Manager에서 읽습니다.
       AWS_DEFAULT_REGION: ap-northeast-2
     volumes:
       # 이미지에 이미 있는 경로라 named volume 이 소유권을 물려받습니다. 이미지에 없는

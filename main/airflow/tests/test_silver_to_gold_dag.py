@@ -9,14 +9,23 @@
 7. Gold 검증 성공 태스크에만 Slack 완료 알림 연결
 8. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 9. API Silver는 최신 collected_at 파일만 선택
+10. 로컬은 기존 Bash·CSV 실행 경로 유지
+11. 운영은 EMR Serverless에 prod 잡 제출 후 완료까지 대기
+12. 운영 EMR 필수 설정이 빠지면 DAG 파싱 단계에서 실패
+13. 운영 Silver는 버전 파일 중 최신 하나만 EMR에 전달
+14. RDS Gold 3종은 같은 최신 버전이며 모두 1행 이상
 """
 
 import importlib
+import importlib.util
 from datetime import datetime, timezone
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
 import pytest
+from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
+from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
@@ -28,6 +37,7 @@ from shared.airflow.common.slack_failure_callback import slack_success_callback
 GOLD_DAG = importlib.import_module(
     "dags.hvfhv_silver_to_gold_dag"
 ).hvfhv_silver_to_gold_dag
+DAG_PATH = Path(__file__).resolve().parents[1] / "dags" / "hvfhv_silver_to_gold_dag.py"
 
 
 def _params(root: Path, **overrides) -> dict:
@@ -242,6 +252,100 @@ def test_Gold검증_성공태스크만_Slack완료알림을_보낸다():
         assert slack_success_callback not in (
             GOLD_DAG.get_task(task_id).on_success_callback or []
         )
+
+
+def _load_runtime_dag(monkeypatch, job_env: str):
+    monkeypatch.setenv("SPARK_JOB_ENV", job_env)
+    module_name = f"_test_silver_to_gold_{job_env}_{uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, DAG_PATH)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module.hvfhv_silver_to_gold_dag
+
+
+def test_로컬은_기존_Bash와_CSV_적재경로를_유지한다():
+    build = GOLD_DAG.get_task("build_gold")
+
+    assert isinstance(build, BashOperator)
+    assert "--output_dir {{ params.output_dir }}" in build.bash_command
+    assert "--env prod" not in build.bash_command
+
+
+def test_운영은_EMR_Serverless에_prod잡을_제출하고_완료까지_기다린다(monkeypatch):
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-123")
+    monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123:role/emr-exec")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "de-theone")
+    monkeypatch.setenv("GOLD_DATABASE_SECRET_ID", "prod/gold/postgres-dsn")
+
+    dag = _load_runtime_dag(monkeypatch, "prod")
+    build = dag.get_task("build_gold")
+
+    assert isinstance(build, EmrServerlessStartJobOperator)
+    assert build.application_id == "app-123"
+    assert build.execution_role_arn == "arn:aws:iam::123:role/emr-exec"
+    assert build.wait_for_completion is True
+    assert build.deferrable is False
+    spark_submit = build.job_driver["sparkSubmit"]
+    assert spark_submit["entryPoint"].endswith(
+        "/main/spark/jobs/silver_to_gold/job.py"
+    )
+    arguments = spark_submit["entryPointArguments"]
+    assert arguments[arguments.index("--env") + 1] == "prod"
+    assert arguments[arguments.index("--bucket") + 1] == "de-theone"
+    assert arguments[arguments.index("--gold_secret_id") + 1] == (
+        "prod/gold/postgres-dsn"
+    )
+    assert "--monthly_taxi_trip_path" in arguments
+    assert build.configuration_overrides["monitoringConfiguration"][
+        "s3MonitoringConfiguration"
+    ]["logUri"] == "s3://de-theone/emr-logs/"
+
+
+def test_운영_EMR_필수설정이_빠지면_DAG파싱이_실패한다(monkeypatch):
+    monkeypatch.delenv("EMR_APPLICATION_ID", raising=False)
+    monkeypatch.delenv("EMR_EXECUTION_ROLE_ARN", raising=False)
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "de-theone")
+
+    with pytest.raises(ValueError, match="EMR_APPLICATION_ID"):
+        _load_runtime_dag(monkeypatch, "prod")
+
+
+def test_운영_Silver는_최신버전_하나와_legacy파일을_함께지원한다(monkeypatch):
+    bucket = "de-theone"
+    keys = {
+        "silver/monthly_taxi_trip/year_month=2026-05/": [
+            "silver/monthly_taxi_trip/year_month=2026-05/part-00000.parquet",
+            "silver/monthly_taxi_trip/year_month=2026-05/20260820T123456123456Z.parquet",
+            "silver/monthly_taxi_trip/year_month=2026-05/20260821T123456123456Z.parquet",
+        ],
+        "silver/driver_vehicle_monthly_snapshot/year_month=2026-05/": [
+            "silver/driver_vehicle_monthly_snapshot/year_month=2026-05/driver_vehicle_monthly_snapshot.parquet"
+        ],
+        "silver/lease_vehicle_inventory/year_month=2026-05/": [
+            "silver/lease_vehicle_inventory/year_month=2026-05/20260820T123456123456Z.parquet",
+            "silver/lease_vehicle_inventory/year_month=2026-05/20260821T123456123456Z.parquet",
+        ],
+        "silver/gas_ev_price/": [
+            "silver/gas_ev_price/year_month=2026-05/gas_ev_price.parquet"
+        ],
+    }
+    monkeypatch.setattr(dag_module, "list_keys", lambda _bucket, prefix: keys[prefix])
+
+    resolved = dag_module.resolve_input_paths(
+        "2026-05", _params(Path("unused")), job_env="prod", bucket=bucket
+    )
+
+    assert resolved["monthly_taxi_trip_path"].endswith(
+        "20260821T123456123456Z.parquet"
+    )
+    assert resolved["driver_vehicle_monthly_snapshot_path"].endswith(
+        "driver_vehicle_monthly_snapshot.parquet"
+    )
+    assert resolved["lease_vehicle_inventory_path"].endswith(
+        "20260821T123456123456Z.parquet"
+    )
+    assert resolved["fuel_price_path"] == "s3://de-theone/silver/gas_ev_price"
 
 
 def _write_gold(root: Path, year_month: str) -> None:

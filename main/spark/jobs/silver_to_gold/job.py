@@ -24,6 +24,7 @@ from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pandas as pd
+import boto3
 from pyspark.sql import DataFrame
 
 from main.spark.jobs.silver_to_gold.postgres_loader import write_gold_to_postgres
@@ -110,6 +111,22 @@ def latest_fuel_price_path(fuel_price_dir: str) -> str:
     return str(parquet_files[-1])
 
 
+def resolve_gold_dsn(gold_dsn: str | None, gold_secret_id: str | None) -> str:
+    """직접 주입된 DSN을 우선하고, 운영에서는 Secrets Manager에서 읽습니다."""
+    if gold_dsn:
+        return gold_dsn
+    if not gold_secret_id:
+        raise ValueError(
+            "--env prod는 --gold_secret_id(또는 GOLD_DATABASE_SECRET_ID)가 필요합니다"
+        )
+    secret = boto3.client("secretsmanager").get_secret_value(
+        SecretId=gold_secret_id
+    ).get("SecretString")
+    if not secret:
+        raise ValueError(f"Gold PostgreSQL DSN SecretString이 비어 있습니다: {gold_secret_id}")
+    return secret
+
+
 def _csv_path(output_dir: str, dataset: str, year_month: str) -> Path:
     return Path(output_dir) / dataset / f"year_month={year_month}" / f"{dataset}.csv"
 
@@ -187,7 +204,11 @@ def main(args_list: list[str] | None = None) -> None:
     parser.add_argument("--output_dir", default="data/gold")
     parser.add_argument(
         "--gold_dsn", default=os.getenv("GOLD_DATABASE_URL"),
-        help="--env prod일 때 Gold 3종을 적재할 PostgreSQL DSN (기본 GOLD_DATABASE_URL 환경변수)",
+        help="로컬 확인용 PostgreSQL DSN. 운영 DAG는 비밀값을 인자에 노출하지 않고 Secret ID를 사용",
+    )
+    parser.add_argument(
+        "--gold_secret_id", default=os.getenv("GOLD_DATABASE_SECRET_ID"),
+        help="--env prod일 때 PostgreSQL DSN 문자열을 보관한 Secrets Manager Secret ID",
     )
     args = parser.parse_args(args_list)
 
@@ -259,11 +280,11 @@ def main(args_list: list[str] | None = None) -> None:
         # 계산 중 실패가 기존 산출물을 남기지 않습니다.
         frames = {name: frame.toPandas() for name, frame in outputs.items()}
         if args.env == "prod":
-            if not args.gold_dsn:
-                raise ValueError(
-                    "--env prod는 --gold_dsn(또는 GOLD_DATABASE_URL 환경변수)이 필요합니다"
-                )
-            written = write_gold_to_postgres(frames, args.gold_dsn, year_month)
+            written = write_gold_to_postgres(
+                frames,
+                resolve_gold_dsn(args.gold_dsn, args.gold_secret_id),
+                year_month,
+            )
             for dataset, rows in written.items():
                 logger.info("gold 적재 완료: dataset=%s rows=%d", dataset, rows)
         else:
