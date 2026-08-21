@@ -10,7 +10,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
-from main.airflow.common import assets
 from main.airflow.common.monthly_bronze import (
     should_process_silver,
     validate_monthly_parquet_bronze,
@@ -332,12 +331,11 @@ def _bronze_quality_result(
 
 @task(
     task_id="validate_silver",
-    outlets=[assets.HVFHV_SILVER],
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_silver_task(raw_result: dict, **context) -> None:
+def validate_silver_task(raw_result: dict) -> None:
     """BashOperator 라 handler 결과 dict 가 없어, Silver 파티션을 직접 열어서 확인합니다."""
     parsed = parse_handler_result(raw_result, expected_locations=1)
     year_month = parse_year_month(
@@ -400,8 +398,3 @@ def validate_silver_task(raw_result: dict, **context) -> None:
         raise ValueError(
             f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
-
-    # 파일·스키마·행 수 검증이 모두 끝난 뒤에만 Gold 입력 완료를 알립니다.
-    assets.publish_month_partition(
-        context.get("outlet_events"), assets.HVFHV_SILVER, year_month
-    )

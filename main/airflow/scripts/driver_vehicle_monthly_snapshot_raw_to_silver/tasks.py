@@ -7,13 +7,11 @@ from pathlib import Path
 
 from airflow.sdk import task
 
-from main.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     S3Location,
     parse_handler_result,
-    parse_year_month,
     read_parquet,
 )
 from main.airflow.common.monthly_bronze import (
@@ -118,15 +116,6 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
     return lambda_handler_for("driver_vehicle_monthly_snapshot_bronze_to_silver")(event=event)
 
 
-@task(
-    task_id="validate_silver",
-    outlets=[assets.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER],
-)
-def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> None:
+@task(task_id="validate_silver")
+def validate_silver_task(silver_result: dict, raw_result: dict) -> None:
     validate_silver_result(silver_result, raw_result["row_count"])
-    year_month = parse_year_month(raw_result.get("year_month"), field="year_month")
-    assets.publish_month_partition(
-        context.get("outlet_events"),
-        assets.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER,
-        year_month,
-    )
