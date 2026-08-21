@@ -27,6 +27,7 @@ from main.spark.jobs.silver_to_gold.transformer import (
     build_monthly_report,
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
+    validate_gold_business_invariants,
 )
 from shared.spark.common.session import get_or_create_spark_session
 
@@ -121,6 +122,12 @@ def main(args_list: list[str] | None = None) -> None:
         recommendation = build_monthly_vehicle_recommendation(
             driver_metrics, inventory
         ).persist()
+        validate_gold_business_invariants(
+            driver_profit,
+            recommendation,
+            driver_snapshot,
+            inventory,
+        )
         report = build_monthly_report(
             recommendation,
             year_month,
