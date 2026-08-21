@@ -8,8 +8,10 @@ Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션
 대용량 원본을 Pandas 에 모두 올리지 않도록 Parquet 을 배치 단위로 검사합니다.
 실제 Parquet 을 tmp_path 에 쓰며 네트워크와 Spark 는 사용하지 않습니다.
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
+S3 Bronze 위치는 로컬 Path로 변환하지 않고 객체 바이트로 검증합니다.
 """
 
+import io
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -122,6 +124,33 @@ def test_Validation_Task에_Slack_실패_콜백이_연결된다():
 def test_정상_적재는_통과한다(tmp_path):
     path = write_bronze(tmp_path)
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, monkeypatch):
+    local_path = write_bronze(tmp_path)
+    payload = Path(local_path).read_bytes()
+    s3_path = (
+        "s3://de-theone/bronze/hvfhv/year_month=2026-07/"
+        "20260811T085354000000Z.parquet"
+    )
+    result = result_for(local_path)
+    result["locations"] = [s3_path]
+    monkeypatch.setattr(
+        "shared.airflow.common.validation.get_object_stream",
+        lambda bucket, key: (io.BytesIO(payload), len(payload)),
+    )
+    monkeypatch.setattr(
+        "shared.airflow.common.validation.get_object_bytes",
+        lambda bucket, key: payload,
+    )
+
+    summary = task_module._bronze_quality_result(
+        result,
+        {"base_dir": "s3://de-theone/bronze"},
+        list(task_module.SCHEMA.names),
+    )
+
+    assert summary.at[0, "row_count"] == 3
 
 
 def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_path, monkeypatch):

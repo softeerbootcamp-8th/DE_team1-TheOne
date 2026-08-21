@@ -68,10 +68,21 @@ default_args = {
             ),
         ),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
+        # 읽기에도 씁니다. vehicle_master 를 어디서 찾을지가 이 값으로 갈립니다 —
+        # EC2 는 바인드 마운트가 없어 local 로 두면 컨테이너 빈 디스크를 보게 됩니다.
         "storage": Param(
-            "local", enum=["local", "s3"], description="attribution·published를 어디에 쓸지"
+            "local",
+            enum=["local", "s3"],
+            description="입력(vehicle_master) 조회와 attribution·published 적재를 어디로 할지",
         ),
-        "bucket": Param("", type="string", description="storage=s3일 때. 비우면 DATA_LAKE_S3_BUCKET"),
+        # type 에 "null" 이 없으면 UI 트리거 폼이 **필수 입력**으로 취급해서 비워둘 수
+        # 없습니다. 이건 드물게 쓰는 재정의값이고, 비우면 DATA_LAKE_S3_BUCKET 을 쓰는 게
+        # 정상 경로입니다 (다른 DAG 들은 파라미터 없이 환경변수만 씁니다).
+        "bucket": Param(
+            None,
+            type=["string", "null"],
+            description="storage=s3일 때 버킷 재정의. 비우면 DATA_LAKE_S3_BUCKET",
+        ),
     },
 )
 def synthetic_driver_trip_source_pipeline():

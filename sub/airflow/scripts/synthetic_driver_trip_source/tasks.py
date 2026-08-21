@@ -205,7 +205,15 @@ def validate_source_inputs(source_result: dict, params: dict) -> dict:
         if not path.is_file():
             raise FileNotFoundError(f"기사-운행 입력 파일이 없습니다: {name}={path}")
 
-    vehicle_master = resolve_vehicle_master_path(params["vehicle_master_dir"])
+    # storage=s3 면 S3 에서 찾아 `vehicle_master_dir` 아래로 내려받고 그 로컬 경로를
+    #돌려줍니다. 하류가 Spark(`spark.read.parquet`)와 pandas 라 `s3://` 를 그대로는
+    # 못 읽습니다. EC2 는 바인드 마운트가 없어 이 경로가 비어 있으므로, storage 를
+    # 안 넘기면 S3 에 데이터가 있어도 매번 "vehicle_master Curated 가 없습니다" 가 납니다.
+    vehicle_master = resolve_vehicle_master_path(
+        params["vehicle_master_dir"],
+        storage=params.get("storage", "local"),
+        bucket=params.get("bucket") or None,
+    )
     return {
         "year_month": year_month,
         "snapshot_date": target_date.isoformat(),

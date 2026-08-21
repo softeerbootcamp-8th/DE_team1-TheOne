@@ -36,3 +36,16 @@ def test_로컬에서는_저장소_루트_env_를_읽는다(monkeypatch):
     env.load_local_env()
 
     assert loaded == [REPOSITORY_ROOT / ".env"]
+
+
+def test_dotenv_가_없는_런타임에서도_죽지_않는다(monkeypatch):
+    """spark 런타임에는 `dotenv` 가 없습니다.
+
+    최상단 import 로 두면 spark 쪽에서 이 헬퍼를 쓰는 코드가 통째로
+    ModuleNotFoundError 로 죽습니다 — 실제로 vehicle_master 를 S3 에서 찾는 경로가
+    그렇게 깨졌습니다.
+    """
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    monkeypatch.setattr(env, "load_dotenv", None)
+
+    env.load_local_env()  # 예외가 나지 않으면 통과

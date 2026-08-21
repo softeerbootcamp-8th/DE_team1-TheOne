@@ -10,7 +10,6 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from airflow.sdk import task
 
-from main.airflow.common import assets
 from main.airflow.common.monthly_bronze import (
     TIMESTAMP_FILE_PATTERN,
     silver_version_path,
@@ -21,6 +20,7 @@ from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.slack_quality_warning import send_quality_warning
 from shared.airflow.common.validation import (
+    parquet_file,
     parse_handler_result,
     parse_year_month,
     run_gx_validation,
@@ -52,7 +52,7 @@ DEFAULT_SILVER_DIR = os.getenv(
 # 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
 HVFHV_ERROR_THRESHOLD = 0.05
 HVFHV_WARNING_THRESHOLD = 0.01
-DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 
 
 def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> str:
@@ -325,30 +325,29 @@ def _bronze_quality_result(
         base_dir=base_dir,
     )
     try:
-        parquet_file = pq.ParquetFile(path)
-    except (OSError, pa.ArrowInvalid) as exc:
+        source = parquet_file(path)
+    except RuntimeError as exc:
         raise ValueError(
             f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
         ) from exc
 
-    summary = _bronze_quality_summary(parquet_file, required_columns)
+    summary = _bronze_quality_summary(source, required_columns)
     return summary
 
 
 @task(
     task_id="validate_silver",
-    outlets=[assets.HVFHV_SILVER],
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_silver_task(raw_result: dict, **context) -> None:
+def validate_silver_task(raw_result: dict) -> None:
     """BashOperator 라 handler 결과 dict 가 없어, Silver 파티션을 직접 열어서 확인합니다."""
     parsed = parse_handler_result(raw_result, expected_locations=1)
     year_month = parse_year_month(
         raw_result.get("year_month"), field="year_month"
     )
-    bronze_rows = pq.ParquetFile(parsed.locations[0]).metadata.num_rows
+    bronze_rows = parquet_file(parsed.locations[0]).metadata.num_rows
 
     version_path = Path(raw_result["silver_version_path"])
     if not version_path.is_file():
@@ -402,8 +401,3 @@ def validate_silver_task(raw_result: dict, **context) -> None:
         raise ValueError(
             f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
-
-    # 최종 파일의 스키마·행 수 검증이 모두 끝난 뒤에만 Gold 입력 완료를 알립니다.
-    assets.publish_month_partition(
-        context.get("outlet_events"), assets.HVFHV_SILVER, year_month
-    )

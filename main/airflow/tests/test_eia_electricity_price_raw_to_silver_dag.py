@@ -15,6 +15,7 @@ import pytest
 from dags import eia_electricity_price_raw_to_silver_dag as dag_module
 from main.airflow.scripts.eia_electricity_price_bronze_to_silver import tasks as task_module
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA as SCHEMA
+from shared.airflow.common.validation import S3Location
 
 
 DAG = dag_module.eia_electricity_price_raw_to_silver_dag
@@ -92,9 +93,12 @@ def test_연도와_월중_하나만_지정하면_실패한다(params):
 
 
 def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):
-    _write(task_module.silver_file(str(tmp_path), "2024-03"), _march())
+    path = task_module.silver_file(str(tmp_path), "2024-03")
+    _write(path, _march())
 
-    task_module.validate_silver(str(tmp_path), "2024-03")
+    task_module.validate_silver(
+        {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
+    )
 
 
 @pytest.mark.parametrize("violation", ["missing_day", "duplicate_day", "schema"])
@@ -111,9 +115,37 @@ def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, 
         _write(path, [{"date": date(2024, 3, day), "price": 0.28} for day in range(1, 32)], schema)
 
     with pytest.raises(ValueError):
-        task_module.validate_silver(str(tmp_path), "2024-03")
+        task_module.validate_silver(
+            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
+        )
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
+    path = task_module.silver_file(str(tmp_path), "2024-03")
     with pytest.raises(FileNotFoundError, match="충전 단가 Silver"):
-        task_module.validate_silver(str(tmp_path), "2024-03")
+        task_module.validate_silver(
+            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
+        )
+
+
+def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
+    seen = []
+    table = pa.Table.from_pylist(_march(), schema=SCHEMA)
+    monkeypatch.setattr(
+        task_module,
+        "read_parquet",
+        lambda path: seen.append(path) or table,
+    )
+
+    task_module.validate_silver(
+        {
+            "year_month": "2024-03",
+            "row_count": 31,
+            "locations": [
+                "s3://data-lake/silver/eia_electricity_price/"
+                "year_month=2024-03/eia_electricity_price.parquet"
+            ],
+        }
+    )
+
+    assert isinstance(seen[0], S3Location)

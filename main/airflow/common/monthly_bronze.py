@@ -4,9 +4,14 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pyarrow.parquet as pq
-
-from shared.airflow.common.validation import parse_handler_result, parse_year_month
+from shared.airflow.common.validation import (
+    S3Location,
+    location_size,
+    parquet_file,
+    parse_handler_result,
+    parse_year_month,
+    require_file,
+)
 
 
 TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
@@ -27,11 +32,13 @@ def validate_monthly_parquet_bronze(
     *,
     dataset_dir: str,
     base_dir: str | Path | None = None,
-) -> tuple[Path, str]:
+) -> tuple[Path | S3Location, str]:
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
     path = parsed.locations[0]
-    if not path.is_file():
+    try:
+        require_file(path)
+    except FileNotFoundError:
         raise ValueError(f"Bronze 원본 파일이 없습니다: {path}")
     if (
         path.parent.name != f"year_month={year_month}"
@@ -51,14 +58,14 @@ def validate_monthly_parquet_bronze(
         raise ValueError(
             f"Bronze 파일명이 collected_at과 다릅니다: {path.name}"
         )
-    if base_dir is not None:
+    if base_dir is not None and isinstance(path, Path):
         expected_partition = Path(base_dir) / dataset_dir / f"year_month={year_month}"
         if path.parent.resolve() != expected_partition.resolve():
             raise ValueError(
                 f"Bronze 경로가 base_dir layout과 다릅니다: {path.parent}"
             )
-    if path.stat().st_size != result.get("file_size_bytes"):
+    if location_size(path) != result.get("file_size_bytes"):
         raise ValueError(f"Bronze 원본 파일 크기가 수집 결과와 다릅니다: {path}")
-    if pq.ParquetFile(path).metadata.num_rows != parsed.row_count:
+    if parquet_file(path).metadata.num_rows != parsed.row_count:
         raise ValueError(f"Bronze 원본 행 수가 수집 결과와 다릅니다: {path}")
     return path, year_month

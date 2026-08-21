@@ -4,6 +4,7 @@
 2. 수집·정제 Lambda 에 파라미터 전달
 3. 필수 컬럼 누락 시 원천부터 한 번 재수집
 4. Bronze 행 수·스키마·재고 품질로 Silver 확인
+5. S3 Silver 경로를 로컬 Path로 접지 않고 검증
 """
 
 from datetime import timedelta
@@ -78,6 +79,10 @@ def test_보유차량은_기사계약과_분리된_DAG에서_Silver까지_처리
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
+
+
+def test_기본_API_주소는_내부_제공서버를_사용한다():
+    assert DAG.params["api_base_url"] == "http://10.0.10.81:8091"
 
 
 def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
@@ -213,6 +218,29 @@ def test_Bronze와_행수가_같고_품질이_맞아야_Silver를_통과시킨�
 
     with pytest.raises(ValueError, match="행 수가 Bronze와 다릅니다"):
         task_module.validate_silver_result(result, 2)
+
+
+def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
+    seen = []
+    table = pa.Table.from_pylist(_rows(), schema=SCHEMA)
+    monkeypatch.setattr(
+        task_module,
+        "read_parquet",
+        lambda path: seen.append(path) or table,
+    )
+
+    task_module.validate_silver_result(
+        {
+            "locations": [
+                "s3://de-theone/silver/lease_vehicle_inventory/"
+                "year_month=2026-08/data.parquet"
+            ],
+            "row_count": 1,
+        },
+        1,
+    )
+
+    assert isinstance(seen[0], task_module.S3Location)
 
 
 def test_적재된_Silver가_재고품질을_깨면_검증에서_잡는다(tmp_path):

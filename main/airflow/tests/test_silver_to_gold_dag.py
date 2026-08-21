@@ -1,7 +1,7 @@
 """Silver → Gold DAG의 2개 실행 Asset 계약과 산출물 검증 시나리오.
 
 1. Gold 스케줄은 API 3종 완료 READY와 Fuel Silver의 OR Asset
-2. Silver Asset 은 적재가 아닌 검증 태스크에서 월 파티션으로 발행
+2. API Silver 3종은 개별 Asset을 발행하지 않고 Fuel만 검증 후 발행
 3. Asset 으로 실행된 Gold 는 해당 파티션 키를 대상 월로 사용
 4. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
 5. Asset 실행은 같은 월 Silver가 덜 준비되면 skip, 수동 실행은 실패
@@ -84,43 +84,37 @@ def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된
 
 
 @pytest.mark.parametrize(
-    ("module_name", "dag_name", "asset", "writer_task"),
+    ("module_name", "dag_name"),
     [
         (
             "dags.hvfhv_raw_to_silver_dag",
             "hvfhv_dag",
-            assets.HVFHV_SILVER,
-            "bronze_to_silver",
         ),
         (
             "dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag",
             "driver_vehicle_monthly_snapshot_raw_to_silver_dag",
-            assets.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER,
-            "bronze_to_silver",
         ),
         (
             "dags.lease_vehicle_inventory_raw_to_silver_dag",
             "lease_vehicle_inventory_raw_to_silver_dag",
-            assets.LEASE_VEHICLE_INVENTORY_SILVER,
-            "bronze_to_silver",
-        ),
-        (
-            "dags.eia_fuel_price_silver_dag",
-            "eia_fuel_price_silver_dag",
-            assets.FUEL_PRICE_SILVER,
-            "combine_silver",
         ),
     ],
 )
-def test_Silver_Asset은_적재가_아니라_검증_태스크에서_발행된다(
-    module_name, dag_name, asset, writer_task
-):
+def test_API_Silver_3종은_개별_Asset을_발행하지_않는다(module_name, dag_name):
     upstream = getattr(importlib.import_module(module_name), dag_name)
 
-    assert asset.name in {
-        outlet.name for outlet in upstream.get_task("validate_silver").outlets
-    }
-    assert not upstream.get_task(writer_task).outlets
+    assert not upstream.get_task("validate_silver").outlets
+
+
+def test_Fuel_Silver는_검증_태스크에서_Asset을_발행한다():
+    upstream = importlib.import_module(
+        "dags.eia_fuel_price_silver_dag"
+    ).eia_fuel_price_silver_dag
+
+    assert [outlet.name for outlet in upstream.get_task("validate_silver").outlets] == [
+        assets.FUEL_PRICE_SILVER.name
+    ]
+    assert not upstream.get_task("combine_silver").outlets
 
 
 def test_검증된_월이_Asset_파티션키로_기록된다():
@@ -132,9 +126,9 @@ def test_검증된_월이_Asset_파티션키로_기록된다():
             self.keys.add(keys)
 
     recorder = Recorder()
-    events = {assets.HVFHV_SILVER: recorder}
+    events = {assets.FUEL_PRICE_SILVER: recorder}
 
-    assets.publish_month_partition(events, assets.HVFHV_SILVER, "2026-05")
+    assets.publish_month_partition(events, assets.FUEL_PRICE_SILVER, "2026-05")
 
     assert recorder.keys == {"2026-05"}
 

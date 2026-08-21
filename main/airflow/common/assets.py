@@ -8,16 +8,10 @@ URI 는 저장 위치가 아니라 데이터 제품의 논리 이름입니다. �
 from airflow.sdk import Asset
 
 
-HVFHV_SILVER = Asset("silver://hvfhv")
-DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER = Asset(
-    "silver://driver_vehicle_monthly_snapshot"
-)
-LEASE_VEHICLE_INVENTORY_SILVER = Asset("silver://lease_vehicle_inventory")
 FUEL_PRICE_SILVER = Asset("silver://gas_ev_price")
 API_SILVER_REFRESH_READY = Asset("silver://api_refresh_ready")
 
-# API 3종은 감시 DAG가 변경된 Silver 실행을 모두 기다린 뒤 한 번만
-# READY를 냅니다. 개별 Silver Asset은 lineage용이고 Gold를 직접 깨우지 않습니다.
+# API 3종은 감시 DAG가 변경된 Silver 실행을 모두 기다린 뒤 READY를 한 번만 냅니다.
 GOLD_INPUTS = API_SILVER_REFRESH_READY | FUEL_PRICE_SILVER
 
 

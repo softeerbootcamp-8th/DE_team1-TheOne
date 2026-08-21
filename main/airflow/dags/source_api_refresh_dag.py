@@ -1,4 +1,4 @@
-"""원천 API 3종의 latest 변경을 감시하고 Gold 준비 Asset을 한 번만 냅니다."""
+"""원천 API 3종의 latest 변경을 묶어 Gold 준비 Asset을 한 번만 냅니다."""
 
 import os
 from datetime import datetime, timedelta
@@ -7,11 +7,9 @@ from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOpe
 from airflow.sdk import Param, dag
 
 from main.airflow.scripts.source_api_refresh.tasks import (
-    check_source_task,
+    check_and_should_refresh_task,
     mark_processed_task,
     publish_api_refresh_ready_task,
-    should_refresh_task,
-    validate_target_month_task,
 )
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
@@ -19,7 +17,7 @@ from shared.airflow.common.slack_failure_callback import (
 )
 
 
-DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 SOURCES = (
     ("monthly_taxi_trip", "hvfhv_raw_to_silver_pipeline"),
     (
@@ -41,7 +39,7 @@ default_args = {
 @dag(
     dag_id="source_api_refresh_pipeline",
     default_args=default_args,
-    description="원천 API 3종 조건부 HEAD 감시 및 Raw→Silver 조정",
+    description="원천 API 3종 독립 HEAD 감시 및 Raw→Silver 조정",
     schedule="@daily",
     start_date=datetime(2024, 1, 1),
     catchup=False,
@@ -62,21 +60,13 @@ default_args = {
     },
 )
 def source_api_refresh_pipeline():
-    checks = {
-        dataset: check_source_task.override(task_id=f"check_{dataset}")(dataset)
-        for dataset, _ in SOURCES
-    }
-    target_month = validate_target_month_task(
-        checks["monthly_taxi_trip"],
-        checks["driver_vehicle_monthly_snapshot"],
-        checks["lease_vehicle_inventory"],
-    )
-
+    check_task_ids = []
     completed = []
     for dataset, dag_id in SOURCES:
-        gate_task_id = f"should_refresh_{dataset}"
-        refresh = should_refresh_task.override(task_id=gate_task_id)(
-            checks[dataset], target_month
+        gate_task_id = f"check_and_should_refresh_{dataset}"
+        check_task_ids.append(gate_task_id)
+        refresh = check_and_should_refresh_task.override(task_id=gate_task_id)(
+            dataset
         )
         trigger = TriggerDagRunOperator(
             task_id=f"trigger_{dataset}",
@@ -104,7 +94,7 @@ def source_api_refresh_pipeline():
         refresh >> trigger >> processed
         completed.append(processed)
 
-    ready = publish_api_refresh_ready_task()
+    ready = publish_api_refresh_ready_task(check_task_ids)
     for processed in completed:
         processed >> ready
 
