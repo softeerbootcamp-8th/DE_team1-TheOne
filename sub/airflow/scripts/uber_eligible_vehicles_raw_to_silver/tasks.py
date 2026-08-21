@@ -12,6 +12,7 @@ from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.validation import (
+    layout_tail,
     parse_handler_result,
     parse_iso_date,
     read_parquet,
@@ -296,7 +297,7 @@ def validate_bronze_task(result: dict, **context) -> None:
             f"Bronze 파일명이 수집시각 형식이 아닙니다: {path.name}"
         ) from exc
     expected = layout.raw_file(raw_dir, requested_city, collected_at)
-    if path.resolve() != expected.resolve():
+    if layout_tail(path) != layout_tail(expected):
         raise ValueError(f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}")
     if collected_at.date() != collected_date:
         raise ValueError(
@@ -348,7 +349,7 @@ def validate_silver_task(result: dict, **context) -> None:
             raise ValueError(f"같은 도시가 두 번 적재됐습니다: {city}")
         seen_cities.add(city)
         expected = layout.curated_file(curated_dir, target_date, city)
-        if path.resolve() != expected.resolve():
+        if layout_tail(path) != layout_tail(expected):
             raise ValueError(
                 f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}"
             )

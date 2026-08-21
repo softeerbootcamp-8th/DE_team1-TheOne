@@ -13,6 +13,7 @@ from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.validation import (
+    layout_tail,
     parse_handler_result,
     parse_iso_date,
     read_parquet,
@@ -316,7 +317,7 @@ def validate_bronze_task(result: dict, **context) -> None:
 
     vendor = layout.vendor_from_partition(path.parent)
     expected = layout.raw_file(raw_dir, vendor, collected_at)
-    if path.resolve() != expected.resolve():
+    if layout_tail(path) != layout_tail(expected):
         raise ValueError(f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}")
     if collected_at.date() != target_date:
         raise ValueError(
@@ -370,7 +371,7 @@ def validate_silver_task(result: dict, **context) -> None:
         seen_vendors.add(vendor)
 
         expected = layout.curated_file(curated_dir, target_date, vendor)
-        if path.resolve() != expected.resolve():
+        if layout_tail(path) != layout_tail(expected):
             raise ValueError(
                 f"적재 경로가 layout 규칙과 다릅니다: {path} != {expected}"
             )

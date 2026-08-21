@@ -58,6 +58,20 @@ class S3Location:
     def suffix(self) -> str:
         return PurePosixPath(self.key).suffix
 
+    @property
+    def parent(self) -> "S3Location":
+        """상위 prefix. `*_from_partition(path.parent)` 이 `.name` 만 쓰므로 맞춰줍니다."""
+        parent = PurePosixPath(self.key).parent
+        if str(parent) in (".", "/"):
+            raise ValueError(f"상위 prefix 가 없습니다: {self}")
+        return S3Location(self.bucket, str(parent))
+
+    def size(self) -> int:
+        """객체 크기. 로컬의 `path.stat().st_size` 자리에 씁니다."""
+        stream, length = get_object_stream(self.bucket, self.key)
+        stream.close()
+        return length
+
 
 def parse_location(value: str) -> Path | S3Location:
     if not value.startswith(S3_SCHEME):
@@ -66,6 +80,13 @@ def parse_location(value: str) -> Path | S3Location:
     if not bucket or not key:
         raise ValueError(f"S3 URI 형식이 아닙니다: {value}")
     return S3Location(bucket, key)
+
+
+def location_size(location: Path | S3Location) -> int:
+    """로컬은 stat(), S3 는 ContentLength. 호출부가 분기하지 않게 감쌉니다."""
+    if isinstance(location, S3Location):
+        return location.size()
+    return location.stat().st_size
 
 
 def layout_tail(location: Path | S3Location | str, segments: int = 3) -> str:
