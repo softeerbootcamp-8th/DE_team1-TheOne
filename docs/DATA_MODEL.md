@@ -71,7 +71,13 @@
 
 기준정보는 시점마다 값이 달라지므로 관측일로 쌓고, 하류가 *"대상 월 이하의 최신 파티션"* 을 골라 읽습니다.
 
-쓰기는 `partitionOverwriteMode=dynamic` 입니다 ([shared/spark/common/io.py](../shared/spark/common/io.py)).
+원천 API의 월별 Bronze 3종은 데이터 기준 월 아래에 실제 수집 시각 파일을 append합니다. 같은 월을 다시 받아도 원본 이력이 유지됩니다.
+
+```text
+data/bronze/<dataset>/year_month=YYYY-MM/YYYYMMDDTHHMMSSffffffZ.parquet
+```
+
+Spark 기반 Silver 쓰기는 `partitionOverwriteMode=dynamic` 입니다 ([shared/spark/common/io.py](../shared/spark/common/io.py)).
 재실행하면 **해당 파티션만** 덮어쓰고 다른 달은 그대로 둡니다 —
 이 옵션이 없으면 `mode("overwrite")` 가 데이터셋 디렉터리 전체를 지우고 다시 씁니다.
 월 배치가 재시도될 때 지난달이 통째로 사라지는 사고가 여기서 납니다.

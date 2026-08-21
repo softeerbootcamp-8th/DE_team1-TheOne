@@ -4,6 +4,7 @@
 2. 원천 행 수 없이 받은 Parquet footer에서 행 수 계산
 """
 
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -16,6 +17,7 @@ from functions.lease_vehicle_inventory_raw_to_bronze.handler import lambda_handl
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/lease_vehicle_inventory"
+COLLECTED_AT = datetime(2026, 8, 20, 10, 15, 32, 123456, tzinfo=timezone.utc)
 ROWS = [
     {
         "vehicle_model_id": f"model-{index}",
@@ -64,6 +66,7 @@ def test_보유차량Parquet만_직접받아_footer행수와함께_Bronze에_저
 ):
     requested = []
     _api(monkeypatch, requested)
+    monkeypatch.setattr(monthly_dataset, "_utc_now", lambda: COLLECTED_AT, raising=False)
 
     result = lambda_handler(
         {
@@ -78,5 +81,7 @@ def test_보유차량Parquet만_직접받아_footer행수와함께_Bronze에_저
     assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
     assert path.parent.parent.name == "lease_vehicle_inventory"
+    assert path.name == "20260820T101532123456Z.parquet"
+    assert result["collected_at"] == "2026-08-20T10:15:32.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
     assert "sha256" not in result and "marker_location" not in result

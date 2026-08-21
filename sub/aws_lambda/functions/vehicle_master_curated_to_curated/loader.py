@@ -1,4 +1,4 @@
-"""차량 마스터를 도시별 Silver Parquet 으로 적재합니다."""
+"""차량 마스터를 도시별 Curated Parquet 으로 적재합니다."""
 
 import io
 import logging
@@ -13,7 +13,7 @@ from schema.source import VEHICLE_MASTER_SCHEMA as SCHEMA
 
 from shared.aws_lambda.common.atomic_write import atomic_write
 from sub.aws_lambda.common import vehicle_master_layout as layout
-from shared.aws_lambda.common.env import load_local_env
+from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 def _group_by_city(data: list[dict]) -> dict[str, list[dict]]:
     if not data:
-        raise ValueError("적재할 차량 마스터 Silver 데이터가 없습니다.")
+        raise ValueError("적재할 차량 마스터 Curated 데이터가 없습니다.")
     by_city: dict[str, list[dict]] = {}
     for row in data:
         by_city.setdefault(row[layout.CITY_PARTITION_KEY], []).append(row)
@@ -37,7 +37,7 @@ def _build_table(city_rows: list[dict]) -> pa.Table:
     )
 
 
-class VehicleMasterSilverLoader(Loader):
+class VehicleMasterCuratedLoader(Loader):
     """도시별로 Parquet 하나씩 씁니다. 같은 파티션은 덮어씁니다.
 
     재실행하면 덮어씁니다. 같은 날 다시 만든 결과가 여러 개 남으면 읽는 쪽에서
@@ -56,7 +56,7 @@ class VehicleMasterSilverLoader(Loader):
 
         written_rows = 0
         for city, city_rows in sorted(by_city.items()):
-            path = layout.silver_file(self._base_dir, self._collected_date, city)
+            path = layout.curated_file(self._base_dir, self._collected_date, city)
             path.parent.mkdir(parents=True, exist_ok=True)
 
             table = _build_table(city_rows)
@@ -68,7 +68,7 @@ class VehicleMasterSilverLoader(Loader):
             )
 
             logger.info(
-                "silver_load done path=%s city=%s rows=%d", path, city, table.num_rows
+                "curated_load done path=%s city=%s rows=%d", path, city, table.num_rows
             )
             self.paths.append(str(path))
             written_rows += table.num_rows
@@ -79,8 +79,8 @@ class VehicleMasterSilverLoader(Loader):
         )
 
 
-class VehicleMasterSilverS3Loader(Loader):
-    """도시별 Silver Parquet 하나씩 S3에 씁니다. 같은 key는 재실행 시 덮어씁니다."""
+class VehicleMasterCuratedS3Loader(Loader):
+    """도시별 Curated Parquet 하나씩 S3에 씁니다. 같은 key는 재실행 시 덮어씁니다."""
 
     def __init__(self, collected_date: str, bucket: str | None = None):
         load_local_env()
@@ -93,7 +93,7 @@ class VehicleMasterSilverS3Loader(Loader):
 
         written_rows = 0
         for city, city_rows in sorted(by_city.items()):
-            key = layout.silver_key(self._collected_date, city)
+            key = layout.curated_key(self._collected_date, city)
             table = _build_table(city_rows)
             buffer = io.BytesIO()
             pq.write_table(table, buffer, compression="snappy")
@@ -102,7 +102,7 @@ class VehicleMasterSilverS3Loader(Loader):
                 S3Object(body=buffer.getvalue(), row_count=table.num_rows)
             )
             logger.info(
-                "silver_load done location=%s city=%s rows=%d",
+                "curated_load done location=%s city=%s rows=%d",
                 result.location,
                 city,
                 table.num_rows,
@@ -111,7 +111,7 @@ class VehicleMasterSilverS3Loader(Loader):
             written_rows += table.num_rows
 
         return WriteResult(
-            location=f"s3://{self._bucket}/silver/{layout.DATASET}/",
+            location=f"s3://{self._bucket}/source/curated/{layout.DATASET}/",
             row_count=written_rows,
         )
 
@@ -119,7 +119,7 @@ class VehicleMasterSilverS3Loader(Loader):
 def build_loader(storage: str, base_dir: str, collected_date: str, bucket: str | None = None) -> Loader:
     """storage 파라미터로 로컬/S3 Loader 중 하나를 고릅니다."""
     if storage == "local":
-        return VehicleMasterSilverLoader(base_dir, collected_date)
+        return VehicleMasterCuratedLoader(base_dir, collected_date)
     if storage == "s3":
-        return VehicleMasterSilverS3Loader(collected_date, bucket=bucket)
+        return VehicleMasterCuratedS3Loader(collected_date, bucket=bucket)
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

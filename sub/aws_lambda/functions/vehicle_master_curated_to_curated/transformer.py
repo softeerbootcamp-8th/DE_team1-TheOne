@@ -1,4 +1,4 @@
-"""네 개 원천 Silver 를 차량 마스터 한 장으로 합칩니다.
+"""네 개 원천 Curated 를 차량 마스터 한 장으로 합칩니다.
 
 그레인은 **(도시, 업체, 차종, 플랫폼, 상품)** 입니다. 차종 하나가 받을 수 있는
 상품 수만큼 행이 늘어납니다.
@@ -96,7 +96,7 @@ def _minmax(specs: list[dict], column: str) -> tuple[Optional[float], Optional[f
     return min(values), max(values)
 
 
-class VehicleMasterSilverTransformer(Transformer):
+class VehicleMasterCuratedTransformer(Transformer):
     """대장 × 자격 곱집합에 제원을 붙여 차량 마스터 행을 만듭니다."""
 
     def transform(self, data: SourceTables) -> list[dict]:
@@ -143,7 +143,7 @@ class VehicleMasterSilverTransformer(Transformer):
     def _require_non_null(rows: list[dict]) -> None:
         """계약상 항상 값이 있어야 할 컬럼이 비지 않았는지 봅니다.
 
-        상류 Silver 의 컬럼명이 바뀌면 `_row` 의 `.get()` 이 예외 없이 None 을 돌려주고,
+        상류 Curated 의 컬럼명이 바뀌면 `_row` 의 `.get()` 이 예외 없이 None 을 돌려주고,
         그 컬럼만 통째로 빈 채 적재까지 성공합니다. Airflow 검증도 스키마 이름·타입만
         보므로 nullable 컬럼은 전 행이 NULL 이어도 통과합니다 (#567).
 
@@ -155,14 +155,14 @@ class VehicleMasterSilverTransformer(Transformer):
             if missing:
                 raise ValueError(
                     f"{column} 이 {missing}/{len(rows)} 행에서 비었습니다. "
-                    "상류 Silver 의 컬럼명이 바뀌지 않았는지 확인하세요."
+                    "상류 Curated 의 컬럼명이 바뀌지 않았는지 확인하세요."
                 )
 
     @staticmethod
     def _catalog_rows(catalog: list[dict]) -> list[dict]:
         """대장을 검증하고 (업체, 차종) 순으로 정렬합니다."""
         if not catalog:
-            raise ValueError("차량 대장 Silver 가 비어 있습니다.")
+            raise ValueError("차량 대장 Curated 가 비어 있습니다.")
 
         seen: set[tuple[str, str, str]] = set()
         rows: list[dict] = []
@@ -174,7 +174,7 @@ class VehicleMasterSilverTransformer(Transformer):
                 raise ValueError(f"차량 대장에 조인 키가 없는 행이 있습니다: {row}")
 
             identity = (vendor, make_key, model_key)
-            # 대장 Silver 단계에서 이미 걸러지지만, 여기서 통과시키면 자격 수만큼
+            # 대장 Curated 단계에서 이미 걸러지지만, 여기서 통과시키면 자격 수만큼
             # 곱해져서 조용히 행이 배로 늘어납니다.
             if identity in seen:
                 raise ValueError(f"차량 대장에 중복 차종이 있습니다: {identity}")
@@ -196,7 +196,7 @@ class VehicleMasterSilverTransformer(Transformer):
         `OUTLANDER` 아래에 `OUTLANDER SPORT 2WD` 까지 들어옵니다 — 다른 차입니다.
         """
         if not specs:
-            raise ValueError("차량 제원 Silver 가 비어 있습니다.")
+            raise ValueError("차량 제원 Curated 가 비어 있습니다.")
 
         min_year, max_year = None, None
         if as_of is not None:
@@ -247,7 +247,7 @@ class VehicleMasterSilverTransformer(Transformer):
 
         for platform, rows in ((PLATFORM_UBER, uber), (PLATFORM_LYFT, lyft)):
             if not rows:
-                raise ValueError(f"{platform} 배차 자격 Silver 가 비어 있습니다.")
+                raise ValueError(f"{platform} 배차 자격 Curated 가 비어 있습니다.")
             for row in rows:
                 city = str(row.get("city") or "").strip()
                 make_key = str(row.get("make_key") or "").strip()
@@ -324,7 +324,7 @@ class VehicleMasterSilverTransformer(Transformer):
             "combined_kwh_per_100mi_max": kwh_max,
             "range_miles_min": range_min,
             "fuel_type": fuel_type,
-            # 계보 — 원천 Silver 가 물고 온 Bronze 경로를 그대로 옮깁니다.
+            # 계보 — 원천 Curated 가 물고 온 Bronze 경로를 그대로 옮깁니다.
             # 후보가 여러 개여도 같은 스냅샷에서 왔으므로 첫 행이면 충분합니다.
             "catalog_bronze_path": vehicle.get("bronze_path"),
             "specs_bronze_path": specs[0].get("bronze_path") if specs else None,

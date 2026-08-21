@@ -46,7 +46,7 @@ COPY sub/__init__.py /home/hadoop/sub/__init__.py
 COPY sub/spark/ /home/hadoop/sub/spark/
 COPY sub/generators/ /home/hadoop/sub/generators/
 
-# bronze_to_silver 가 S3 파티션 목록 조회에만 shared/aws_lambda 의 list_keys 를 재사용합니다
-# (전용 파일 하나만 — common/ 전체를 넣으면 spark 에 없는 의존성을 끌고 옵니다).
-COPY shared/aws_lambda/__init__.py /home/hadoop/shared/aws_lambda/__init__.py
-COPY shared/aws_lambda/common/s3_reader.py /home/hadoop/shared/aws_lambda/common/s3_reader.py
+# bronze_to_silver 가 S3 파티션 목록 조회에만 shared/common 의 list_keys 를 재사용합니다
+# (전용 파일 하나만 — env.py 는 spark 에 없는 dotenv 의존성을 끌고 옵니다).
+COPY shared/common/__init__.py /home/hadoop/shared/common/__init__.py
+COPY shared/common/s3_reader.py /home/hadoop/shared/common/s3_reader.py

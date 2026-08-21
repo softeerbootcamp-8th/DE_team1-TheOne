@@ -33,7 +33,7 @@ GET /v1/data/{YYYY-MM}/datasets/lease_vehicle_inventory
 | 요청한 월이나 데이터셋이 없음 | API `404` 응답 | 원천 API |
 | 최신 URL이 다른 호스트나 데이터셋으로 이동 | 최종 URL의 host·월·데이터셋 확인 | 수집 |
 | 빈 응답 또는 Parquet이 아닌 응답 | 응답 바이트와 `pq.ParquetFile` 확인 | 적재 |
-| 같은 달을 다시 수집 | 같은 월 파티션의 `data.parquet`을 원자적으로 교체 | 적재 |
+| 같은 달을 다시 수집 | `year_month=YYYY-MM/<UTC 수집시각>.parquet`으로 원본 이력 추가 | 적재 |
 | 저장 결과가 수집 응답과 다름 | 파일 크기·Parquet footer 행 수·파티션 경로 확인 | 검증 태스크 |
 
 행 수는 원천이 알려 준 값과 비교하지 않고, 다운로드한 Parquet footer에서 계산해 Main 내부 결과로만 사용합니다.

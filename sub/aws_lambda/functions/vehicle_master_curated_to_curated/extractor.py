@@ -1,4 +1,4 @@
-"""차량 마스터를 만들 네 개의 원천 Silver 를 읽습니다.
+"""차량 마스터를 만들 네 개의 원천 Curated 를 읽습니다.
 
 원천마다 최신 파티션이 다른 날짜에 있습니다(제원 월 1회, 나머지 주 1회). 각각
 `latest_date_partition` 으로 따로 찾습니다 — 자세한 이유는 그 함수의 docstring.
@@ -24,9 +24,9 @@ from sub.aws_lambda.common import uber_eligible_vehicles_layout as uber_layout
 from sub.aws_lambda.common import vehicle_catalog_layout as catalog_layout
 from sub.aws_lambda.common import vehicle_master_layout as layout
 from sub.aws_lambda.common import vehicle_specs_layout as specs_layout
-from shared.aws_lambda.common.env import load_local_env
+from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
-from shared.aws_lambda.common.s3_reader import get_object_bytes, list_keys
+from shared.common.s3_reader import get_object_bytes, list_keys
 
 logger = logging.getLogger(__name__)
 
@@ -73,10 +73,10 @@ class SourceTables:
     as_of: date | None = None
 
 
-class VehicleMasterSilverExtractor(Extractor):
-    """네 개 Silver 데이터셋의 최신 파티션을 읽어 합칩니다."""
+class VehicleMasterCuratedExtractor(Extractor):
+    """네 개 Curated 데이터셋의 최신 파티션을 읽어 합칩니다."""
 
-    name = "vehicle_master_silver_sources"
+    name = "vehicle_master_curated_sources"
 
     def __init__(self, base_dir: str, as_of: str):
         self.as_of = _validate_as_of(as_of)
@@ -107,7 +107,7 @@ class VehicleMasterSilverExtractor(Extractor):
     ) -> tuple[date, list[dict]]:
         """`collected_date=*/<sub_key>=*/<데이터셋>.parquet` 을 전부 읽습니다.
 
-        Silver 파일명은 데이터셋마다 고정이라 같은 파티션에 여러 파일이 쌓이지
+        Curated 파일명은 데이터셋마다 고정이라 같은 파티션에 여러 파일이 쌓이지
         않습니다. Bronze 처럼 최신 파일을 고를 필요가 없습니다.
         """
         dataset_dir = source_layout.dataset_path(self._base_dir)
@@ -115,19 +115,19 @@ class VehicleMasterSilverExtractor(Extractor):
 
         sub_dirs = sorted(d for d in partition.glob(f"{sub_key}=*") if d.is_dir())
         if not sub_dirs:
-            raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: {partition}")
+            raise FileNotFoundError(f"Curated 파티션이 비어 있습니다: {partition}")
 
         rows: list[dict] = []
         for sub_dir in sub_dirs:
             path = sub_dir / source_layout.CURATED_FILE_NAME
             if not path.is_file():
-                raise FileNotFoundError(f"Silver Parquet 파일이 없습니다: {path}")
+                raise FileNotFoundError(f"Curated Parquet 파일이 없습니다: {path}")
             try:
                 table = pq.ParquetFile(path).read()
             except (OSError, pa.ArrowInvalid) as exc:
-                raise RuntimeError(f"Silver Parquet을 읽지 못했습니다: {path}") from exc
+                raise RuntimeError(f"Curated Parquet을 읽지 못했습니다: {path}") from exc
             if not table.num_rows:
-                raise RuntimeError(f"Silver Parquet이 비어 있습니다: {path}")
+                raise RuntimeError(f"Curated Parquet이 비어 있습니다: {path}")
 
             # 파티션 키는 파일 안에 없습니다. 디렉터리명에서 되살립니다.
             sub_value = sub_dir.name.removeprefix(f"{sub_key}=")
@@ -136,8 +136,8 @@ class VehicleMasterSilverExtractor(Extractor):
         return collected_date, rows
 
 
-class VehicleMasterSilverS3Extractor(Extractor):
-    """네 개 S3 Silver 데이터셋의 최신 파티션을 읽어 합칩니다.
+class VehicleMasterCuratedS3Extractor(Extractor):
+    """네 개 S3 Curated 데이터셋의 최신 파티션을 읽어 합칩니다.
 
     로컬과 달리 파티션을 디렉터리로 순회할 수 없어, 데이터셋별 prefix 전체를
     `list_keys` 로 한 번에 나열한 뒤 `collected_date=`/하위 파티션 키를 key
@@ -145,7 +145,7 @@ class VehicleMasterSilverS3Extractor(Extractor):
     `vehicle_master_layout.latest_date_from_keys()`.
     """
 
-    name = "vehicle_master_silver_sources"
+    name = "vehicle_master_curated_sources"
 
     def __init__(self, as_of: str, bucket: str | None = None):
         self.as_of = _validate_as_of(as_of)
@@ -176,7 +176,7 @@ class VehicleMasterSilverS3Extractor(Extractor):
         prefix = f"source/curated/{source_layout.DATASET}/"
         all_keys = list_keys(self._bucket, prefix)
         if not all_keys:
-            raise FileNotFoundError(f"원천 Silver 데이터셋이 없습니다: s3://{self._bucket}/{prefix}")
+            raise FileNotFoundError(f"원천 Curated 데이터셋이 없습니다: s3://{self._bucket}/{prefix}")
 
         collected_date = layout.latest_date_from_keys(
             all_keys, self.as_of, f"s3://{self._bucket}/{prefix}"
@@ -187,7 +187,7 @@ class VehicleMasterSilverS3Extractor(Extractor):
             if k.startswith(date_prefix) and k.endswith(f"/{source_layout.CURATED_FILE_NAME}")
         )
         if not date_keys:
-            raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: s3://{self._bucket}/{date_prefix}")
+            raise FileNotFoundError(f"Curated 파티션이 비어 있습니다: s3://{self._bucket}/{date_prefix}")
 
         rows: list[dict] = []
         for key in date_keys:
@@ -196,10 +196,10 @@ class VehicleMasterSilverS3Extractor(Extractor):
                 table = pq.ParquetFile(io.BytesIO(body)).read()
             except (OSError, pa.ArrowInvalid) as exc:
                 raise RuntimeError(
-                    f"Silver Parquet을 읽지 못했습니다: s3://{self._bucket}/{key}"
+                    f"Curated Parquet을 읽지 못했습니다: s3://{self._bucket}/{key}"
                 ) from exc
             if not table.num_rows:
-                raise RuntimeError(f"Silver Parquet이 비어 있습니다: s3://{self._bucket}/{key}")
+                raise RuntimeError(f"Curated Parquet이 비어 있습니다: s3://{self._bucket}/{key}")
 
             sub_value = _value_from_key(key, sub_key)
             rows += [{**row, sub_key: sub_value} for row in table.to_pylist()]
@@ -210,7 +210,7 @@ class VehicleMasterSilverS3Extractor(Extractor):
 def build_extractor(storage: str, base_dir: str, as_of: str, bucket: str | None = None) -> Extractor:
     """storage 파라미터로 로컬/S3 Extractor 중 하나를 고릅니다."""
     if storage == "local":
-        return VehicleMasterSilverExtractor(base_dir, as_of)
+        return VehicleMasterCuratedExtractor(base_dir, as_of)
     if storage == "s3":
-        return VehicleMasterSilverS3Extractor(as_of, bucket=bucket)
+        return VehicleMasterCuratedS3Extractor(as_of, bucket=bucket)
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

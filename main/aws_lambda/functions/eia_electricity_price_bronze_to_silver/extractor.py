@@ -14,7 +14,7 @@ import logging
 from pipeline_core.extractor import Extractor
 
 from main.aws_lambda.common import eia_fuel_price_layout as layout
-from shared.aws_lambda.common.s3_reader import get_object_bytes, list_keys
+from shared.common.s3_reader import get_object_bytes, list_keys
 
 logger = logging.getLogger(__name__)
 

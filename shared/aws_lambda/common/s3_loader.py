@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import boto3
 from pipeline_core.loader import Loader, WriteResult
 
-from .env import load_local_env
+from shared.common.env import load_local_env
 
 BUCKET_ENV_VAR = "DATA_LAKE_S3_BUCKET"
 

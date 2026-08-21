@@ -12,7 +12,7 @@ from main.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import parse_year_month
-from main.airflow.common.monthly_bronze import validate_synthetic_bronze
+from main.airflow.common.monthly_bronze import validate_monthly_parquet_bronze
 from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 
 
@@ -87,7 +87,7 @@ def _validate_bronze_result(
     result: dict,
     base_dir: str | Path,
 ) -> tuple[Path, list[str]]:
-    path, _ = validate_synthetic_bronze(
+    path, _ = validate_monthly_parquet_bronze(
         result,
         dataset_dir=DATASET,
         base_dir=base_dir,

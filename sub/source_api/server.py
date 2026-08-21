@@ -18,8 +18,8 @@ from urllib.parse import urlsplit
 
 from botocore.exceptions import ClientError
 
-from shared.aws_lambda.common.env import load_local_env
-from shared.aws_lambda.common.s3_reader import get_object_stream, list_keys
+from shared.common.env import load_local_env
+from shared.common.s3_reader import get_object_stream, list_keys
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 

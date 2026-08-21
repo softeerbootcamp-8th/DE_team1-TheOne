@@ -1,4 +1,4 @@
-"""차량 마스터 통합 Silver 시나리오 (원천 Silver 파티션을 직접 깔고 핸들러 실행).
+"""차량 마스터 통합 Curated 시나리오 (원천 Curated 파티션을 직접 깔고 핸들러 실행).
 
  1. 원천 4개의 최신 파티션을 각각 고름 (제원만 1년 전 파티션)
  2. as_of 이후 파티션은 건너뜀
@@ -24,17 +24,17 @@ import pyarrow.parquet as pq
 import pytest
 
 from sub.aws_lambda.common import vehicle_master_layout as layout
-from sub.aws_lambda.functions.vehicle_master_silver.handler import (
+from sub.aws_lambda.functions.vehicle_master_curated_to_curated.handler import (
     lambda_handler as to_master,
 )
-from sub.aws_lambda.functions.vehicle_master_silver.loader import SCHEMA
+from sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader import SCHEMA
 
 AS_OF = "2026-08-13"
 CITY = "new-york"
 VENDOR = "fasttrack"
 SPECS_SOURCE = "fueleconomy.gov"
 
-# 원천 Silver 의 실제 스키마 (각 loader.SCHEMA 와 같은 모양). 파티션 키(vendor /
+# 원천 Curated 의 실제 스키마 (각 loader.SCHEMA 와 같은 모양). 파티션 키(vendor /
 # source / city)는 파일 안에 없으므로 여기에도 없습니다.
 CATALOG_SCHEMA = pa.schema(
     [
@@ -151,7 +151,7 @@ LYFT = [
 
 
 def write_source(
-    silver_dir: Path,
+    curated_dir: Path,
     dataset: str,
     collected_date: str,
     sub_key: str,
@@ -160,7 +160,7 @@ def write_source(
     schema: pa.Schema,
 ) -> Path:
     path = (
-        silver_dir
+        curated_dir
         / dataset
         / f"collected_date={collected_date}"
         / f"{sub_key}={sub_value}"
@@ -172,7 +172,7 @@ def write_source(
 
 
 def build_sources(
-    silver_dir: Path,
+    curated_dir: Path,
     *,
     catalog: list[dict] = CATALOG,
     specs: list[dict] = SPECS,
@@ -185,25 +185,25 @@ def build_sources(
     lyft_date: str = "2026-08-12",
 ) -> None:
     write_source(
-        silver_dir, "vehicle_catalog", catalog_date, "vendor", VENDOR,
+        curated_dir, "vehicle_catalog", catalog_date, "vendor", VENDOR,
         catalog, CATALOG_SCHEMA,
     )
     write_source(
-        silver_dir, "fueleconomy_vehicle_specs", specs_date, "source", SPECS_SOURCE,
+        curated_dir, "fueleconomy_vehicle_specs", specs_date, "source", SPECS_SOURCE,
         specs, SPECS_SCHEMA,
     )
     write_source(
-        silver_dir, "uber_eligible_vehicles", uber_date, "city", CITY,
+        curated_dir, "uber_eligible_vehicles", uber_date, "city", CITY,
         uber, ELIGIBILITY_SCHEMA,
     )
     write_source(
-        silver_dir, "lyft_eligible_vehicles", lyft_date, "city", CITY,
+        curated_dir, "lyft_eligible_vehicles", lyft_date, "city", CITY,
         lyft, ELIGIBILITY_SCHEMA,
     )
 
 
-def run(silver_dir: Path, as_of: str = AS_OF) -> dict:
-    return to_master(event={"silver_dir": str(silver_dir), "collected_date": as_of})
+def run(curated_dir: Path, as_of: str = AS_OF) -> dict:
+    return to_master(event={"curated_dir": str(curated_dir), "collected_date": as_of})
 
 
 def read_rows(result: dict) -> list[dict]:
@@ -398,7 +398,7 @@ def test_layout_이_정한_경로에_스키마대로_쓴다(tmp_path):
     result = run(tmp_path)
 
     path = Path(result["locations"][0])
-    assert path == layout.silver_file(str(tmp_path), date.fromisoformat(AS_OF), CITY)
+    assert path == layout.curated_file(str(tmp_path), date.fromisoformat(AS_OF), CITY)
     table = pq.ParquetFile(path).read()
     assert table.schema == SCHEMA
     # city 와 collected_date 는 파티션 키라 컬럼으로 두지 않습니다.
@@ -407,7 +407,7 @@ def test_layout_이_정한_경로에_스키마대로_쓴다(tmp_path):
 
 
 # --- 상류 컬럼 유실 (#567) ----------------------------------------------------
-# 상류 Silver 의 컬럼명이 바뀌면 `_row` 의 `.get()` 이 조용히 None 을 돌려주고,
+# 상류 Curated 의 컬럼명이 바뀌면 `_row` 의 `.get()` 이 조용히 None 을 돌려주고,
 # 그 컬럼만 통째로 빈 채 적재까지 성공합니다. `weekly_price_usd` -> `weekly_lease_fee`
 # 통일 때 실제로 142행 전부 NULL 인 마스터가 만들어졌습니다.
 

@@ -38,9 +38,9 @@ from sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.loader import (
     SCHEMA as CATALOG_SILVER_SCHEMA,
     VehicleCatalogCuratedLoader,
 )
-from sub.aws_lambda.functions.vehicle_master_silver.loader import (
+from sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader import (
     SCHEMA as MASTER_SILVER_SCHEMA,
-    VehicleMasterSilverLoader,
+    VehicleMasterCuratedLoader,
 )
 
 COLLECTED_AT = datetime(2026, 8, 13, 3, tzinfo=timezone.utc)
@@ -148,7 +148,7 @@ def _catalog_silver(root):
 def _master_silver(root):
     row = _row(MASTER_SILVER_SCHEMA)
     row["city"] = "new-york"
-    return VehicleMasterSilverLoader(str(root), "2026-08-13"), [row]
+    return VehicleMasterCuratedLoader(str(root), "2026-08-13"), [row]
 
 
 @pytest.mark.parametrize(

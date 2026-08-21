@@ -2,7 +2,7 @@
 
 1. `year_month_range` 가 양끝을 포함해 순서대로 반환, 연도 경계도 처리
 2. `year_month_range` 는 start가 end보다 늦으면 ValueError
-3. `latest_partition_file` 은 파티션/파일이 없으면 None, 있으면 최신 파일 경로
+3. `latest_partition_file` 은 파티션/파일이 없으면 None, 있으면 최신 수집 파일 경로
 4. [필수] range로 여러 달 파티션을 한 번에 읽어 Silver로 적재
 5. [필수] range 안에 파티션이 하나라도 없으면 FileNotFoundError (부분 처리 안 함)
 6. [필수] 없는 파티션이 여러 개면 첫 번째에서 멈추지 않고 전부 모아서 보고
@@ -93,13 +93,35 @@ def test_latest_partition_file은_파일이_없는_빈_파티션이면_None(tmp_
     assert job.latest_partition_file(str(tmp_path), "2024-01") is None
 
 
-def test_latest_partition_file은_있으면_최신_파일_경로를_반환한다(spark, tmp_path):
-    _write_partition(spark, tmp_path, "2024-01", [_row()])
+def test_latest_partition_file은_최신_수집시각_파일을_반환한다(tmp_path):
+    partition = tmp_path / "year_month=2024-01"
+    partition.mkdir()
+    (partition / "data.parquet").touch()
+    older = partition / "20240820T101530123456Z.parquet"
+    latest = partition / "20240820T112205654321Z.parquet"
+    older.touch()
+    latest.touch()
 
     result = job.latest_partition_file(str(tmp_path), "2024-01")
 
-    assert result is not None
-    assert result.endswith(".parquet")
+    assert result == str(latest)
+
+
+def test_latest_partition_files는_각_월의_최신파일만_고른다(tmp_path):
+    january = tmp_path / "year_month=2024-01"
+    february = tmp_path / "year_month=2024-02"
+    january.mkdir()
+    february.mkdir()
+    (january / "20240820T101530123456Z.parquet").touch()
+    january_latest = january / "20240820T112205654321Z.parquet"
+    february_latest = february / "20240821T112205654321Z.parquet"
+    january_latest.touch()
+    february_latest.touch()
+
+    assert job.latest_partition_files(str(tmp_path)) == [
+        str(january_latest),
+        str(february_latest),
+    ]
 
 
 def test_default_paths는_local이면_로컬_경로를_돌려준다():

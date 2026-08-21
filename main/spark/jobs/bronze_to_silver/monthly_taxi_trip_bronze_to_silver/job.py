@@ -1,11 +1,12 @@
 import argparse
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
-from shared.aws_lambda.common.s3_reader import list_keys
+from shared.common.s3_reader import list_keys
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
 from pipeline_core.pipeline import Pipeline, PipelineResult
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 CURRENT_FILE = Path(__file__).resolve()
 # spark/jobs/bronze_to_silver/monthly_taxi_trip_bronze_to_silver/job.py -> project root
 PROJECT_ROOT = CURRENT_FILE.parents[5]
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 
 DEFAULT_LOCAL_INPUT = "data/bronze/monthly_taxi_trip"
@@ -79,7 +81,21 @@ def latest_partition_file(input_path: str, year_month: str) -> Optional[str]:
     parquet_files = sorted(partition_dir.glob("*.parquet"))
     if not parquet_files:
         return None
-    return str(parquet_files[-1])
+    timestamp_files = [
+        path for path in parquet_files if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
+    ]
+    return str((timestamp_files or parquet_files)[-1])
+
+
+def latest_partition_files(input_path: str) -> list[str]:
+    """Bronze 루트에서 월별 최신 수집본 하나씩만 고릅니다."""
+    selected = []
+    for partition in sorted(Path(input_path).glob("year_month=????-??")):
+        year_month = partition.name.removeprefix("year_month=")
+        latest = latest_partition_file(input_path, year_month)
+        if latest is not None:
+            selected.append(latest)
+    return selected
 
 
 def _latest_s3_partition_file(input_path: str, year_month: str) -> Optional[str]:
@@ -90,7 +106,10 @@ def _latest_s3_partition_file(input_path: str, year_month: str) -> Optional[str]
     parquet_keys = sorted(key for key in list_keys(bucket, partition_prefix) if key.endswith(".parquet"))
     if not parquet_keys:
         return None
-    return f"{scheme}://{bucket}/{parquet_keys[-1]}"
+    timestamp_keys = [
+        key for key in parquet_keys if TIMESTAMP_FILE_PATTERN.fullmatch(Path(key).name)
+    ]
+    return f"{scheme}://{bucket}/{(timestamp_keys or parquet_keys)[-1]}"
 
 
 def main(args_list: Optional[list[str]] = None) -> PipelineResult:
@@ -140,6 +159,11 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
             raise FileNotFoundError(f"Bronze 파티션이 없거나 비어 있습니다: year_month={missing_year_months}")
 
         logger.info("선택된 Bronze 파일 %d개: %s", len(target_input_path), target_input_path)
+    elif Path(input_path).is_dir():
+        target_input_path = latest_partition_files(input_path)
+        if not target_input_path:
+            raise FileNotFoundError(f"Bronze 월 파티션이 없거나 비어 있습니다: {input_path}")
+        logger.info("선택된 월별 최신 Bronze 파일 %d개: %s", len(target_input_path), target_input_path)
     else:
         target_input_path = input_path
 

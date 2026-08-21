@@ -67,7 +67,7 @@ def electricity_bronze_key(collected_date: date) -> str:
 
 
 def bronze_s3_prefix(dataset: str) -> str:
-    """`shared.aws_lambda.common.s3_reader.list_keys` 에 넘길 접두사."""
+    """`shared.common.s3_reader.list_keys` 에 넘길 접두사."""
     return f"bronze/{dataset}/{BRONZE_PARTITION_KEY}="
 
 
