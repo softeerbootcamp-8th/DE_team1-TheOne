@@ -26,7 +26,7 @@ jobs:
   # 이미지에 들어가는 파일이 안 바뀌었으면 굽는 결과가 직전과 같습니다. 그래서 소스 전체가
   # 아니라 **각 Dockerfile 이 실제로 COPY 하는 것**을 기준으로 거릅니다.
   #
-  #   공통      main/<runtime>/Dockerfile 과 각 pyproject.toml, uv.lock
+  #   공통      shared/<runtime>/Dockerfile 과 각 pyproject.toml, uv.lock
   #   airflow   DAG 와 그것이 import 하는 main·sub·shared·schema·libs (#616 에서 추가)
   #   그 외     각 런타임이 COPY 하는 제품 코드와 libs/pipeline_core
   #
@@ -47,7 +47,6 @@ jobs:
         with:
           filters: |
             airflow:
-              - 'main/airflow/Dockerfile'
               - 'main/airflow/pyproject.toml'
               - 'main/airflow/uv.lock'
               - 'main/airflow/dags/**'
@@ -60,7 +59,6 @@ jobs:
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             spark:
-              - 'main/spark/Dockerfile'
               - 'main/spark/pyproject.toml'
               - 'main/spark/uv.lock'
               - 'sub/spark/**'
@@ -70,7 +68,6 @@ jobs:
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             aws_lambda:
-              - 'main/aws_lambda/Dockerfile'
               - 'main/aws_lambda/pyproject.toml'
               - 'main/aws_lambda/uv.lock'
               # ↓ Dockerfile 이 COPY 하는데 빠져 있던 것들. 없으면 main 함수 코드를

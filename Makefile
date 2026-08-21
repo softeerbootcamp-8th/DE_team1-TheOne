@@ -118,12 +118,13 @@ build:
 		exit 1; \
 	fi
 	@for r in $(RUNTIMES); do \
-		name=$$(basename $$r); \
+		dirname=$$(basename $$r); \
+		name=$$dirname; \
 		if [ "$$name" = "aws_lambda" ]; then name="lambda"; fi; \
 		image="$(IMAGE_PREFIX)$$name"; \
 		if [ -n "$(IMAGE_NAME)" ]; then image="$(IMAGE_NAME)"; fi; \
 		echo "==> building $(REGISTRY)$$image:$(GIT_SHA)"; \
-		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f $$r/Dockerfile \
+		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f shared/$$dirname/Dockerfile \
 			-t $(REGISTRY)$$image:$(GIT_SHA) . || exit 1; \
 	done
 

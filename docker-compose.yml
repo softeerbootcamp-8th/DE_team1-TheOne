@@ -32,12 +32,12 @@ services:
     restart: unless-stopped
 
   airflow:
-    # main/airflow/Dockerfile을 빌드해서 씁니다(uv.lock으로 고정된 패키지 포함).
-    # 컨텍스트는 저장소 루트입니다 — Dockerfile 의 COPY 경로가 `airflow/...` 로
+    # shared/airflow/Dockerfile을 빌드해서 씁니다(uv.lock으로 고정된 패키지 포함).
+    # 컨텍스트는 저장소 루트입니다 — Dockerfile 의 COPY 경로가 `main/airflow/...` 로
     # 시작해서(`make build` 와 동일) 여기를 ./airflow 로 두면 빌드가 실패합니다.
     build:
       context: .
-      dockerfile: main/airflow/Dockerfile
+      dockerfile: shared/airflow/Dockerfile
     # DAG 는 저장소 루트의 data/ 에 Bronze·Silver 를 씁니다. 이미지 기본 uid(50000)로
     # 돌면 호스트 소유(uid 1000)인 마운트에 쓰지 못해 PermissionError 가 납니다.
     # gid 는 0 을 유지해야 합니다 — /opt/airflow 가 airflow:root 775 라 gid 0 으로 씁니다.
