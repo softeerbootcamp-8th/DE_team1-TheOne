@@ -20,6 +20,7 @@ from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.slack_quality_warning import send_quality_warning
 from shared.airflow.common.validation import (
+    parquet_file,
     parse_handler_result,
     parse_year_month,
     run_gx_validation,
@@ -51,7 +52,7 @@ DEFAULT_SILVER_DIR = os.getenv(
 # 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
 HVFHV_ERROR_THRESHOLD = 0.05
 HVFHV_WARNING_THRESHOLD = 0.01
-DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 
 
 def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> str:
@@ -319,13 +320,13 @@ def _bronze_quality_result(
         base_dir=base_dir,
     )
     try:
-        parquet_file = pq.ParquetFile(path)
-    except (OSError, pa.ArrowInvalid) as exc:
+        source = parquet_file(path)
+    except RuntimeError as exc:
         raise ValueError(
             f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
         ) from exc
 
-    summary = _bronze_quality_summary(parquet_file, required_columns)
+    summary = _bronze_quality_summary(source, required_columns)
     return summary
 
 
@@ -342,7 +343,7 @@ def validate_silver_task(raw_result: dict, **context) -> None:
     year_month = parse_year_month(
         raw_result.get("year_month"), field="year_month"
     )
-    bronze_rows = pq.ParquetFile(parsed.locations[0]).metadata.num_rows
+    bronze_rows = parquet_file(parsed.locations[0]).metadata.num_rows
 
     silver_partition = Path(DEFAULT_SILVER_DIR) / f"year_month={year_month}"
     silver_files = sorted(silver_partition.glob("*.parquet"))
