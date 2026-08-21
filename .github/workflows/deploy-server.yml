@@ -107,10 +107,18 @@ jobs:
             f"docker pull {os.environ['IMAGE_URI']}",
             "docker stop theone-source-server 2>/dev/null || true",
             "docker rm theone-source-server 2>/dev/null || true",
+            # 이름이 다른 컨테이너(손으로 띄운 것, 옛 이름으로 띄운 것)가 8091 을 잡고
+            # 있으면 위 두 줄로는 안 비워집니다. 그 상태로 docker run 을 하면
+            # "port is already allocated" 로 죽고, EC2 는 옛 이미지를 계속 서빙합니다.
+            "docker ps -q --filter publish=8091 | xargs -r docker rm -f",
             "docker run -d --name theone-source-server --restart unless-stopped "
             f"-p 8091:8091 -e SOURCE_API_S3_BUCKET={os.environ['S3_BUCKET']} {os.environ['IMAGE_URI']}",
             "sleep 3",
             "curl -fsS http://localhost:8091/health",
+            # health 만 보면 옛 컨테이너가 응답해도 초록불입니다. 실제로 방금 푸시한
+            # 이미지가 돌고 있는지 태그로 확인합니다.
+            "docker inspect -f '{{.Config.Image}}' theone-source-server | grep -qx "
+            + os.environ["IMAGE_URI"],
           ]
           print(json.dumps({"commands": cmds}))
           PY
