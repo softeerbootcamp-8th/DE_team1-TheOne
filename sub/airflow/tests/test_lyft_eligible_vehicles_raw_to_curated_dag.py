@@ -1,22 +1,18 @@
-"""Uber 자격 차량 DAG 가 핸들러에 넘기는 event 계약을 고정합니다.
+"""Lyft 자격 차량 DAG 가 핸들러에 넘기는 event 계약을 고정합니다.
 
 두 태스크는 event 딕셔너리로만 핸들러와 이야기합니다. 키 이름이 어긋나도 핸들러는
 `event.get(...) or 기본값` 으로 받으므로 **예외 없이 기본 경로에 씁니다.** DAG 는
 초록불로 끝나고 데이터만 엉뚱한 곳에 쌓입니다. 그래서 계약을 여기서 못 박습니다.
 
-Lyft DAG 와 event 계약이 같습니다(#228 에서 `base_dir` 로 통일). 그래도 테스트를
-합치지 않습니다 — 두 DAG 는 서로 다른 사이트를 긁고 따로 바뀌므로, 한쪽이 깨졌을 때
-어느 쪽인지 이름만 보고 알 수 있어야 합니다.
-
 시나리오:
 
 1. DAG 구조 — dag_id, 태스크 2개, raw_to_bronze -> bronze_to_silver 의존 순서
-2. [필수] Bronze event = base_dir + city_slug 두 키
-3. [필수] Silver event 에 city_slug 가 없음
+2. [필수] Raw event = base_dir + city_slug 두 키
+3. [필수] Curated event 에 city_slug 가 없음
 4. [필수] collected_date 가 비면 raw_result 값을 씀
 5. [필수] collected_date 가 공백 문자열이어도 raw_result 값으로 떨어짐
-6. collected_date 를 주면 그 값이 Silver 로 감
-7. city_slug 를 주면 그 값이 Bronze event 로 감
+6. collected_date 를 주면 그 값이 Curated 로 감
+7. city_slug 를 주면 그 값이 Raw event 로 감
 8. 파라미터가 비면 DAG 기본값(경로 / 도시)을 씀
 
 핸들러는 부르지 않습니다. `lambda_handler_for` 를 가짜로 바꿔 event 만 받아 적습니다.
@@ -25,19 +21,19 @@ Lyft DAG 와 event 계약이 같습니다(#228 에서 `base_dir` 로 통일). �
 
 import pytest
 
-from dags import uber_eligible_vehicles_raw_to_silver_dag as dag_module
-from sub.airflow.scripts.uber_eligible_vehicles_raw_to_silver import tasks as task_module
+from dags import lyft_eligible_vehicles_raw_to_curated_dag as dag_module
+from sub.airflow.scripts.lyft_eligible_vehicles_raw_to_curated import tasks as task_module
 
-DAG = dag_module.uber_eligible_vehicles_dag
-DAG_ID = "uber_eligible_vehicles_raw_to_silver_pipeline"
-BRONZE_FUNCTION = "uber_eligible_vehicles_source_to_raw"
-SILVER_FUNCTION = "uber_eligible_vehicles_raw_to_curated"
+DAG = dag_module.lyft_eligible_vehicles_dag
+DAG_ID = "lyft_eligible_vehicles_raw_to_curated_pipeline"
+RAW_FUNCTION = "lyft_eligible_vehicles_source_to_raw"
+CURATED_FUNCTION = "lyft_eligible_vehicles_raw_to_curated"
 
-# Bronze 가 돌려줬다고 가정할 수집일. PARAM_DATE 와 반드시 달라야
+# Raw 가 돌려줬다고 가정할 수집일. PARAM_DATE 와 반드시 달라야
 # "어느 쪽 값이 갔는지" 를 구분할 수 있습니다.
-BRONZE_DATE = "2026-08-11"
+RAW_DATE = "2026-08-11"
 PARAM_DATE = "2026-08-01"
-RAW_RESULT = {"collected_date": BRONZE_DATE}
+RAW_RESULT = {"collected_date": RAW_DATE}
 
 
 @pytest.fixture
@@ -71,51 +67,51 @@ def only_event(events: list[tuple[str, dict]], function_name: str) -> dict:
 def test_적재와_검증이_번갈아_이어진다():
     """raw_to_bronze -> validate_bronze -> bronze_to_silver -> validate_silver.
 
-    검증이 변환 앞에 있어야 깨진 Bronze 를 읽지 않습니다.
+    검증이 변환 앞에 있어야 깨진 Raw 를 읽지 않습니다.
     """
     assert DAG.dag_id == DAG_ID
     assert set(DAG.task_ids) == {
-        "raw_to_bronze",
-        "validate_bronze",
-        "bronze_to_silver",
-        "validate_silver",
+        "source_to_raw",
+        "validate_raw",
+        "raw_to_curated",
+        "validate_curated",
     }
-    assert DAG.get_task("raw_to_bronze").upstream_task_ids == set()
-    assert DAG.get_task("validate_bronze").upstream_task_ids == {"raw_to_bronze"}
-    # Bronze 결과(collected_date)가 필요해서 raw_to_bronze 에도 붙어 있습니다.
-    assert DAG.get_task("bronze_to_silver").upstream_task_ids == {
-        "raw_to_bronze",
-        "validate_bronze",
+    assert DAG.get_task("source_to_raw").upstream_task_ids == set()
+    assert DAG.get_task("validate_raw").upstream_task_ids == {"source_to_raw"}
+    # Raw 결과(collected_date)가 필요해서 source_to_raw 에도 붙어 있습니다.
+    assert DAG.get_task("raw_to_curated").upstream_task_ids == {
+        "source_to_raw",
+        "validate_raw",
     }
-    assert DAG.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}
+    assert DAG.get_task("validate_curated").upstream_task_ids == {"raw_to_curated"}
 
 
 def test_Bronze_event_는_base_dir_city_slug_collected_date_를_넘긴다(events):
-    """[필수] 이 핸들러는 경로를 `base_dir` 로만 받습니다. `bronze_dir` 로 보내면 기본 경로에 씁니다."""
+    """[필수] 핸들러가 받는 경로 인자명은 `base_dir` — `bronze_dir` 로 보내면 기본 경로에 씁니다."""
     call_task(
-        "raw_to_bronze",
-        params={"bronze_dir": "/tmp/bronze", "city_slug": "chicago"},
+        "source_to_raw",
+        params={"raw_dir": "/tmp/raw", "city_slug": "chicago"},
     )
 
-    assert only_event(events, BRONZE_FUNCTION) == {
-        "base_dir": "/tmp/bronze",
+    assert only_event(events, RAW_FUNCTION) == {
+        "base_dir": "/tmp/raw",
         "city_slug": "chicago",
         "collected_date": None,
     }
 
 
 def test_Silver_event_에는_city_slug_가_들어가지_않는다(events):
-    """[필수] Silver 핸들러는 수집일 아래 도시 디렉터리를 전부 훑으므로 도시를 받지 않습니다."""
+    """[필수] Curated 핸들러는 수집일 아래 도시 디렉터리를 전부 훑으므로 도시를 받지 않습니다."""
     call_task(
-        "bronze_to_silver",
+        "raw_to_curated",
         raw_result=RAW_RESULT,
-        params={"city_slug": "chicago", "bronze_dir": "/tmp/b", "silver_dir": "/tmp/s"},
+        params={"city_slug": "chicago", "raw_dir": "/tmp/b", "curated_dir": "/tmp/s"},
     )
 
-    event = only_event(events, SILVER_FUNCTION)
+    event = only_event(events, CURATED_FUNCTION)
     assert "city_slug" not in event
     assert event == {
-        "collected_date": BRONZE_DATE,
+        "collected_date": RAW_DATE,
         "raw_dir": "/tmp/b",
         "curated_dir": "/tmp/s",
     }
@@ -123,43 +119,43 @@ def test_Silver_event_에는_city_slug_가_들어가지_않는다(events):
 
 def test_collected_date_가_없으면_Bronze_가_알려준_값을_쓴다(events):
     """[필수] 자정 근처 어긋남 방지 — DAG 가 날짜를 따로 계산하면 안 됩니다."""
-    call_task("bronze_to_silver", raw_result=RAW_RESULT, params={"collected_date": None})
+    call_task("raw_to_curated", raw_result=RAW_RESULT, params={"collected_date": None})
 
-    assert only_event(events, SILVER_FUNCTION)["collected_date"] == BRONZE_DATE
+    assert only_event(events, CURATED_FUNCTION)["collected_date"] == RAW_DATE
 
 
 def test_collected_date_가_공백_문자열이어도_Bronze_값으로_떨어진다(events):
     """[필수] Airflow UI 에서 비워두면 None 이 아니라 공백이 들어올 수 있습니다."""
-    call_task("bronze_to_silver", raw_result=RAW_RESULT, params={"collected_date": "   "})
+    call_task("raw_to_curated", raw_result=RAW_RESULT, params={"collected_date": "   "})
 
-    assert only_event(events, SILVER_FUNCTION)["collected_date"] == BRONZE_DATE
+    assert only_event(events, CURATED_FUNCTION)["collected_date"] == RAW_DATE
 
 
 def test_collected_date_를_주면_그_값이_Silver_로_간다(events):
-    """이미 적재된 Bronze 를 다시 변환하는 경로입니다."""
+    """이미 적재된 Raw 를 다시 변환하는 경로입니다."""
     call_task(
-        "bronze_to_silver", raw_result=RAW_RESULT, params={"collected_date": PARAM_DATE}
+        "raw_to_curated", raw_result=RAW_RESULT, params={"collected_date": PARAM_DATE}
     )
 
-    assert only_event(events, SILVER_FUNCTION)["collected_date"] == PARAM_DATE
+    assert only_event(events, CURATED_FUNCTION)["collected_date"] == PARAM_DATE
 
 
 def test_city_slug_를_주면_그_값이_Bronze_로_간다(events):
     """자격 페이지가 도시마다 달라, 무시되면 항상 같은 도시만 긁습니다."""
-    call_task("raw_to_bronze", params={"city_slug": "chicago"})
+    call_task("source_to_raw", params={"city_slug": "chicago"})
 
-    assert only_event(events, BRONZE_FUNCTION)["city_slug"] == "chicago"
+    assert only_event(events, RAW_FUNCTION)["city_slug"] == "chicago"
 
 
 def test_파라미터가_비면_DAG_기본값을_쓴다(events):
     """params 가 통째로 비어도 None 이 핸들러로 새어 나가면 안 됩니다."""
-    call_task("raw_to_bronze", params={})
-    call_task("bronze_to_silver", raw_result=RAW_RESULT, params={})
+    call_task("source_to_raw", params={})
+    call_task("raw_to_curated", raw_result=RAW_RESULT, params={})
 
-    bronze = only_event(events, BRONZE_FUNCTION)
+    bronze = only_event(events, RAW_FUNCTION)
     assert bronze["base_dir"] == dag_module.DEFAULT_RAW_DIR
     assert bronze["city_slug"] == dag_module.DEFAULT_CITY_SLUG
 
-    silver = only_event(events, SILVER_FUNCTION)
+    silver = only_event(events, CURATED_FUNCTION)
     assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
     assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR

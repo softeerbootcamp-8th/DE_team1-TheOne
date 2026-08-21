@@ -1,4 +1,4 @@
-"""리스 업체 차량 대장 Raw → Bronze → Silver 주간 DAG."""
+"""리스 업체 차량 대장 Source → Raw → Curated 주간 DAG."""
 
 from datetime import datetime, timedelta
 
@@ -8,13 +8,13 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
-from sub.airflow.scripts.vehicle_catalog_raw_to_silver.tasks import (
+from sub.airflow.scripts.vehicle_catalog_raw_to_curated.tasks import (
     DEFAULT_RAW_DIR,
     DEFAULT_CURATED_DIR,
-    bronze_to_silver_task,
-    raw_to_bronze_task,
-    validate_bronze_task,
-    validate_silver_task,
+    raw_to_curated_task,
+    source_to_raw_task,
+    validate_raw_task,
+    validate_curated_task,
 )
 
 
@@ -29,14 +29,14 @@ default_args = {
 
 
 @dag(
-    dag_id="vehicle_catalog_raw_to_silver_pipeline",
+    dag_id="vehicle_catalog_raw_to_curated_pipeline",
     default_args=default_args,
-    description="리스 업체 보유 차량 대장 Raw -> Bronze -> Silver 수집 및 정제 파이프라인",
+    description="리스 업체 보유 차량 대장 Source -> Raw -> Curated 수집 및 정제 파이프라인",
     schedule="0 3 * * 1",
     start_date=datetime(2026, 8, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["sub", "vehicle_catalog", "raw", "bronze", "silver", "lambda"],
+    tags=["sub", "vehicle_catalog", "raw", "curated", "lambda"],
     params={
         "collected_date": Param(
             None,
@@ -48,28 +48,28 @@ default_args = {
                 "비워두면 실행 시각을 씁니다."
             ),
         ),
-        "bronze_dir": Param(
+        "raw_dir": Param(
             DEFAULT_RAW_DIR,
             type="string",
             description="Raw 데이터 저장 기본 경로",
         ),
-        "silver_dir": Param(
+        "curated_dir": Param(
             DEFAULT_CURATED_DIR,
             type="string",
             description="Curated 데이터 저장 기본 경로",
         ),
     },
 )
-def vehicle_catalog_raw_to_silver_pipeline():
-    raw_result = raw_to_bronze_task.override(
+def vehicle_catalog_raw_to_curated_pipeline():
+    raw_result = source_to_raw_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
         retry_exponential_backoff=True,
     )()
-    bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
-    silver_result = bronze_to_silver_task(raw_result)
-    bronze_checked >> silver_result
-    validate_silver_task.override(retries=0)(silver_result)
+    raw_checked = validate_raw_task.override(retries=0)(raw_result)
+    curated_result = raw_to_curated_task(raw_result)
+    raw_checked >> curated_result
+    validate_curated_task.override(retries=0)(curated_result)
 
 
-vehicle_catalog_dag = vehicle_catalog_raw_to_silver_pipeline()
+vehicle_catalog_dag = vehicle_catalog_raw_to_curated_pipeline()

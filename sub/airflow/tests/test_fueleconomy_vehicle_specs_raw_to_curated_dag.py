@@ -10,7 +10,7 @@
     catchup=False          배포 시점 이전 달을 소급 실행하지 않음
     max_active_runs=1      수동 트리거가 겹쳐 같은 파티션을 동시에 쓰는 것을 막음
 
-event 쪽은 다른 DAG 와 같은 규칙입니다. `collected_date` 는 Bronze 가 돌려준 값을
+event 쪽은 다른 DAG 와 같은 규칙입니다. `collected_date` 는 Raw 가 돌려준 값을
 그대로 씁니다 — DAG 가 날짜를 따로 계산하면 자정 근처에서 어긋나 없는 파티션을
 읽습니다.
 
@@ -20,19 +20,19 @@ event 쪽은 다른 DAG 와 같은 규칙입니다. `collected_date` 는 Bronze 
 
 import pytest
 
-from dags import fueleconomy_vehicle_specs_raw_to_silver_dag as dag_module
-from sub.airflow.scripts.fueleconomy_vehicle_specs_raw_to_silver import tasks as task_module
+from dags import fueleconomy_vehicle_specs_raw_to_curated_dag as dag_module
+from sub.airflow.scripts.fueleconomy_vehicle_specs_raw_to_curated import tasks as task_module
 
 DAG = dag_module.fueleconomy_vehicle_specs_dag
-DAG_ID = "fueleconomy_vehicle_specs_raw_to_silver_pipeline"
-BRONZE_FUNCTION = "fueleconomy_vehicle_specs_source_to_raw"
-SILVER_FUNCTION = "fueleconomy_vehicle_specs_raw_to_curated"
+DAG_ID = "fueleconomy_vehicle_specs_raw_to_curated_pipeline"
+RAW_FUNCTION = "fueleconomy_vehicle_specs_source_to_raw"
+CURATED_FUNCTION = "fueleconomy_vehicle_specs_raw_to_curated"
 
-# Bronze 가 돌려줬다고 가정할 수집일. PARAM_DATE 와 반드시 달라야
+# Raw 가 돌려줬다고 가정할 수집일. PARAM_DATE 와 반드시 달라야
 # "어느 쪽 값이 갔는지" 를 구분할 수 있습니다.
-BRONZE_DATE = "2026-01-01"
+RAW_DATE = "2026-01-01"
 PARAM_DATE = "2025-01-01"
-RAW_RESULT = {"collected_date": BRONZE_DATE}
+RAW_RESULT = {"collected_date": RAW_DATE}
 
 
 @pytest.fixture
@@ -66,23 +66,23 @@ def only_event(events: list[tuple[str, dict]], function_name: str) -> dict:
 def test_적재와_검증이_번갈아_이어진다():
     """raw_to_bronze -> validate_bronze -> bronze_to_silver -> validate_silver.
 
-    검증이 변환 앞에 있어야 깨진 Bronze 를 읽지 않습니다.
+    검증이 변환 앞에 있어야 깨진 Raw 를 읽지 않습니다.
     """
     assert DAG.dag_id == DAG_ID
     assert set(DAG.task_ids) == {
-        "raw_to_bronze",
-        "validate_bronze",
-        "bronze_to_silver",
-        "validate_silver",
+        "source_to_raw",
+        "validate_raw",
+        "raw_to_curated",
+        "validate_curated",
     }
-    assert DAG.get_task("raw_to_bronze").upstream_task_ids == set()
-    assert DAG.get_task("validate_bronze").upstream_task_ids == {"raw_to_bronze"}
-    # Bronze 결과(collected_date)가 필요해서 raw_to_bronze 에도 붙어 있습니다.
-    assert DAG.get_task("bronze_to_silver").upstream_task_ids == {
-        "raw_to_bronze",
-        "validate_bronze",
+    assert DAG.get_task("source_to_raw").upstream_task_ids == set()
+    assert DAG.get_task("validate_raw").upstream_task_ids == {"source_to_raw"}
+    # Raw 결과(collected_date)가 필요해서 source_to_raw 에도 붙어 있습니다.
+    assert DAG.get_task("raw_to_curated").upstream_task_ids == {
+        "source_to_raw",
+        "validate_raw",
     }
-    assert DAG.get_task("validate_silver").upstream_task_ids == {"bronze_to_silver"}
+    assert DAG.get_task("validate_curated").upstream_task_ids == {"raw_to_curated"}
 
 
 def test_월_1회_스케줄_계약을_지킨다():
@@ -98,10 +98,10 @@ def test_월_1회_스케줄_계약을_지킨다():
 
 def test_Bronze_event_는_base_dir_와_collected_date_를_넘긴다(events):
     """핸들러가 받는 인자명이 `base_dir` 입니다 — `bronze_dir` 로 보내면 기본 경로에 씁니다."""
-    call_task("raw_to_bronze", params={"bronze_dir": "/tmp/bronze"})
+    call_task("source_to_raw", params={"raw_dir": "/tmp/raw"})
 
-    assert only_event(events, BRONZE_FUNCTION) == {
-        "base_dir": "/tmp/bronze",
+    assert only_event(events, RAW_FUNCTION) == {
+        "base_dir": "/tmp/raw",
         "collected_date": None,
     }
 
@@ -109,13 +109,13 @@ def test_Bronze_event_는_base_dir_와_collected_date_를_넘긴다(events):
 def test_Silver_event_는_세_키를_넘긴다(events):
     """키가 빠지면 핸들러가 환경변수 기본값으로 조용히 넘어갑니다."""
     call_task(
-        "bronze_to_silver",
+        "raw_to_curated",
         raw_result=RAW_RESULT,
-        params={"bronze_dir": "/tmp/b", "silver_dir": "/tmp/s"},
+        params={"raw_dir": "/tmp/b", "curated_dir": "/tmp/s"},
     )
 
-    assert only_event(events, SILVER_FUNCTION) == {
-        "collected_date": BRONZE_DATE,
+    assert only_event(events, CURATED_FUNCTION) == {
+        "collected_date": RAW_DATE,
         "raw_dir": "/tmp/b",
         "curated_dir": "/tmp/s",
     }
@@ -123,34 +123,34 @@ def test_Silver_event_는_세_키를_넘긴다(events):
 
 def test_collected_date_가_없으면_Bronze_가_알려준_값을_쓴다(events):
     """[필수] 자정 근처 어긋남 방지 — DAG 가 날짜를 따로 계산하면 안 됩니다."""
-    call_task("bronze_to_silver", raw_result=RAW_RESULT, params={"collected_date": None})
+    call_task("raw_to_curated", raw_result=RAW_RESULT, params={"collected_date": None})
 
-    assert only_event(events, SILVER_FUNCTION)["collected_date"] == BRONZE_DATE
+    assert only_event(events, CURATED_FUNCTION)["collected_date"] == RAW_DATE
 
 
 def test_collected_date_가_공백_문자열이어도_Bronze_값으로_떨어진다(events):
     """[필수] Airflow UI 에서 비워두면 None 이 아니라 공백이 들어올 수 있습니다."""
-    call_task("bronze_to_silver", raw_result=RAW_RESULT, params={"collected_date": "   "})
+    call_task("raw_to_curated", raw_result=RAW_RESULT, params={"collected_date": "   "})
 
-    assert only_event(events, SILVER_FUNCTION)["collected_date"] == BRONZE_DATE
+    assert only_event(events, CURATED_FUNCTION)["collected_date"] == RAW_DATE
 
 
 def test_collected_date_를_주면_그_값이_Silver_로_간다(events):
     """지난달 스냅샷을 다시 변환하는 경로입니다. 월 1회라 이 경로를 쓸 일이 실제로 있습니다."""
     call_task(
-        "bronze_to_silver", raw_result=RAW_RESULT, params={"collected_date": PARAM_DATE}
+        "raw_to_curated", raw_result=RAW_RESULT, params={"collected_date": PARAM_DATE}
     )
 
-    assert only_event(events, SILVER_FUNCTION)["collected_date"] == PARAM_DATE
+    assert only_event(events, CURATED_FUNCTION)["collected_date"] == PARAM_DATE
 
 
 def test_경로_파라미터가_비면_DAG_기본값을_쓴다(events):
     """params 가 통째로 비어도 None 이 핸들러로 새어 나가면 안 됩니다."""
-    call_task("raw_to_bronze", params={})
-    call_task("bronze_to_silver", raw_result=RAW_RESULT, params={})
+    call_task("source_to_raw", params={})
+    call_task("raw_to_curated", raw_result=RAW_RESULT, params={})
 
-    assert only_event(events, BRONZE_FUNCTION)["base_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert only_event(events, RAW_FUNCTION)["base_dir"] == dag_module.DEFAULT_RAW_DIR
 
-    silver = only_event(events, SILVER_FUNCTION)
+    silver = only_event(events, CURATED_FUNCTION)
     assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
     assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR

@@ -278,7 +278,7 @@ def test_preferences_뷰가_candidates_필수컬럼을_전부_채운다():
         assert preferences_by_driver.loc[driver_id, "time_block_mask"] == time_block_mask
 
 
-# ── 3. 실측 Silver 변환 (#628) ──────────────────────────────────────────
+# ── 3. 실측 Curated 변환 (#628) ──────────────────────────────────────────
 
 
 def _silver_vehicle_master() -> pd.DataFrame:

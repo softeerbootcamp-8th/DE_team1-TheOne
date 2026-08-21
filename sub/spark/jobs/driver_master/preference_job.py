@@ -1,6 +1,6 @@
 """가상 기사 선호 마스터 생성 CLI.
 
-`job.py` 와 같은 이유로 Spark 세션을 쓰지 않습니다 — `load_bootstrap_pools` 가 Bronze
+`job.py` 와 같은 이유로 Spark 세션을 쓰지 않습니다 — `load_bootstrap_pools` 가 Raw
 parquet 을 pandas 로 직접 읽습니다.
 
 사용 예:
@@ -31,7 +31,7 @@ def main(args_list: list[str] | None = None) -> Path:
     )
     parser.add_argument(
         "--months", nargs="+", default=None,
-        help="부트스트랩에 쓸 year_month 목록 (예: 2026-01). 비우면 Bronze 에 있는 달 전부",
+        help="부트스트랩에 쓸 year_month 목록 (예: 2026-01). 비우면 Raw 에 있는 달 전부",
     )
     parser.add_argument("--seed", type=int, default=None, help="비우면 config 의 global_seed")
     parser.add_argument(

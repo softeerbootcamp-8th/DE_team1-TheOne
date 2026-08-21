@@ -19,14 +19,14 @@ DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
 
 DAG_VARIABLES = {
     "driver_master_raw_to_silver_dag": "driver_master_raw_to_silver_dag",
-    "fueleconomy_vehicle_specs_raw_to_silver_dag": "fueleconomy_vehicle_specs_dag",
+    "fueleconomy_vehicle_specs_raw_to_curated_dag": "fueleconomy_vehicle_specs_dag",
     "hvfhv_driver_trip_silver_dag": "hvfhv_driver_trip_silver_dag",
     "hvfhv_raw_to_silver_dag": "hvfhv_dag",
     "hvfhv_silver_to_gold_dag": "hvfhv_silver_to_gold_dag",
-    "lyft_eligible_vehicles_raw_to_silver_dag": "lyft_eligible_vehicles_dag",
-    "uber_eligible_vehicles_raw_to_silver_dag": "uber_eligible_vehicles_dag",
-    "vehicle_catalog_raw_to_silver_dag": "vehicle_catalog_dag",
-    "vehicle_master_silver_dag": "vehicle_master_dag",
+    "lyft_eligible_vehicles_raw_to_curated_dag": "lyft_eligible_vehicles_dag",
+    "uber_eligible_vehicles_raw_to_curated_dag": "uber_eligible_vehicles_dag",
+    "vehicle_catalog_raw_to_curated_dag": "vehicle_catalog_dag",
+    "vehicle_master_curated_to_curated_dag": "vehicle_master_dag",
 }
 DAG_VARIABLES = {
     module_name: variable_name
@@ -39,56 +39,56 @@ SCHEDULES = {
     # 과거 값 개정분을 확보하기 위한 것입니다.
     "driver_master_raw_to_silver_dag": "0 0 10 * *",
     "hvfhv_raw_to_silver_dag": "0 0 10 * *",
-    "vehicle_catalog_raw_to_silver_dag": "0 3 * * 1",
-    "lyft_eligible_vehicles_raw_to_silver_dag": "0 4 * * 1",
-    "uber_eligible_vehicles_raw_to_silver_dag": "0 5 * * 1",
+    "vehicle_catalog_raw_to_curated_dag": "0 3 * * 1",
+    "lyft_eligible_vehicles_raw_to_curated_dag": "0 4 * * 1",
+    "uber_eligible_vehicles_raw_to_curated_dag": "0 5 * * 1",
 }
 
 RETRY_CONTRACTS = {
     "driver_master_raw_to_silver_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {"bronze_to_silver": 15},
-        "validation": {"validate_bronze", "validate_silver"},
+        "collection": {"source_to_raw"},
+        "transform": {"raw_to_curated": 15},
+        "validation": {"validate_raw", "validate_curated"},
     },
-    "fueleconomy_vehicle_specs_raw_to_silver_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {"bronze_to_silver": 15},
-        "validation": {"validate_bronze", "validate_silver"},
+    "fueleconomy_vehicle_specs_raw_to_curated_pipeline": {
+        "collection": {"source_to_raw"},
+        "transform": {"raw_to_curated": 15},
+        "validation": {"validate_raw", "validate_curated"},
     },
     "hvfhv_driver_trip_silver_pipeline": {
         "collection": set(),
         "transform": {"build_driver_trip_silver": 30},
-        "validation": {"validate_inputs", "validate_silver"},
+        "validation": {"validate_inputs", "validate_curated"},
     },
     "hvfhv_raw_to_silver_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {"bronze_to_silver": 30},
-        "validation": {"validate_bronze", "validate_silver"},
+        "collection": {"source_to_raw"},
+        "transform": {"raw_to_curated": 30},
+        "validation": {"validate_raw", "validate_curated"},
     },
     "hvfhv_silver_to_gold_pipeline": {
         "collection": set(),
         "transform": {"build_gold": 10},
         "validation": {"validate_inputs", "validate_gold"},
     },
-    "lyft_eligible_vehicles_raw_to_silver_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {"bronze_to_silver": 15},
-        "validation": {"validate_bronze", "validate_silver"},
+    "lyft_eligible_vehicles_raw_to_curated_pipeline": {
+        "collection": {"source_to_raw"},
+        "transform": {"raw_to_curated": 15},
+        "validation": {"validate_raw", "validate_curated"},
     },
-    "uber_eligible_vehicles_raw_to_silver_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {"bronze_to_silver": 15},
-        "validation": {"validate_bronze", "validate_silver"},
+    "uber_eligible_vehicles_raw_to_curated_pipeline": {
+        "collection": {"source_to_raw"},
+        "transform": {"raw_to_curated": 15},
+        "validation": {"validate_raw", "validate_curated"},
     },
-    "vehicle_catalog_raw_to_silver_pipeline": {
-        "collection": {"raw_to_bronze"},
-        "transform": {"bronze_to_silver": 30},
-        "validation": {"validate_bronze", "validate_silver"},
+    "vehicle_catalog_raw_to_curated_pipeline": {
+        "collection": {"source_to_raw"},
+        "transform": {"raw_to_curated": 30},
+        "validation": {"validate_raw", "validate_curated"},
     },
-    "vehicle_master_silver_pipeline": {
+    "vehicle_master_curated_to_curated_pipeline": {
         "collection": set(),
         "transform": {"build_vehicle_master": 15},
-        "validation": {"validate_silver"},
+        "validation": {"validate_curated"},
     },
 }
 RETRY_CONTRACTS = {
@@ -96,11 +96,11 @@ RETRY_CONTRACTS = {
     for dag_id, contract in RETRY_CONTRACTS.items()
     if dag_id
     in {
-        "fueleconomy_vehicle_specs_raw_to_silver_pipeline",
-        "lyft_eligible_vehicles_raw_to_silver_pipeline",
-        "uber_eligible_vehicles_raw_to_silver_pipeline",
-        "vehicle_catalog_raw_to_silver_pipeline",
-        "vehicle_master_silver_pipeline",
+        "fueleconomy_vehicle_specs_raw_to_curated_pipeline",
+        "lyft_eligible_vehicles_raw_to_curated_pipeline",
+        "uber_eligible_vehicles_raw_to_curated_pipeline",
+        "vehicle_catalog_raw_to_curated_pipeline",
+        "vehicle_master_curated_to_curated_pipeline",
     }
 }
 
@@ -187,15 +187,15 @@ def test_모든_task는_장애유형에_맞는_retry_정책을_쓴다(dag_id, co
 
 
 def test_Vehicle_Master_DAG의_공개_계약을_유지한다():
-    module = importlib.import_module("dags.vehicle_master_silver_dag")
+    module = importlib.import_module("dags.vehicle_master_curated_to_curated_dag")
     dag = module.vehicle_master_dag
 
-    assert dag.dag_id == "vehicle_master_silver_pipeline"
+    assert dag.dag_id == "vehicle_master_curated_to_curated_pipeline"
     assert {task.task_id for task in dag.tasks} == {
         "build_vehicle_master",
-        "validate_silver",
+        "validate_curated",
     }
-    assert dag.get_task("validate_silver").upstream_task_ids == {
+    assert dag.get_task("validate_curated").upstream_task_ids == {
         "build_vehicle_master"
     }
 

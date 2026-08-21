@@ -250,13 +250,13 @@ def run_gx_silver_validation(
     )
 
 
-@task(task_id="raw_to_bronze")
-def raw_to_bronze_task(**context) -> dict:
+@task(task_id="source_to_raw")
+def source_to_raw_task(**context) -> dict:
     """렌탈 업체 사이트를 수집해 Raw 에 적재합니다."""
     params = context.get("params", {})
     result = lambda_handler_for("vehicle_catalog_source_to_raw", package="sub.aws_lambda.functions")(
         event={
-            "base_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
+            "base_dir": params.get("raw_dir") or DEFAULT_RAW_DIR,
             "collected_date": params.get("collected_date"),
         }
     )
@@ -264,8 +264,8 @@ def raw_to_bronze_task(**context) -> dict:
     return result
 
 
-@task(task_id="bronze_to_silver")
-def bronze_to_silver_task(raw_result: dict, **context) -> dict:
+@task(task_id="raw_to_curated")
+def raw_to_curated_task(raw_result: dict, **context) -> dict:
     """Raw 차량 대장의 조인 키를 정규화해 Curated 로 적재합니다."""
     params = context.get("params", {})
     collected_date = (params.get("collected_date") or "").strip() or raw_result[
@@ -274,8 +274,8 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
     result = lambda_handler_for("vehicle_catalog_raw_to_curated", package="sub.aws_lambda.functions")(
         event={
             "collected_date": collected_date,
-            "raw_dir": params.get("bronze_dir") or DEFAULT_RAW_DIR,
-            "curated_dir": params.get("silver_dir") or DEFAULT_CURATED_DIR,
+            "raw_dir": params.get("raw_dir") or DEFAULT_RAW_DIR,
+            "curated_dir": params.get("curated_dir") or DEFAULT_CURATED_DIR,
         }
     )
     logger.info("Raw -> Curated 완료: %s", result)
@@ -283,15 +283,15 @@ def bronze_to_silver_task(raw_result: dict, **context) -> dict:
 
 
 @task(
-    task_id="validate_bronze",
+    task_id="validate_raw",
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_bronze_task(result: dict, **context) -> None:
+def validate_raw_task(result: dict, **context) -> None:
     """Raw 적재 경계를 확인한 뒤 원본 품질을 GX로 검증합니다."""
     params = context.get("params", {})
-    raw_dir = params.get("bronze_dir") or DEFAULT_RAW_DIR
+    raw_dir = params.get("raw_dir") or DEFAULT_RAW_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_catalog_layout")
     extractor = importlib.import_module(
         "sub.aws_lambda.functions.vehicle_catalog_source_to_raw.extractor"
@@ -337,20 +337,20 @@ def validate_bronze_task(result: dict, **context) -> None:
         transformer.MIN_WEEKLY_PRICE_USD,
         transformer.MAX_WEEKLY_PRICE_USD,
     )
-    logger.info("Bronze 검증 통과: vendor=%s rows=%d", vendor, parsed.row_count)
+    logger.info("Raw 검증 통과: vendor=%s rows=%d", vendor, parsed.row_count)
 
 
 @task(
-    task_id="validate_silver",
-    outlets=[assets.VEHICLE_CATALOG_SILVER],
+    task_id="validate_curated",
+    outlets=[assets.VEHICLE_CATALOG_CURATED],
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
 )
-def validate_silver_task(result: dict, **context) -> None:
+def validate_curated_task(result: dict, **context) -> None:
     """Curated 는 업체별로 파일을 씁니다. 그중 하나가 비어도 잡아냅니다."""
     params = context.get("params", {})
-    curated_dir = params.get("silver_dir") or DEFAULT_CURATED_DIR
+    curated_dir = params.get("curated_dir") or DEFAULT_CURATED_DIR
     layout = importlib.import_module("sub.aws_lambda.common.vehicle_catalog_layout")
     loader = importlib.import_module(
         "sub.aws_lambda.functions.vehicle_catalog_raw_to_curated.loader"
@@ -387,7 +387,7 @@ def validate_silver_task(result: dict, **context) -> None:
 
     if total_rows != parsed.row_count:
         raise ValueError(
-            "Silver 행 수 합계가 row_count 와 다릅니다: "
+            "Curated 행 수 합계가 row_count 와 다릅니다: "
             f"{total_rows} != {parsed.row_count}"
         )
-    logger.info("Silver 검증 통과: vendors=%d rows=%d", len(seen_vendors), total_rows)
+    logger.info("Curated 검증 통과: vendors=%d rows=%d", len(seen_vendors), total_rows)

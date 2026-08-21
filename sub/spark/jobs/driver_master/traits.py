@@ -70,7 +70,7 @@ def discover_bootstrap_months(bronze_dir: str) -> list[str]:
     )
     if not months:
         raise FileNotFoundError(
-            f"HVFHV Bronze 파티션이 없습니다: {bronze_dir}. "
+            f"HVFHV Raw 파티션이 없습니다: {bronze_dir}. "
             "hvfhv_raw_to_silver DAG 를 먼저 돌리거나 --months 로 직접 지정하세요."
         )
     return months

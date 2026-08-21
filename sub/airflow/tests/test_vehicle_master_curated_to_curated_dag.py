@@ -1,4 +1,4 @@
-"""차량 마스터 Silver DAG 의 스케줄 계약과 검증 시나리오.
+"""차량 마스터 Curated DAG 의 스케줄 계약과 검증 시나리오.
 
  1. 스케줄이 (대장 & Uber & Lyft) | 제원 — 제원을 AND 에 넣으면 월 1회로 묶임
  2. 상류 4개 DAG 가 그 Asset 을 실제로 발행 (생산자와 소비자가 같은 객체를 봄)
@@ -22,14 +22,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dags import vehicle_master_silver_dag as dag_module
+from dags import vehicle_master_curated_to_curated_dag as dag_module
 from sub.airflow.common import assets
 
 layout = importlib.import_module("sub.aws_lambda.common.vehicle_master_layout")
 loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader")
 
 DAG = dag_module.vehicle_master_dag
-validate_silver = DAG.get_task("validate_silver").python_callable
+validate_silver = DAG.get_task("validate_curated").python_callable
 COLLECTED_DATE = "2026-08-13"
 CITY = "new-york"
 
@@ -42,10 +42,10 @@ FRESH_SOURCES = {
 }
 
 UPSTREAM = {
-    "vehicle_catalog_raw_to_silver_dag": assets.VEHICLE_CATALOG_SILVER,
-    "uber_eligible_vehicles_raw_to_silver_dag": assets.UBER_ELIGIBLE_VEHICLES_SILVER,
-    "lyft_eligible_vehicles_raw_to_silver_dag": assets.LYFT_ELIGIBLE_VEHICLES_SILVER,
-    "fueleconomy_vehicle_specs_raw_to_silver_dag": assets.FUELECONOMY_VEHICLE_SPECS_SILVER,
+    "vehicle_catalog_raw_to_curated_dag": assets.VEHICLE_CATALOG_CURATED,
+    "uber_eligible_vehicles_raw_to_curated_dag": assets.UBER_ELIGIBLE_VEHICLES_CURATED,
+    "lyft_eligible_vehicles_raw_to_curated_dag": assets.LYFT_ELIGIBLE_VEHICLES_CURATED,
+    "fueleconomy_vehicle_specs_raw_to_curated_dag": assets.FUELECONOMY_VEHICLE_SPECS_CURATED,
 }
 
 
@@ -91,7 +91,7 @@ def result_for(paths: list[Path], row_count: int, sources: dict | None = None) -
 
 
 def params_for(silver_dir: Path) -> dict:
-    return {"params": {"silver_dir": str(silver_dir)}}
+    return {"params": {"curated_dir": str(silver_dir)}}
 
 
 def test_스케줄이_주간_3종_AND_와_제원_OR_이다():
@@ -100,11 +100,11 @@ def test_스케줄이_주간_3종_AND_와_제원_OR_이다():
     weekly, specs = condition.objects
 
     assert {asset.name for asset in weekly.objects} == {
-        assets.VEHICLE_CATALOG_SILVER.name,
-        assets.UBER_ELIGIBLE_VEHICLES_SILVER.name,
-        assets.LYFT_ELIGIBLE_VEHICLES_SILVER.name,
+        assets.VEHICLE_CATALOG_CURATED.name,
+        assets.UBER_ELIGIBLE_VEHICLES_CURATED.name,
+        assets.LYFT_ELIGIBLE_VEHICLES_CURATED.name,
     }
-    assert specs.name == assets.FUELECONOMY_VEHICLE_SPECS_SILVER.name
+    assert specs.name == assets.FUELECONOMY_VEHICLE_SPECS_CURATED.name
     # AND 묶음 하나와 제원 하나를 OR 로 잇습니다.
     assert type(condition).__name__ == "AssetAny"
     assert type(weekly).__name__ == "AssetAll"
@@ -119,9 +119,9 @@ def test_상류_DAG_가_검증_태스크에서_Asset_을_발행한다(module_nam
     )
 
     # 적재 태스크가 아니라 검증 태스크여야 합니다. 적재 직후 발행하면 깨진
-    # Silver 로 조립이 돌아갑니다.
-    assert asset.name in {a.name for a in dag.get_task("validate_silver").outlets}
-    assert not dag.get_task("bronze_to_silver").outlets
+    # Curated 로 조립이 돌아갑니다.
+    assert asset.name in {a.name for a in dag.get_task("validate_curated").outlets}
+    assert not dag.get_task("raw_to_curated").outlets
 
 
 def test_정상_결과는_통과하고_마스터_Asset_을_발행한다(tmp_path):
@@ -129,8 +129,8 @@ def test_정상_결과는_통과하고_마스터_Asset_을_발행한다(tmp_path
 
     validate_silver(result_for([path], 2), **params_for(tmp_path))
 
-    outlets = DAG.get_task("validate_silver").outlets
-    assert [a.name for a in outlets] == [assets.VEHICLE_MASTER_SILVER.name]
+    outlets = DAG.get_task("validate_curated").outlets
+    assert [a.name for a in outlets] == [assets.VEHICLE_MASTER_CURATED.name]
 
 
 def test_layout_규칙과_다른_경로면_실패한다(tmp_path):

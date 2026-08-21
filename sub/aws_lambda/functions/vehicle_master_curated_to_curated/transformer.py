@@ -324,7 +324,7 @@ class VehicleMasterCuratedTransformer(Transformer):
             "combined_kwh_per_100mi_max": kwh_max,
             "range_miles_min": range_min,
             "fuel_type": fuel_type,
-            # 계보 — 원천 Curated 가 물고 온 Bronze 경로를 그대로 옮깁니다.
+            # 계보 — 원천 Curated 가 물고 온 Raw 경로를 그대로 옮깁니다.
             # 후보가 여러 개여도 같은 스냅샷에서 왔으므로 첫 행이면 충분합니다.
             "catalog_bronze_path": vehicle.get("bronze_path"),
             "specs_bronze_path": specs[0].get("bronze_path") if specs else None,
