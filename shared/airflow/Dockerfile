@@ -27,13 +27,40 @@ ENV PYTHONPATH=/opt/airflow/project-root
 COPY --chown=airflow:root main/airflow/dags/ /opt/airflow/dags/main/
 COPY --chown=airflow:root sub/airflow/dags/ /opt/airflow/dags/sub/
 
+# 필요한 것만 담습니다. 전에는 main/·sub/·shared/ 를 통째로 COPY 했는데, 그러면
+# 이미지 입력이 사실상 저장소 전체가 되어 CI·배포 필터를 그만큼 넓혀야 하고,
+# lambda 함수 코드만 고친 머지에도 airflow 가 재배포되며 실행 중인 DAG 이 끊깁니다.
+# 아래 목록은 `.github/scripts/check_image_filters.py` 가 워크플로 필터와 대조합니다 —
+# 여기를 늘리거나 줄이면 그 필터도 같이 고쳐야 CI 가 통과합니다.
+#
 # DAG 는 shared.airflow.common 과 main/sub 의 scripts 를 절대 import 하고, 그 아래로
-# schema.*, sub.generators, importlib 로 sub.aws_lambda.functions.*, 그리고
-# project_paths.py 가 sys.path 에 넣는 libs/pipeline_core 까지 끌어옵니다.
-# 하나라도 빠지면 그 DAG 는 import 단계에서 죽습니다.
-COPY --chown=airflow:root main/ /opt/airflow/project-root/main/
-COPY --chown=airflow:root sub/ /opt/airflow/project-root/sub/
-COPY --chown=airflow:root shared/ /opt/airflow/project-root/shared/
+# schema.*, sub.generators, importlib 로 main.aws_lambda.common·sub.aws_lambda.* 까지
+# 끌어옵니다. 하나라도 빠지면 그 DAG 는 import 단계에서 죽습니다.
+COPY --chown=airflow:root main/__init__.py /opt/airflow/project-root/main/__init__.py
+COPY --chown=airflow:root main/airflow/ /opt/airflow/project-root/main/airflow/
+COPY --chown=airflow:root sub/__init__.py /opt/airflow/project-root/sub/__init__.py
+COPY --chown=airflow:root sub/airflow/ /opt/airflow/project-root/sub/airflow/
+COPY --chown=airflow:root sub/generators/ /opt/airflow/project-root/sub/generators/
+COPY --chown=airflow:root shared/__init__.py /opt/airflow/project-root/shared/__init__.py
+COPY --chown=airflow:root shared/airflow/ /opt/airflow/project-root/shared/airflow/
+COPY --chown=airflow:root shared/common/ /opt/airflow/project-root/shared/common/
+
+# in-process 로 부르는 lambda 핸들러. main 쪽은 common 만 쓰고(handler 는 안 부릅니다),
+# sub 쪽은 functions.* 를 importlib 로 직접 부릅니다.
+# main/aws_lambda/functions/ 를 넣지 않는 것이 핵심입니다 — 넣으면 Lambda 함수 코드만
+# 고친 머지에도 이 이미지가 바뀌어 airflow 가 재배포됩니다.
+COPY --chown=airflow:root main/aws_lambda/__init__.py /opt/airflow/project-root/main/aws_lambda/__init__.py
+COPY --chown=airflow:root main/aws_lambda/common/ /opt/airflow/project-root/main/aws_lambda/common/
+COPY --chown=airflow:root sub/aws_lambda/ /opt/airflow/project-root/sub/aws_lambda/
+COPY --chown=airflow:root shared/aws_lambda/ /opt/airflow/project-root/shared/aws_lambda/
+
+# BashOperator 가 실행하는 Spark job. 그 job 들이 shared.spark 와 sub/ 최상위 모듈
+# (config·run_context·seeds)을 import 합니다.
+COPY --chown=airflow:root main/spark/ /opt/airflow/project-root/main/spark/
+COPY --chown=airflow:root sub/spark/ /opt/airflow/project-root/sub/spark/
+COPY --chown=airflow:root shared/spark/ /opt/airflow/project-root/shared/spark/
+COPY --chown=airflow:root sub/config.py sub/run_context.py sub/seeds.py /opt/airflow/project-root/sub/
+
 COPY --chown=airflow:root schema/ /opt/airflow/project-root/schema/
 COPY --chown=airflow:root libs/ /opt/airflow/project-root/libs/
 
