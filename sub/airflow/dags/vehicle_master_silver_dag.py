@@ -10,7 +10,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_retry_alert_callback,
 )
 from sub.airflow.scripts.vehicle_master_silver.tasks import (
-    DEFAULT_SILVER_DIR,
+    DEFAULT_CURATED_DIR,
     build_vehicle_master_task,
     validate_silver_task,
 )
@@ -52,9 +52,9 @@ default_args = {
             ),
         ),
         "silver_dir": Param(
-            DEFAULT_SILVER_DIR,
+            DEFAULT_CURATED_DIR,
             type="string",
-            description="Silver 데이터 기본 경로 (읽기·쓰기 모두 여기)",
+            description="Curated 데이터 기본 경로 (읽기·쓰기 모두 여기)",
         ),
     },
 )

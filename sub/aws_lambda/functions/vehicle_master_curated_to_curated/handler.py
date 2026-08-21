@@ -1,6 +1,6 @@
-"""네 개 Silver 를 합쳐 차량 마스터 Silver 를 만듭니다.
+"""네 개 Curated 를 합쳐 차량 마스터 Curated 를 만듭니다.
 
-다른 함수와 달리 Bronze 를 읽지 않습니다. 입력도 출력도 Silver 입니다.
+다른 함수와 달리 Raw 를 읽지 않습니다. 입력도 출력도 Curated 입니다.
 
 `collected_date` 는 **만드는 날**입니다. 비우면 실행일(UTC)을 씁니다. 원천은
 각자의 최신 파티션에서 읽으므로 이 값과 원천 수집일은 다를 수 있습니다.
@@ -15,7 +15,7 @@ from pipeline_core.pipeline import Pipeline
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
 from .extractor import build_extractor
 from .loader import build_loader
-from .transformer import VehicleMasterSilverTransformer
+from .transformer import VehicleMasterCuratedTransformer
 
 configure_lambda_logging()
 
@@ -28,15 +28,15 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         or datetime.now(timezone.utc).date().isoformat()
     )
     storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
-    silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
+    curated_dir = event.get("curated_dir") or os.getenv("CURATED_DIR", "data/source/curated")
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
 
-    extractor = build_extractor(storage, silver_dir, collected_date, bucket=bucket)
-    loader = build_loader(storage, silver_dir, collected_date, bucket=bucket)
+    extractor = build_extractor(storage, curated_dir, collected_date, bucket=bucket)
+    loader = build_loader(storage, curated_dir, collected_date, bucket=bucket)
     result = Pipeline(
         extractor,
         loader,
-        transformer=VehicleMasterSilverTransformer(),
+        transformer=VehicleMasterCuratedTransformer(),
     ).run()
 
     return {

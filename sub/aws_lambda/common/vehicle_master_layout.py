@@ -1,9 +1,9 @@
-"""차량 마스터 통합 Silver 데이터셋의 저장 경로 규칙.
+"""차량 마스터 통합 Curated 데이터셋의 저장 경로 규칙.
 
     <base>/vehicle_master/collected_date=YYYY-MM-DD/city=<도시>/vehicle_master.parquet
 
-다른 데이터셋과 달리 Bronze 가 없습니다. 네 개의 Silver 를 조인해서 만드는
-파생 Silver 라 원천은 전부 `<base>/<데이터셋>/collected_date=.../` 아래에 있습니다.
+다른 데이터셋과 달리 Raw 가 없습니다. 네 개의 Curated 를 조인해서 만드는
+파생 Curated 라 원천은 전부 `<base>/<데이터셋>/collected_date=.../` 아래에 있습니다.
 
 도시(city)가 파티션 키인 이유는 배차 자격이 도시마다 다르기 때문입니다. 차량
 대장과 제원은 도시와 무관하지만, 자격이 도시별이라 결과 행도 도시별로 갈립니다.
@@ -19,7 +19,7 @@ from pathlib import Path
 DATASET = "vehicle_master"
 DATE_PARTITION_KEY = "collected_date"
 CITY_PARTITION_KEY = "city"
-SILVER_FILE_NAME = f"{DATASET}.parquet"
+CURATED_FILE_NAME = f"{DATASET}.parquet"
 
 
 def dataset_path(base_dir: str) -> Path:
@@ -40,16 +40,16 @@ def city_from_partition(partition: Path) -> str:
     return partition.name.removeprefix(f"{CITY_PARTITION_KEY}=")
 
 
-def silver_file(base_dir: str, collected_date: date, city: str) -> Path:
-    """Silver 는 재실행하면 덮어씁니다. 그래서 파일명이 고정입니다."""
-    return city_partition(base_dir, collected_date.isoformat(), city) / SILVER_FILE_NAME
+def curated_file(base_dir: str, collected_date: date, city: str) -> Path:
+    """Curated 는 재실행하면 덮어씁니다. 그래서 파일명이 고정입니다."""
+    return city_partition(base_dir, collected_date.isoformat(), city) / CURATED_FILE_NAME
 
 
-def silver_key(collected_date: date, city: str) -> str:
-    """S3 silver key. silver_file()과 같은 파티션 규칙, base_dir 대신 silver/ prefix."""
+def curated_key(collected_date: date, city: str) -> str:
+    """S3 curated key. curated_file()과 같은 파티션 규칙, base_dir 대신 curated/ prefix."""
     return (
-        f"silver/{DATASET}/{DATE_PARTITION_KEY}={collected_date.isoformat()}/"
-        f"{CITY_PARTITION_KEY}={city}/{SILVER_FILE_NAME}"
+        f"source/curated/{DATASET}/{DATE_PARTITION_KEY}={collected_date.isoformat()}/"
+        f"{CITY_PARTITION_KEY}={city}/{CURATED_FILE_NAME}"
     )
 
 
@@ -64,7 +64,7 @@ def latest_date_partition(dataset_dir: Path, as_of: date) -> tuple[date, Path]:
     없었던 데이터가 섞여 들어오면 재현이 안 됩니다.
     """
     if not dataset_dir.is_dir():
-        raise FileNotFoundError(f"원천 Silver 데이터셋이 없습니다: {dataset_dir}")
+        raise FileNotFoundError(f"원천 Curated 데이터셋이 없습니다: {dataset_dir}")
 
     candidates: list[tuple[date, Path]] = []
     for partition in dataset_dir.glob(f"{DATE_PARTITION_KEY}=*"):
@@ -83,7 +83,7 @@ def latest_date_partition(dataset_dir: Path, as_of: date) -> tuple[date, Path]:
 
     if not candidates:
         raise FileNotFoundError(
-            f"{as_of.isoformat()} 이전의 Silver 파티션이 없습니다: {dataset_dir}"
+            f"{as_of.isoformat()} 이전의 Curated 파티션이 없습니다: {dataset_dir}"
         )
     return max(candidates, key=lambda item: item[0])
 
@@ -110,6 +110,6 @@ def latest_date_from_keys(keys: list[str], as_of: date, dataset_dir: str) -> dat
 
     if not candidates:
         raise FileNotFoundError(
-            f"{as_of.isoformat()} 이전의 Silver 파티션이 없습니다: {dataset_dir}"
+            f"{as_of.isoformat()} 이전의 Curated 파티션이 없습니다: {dataset_dir}"
         )
     return max(candidates)
