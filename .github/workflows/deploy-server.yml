@@ -105,8 +105,10 @@ jobs:
             "set -euo pipefail",
             f"aws ecr get-login-password --region {os.environ['AWS_REGION']} | docker login --username AWS --password-stdin {os.environ['REGISTRY']}",
             f"docker pull {os.environ['IMAGE_URI']}",
-            "docker stop theone-source-server 2>/dev/null || true",
-            "docker rm theone-source-server 2>/dev/null || true",
+            "docker rm -f theone-source-server 2>/dev/null || true",
+            # 이름이 다른 예전 컨테이너가 8091을 잡고 있을 수 있어 포트 기준으로도 찾아 제거합니다.
+            "port_holder=$(docker ps -q --filter publish=8091); "
+            "if [ -n \"$port_holder\" ]; then docker rm -f $port_holder; fi",
             "docker run -d --name theone-source-server --restart unless-stopped "
             f"-p 8091:8091 -e SOURCE_API_S3_BUCKET={os.environ['S3_BUCKET']} {os.environ['IMAGE_URI']}",
             "sleep 3",
