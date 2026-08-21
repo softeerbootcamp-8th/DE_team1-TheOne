@@ -173,7 +173,7 @@ def require_file(path: Path | S3Location) -> Path | S3Location:
     return path
 
 
-def read_parquet(path: Path | S3Location) -> pa.Table:
+def parquet_file(path: Path | S3Location) -> pq.ParquetFile:
     require_file(path)
     if path.suffix != ".parquet":
         raise ValueError(f"Parquet 파일이 아닙니다: {path}")
@@ -181,8 +181,17 @@ def read_parquet(path: Path | S3Location) -> pa.Table:
         if isinstance(path, S3Location):
             return pq.ParquetFile(
                 io.BytesIO(get_object_bytes(path.bucket, path.key))
-            ).read()
-        return pq.ParquetFile(path).read()
+            )
+        return pq.ParquetFile(path)
+    except (OSError, pa.ArrowInvalid) as exc:
+        raise RuntimeError(f"Parquet 파일을 읽지 못했습니다: {path}") from exc
+
+
+def read_parquet(path: Path | S3Location) -> pa.Table:
+    try:
+        return parquet_file(path).read()
+    except FileNotFoundError:
+        raise
     except (OSError, pa.ArrowInvalid) as exc:
         raise RuntimeError(f"Parquet 파일을 읽지 못했습니다: {path}") from exc
 

@@ -5,11 +5,15 @@ import logging
 import os
 from pathlib import Path
 
-import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.airflow.common.validation import (
+    S3Location,
+    parse_handler_result,
+    read_parquet,
+)
 from main.airflow.common.monthly_bronze import (
     should_process_silver,
     validate_monthly_parquet_bronze,
@@ -19,7 +23,7 @@ from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
 
 logger = logging.getLogger(__name__)
 DATASET = "driver_vehicle_monthly_snapshot"
-DEFAULT_API_BASE_URL = "http://host.docker.internal:8091"
+DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 DEFAULT_BRONZE_DIR = os.getenv(
     "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
 )
@@ -39,13 +43,12 @@ def _silver_transformer():
 
 
 def validate_silver_result(result: dict, expected_rows: int) -> None:
-    locations = result.get("locations")
-    if not isinstance(locations, list) or len(locations) != 1:
-        raise ValueError("기사 차량 스냅샷 Silver 경로는 하나여야 합니다")
-    path = Path(locations[0])
-    if not path.is_file():
+    parsed = parse_handler_result(result, expected_locations=1)
+    path = parsed.locations[0]
+    try:
+        table = read_parquet(path)
+    except FileNotFoundError:
         raise ValueError(f"기사 차량 스냅샷 Silver 파일이 없습니다: {path}")
-    table = pq.ParquetFile(path).read()
     if table.schema != SCHEMA or table.num_rows != expected_rows:
         raise ValueError("기사 차량 스냅샷 Silver 스키마 또는 행 수가 Bronze와 다릅니다")
     # 적재된 파일에 같은 정제 규칙을 다시 적용합니다. 변환이 통과했더라도 적재
@@ -92,13 +95,13 @@ def validate_bronze_task(result: dict, **context) -> dict:
 def _validate_bronze_result(
     result: dict,
     base_dir: str | Path,
-) -> tuple[Path, list[str]]:
+) -> tuple[Path | S3Location, list[str]]:
     path, _ = validate_monthly_parquet_bronze(
         result,
         dataset_dir=DATASET,
         base_dir=base_dir,
     )
-    missing = sorted(set(SCHEMA.names) - set(pq.read_schema(path).names))
+    missing = sorted(set(SCHEMA.names) - set(read_parquet(path).schema.names))
     return path, missing
 
 
