@@ -21,7 +21,9 @@ PREMIUM_TIER_TRIP_SHARE = 0.4
 
 
 def _columns(model: type) -> list[str]:
-    return [field.name for field in fields(model)]
+    """`version`은 DB 적재 시점(기존 버전 + 1)에 결정되는 값이라 Spark 산출물에는
+    포함하지 않습니다."""
+    return [field.name for field in fields(model) if field.name != "version"]
 
 
 def _validate_year_month(year_month: str) -> None:
@@ -145,8 +147,10 @@ def enrich_trips_with_fuel_cost(
         raise ValueError(f"HVFHV Silver에 {year_month}가 아닌 운행이 섞였습니다")
     if _has_rows(driver_snapshot.filter(F.col("snapshot_month") != year_month)):
         raise ValueError(f"기사 차량 스냅샷에 {year_month}가 아닌 행이 섞였습니다")
-    if _has_rows(fuel_price.filter(F.date_format("date", "yyyy-MM") != year_month)):
-        raise ValueError(f"연료비 Silver에 {year_month}가 아닌 날짜가 섞였습니다")
+    # 연료비 Silver는 다른 3종과 달리 그 시점까지의 과거 일별 가격을 전부 담고 있어
+    # (job.py의 latest_fuel_price_path), 대상 월 하루치만 걸러서 씁니다 — 다른
+    # 3종처럼 "섞이면 실패" 로 막지 않습니다.
+    fuel_price = fuel_price.filter(F.date_format("date", "yyyy-MM") == year_month)
     invalid_trip = (
         F.col("trip_miles").isNull()
         | (F.col("trip_miles") <= 0)

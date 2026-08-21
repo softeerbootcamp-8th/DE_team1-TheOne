@@ -61,11 +61,12 @@ def hvfhv_silver_to_gold_pipeline():
         task_id="build_gold",
         bash_command=(
             f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py "
-            + "--hvfhv_path {{ task_instance.xcom_pull(task_ids='validate_inputs')['hvfhv_path'] }} "
-            + "--driver_snapshot_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_snapshot_path'] }} "
-            + "--inventory_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['inventory_path'] }} "
+            + "--monthly_taxi_trip_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['monthly_taxi_trip_path'] }} "
+            + "--driver_vehicle_monthly_snapshot_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_vehicle_monthly_snapshot_path'] }} "
+            + "--lease_vehicle_inventory_path "
+            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['lease_vehicle_inventory_path'] }} "
             + "--fuel_price_path "
             + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }} "
             + "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "

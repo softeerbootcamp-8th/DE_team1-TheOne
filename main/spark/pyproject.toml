@@ -25,6 +25,7 @@ dependencies = [
     # (docker run --rm --entrypoint /usr/bin/python3.11
     #   public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest -m pip list --format=freeze).
     "boto3==1.42.78",
+    "psycopg2-binary==2.9.10",
 ]
 
 [dependency-groups]

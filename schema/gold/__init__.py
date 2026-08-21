@@ -7,6 +7,9 @@ output: schema/gold.py - DriverMonthlyProfit
 """
 @dataclass(frozen=True)
 class DriverMonthlyProfit:
+    version: int
+    """ 골드 데이터 버전 """
+
     driver_id: str
     """ 기사 ID """
 
@@ -63,6 +66,9 @@ output: schema/gold.py - MonthlyVehicleRecommendation
 """
 @dataclass(frozen=True)
 class MonthlyVehicleRecommendation:
+    version: int
+    """ 골드 데이터 버전 """
+    
     driver_id: str
     """기사 ID"""
 
@@ -116,6 +122,9 @@ output: schema/gold.py - MonthlyReport
 """
 @dataclass(frozen=True)
 class MonthlyReport:
+    version: int
+    """ 골드 데이터 버전 """
+    
     year_month: str
     """집계 대상 월 (YYYY-MM). PK"""
 
