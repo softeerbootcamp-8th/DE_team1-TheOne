@@ -3,10 +3,10 @@
 from main.aws_lambda.common.monthly_dataset import MonthlyParquetAPIExtractor
 
 
-DATASET = "hvfhv_taxi_trips"
+DATASET = "monthly_taxi_trip"
 
 
-class HvfhvExtractor(MonthlyParquetAPIExtractor):
+class MonthlyTaxiTripExtractor(MonthlyParquetAPIExtractor):
     def __init__(
         self,
         api_base_url: str,

@@ -1,5 +1,6 @@
 import argparse
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -13,6 +14,7 @@ logger = logging.getLogger(__name__)
 CURRENT_FILE = Path(__file__).resolve()
 # spark/jobs/bronze_to_silver/hvfhv/job.py -> project root
 PROJECT_ROOT = CURRENT_FILE.parents[5]
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 
 def resolve_path(path_str: str) -> str:
@@ -48,7 +50,10 @@ def latest_partition_file(input_path: str, year_month: str) -> Optional[str]:
     parquet_files = sorted(partition_dir.glob("*.parquet"))
     if not parquet_files:
         return None
-    return str(parquet_files[-1])
+    timestamp_files = [
+        path for path in parquet_files if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
+    ]
+    return str((timestamp_files or parquet_files)[-1])
 
 
 def latest_partition_files(input_path: str) -> list[str]:

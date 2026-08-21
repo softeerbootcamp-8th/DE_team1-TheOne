@@ -2,14 +2,13 @@
 
 import json
 import os
-from pathlib import Path
 
 from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
 from main.aws_lambda.common.monthly_dataset import requested_year_month
-from .extractor import HvfhvExtractor
-from .loader import HvfhvBronzeLoader
+from .extractor import MonthlyTaxiTripExtractor
+from .loader import build_loader
 
 
 configure_lambda_logging()
@@ -21,11 +20,12 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not api_base_url:
         raise ValueError("api_base_url이 누락되었습니다")
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
-    loader = HvfhvBronzeLoader(base_dir)
+    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
+    loader = build_loader(storage, base_dir, bucket=bucket)
     result = Pipeline(
-        HvfhvExtractor(api_base_url, requested_year_month(event)), loader
+        MonthlyTaxiTripExtractor(api_base_url, requested_year_month(event)), loader
     ).run()
-    path = Path(result.write_result.location)
     payload = loader.payload
     return {
         "year_month": payload["year_month"],
@@ -33,8 +33,8 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "year": payload["year_month"][:4],
         "month": payload["year_month"][5:],
         "row_count": result.write_result.row_count,
-        "locations": [str(path)],
-        "file_size_bytes": path.stat().st_size,
+        "locations": [result.write_result.location],
+        "file_size_bytes": len(payload["content"]),
     }
 
 

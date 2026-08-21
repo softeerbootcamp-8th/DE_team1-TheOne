@@ -1,0 +1,67 @@
+# source_api
+
+`main`이 원천 데이터를 직접 안 읽고 이 API만 거치도록 하는, 사내 가짜 회사 원천 API입니다.
+월별 릴리스 하나를 데이터셋별로 Parquet 파일 그대로 내려줍니다 
+
+## 엔드포인트
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| GET/HEAD | `/v1/data/{year_month}/datasets/{dataset}` | 해당 월 릴리스의 Parquet 다운로드 |
+| GET/HEAD | `/v1/data/latest/datasets/{dataset}` | 가장 최신 월로 307 리다이렉트 |
+| GET | `/health` | `{"status": "ok"}` |
+
+- `year_month`은 `YYYY-MM` 형식만 허용합니다 (`2026-1`, `202601` 등은 404).
+- 트레일링 슬래시·쿼리스트링은 무시합니다.
+- HEAD는 헤더만 주고 본문은 안 내려줍니다 (`Content-Length`는 정확히 채워짐).
+
+### dataset 목록
+
+| dataset | 대응 스키마 |
+|---|---|
+| `monthly_taxi_trip` | `schema.bronze.MONTHLY_TAXI_TRIP_SCHEMA` |
+| `driver_vehicle_monthly_snapshot` | `schema.bronze.DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA` |
+| `lease_vehicle_inventory` | `schema.bronze.LEASE_VEHICLE_INVENTORY_SCHEMA` |
+
+이 목록 밖의 이름(대문자 포함)은 전부 404입니다 — `DATASETS` 화이트리스트로 막습니다.
+
+### 응답
+
+성공 시 `200`, 본문은 Parquet 바이트 그대로, 헤더는:
+
+```
+Content-Type: application/vnd.apache.parquet
+Content-Length: <바이트 수>
+Content-Disposition: attachment; filename="<dataset>.parquet"
+```
+
+500MB급 파일도 청크 단위로 스트리밍하므로 서버가 파일 전체를 메모리에 올리지 않습니다.
+
+### 에러
+
+| 상태 | 상황 |
+|---|---|
+| `404` | 알 수 없는 경로·dataset·월 형식, 또는 해당 월 릴리스/파일이 없음 |
+| `500` | 릴리스는 있는데 읽을 수 없음 (예: local 모드의 manifest.json이 깨짐) |
+
+## 저장소 백엔드 (`SOURCE_API_ENV`)
+
+| 값 | 동작 |
+|---|---|
+| `local` (기본값) | `SOURCE_API_LOCAL_ROOT` 아래 `year_month=YYYY-MM/manifest.json` 레이아웃을 읽음. 생성 DAG(`synthetic_driver_trip_source`)가 만드는 그대로의 형식 |
+| `prod` | S3의 `<SOURCE_API_S3_PREFIX>/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 직접 읽음. manifest 없음 |
+
+`monthly_taxi_trip`만 local manifest의 실제 키(`hvfhv_taxi_trips`, 생성 DAG가 아직 이 이름을
+씀)와 공개 API 이름이 다릅니다 — `LocalDatasetStorage._MANIFEST_KEYS`에서만 번역합니다.
+S3 쪽은 폴더명이 이미 `monthly_taxi_trip`이라 번역이 필요 없습니다.
+
+## 환경변수
+
+`.env.example`의 `SOURCE_API_*` 참고. 필수는 `prod`일 때의 `SOURCE_API_S3_BUCKET`뿐이고,
+나머지는 전부 기본값이 있습니다.
+
+## 로컬 실행
+
+```bash
+python -m sub.source_api.server
+```

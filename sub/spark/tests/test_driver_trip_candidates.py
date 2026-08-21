@@ -12,10 +12,22 @@
 from datetime import date, datetime
 
 import pytest
-from pyspark.sql.functions import array, concat, lit, slice
+from pyspark.sql.functions import concat, lit, slice
 
 from shared.spark.common.session import get_or_create_spark_session
-from sub.spark.jobs.driver_assignment.candidates import SCORE_WEIGHTS, build_trip_candidates
+from conftest import TEST_SCORE_WEIGHTS as SCORE_WEIGHTS, TEST_SEED
+from sub.spark.jobs.driver_assignment.candidates import (
+    C1_ROSTER,
+    C2_TIER,
+    C6_PROFILE,
+    C_NO_CANDIDATE,
+    build_trip_candidates,
+)
+
+
+def _injected(**overrides) -> dict:
+    """기본값이 사라진 인자를 테스트 리터럴로 채웁니다 (conftest 소유)."""
+    return {"seed": TEST_SEED, "score_weights": SCORE_WEIGHTS, **overrides}
 @pytest.fixture(scope="module")
 def spark():
     session = get_or_create_spark_session("test_driver_trip_candidates")
@@ -31,31 +43,21 @@ def _frames(spark, *, tier="Standard", pickup_zone="Queens", bucket_size=1):
         "pickup_service_zone": "Airports" if pickup_zone == "Airport" else "Boro Zone",
         "dropoff_service_zone": "Boro Zone",
     }])
+    # 2024-03-04는 월요일(비트 0), 09-12는 시간대 인덱스 3(비트 3).
     preferences = spark.createDataFrame([{
-        "driver_id": "driver-1", "active_weekdays": ["MON"],
-        "preferred_time_blocks": ["09-12"], "time_block_weights": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
+        "driver_id": "driver-1", "weekday_mask": 1 << 0,
+        "time_block_mask": 1 << 3, "time_block_weights": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0],
         "preferred_distance_miles": 5.0, "airport_preference": 0.9,
         "manhattan_preference": 0.8, "tier_preference": 0.7,
-        "target_daily_trips": 10,
+        "target_drive_minutes": 400,
         "target_work_minutes": 480, "max_deadhead_minutes": 10,
     }])
-    # 실제 회사 스냅샷은 세 테이블이 모두 `snapshot_date` 를 갖습니다. 빼놓으면
-    # 조인 후 컬럼이 3개로 겹치는 상황을 재현하지 못합니다.
-    customers = spark.createDataFrame([{
-        "customer_id": "customer-1", "synthetic_driver_id": "driver-1",
-        "snapshot_date": date(2026, 8, 12),
-    }])
-    leases = spark.createDataFrame([{
-        "lease_id": "lease-1", "customer_id": "customer-1", "taxi_id": "taxi-1",
+    current_driver_vehicle = spark.createDataFrame([{
+        "driver_id": "driver-1", "taxi_id": "taxi-1",
         "lease_started_on": date(2024, 1, 1), "lease_ended_on": date(2099, 1, 1),
-        "snapshot_date": date(2026, 8, 12),
+        "uber_comfort_eligible": True, "lyft_extra_comfort_eligible": True,
     }])
-    taxis = spark.createDataFrame([{
-        "taxi_id": "taxi-1", "uber_comfort_eligible": True,
-        "lyft_extra_comfort_eligible": True,
-        "snapshot_date": date(2026, 8, 12),
-    }])
-    return trips, preferences, customers, leases, taxis, bucket_size
+    return trips, preferences, current_driver_vehicle, bucket_size
 
 
 def _with_drivers(frames, count):
@@ -65,19 +67,10 @@ def _with_drivers(frames, count):
             frames[1].limit(1).withColumn("driver_id", concat(lit("driver-"), suffix))
         )
         frames[2] = frames[2].unionByName(frames[2].limit(1).select(
-            concat(lit("customer-"), suffix).alias("customer_id"),
-            concat(lit("driver-"), suffix).alias("synthetic_driver_id"),
-            "snapshot_date",
-        ))
-        frames[3] = frames[3].unionByName(frames[3].limit(1).select(
-            concat(lit("lease-"), suffix).alias("lease_id"),
-            concat(lit("customer-"), suffix).alias("customer_id"),
+            concat(lit("driver-"), suffix).alias("driver_id"),
             concat(lit("taxi-"), suffix).alias("taxi_id"),
-            "lease_started_on", "lease_ended_on", "snapshot_date",
-        ))
-        frames[4] = frames[4].unionByName(frames[4].limit(1).select(
-            concat(lit("taxi-"), suffix).alias("taxi_id"),
-            "uber_comfort_eligible", "lyft_extra_comfort_eligible", "snapshot_date",
+            "lease_started_on", "lease_ended_on",
+            "uber_comfort_eligible", "lyft_extra_comfort_eligible",
         ))
     return frames
 
@@ -85,14 +78,20 @@ def _with_drivers(frames, count):
 @pytest.mark.parametrize("change", ["contract", "weekday", "time_block"])
 def test_계약_요일_시간대가_맞지_않으면_후보에서_제외한다(spark, change):
     frames = list(_frames(spark))
+    counter = C1_ROSTER
     if change == "contract":
-        frames[3] = frames[3].withColumn("lease_ended_on", frames[3].lease_started_on)
+        frames[2] = frames[2].withColumn("lease_ended_on", frames[2].lease_started_on)
     elif change == "weekday":
-        frames[1] = frames[1].withColumn("active_weekdays", array(lit("TUE")))
+        frames[1] = frames[1].withColumn("weekday_mask", lit(1 << 1))  # 화요일만
+        counter = C6_PROFILE
     else:
-        frames[1] = frames[1].withColumn("preferred_time_blocks", array(lit("12-15")))
+        frames[1] = frames[1].withColumn("time_block_mask", lit(1 << 4))  # 12-15만
+        counter = C6_PROFILE
 
-    assert build_trip_candidates(*frames[:-1], bucket_size=frames[-1]).count() == 0
+    result, rejected = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
+    assert result.count() == 0
+    assert rejected[counter] == 1
+    assert rejected[C_NO_CANDIDATE] == 0
 
 
 @pytest.mark.parametrize(
@@ -101,13 +100,16 @@ def test_계약_요일_시간대가_맞지_않으면_후보에서_제외한다(s
 )
 def test_프리미엄_운행은_해당_자격_차량만_후보다(spark, tier, eligibility):
     frames = list(_frames(spark, tier=tier))
-    frames[4] = frames[4].withColumn(eligibility, ~frames[4][eligibility])
+    frames[2] = frames[2].withColumn(eligibility, ~frames[2][eligibility])
 
-    assert build_trip_candidates(*frames[:-1], bucket_size=frames[-1]).count() == 0
+    result, rejected = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
+    assert result.count() == 0
+    assert rejected[C2_TIER] == 1
 
 
 def test_시간_거리_지역_등급_선호가_점수에_반영된다(spark):
-    result = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1).first()
+    result, _ = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1, **_injected())
+    result = result.first()
 
     assert result.time_score == pytest.approx(1.0)
     assert result.distance_score == pytest.approx(1.0)
@@ -128,8 +130,10 @@ def test_시간_거리_지역_등급_선호가_점수에_반영된다(spark):
 )
 def test_자격되는_프리미엄_운행은_Standard_보다_등급점수가_높다(spark, tier, eligibility):
     """같은 기사·같은 조건이면 프리미엄 쪽 점수가 더 높아야 배정에서 우선됩니다."""
-    standard = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1).first()
-    premium = build_trip_candidates(*_frames(spark, tier=tier)[:-1], bucket_size=1).first()
+    standard_result, _ = build_trip_candidates(*_frames(spark)[:-1], bucket_size=1, **_injected())
+    premium_result, _ = build_trip_candidates(*_frames(spark, tier=tier)[:-1], bucket_size=1, **_injected())
+    standard = standard_result.first()
+    premium = premium_result.first()
 
     assert standard.tier_score == pytest.approx(0.3)   # 1 - 0.7
     assert premium.tier_score == pytest.approx(0.7)    # tier_preference 그대로
@@ -139,8 +143,11 @@ def test_자격되는_프리미엄_운행은_Standard_보다_등급점수가_높
 def test_같은_seed는_입력_순서와_무관하게_같은_후보를_만든다(spark):
     frames = list(_frames(spark))
     frames = _with_drivers(frames, 2)
-    first = build_trip_candidates(*frames[:-1], seed=7, bucket_size=2)
-    second = build_trip_candidates(frames[0], frames[1].orderBy("driver_id", ascending=False), *frames[2:-1], seed=7, bucket_size=2)
+    first, _ = build_trip_candidates(*frames[:-1], bucket_size=2, **_injected(seed=7))
+    second, _ = build_trip_candidates(
+        frames[0], frames[1].orderBy("driver_id", ascending=False), *frames[2:-1],
+        bucket_size=2, **_injected(seed=7),
+    )
 
     assert sorted(first.select("driver_id", "tie_break").collect()) == sorted(
         second.select("driver_id", "tie_break").collect()
@@ -151,7 +158,8 @@ def test_운행별_후보수는_버킷_인원수를_넘지_않는다(spark):
     frames = list(_frames(spark))
     frames = _with_drivers(frames, 7)
 
-    assert build_trip_candidates(*frames[:-1], bucket_size=3).count() <= 3
+    result, _ = build_trip_candidates(*frames[:-1], bucket_size=3, **_injected())
+    assert result.count() <= 3
 
 
 def test_한_운행에_같은_기사가_두_번_후보로_들어가지_않는다(spark):
@@ -163,11 +171,10 @@ def test_한_운행에_같은_기사가_두_번_후보로_들어가지_않는다
     # 기사 7명, bucket_size 64 -> 버킷 수 max(1, 7//64) = 1. 전원이 한 버킷입니다.
     frames = _with_drivers(list(_frames(spark, bucket_size=64)), 7)
 
+    result, _ = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
     pairs = [
         (row.trip_key, row.driver_id)
-        for row in build_trip_candidates(*frames[:-1], bucket_size=frames[-1])
-        .select("trip_key", "driver_id")
-        .collect()
+        for row in result.select("trip_key", "driver_id").collect()
     ]
 
     assert len(pairs) == len(set(pairs))
@@ -179,12 +186,8 @@ def test_운행은_버킷_하나에만_들어간다(spark):
     """두 버킷이 같은 운행을 다투면 중복 배정이 생깁니다."""
     frames = _with_drivers(list(_frames(spark, bucket_size=2)), 6)
 
-    rows = (
-        build_trip_candidates(*frames[:-1], bucket_size=frames[-1])
-        .select("trip_key", "_bucket")
-        .distinct()
-        .collect()
-    )
+    result, _ = build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
+    rows = result.select("trip_key", "_bucket").distinct().collect()
 
     buckets_per_trip = {}
     for row in rows:
@@ -203,22 +206,23 @@ def test_입력_계약_위반은_ValueError다(spark, violation):
         frames[1] = frames[1].withColumn("time_block_weights", slice("time_block_weights", 1, 7))
 
     with pytest.raises(ValueError):
-        build_trip_candidates(*frames[:-1], bucket_size=frames[-1])
+        build_trip_candidates(*frames[:-1], bucket_size=frames[-1], **_injected())
 
 
 # --- 컬럼 이름 중복 (#365) -------------------------------------------------
 #
-# 고객·계약·택시가 각자 `snapshot_date` 를 들고 있어 조인 3번이면 같은 이름의 컬럼이
-# 3개가 됩니다. 그 상태로 배정의 `applyInPandas` 에 넘기면 `df["snapshot_date"]` 가
-# AMBIGUOUS_REFERENCE 로 죽습니다 — 후보 생성 단계에서는 아무 증상이 없어서,
-# 배정까지 가봐야 드러납니다.
+# customer/lease/taxi 3-테이블 조인 시절엔 각 테이블의 `snapshot_date` 가 3개로
+# 겹쳐 배정의 `applyInPandas` 가 AMBIGUOUS_REFERENCE 로 죽었습니다(#365).
+# `current_driver_vehicle` 한 테이블로 합친 뒤(#643)는 그 경로 자체가 없지만,
+# 회귀 안전망으로 남겨 둡니다 — 다음에 컬럼을 또 추가할 때도 조용히 겹치지 않게.
 
 
 def test_후보에_같은_이름의_컬럼이_두_번_들어가지_않는다(spark):
     """중복 컬럼은 실패하지 않고 다음 단계로 흘러가 거기서 터집니다."""
     frames = _frames(spark)
 
-    columns = build_trip_candidates(*frames[:5], seed=42, bucket_size=frames[5]).columns
+    result, _ = build_trip_candidates(*frames[:3], bucket_size=frames[3], **_injected())
+    columns = result.columns
 
     duplicated = sorted({name for name in columns if columns.count(name) > 1})
     assert not duplicated, f"중복 컬럼: {duplicated}"

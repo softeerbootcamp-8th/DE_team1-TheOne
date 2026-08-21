@@ -26,6 +26,7 @@ airflow/**/*.pyc
 .env
 .env.*
 !.env.example
+.ssh-config
 
 # Editor
 .vscode/
@@ -40,3 +41,4 @@ graphify-out
 CLAUDE.md
 .claude/skills/skill-creator
 .claude/.review-cache/
+*.pem

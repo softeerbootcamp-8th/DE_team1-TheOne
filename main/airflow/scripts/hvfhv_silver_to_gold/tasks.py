@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+from airflow.sdk.exceptions import AirflowSkipException
 from airflow.sdk import task
 
 from shared.airflow.common.project_paths import PROJECT_ROOT
@@ -157,7 +158,14 @@ def validate_inputs_task(**context) -> dict:
         partition_key,
     )
     logger.info("Gold 대상 연월: %s", year_month)
-    return resolve_input_paths(year_month, params)
+    try:
+        return resolve_input_paths(year_month, params)
+    except FileNotFoundError as exc:
+        if partition_key:
+            raise AirflowSkipException(
+                f"Silver 4종 준비 대기: year_month={year_month}; {exc}"
+            ) from exc
+        raise
 
 
 @task(task_id="validate_gold")

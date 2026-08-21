@@ -30,7 +30,7 @@ from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module
 
 sys.path.append(str(PROJECT_ROOT))
-from sub.source_api.server import create_server
+from sub.source_api.server import LocalDatasetStorage, create_server
 
 DAG = dag_module.synthetic_driver_trip_source_dag
 
@@ -62,18 +62,67 @@ def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다()
     for option in (
         "--hvfhv_input_path",
         "--zone_lookup_path",
-        "--previous_snapshot_dir",
-        "--previous_preferences_path",
         "--vehicle_master_path",
         "--state_output_dir",
         "--release_output_dir",
         "--year_month",
+        # 조건부 플래그입니다. Param 을 비우면 렌더링 후 사라지지만, 템플릿 원문에는
+        # 남아 있어야 합니다 — 없으면 seed 오버라이드 경로가 끊긴 것입니다.
         "--seed",
+        "--bucket_size",
         "--test_row_limit",
     ):
         assert option in command
     assert "bronze_trips" not in command
     assert "trips_path" not in command
+
+
+class _StubTaskInstance:
+    """템플릿이 부르는 xcom_pull 만 흉내냅니다."""
+
+    @staticmethod
+    def xcom_pull(**_):
+        return {
+            "hvfhv_input_path": "h",
+            "zone_lookup_path": "z",
+            "vehicle_master_path": "v",
+            "year_month": "2026-08",
+        }
+
+
+def _render_build_command(seed=None, bucket_size=None) -> str:
+    task = DAG.get_task("build_source_release")
+    return DAG.get_template_env().from_string(task.bash_command).render(
+        params={
+            "seed": seed,
+            "bucket_size": bucket_size,
+            "state_output_dir": "S",
+            "release_output_dir": "R",
+            "test_row_limit": 0,
+        },
+        task_instance=_StubTaskInstance(),
+    )
+
+
+def test_seed_Param을_비우면_플래그가_렌더링되지_않는다():
+    """Param 에 기본값을 두면 항상 CLI 로 실려서 generation.json 이 영원히 가려집니다.
+
+    비어 있을 때 플래그 자체가 사라져야 job 이 설정 파일을 읽습니다.
+    """
+    assert "--seed" not in _render_build_command(seed=None)
+
+
+def test_seed_Param을_주면_CLI로_전달된다():
+    assert "--seed 7" in _render_build_command(seed=7)
+
+
+def test_bucket_size_Param을_비우면_플래그가_렌더링되지_않는다():
+    """Param 에 기본값을 두면 항상 CLI 로 실려서 config 의 allocation.bucket_size 가 가려집니다."""
+    assert "--bucket_size" not in _render_build_command(bucket_size=None)
+
+
+def test_bucket_size_Param을_주면_CLI로_전달된다():
+    assert "--bucket_size 20" in _render_build_command(bucket_size=20)
 
 
 def test_임시행제한은_프로덕션과_분리된_경로를_사용한다(tmp_path):
@@ -133,18 +182,11 @@ def test_TLC_월별_Parquet은_전체응답을_메모리에_올리지_않고_저
     assert response.read_sizes and -1 not in response.read_sizes
 
 
-def _touch_snapshot(partition):
-    partition.mkdir(parents=True)
-    for name in ("customer", "lease_contract", "taxi"):
-        (partition / f"{name}.parquet").touch()
-
-
-def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(tmp_path):
-    state = tmp_path / "state"
-    previous = state / "data_month=2026-08"
-    _touch_snapshot(previous)
-    preferences = previous / "driver_preferences.parquet"
-    preferences.touch()
+def test_입력검증은_기사_상태_스냅샷이_전혀_없어도_통과한다(tmp_path):
+    """event sourcing 이후 `prepare_monthly_state()`가 스스로 부트스트랩하거나
+    체크포인트를 이어받으므로(#605/#628), 사전에 기사·차량 상태 스냅샷이 있어야
+    한다는 전제 자체가 없다 — 예전(legacy) 검사를 없앤 회귀(실제 Airflow 컨테이너
+    첫 실행에서 `FileNotFoundError: 회사 스냅샷 파일이 없습니다`로 재현됨)."""
     hvfhv = tmp_path / "source" / "hvfhv.parquet"
     zone = tmp_path / "source" / "taxi_zone_lookup.csv"
     hvfhv.parent.mkdir()
@@ -152,9 +194,6 @@ def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(
     zone.touch()
     params = {
         **task_module.DEFAULT_PATHS,
-        "company_path": str(tmp_path / "company"),
-        "state_output_dir": str(state),
-        "release_output_dir": str(tmp_path / "release"),
         "vehicle_master_dir": str(tmp_path / "silver" / "vehicle_master"),
     }
     vehicle_master = (
@@ -176,9 +215,10 @@ def test_입력검증은_대상월이_없으면_직전월상태를_선택한다(
     )
 
     assert result["snapshot_date"] == "2026-09-01"
-    assert result["previous_snapshot_dir"] == str(previous)
-    assert result["previous_preferences_path"] == str(preferences)
     assert result["vehicle_master_path"] == str(vehicle_master)
+
+
+CONFIG_HASH = "0123456789ab"
 
 
 def _write_release(root, *, manifest_rows=1):
@@ -231,6 +271,10 @@ def _write_release(root, *, manifest_rows=1):
         "release_id": "2026-09-seed-42",
         "year_month": "2026-09",
         "seed": 42,
+        # 설정 통합 이후 계보 필드. run_id 는 year_month 와 config_hash 로 조립됩니다.
+        "run_id": f"2026-09_{CONFIG_HASH}",
+        "config_hash": CONFIG_HASH,
+        "created_at": "2026-09-10T00:00:00+00:00",
         "datasets": {
             "hvfhv_taxi_trips": metadata(trip_file),
             "driver_vehicle_monthly_snapshot": metadata(snapshot_file),
@@ -238,6 +282,9 @@ def _write_release(root, *, manifest_rows=1):
         },
     }
     (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    (release / "quality_report.json").write_text(
+        json.dumps({"target_month": "2026-09", "clip_rate": 0.0}), encoding="utf-8"
+    )
     return release, manifest
 
 
@@ -247,6 +294,34 @@ def test_릴리스검증은_manifest_행수_checksum_필수컬럼을_확인한�
     task_module.validate_release(tmp_path, "2026-09", 42)
 
 
+def test_계보필드가_없는_옛_릴리스는_복구방법과_함께_실패한다(tmp_path):
+    release, manifest = _write_release(tmp_path)
+    del manifest["run_id"]
+    del manifest["config_hash"]
+    (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError) as error:
+        task_module.validate_release(tmp_path, "2026-09", 42)
+    # 메시지만으로 다음 사람이 복구할 수 있어야 합니다.
+    assert "run_id" in str(error.value)
+    assert "rm -rf" in str(error.value)
+
+
+def test_run_id가_year_month_config_hash와_어긋나면_실패한다(tmp_path):
+    release, manifest = _write_release(tmp_path)
+    manifest["run_id"] = "2026-08_0123456789ab"
+    (release / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="run_id가 year_month"):
+        task_module.validate_release(tmp_path, "2026-09", 42)
+
+
+def test_seed를_비우면_manifest_seed를_비교하지_않는다(tmp_path):
+    """Param 을 비운 실행은 config 의 global_seed 를 쓴 것이라 맞춰 볼 요청값이 없습니다."""
+    _write_release(tmp_path)
+    task_module.validate_release(tmp_path, "2026-09", None)
+
+
 def test_릴리스행수가_manifest와_다르면_실패한다(tmp_path):
     _write_release(tmp_path, manifest_rows=2)
 
@@ -254,12 +329,24 @@ def test_릴리스행수가_manifest와_다르면_실패한다(tmp_path):
         task_module.validate_release(tmp_path, "2026-09", 42)
 
 
+def test_품질리포트가_없으면_실패한다(tmp_path):
+    release, _ = _write_release(tmp_path)
+    (release / "quality_report.json").unlink()
+
+    with pytest.raises(ValueError, match="품질 리포트가 없습니다"):
+        task_module.validate_release(tmp_path, "2026-09", 42)
+
+
 def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다(tmp_path):
+    """manifest의 dataset 키는 생성 DAG가 쓰는 이름 그대로지만, 공개 API는 이름이
+    다른 것(hvfhv_taxi_trips -> monthly_taxi_trip)이 있어 URL은 그걸로 만듭니다
+    (LocalDatasetStorage의 번역표 참고)."""
     release, manifest = _write_release(tmp_path)
-    server = create_server(tmp_path, port=0)
+    server = create_server(LocalDatasetStorage(tmp_path), port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
+    public_names = {"hvfhv_taxi_trips": "monthly_taxi_trip"}
     try:
         for path in ("/v1/data/latest", "/v1/data/2026-09"):
             with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -267,7 +354,8 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
             assert exc_info.value.code == 404
 
         for dataset in manifest["datasets"]:
-            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{dataset}"
+            public_name = public_names.get(dataset, dataset)
+            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{public_name}"
             with urllib.request.urlopen(dataset_url) as response:
                 assert response.headers["Content-Type"] == (
                     "application/vnd.apache.parquet"
@@ -277,7 +365,7 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
                 ).read_bytes()
 
             with urllib.request.urlopen(
-                f"{base_url}/v1/data/latest/datasets/{dataset}"
+                f"{base_url}/v1/data/latest/datasets/{public_name}"
             ) as response:
                 assert response.geturl() == dataset_url
                 assert response.read() == (

@@ -7,10 +7,19 @@ RUNTIMES := main/airflow main/spark main/aws_lambda
 # build·sync 는 Docker 이미지가 있는 RUNTIMES 만 그대로 순회합니다.
 UV_PROJECTS := $(RUNTIMES) main/dashboard
 GIT_SHA  := $(shell git rev-parse --short HEAD 2>/dev/null || echo "nogit")
-# 기본값은 비워둡니다 — 로컬에서 `make build` 하면 tlc-airflow:<sha> 로 태그됩니다.
+# 기본값은 비워둡니다 — 로컬에서 `make build` 하면 theone-airflow:<sha> 로 태그됩니다.
 # ECR 로 푸시할 때만 끝에 슬래시를 붙여 지정하세요:
-#   make build REGISTRY=123456789012.dkr.ecr.ap-northeast-2.amazonaws.com/
+#   make build REGISTRY=572660899671.dkr.ecr.ap-northeast-2.amazonaws.com/
 REGISTRY ?=
+# 이미지 이름 접두사. ECR 리포지토리 이름과 **같아야** 합니다 — 전에는 `tlc-` 였는데
+# 실제 ECR 은 `theone-airflow` 라서, 배포할 때마다 사람이 손으로 다시 태그해야 했습니다.
+# 자동 배포에서는 그 한 단계가 들어갈 자리가 없어 이름을 맞춥니다.
+IMAGE_PREFIX ?= theone-
+# 이름을 통째로 지정할 때 씁니다. ECR 리포지토리 이름이 접두사+런타임 규칙과 다를 때
+# (예: aws_lambda 는 `theone-main-lambda`) 규칙을 비틀지 않고 그 이름을 그대로 넘깁니다.
+# 배포 워크플로가 ECR_REPOSITORY 변수를 여기에 넘겨서, 리포지토리 이름이 단일 원천이
+# 됩니다 — 이름이 바뀌어도 Makefile 을 고칠 필요가 없습니다. 런타임 하나에만 씁니다.
+IMAGE_NAME ?=
 # Lambda/EMR 기본 아키텍처. 고정하지 않으면 Apple Silicon 팀원은 arm64 이미지를 만들고,
 # 그건 x86_64 Lambda 에서 "exec format error" 로 죽습니다. Graviton 으로 갈 때만 바꾸세요.
 PLATFORM ?= linux/amd64
@@ -27,7 +36,7 @@ help:
 	@echo "test         - 전 프로젝트 pytest (활성화된 venv 와 무관하게 각자 것으로 실행)"
 	@echo "uv-bin       - uv 설치 확인/설치 (sync 가 먼저 호출)"
 	@echo "tesseract    - OCR 바이너리 확인/설치 (sync 가 먼저 호출)"
-	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: <runtime>:<git-sha>)"
+	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: theone-<runtime>:<git-sha>)"
 	@echo "setup-hooks  - review-engineering 검토 기록 Git 훅 설치"
 	@echo "bootstrap    - DAG 가 없는 로컬 파생 산출물 4개 생성 (있으면 건너뜀)"
 	@echo "               개별: zone-lookup / travel-times / driver-preferences / company-snapshot"
@@ -104,12 +113,18 @@ tesseract:
 # 도커는 컨텍스트 밖을 참조할 수 없어서입니다. 전송량은 .dockerignore 가 잡습니다.
 .PHONY: build
 build:
+	@if [ -n "$(IMAGE_NAME)" ] && [ $$(echo $(RUNTIMES) | wc -w) -ne 1 ]; then \
+		echo "IMAGE_NAME 은 런타임 하나를 지정할 때만 씁니다: RUNTIMES=$(RUNTIMES)" >&2; \
+		exit 1; \
+	fi
 	@for r in $(RUNTIMES); do \
 		name=$$(basename $$r); \
 		if [ "$$name" = "aws_lambda" ]; then name="lambda"; fi; \
-		echo "==> building $(REGISTRY)tlc-$$name:$(GIT_SHA)"; \
+		image="$(IMAGE_PREFIX)$$name"; \
+		if [ -n "$(IMAGE_NAME)" ]; then image="$(IMAGE_NAME)"; fi; \
+		echo "==> building $(REGISTRY)$$image:$(GIT_SHA)"; \
 		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f $$r/Dockerfile \
-			-t $(REGISTRY)tlc-$$name:$(GIT_SHA) . || exit 1; \
+			-t $(REGISTRY)$$image:$(GIT_SHA) . || exit 1; \
 	done
 
 .PHONY: setup-hooks
@@ -143,8 +158,8 @@ TRAVEL_TIMES     := data/silver/taxi_zone_travel_times
 DRIVER_PREFS     := data/bronze/driver_preferences.parquet
 COMPANY_SNAPSHOT := data/source/company
 
-# 회사 픽스처를 어느 시점으로 만들지. 비우면 `snapshot.py` 의 DEFAULT_SNAPSHOT_DATE 를
-# 씁니다 — 기본값은 거기 한 곳이 소유합니다.
+# 회사 픽스처를 어느 시점으로 만들지. 비우면 `config/generation.json` 의
+# bootstrap.snapshot_date 를 씁니다 — 값은 그 파일 한 곳이 소유합니다.
 #
 # 이 날짜는 취향이 아니라 **데이터를 결정하는 값**입니다. 리스 시작일이
 # `[lease_start_min, snapshot_date]` 에서 추첨되고, 생성기는 여기서부터 한 달씩만

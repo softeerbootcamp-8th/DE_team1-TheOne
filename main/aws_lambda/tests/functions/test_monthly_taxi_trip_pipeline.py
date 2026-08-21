@@ -15,16 +15,20 @@ import pyarrow.parquet as pq
 import pytest
 
 from main.aws_lambda.common import monthly_dataset
-from functions.hvfhv_raw_to_bronze.handler import lambda_handler
+from functions.monthly_taxi_trip_raw_to_bronze.handler import lambda_handler
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 
 
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
-DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips"
-LATEST_URL = f"{API_URL}/v1/data/latest/datasets/hvfhv_taxi_trips"
-FIRST_COLLECTED_AT = datetime(2026, 8, 20, 10, 15, 30, 123456, tzinfo=timezone.utc)
-SECOND_COLLECTED_AT = datetime(2026, 8, 20, 11, 22, 5, 654321, tzinfo=timezone.utc)
+DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+LATEST_URL = f"{API_URL}/v1/data/latest/datasets/monthly_taxi_trip"
+FIRST_COLLECTED_AT = datetime(
+    2026, 8, 20, 10, 15, 30, 123456, tzinfo=timezone.utc
+)
+SECOND_COLLECTED_AT = datetime(
+    2026, 8, 20, 11, 22, 5, 654321, tzinfo=timezone.utc
+)
 
 
 def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
@@ -176,7 +180,7 @@ def test_다른host로_이동한_응답은_저장하지않는다(tmp_path, monke
     _api(
         monkeypatch,
         response_url=(
-            f"http://other.example/v1/data/{YEAR_MONTH}/datasets/hvfhv_taxi_trips"
+            f"http://other.example/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
         ),
     )
 

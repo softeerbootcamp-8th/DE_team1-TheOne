@@ -78,6 +78,7 @@ def test_latest_partition_file은_파일이_없는_빈_파티션이면_None(tmp_
 def test_latest_partition_file은_최신_수집시각_파일을_반환한다(tmp_path):
     partition = tmp_path / "year_month=2024-01"
     partition.mkdir()
+    (partition / "data.parquet").touch()
     older = partition / "20240820T101530123456Z.parquet"
     latest = partition / "20240820T112205654321Z.parquet"
     older.touch()

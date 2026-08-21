@@ -23,13 +23,15 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # 이미지에 들어가는 파일이 안 바뀌었으면 굽는 결과가 직전과 같습니다. 각 Dockerfile 이
-  # COPY 하는 건 의존성 파일과 libs/pipeline_core 뿐이라, DAG·테스트·핸들러를 고쳐도
-  # 이미지는 그대로입니다. 그래서 소스가 아니라 **이미지의 입력**을 기준으로 거릅니다.
+  # 이미지에 들어가는 파일이 안 바뀌었으면 굽는 결과가 직전과 같습니다. 그래서 소스 전체가
+  # 아니라 **각 Dockerfile 이 실제로 COPY 하는 것**을 기준으로 거릅니다.
   #
-  #   main/<runtime>/Dockerfile 과 각 pyproject.toml, uv.lock
+  #   공통      main/<runtime>/Dockerfile 과 각 pyproject.toml, uv.lock
+  #   airflow   DAG 와 그것이 import 하는 main·sub·shared·schema·libs (#616 에서 추가)
+  #   그 외     각 런타임이 COPY 하는 제품 코드와 libs/pipeline_core
   #
-  # airflow 만 libs/pipeline_core 를 COPY 하지 않아 조건에서 빠져 있습니다.
+  # 여기 목록이 Dockerfile 의 COPY 와 어긋나면, 이미지가 바뀌는데 빌드가 스킵됩니다.
+  # Dockerfile 에서 COPY 를 늘리거나 줄이면 이 필터도 같이 고치세요.
   changes:
     name: 변경 판정
     runs-on: ubuntu-latest
@@ -48,6 +50,12 @@ jobs:
               - 'main/airflow/Dockerfile'
               - 'main/airflow/pyproject.toml'
               - 'main/airflow/uv.lock'
+              - 'main/airflow/dags/**'
+              - 'main/airflow/scripts/**'
+              - 'sub/airflow/**'
+              - 'shared/airflow/**'
+              - 'schema/**'
+              - 'libs/pipeline_core/**'
               - 'Makefile'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
@@ -65,6 +73,14 @@ jobs:
               - 'main/aws_lambda/Dockerfile'
               - 'main/aws_lambda/pyproject.toml'
               - 'main/aws_lambda/uv.lock'
+              # ↓ Dockerfile 이 COPY 하는데 빠져 있던 것들. 없으면 main 함수 코드를
+              #   고쳐도 이미지 빌드가 스킵됩니다.
+              - 'main/aws_lambda/functions/**'
+              - 'main/aws_lambda/common/**'
+              - 'main/__init__.py'
+              - 'sub/__init__.py'
+              - 'shared/__init__.py'
+              - 'schema/**'
               - 'sub/aws_lambda/**'
               - 'shared/aws_lambda/**'
               - 'libs/pipeline_core/**'

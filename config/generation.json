@@ -1,0 +1,29 @@
+{
+  "global_seed": 42,
+  "driver": {
+    "initial_count": 2000,
+    "join_rate": 0.008,
+    "exit_rate": 0.007,
+    "vehicle_change_rate": 0.02
+  },
+  "bootstrap": {
+    "snapshot_date": "2026-01-01",
+    "sample_per_month": 200000
+  },
+  "allocation": {
+    "score_weights": {
+      "time": 0.2975,
+      "distance": 0.255,
+      "airport": 0.17,
+      "manhattan": 0.1275,
+      "tier": 0.15
+    },
+    "bucket_size": 5
+  },
+  "synthesize": {
+    "rationality": 0.6,
+    "traits_volatility": 1.0,
+    "noise_phi": 0.7,
+    "seasonal_amplitude": 0.05
+  }
+}
