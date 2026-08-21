@@ -73,8 +73,8 @@ test:
 # 저장소 루트를 직접 넘겨줍니다.
 	@echo "==> testing sub/airflow"; \
 	(cd main/airflow && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/airflow/tests) || exit 1
-	@echo "==> testing sub/aws_lambda and shared/aws_lambda"; \
-	(cd main/aws_lambda && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/aws_lambda/tests ../../shared/aws_lambda/tests) || exit 1
+	@echo "==> testing sub/aws_lambda, shared/aws_lambda and shared/common"; \
+	(cd main/aws_lambda && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/aws_lambda/tests ../../shared/aws_lambda/tests ../../shared/common/tests) || exit 1
 	@echo "==> testing sub/spark"; \
 	(cd main/spark && env -u VIRTUAL_ENV PYTHONPATH=../.. uv run --frozen pytest -q ../../sub/spark/tests) || exit 1
 
