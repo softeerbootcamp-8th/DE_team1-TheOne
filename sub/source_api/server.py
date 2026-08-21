@@ -100,8 +100,14 @@ class LocalDatasetStorage(DatasetStorage):
         return path.open("rb"), path.stat().st_size
 
     def latest_year_month(self, dataset: str) -> str | None:
-        releases = sorted(self._root.glob("year_month=????-??"))
-        return releases[-1].name.removeprefix("year_month=") if releases else None
+        # 감시 DAG가 원천을 각각 독립으로 보므로, prod(S3)처럼 **그 데이터셋이 실제로
+        # 있는** 가장 최신 월을 돌려줍니다. 최신 릴리스에 이 데이터셋이 빠져 있으면
+        # 전체 최신 월을 그대로 주면 latest -> 307 -> 404 가 됩니다.
+        for release in sorted(self._root.glob("year_month=????-??"), reverse=True):
+            year_month = release.name.removeprefix("year_month=")
+            if self._file(dataset, year_month) is not None:
+                return year_month
+        return None
 
     def metadata(self, dataset: str, year_month: str) -> DatasetMetadata | None:
         found = self._file(dataset, year_month)

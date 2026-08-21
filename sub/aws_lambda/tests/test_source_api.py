@@ -421,3 +421,115 @@ def test_S3저장소의_latest는_데이터가_없으면_None(s3_client):
     storage = S3DatasetStorage(S3_BUCKET)
 
     assert storage.latest_year_month("lease_vehicle_inventory") is None
+
+
+@pytest.fixture
+def s3_api(s3_client):
+    """prod(S3) 모드로 실제 서버를 띄웁니다.
+
+    AWS 배포는 `SOURCE_API_ENV=prod` 로 돕니다. 지금까지 prod 커버는 저장소 클래스
+    단위뿐이었고, 감시 DAG(`source_api_refresh_pipeline`)가 실제로 타는 **HTTP 응답**은
+    local 모드로만 검증돼 있었습니다 — validator 헤더가 빠져도 prod 에서만 깨집니다.
+    """
+    for dataset in sorted(DATASETS):
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=_s3_key(dataset, YEAR_MONTH),
+            Body=BODIES[dataset],
+        )
+    server = create_server(S3DatasetStorage(S3_BUCKET), port=0)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        yield f"http://127.0.0.1:{server.server_port}"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+@pytest.mark.parametrize("dataset", sorted(DATASETS))
+def test_prod의_HEAD도_validator를_제공한다(s3_api, dataset):
+    """감시 DAG 는 ETag·Last-Modified 가 둘 다 없으면 그 자리에서 실패합니다."""
+    status, body, _, headers = send(
+        s3_api, f"/v1/data/{YEAR_MONTH}/datasets/{dataset}", "HEAD"
+    )
+
+    assert (status, body) == (200, b"")
+    assert headers["ETag"].startswith('"')
+    assert headers["Last-Modified"].endswith("GMT")
+    assert headers["Content-Length"] == str(len(BODIES[dataset]))
+
+
+def test_prod의_조건부_HEAD는_미변경이면_304(s3_api):
+    """DAG 가 직전 validator 를 되돌려주면 원천 미변경으로 판정돼야 합니다."""
+    path = f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+    _, _, _, validators = send(s3_api, path, "HEAD")
+
+    status, body, _, _ = send(
+        s3_api,
+        path,
+        "HEAD",
+        {
+            "If-None-Match": validators["ETag"],
+            "If-Modified-Since": validators["Last-Modified"],
+        },
+    )
+
+    assert (status, body) == (304, b"")
+
+
+def head_no_redirect(base: str, path: str) -> tuple[int, dict]:
+    """(상태코드, 응답헤더). 감시 DAG 처럼 redirect 를 따라가지 않습니다.
+
+    `send` 는 urllib 기본 동작대로 307 을 따라가고, 그 과정에서 HEAD 가 GET 으로
+    바뀌어 본문까지 받습니다 — DAG(`allow_redirects=False`)와 다른 흐름입니다.
+    """
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *args, **kwargs):
+            return None
+
+    request = urllib.request.Request(f"{base}{path}", method="HEAD")
+    try:
+        with urllib.request.build_opener(NoRedirect).open(request) as response:
+            return response.status, dict(response.headers.items())
+    except urllib.error.HTTPError as error:
+        return error.code, dict(error.headers.items())
+
+
+def test_prod의_latest는_월_URL로_리다이렉트한다(s3_api):
+    """DAG 는 redirect 를 따라가지 않고 Location 의 월만 읽습니다."""
+    status, headers = head_no_redirect(
+        s3_api, "/v1/data/latest/datasets/monthly_taxi_trip"
+    )
+
+    assert status == 307
+    assert headers["Location"] == (
+        f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+    )
+
+
+def test_local의_latest는_그_데이터셋이_있는_최신월을_고른다(release_root):
+    """감시 DAG 는 원천을 각각 독립으로 봅니다 — 한 데이터셋만 새 월이 나올 수 있습니다.
+
+    전체 최신 월을 그대로 주면 그 월에 없는 데이터셋은 latest -> 307 -> 404 가 되어,
+    아직 최신인 옛 월조차 못 받습니다. prod(S3)는 데이터셋별 prefix 를 나열하므로
+    이미 이렇게 동작합니다.
+    """
+    newer = release_root / "year_month=2026-02"
+    newer.mkdir()
+    (newer / "monthly_taxi_trip_only.parquet").write_bytes(b"PAR1-new")
+    _write_manifest(
+        newer,
+        {
+            "hvfhv_taxi_trips": {
+                "file": "monthly_taxi_trip_only.parquet",
+                "sha256": hashlib.sha256(b"PAR1-new").hexdigest(),
+            }
+        },
+    )
+    storage = LocalDatasetStorage(release_root)
+
+    assert storage.latest_year_month("monthly_taxi_trip") == "2026-02"
+    assert storage.latest_year_month("lease_vehicle_inventory") == YEAR_MONTH

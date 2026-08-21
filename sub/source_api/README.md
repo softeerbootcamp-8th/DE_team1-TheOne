@@ -14,6 +14,8 @@
 - `year_month`은 `YYYY-MM` 형식만 허용합니다 (`2026-1`, `202601` 등은 404).
 - 트레일링 슬래시·쿼리스트링은 무시합니다.
 - HEAD는 헤더만 주고 본문은 안 내려줍니다 (`Content-Length`는 정확히 채워짐).
+- `latest`는 **그 dataset이 실제로 있는** 가장 최신 월로 보냅니다. 원천 3종이 서로 다른
+  월에 갱신될 수 있어서(감시 DAG가 각각 독립으로 봅니다) dataset별로 따로 찾습니다.
 
 ### dataset 목록
 
@@ -33,9 +35,29 @@
 Content-Type: application/vnd.apache.parquet
 Content-Length: <바이트 수>
 Content-Disposition: attachment; filename="<dataset>.parquet"
+ETag: "<local: manifest sha256 | prod: S3 ETag>"
+Last-Modified: <RFC 7231 GMT>
 ```
 
 500MB급 파일도 청크 단위로 스트리밍하므로 서버가 파일 전체를 메모리에 올리지 않습니다.
+
+### 조건부 요청 (변경 감시)
+
+`main`의 감시 DAG(`source_api_refresh_pipeline`)는 본문을 받지 않고 HEAD 만으로 원천
+변경을 판정합니다. 그래서 **ETag·Last-Modified 는 200·304 양쪽에 반드시 실려야 합니다** —
+하나라도 빠지면 DAG 가 그 자리에서 실패합니다(`HEAD 응답에 ETag 또는 Last-Modified가
+없습니다`).
+
+| 요청 헤더 | 동작 |
+|---|---|
+| 없음 | `200` + validator 헤더 (변경으로 판정) |
+| `If-None-Match` 가 현재 ETag 와 같음 | `304` + validator 헤더, 본문 없음 (미변경) |
+| `If-None-Match` 가 다름 | `200` — `If-Modified-Since` 가 맞아도 ETag 가 우선입니다 |
+| `If-Modified-Since` 만 있고 그 이후 변경 없음 | `304` + validator 헤더 |
+
+DAG 는 redirect 를 따라가지 않고(`allow_redirects=False`) `latest` 의 `Location` 에서 월만
+읽어 그 월 URL 로 조건부 HEAD 를 보냅니다. `local`·`prod` 어느 백엔드든 같게 동작해야 하며,
+prod 응답은 `sub/aws_lambda/tests/test_source_api.py` 의 `s3_api` 테스트들이 고정합니다.
 
 ### 에러
 
