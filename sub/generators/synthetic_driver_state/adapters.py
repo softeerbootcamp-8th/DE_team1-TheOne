@@ -27,7 +27,7 @@ def _bitmask(indexes) -> int:
 
 
 def vehicle_pool_from_silver(vehicle_master: pd.DataFrame) -> pd.DataFrame:
-    """실측 Silver `vehicle_master.parquet`(vendor·platform·product 행 여러 개)를
+    """실측 Curated `vehicle_master.parquet`(vendor·platform·product 행 여러 개)를
     `synthesize_month`이 기대하는 차종 한 행짜리 풀로 바꿉니다.
 
     `build_vehicle_pool()`이 자격·그룹 판정(같은 조인 키)을 이미 하므로 그대로

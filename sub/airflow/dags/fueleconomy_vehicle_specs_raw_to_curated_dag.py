@@ -1,4 +1,4 @@
-"""fueleconomy.gov 차종별 제원 Raw → Bronze → Silver 월간 DAG."""
+"""fueleconomy.gov 차종별 제원 Source → Raw → Curated 월간 DAG."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -8,13 +8,13 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
-from sub.airflow.scripts.fueleconomy_vehicle_specs_raw_to_silver.tasks import (
+from sub.airflow.scripts.fueleconomy_vehicle_specs_raw_to_curated.tasks import (
     DEFAULT_RAW_DIR,
     DEFAULT_CURATED_DIR,
-    bronze_to_silver_task,
-    raw_to_bronze_task,
-    validate_bronze_task,
-    validate_silver_task,
+    raw_to_curated_task,
+    source_to_raw_task,
+    validate_raw_task,
+    validate_curated_task,
 )
 
 
@@ -30,14 +30,14 @@ default_args = {
 
 
 @dag(
-    dag_id="fueleconomy_vehicle_specs_raw_to_silver_pipeline",
+    dag_id="fueleconomy_vehicle_specs_raw_to_curated_pipeline",
     default_args=default_args,
-    description="fueleconomy.gov 차종별 제원 Raw -> Bronze -> Silver 월 1회 파이프라인",
+    description="fueleconomy.gov 차종별 제원 Source -> Raw -> Curated 월 1회 파이프라인",
     schedule="0 4 1 * *",
     start_date=datetime(2026, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
-    tags=["sub", "vehicle_specs", "raw", "bronze", "silver", "lambda"],
+    tags=["sub", "vehicle_specs", "raw", "curated", "lambda"],
     params={
         "collected_date": Param(
             None,
@@ -49,28 +49,28 @@ default_args = {
                 "비워두면 실행 시각을 씁니다."
             ),
         ),
-        "bronze_dir": Param(
+        "raw_dir": Param(
             DEFAULT_RAW_DIR,
             type="string",
             description="Raw 데이터 저장 기본 경로",
         ),
-        "silver_dir": Param(
+        "curated_dir": Param(
             DEFAULT_CURATED_DIR,
             type="string",
             description="Curated 데이터 저장 기본 경로",
         ),
     },
 )
-def fueleconomy_vehicle_specs_raw_to_silver_pipeline():
-    raw_result = raw_to_bronze_task.override(
+def fueleconomy_vehicle_specs_raw_to_curated_pipeline():
+    raw_result = source_to_raw_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
         retry_exponential_backoff=True,
     )()
-    bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
-    silver_result = bronze_to_silver_task(raw_result)
-    bronze_checked >> silver_result
-    validate_silver_task.override(retries=0)(silver_result)
+    raw_checked = validate_raw_task.override(retries=0)(raw_result)
+    curated_result = raw_to_curated_task(raw_result)
+    raw_checked >> curated_result
+    validate_curated_task.override(retries=0)(curated_result)
 
 
-fueleconomy_vehicle_specs_dag = fueleconomy_vehicle_specs_raw_to_silver_pipeline()
+fueleconomy_vehicle_specs_dag = fueleconomy_vehicle_specs_raw_to_curated_pipeline()

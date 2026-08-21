@@ -1,4 +1,4 @@
-"""Lyft Premium Eligible Vehicles 수집과 Bronze 적재 핸들러."""
+"""Lyft Premium Eligible Vehicles 수집과 Raw 적재 핸들러."""
 
 import os
 

@@ -3,8 +3,8 @@
 시나리오:
 1. 정상 Bronze와 여러 도시 Silver가 통과한다.
 2. Handler 응답·파일·layout·수집일·요청 도시·중복 도시·총 행 수 경계를 거부한다.
-3. Bronze GX가 행 수·필수 컬럼/값·문자열·products·연식·수집시각을 검증한다.
-4. Silver GX가 컬럼 순서·논리 타입·숫자 폭·필수값·연식·복합 유일성을 검증한다.
+3. Raw GX가 행 수·필수 컬럼/값·문자열·products·연식·수집시각을 검증한다.
+4. Curated GX가 컬럼 순서·논리 타입·숫자 폭·필수값·연식·복합 유일성을 검증한다.
 5. GX 실패 로그가 layer·expectation·column·unexpected_count·observed_value를 남긴다.
 6. Validation Task가 1회 재시도·10분 지연·실패 콜백을 사용한다.
 
@@ -20,7 +20,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dags import uber_eligible_vehicles_raw_to_silver_dag as dag_module
+from dags import uber_eligible_vehicles_raw_to_curated_dag as dag_module
 
 layout = importlib.import_module(
     "sub.aws_lambda.common.uber_eligible_vehicles_layout"
@@ -37,12 +37,12 @@ COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 COLLECTED_DATE = "2026-08-11"
 CITY = "new-york"
 
-validate_bronze = DAG.get_task("validate_bronze").python_callable
-validate_silver = DAG.get_task("validate_silver").python_callable
+validate_bronze = DAG.get_task("validate_raw").python_callable
+validate_silver = DAG.get_task("validate_curated").python_callable
 
 
 def test_Validation_Task에_Slack_실패_콜백이_연결된다():
-    for task_id in ("validate_bronze", "validate_silver"):
+    for task_id in ("validate_raw", "validate_curated"):
         validation_task = DAG.get_task(task_id)
         assert dag_module.slack_failure_callback in validation_task.on_failure_callback
 
@@ -107,7 +107,7 @@ def bronze_result(locations: list[str], **overrides) -> dict:
     } | overrides
 
 
-def silver_result(locations: list[str], **overrides) -> dict:
+def curated_result(locations: list[str], **overrides) -> dict:
     return {
         "row_count": 2 * len(locations),
         "locations": locations,
@@ -125,7 +125,7 @@ def test_규칙대로_적재된_Bronze_는_통과한다(tmp_path):
 
     validate_bronze(
         bronze_result([path]),
-        params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+        params={"raw_dir": str(tmp_path), "city_slug": CITY},
     )
 
 
@@ -135,7 +135,7 @@ def test_Bronze_실제_행_수와_Handler_row_count가_다르면_GX가_실패한
     with pytest.raises(ValueError, match=r"expect_table_row_count_to_equal\[table\]"):
         validate_bronze(
             bronze_result([path], row_count=4),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -151,7 +151,7 @@ def test_Bronze_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
     with pytest.raises(ValueError, match="expect_table_columns_to_match_ordered_list"):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -166,7 +166,7 @@ def test_Bronze_필수값이_NULL이면_GX가_실패한다(tmp_path, column):
     ):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -182,7 +182,7 @@ def test_Bronze_파일_속_도시가_요청_도시와_다르면_GX가_실패를_
     ):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
     assert "gx_validation failed layer=bronze" in caplog.text
@@ -203,7 +203,7 @@ def test_Bronze_필수_문자열이_공백이면_GX가_실패한다(tmp_path, co
     ):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -235,7 +235,7 @@ def test_Bronze_products가_목록이_아니거나_비었으면_GX가_실패한�
     with pytest.raises(ValueError, match="products_(count|nonblank)"):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -254,7 +254,7 @@ def test_Bronze_min_year가_int16이_아니면_GX가_실패한다(tmp_path):
     ):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -271,7 +271,7 @@ def test_Bronze_연식이_1980_2100_범위를_벗어나면_GX가_실패한다(
     ):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -290,7 +290,7 @@ def test_Bronze_collected_at에_시간대가_없으면_GX가_실패한다(tmp_pa
     with pytest.raises(ValueError, match="collected_at_has_timezone"):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -321,7 +321,7 @@ def test_Bronze_collected_at의_UTC_날짜가_같아도_시간대가_UTC가_아�
     ):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -333,7 +333,7 @@ def test_Bronze_collected_at의_UTC_날짜가_수집일과_다르면_GX가_실�
     with pytest.raises(ValueError, match="collected_date_utc"):
         validate_bronze(
             bronze_result([path]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -343,7 +343,7 @@ def test_도시가_여럿이어도_행_수_합계가_맞으면_통과한다(tmp_
         write_silver(tmp_path, "chicago", silver_rows()),
     ]
 
-    validate_silver(silver_result(paths), params={"silver_dir": str(tmp_path)})
+    validate_silver(curated_result(paths), params={"curated_dir": str(tmp_path)})
 
 
 # --------------------------------------------------------------------------
@@ -358,7 +358,7 @@ def test_요청한_도시와_수집한_도시가_다르면_실패한다(tmp_path
     with pytest.raises(ValueError, match="도시"):
         validate_bronze(
             bronze_result([path], city_slug="chicago"),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -369,7 +369,7 @@ def test_city_slug_가_빠지면_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="도시"):
         validate_bronze(
-            result, params={"bronze_dir": str(tmp_path), "city_slug": CITY}
+            result, params={"raw_dir": str(tmp_path), "city_slug": CITY}
         )
 
 
@@ -378,7 +378,7 @@ def test_같은_도시가_두_번_적재되면_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="두 번"):
         validate_silver(
-            silver_result([path, path]), params={"silver_dir": str(tmp_path)}
+            curated_result([path, path]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -397,7 +397,7 @@ def test_row_count_가_수상하면_실패한다(tmp_path, row_count):
     with pytest.raises(ValueError):
         validate_bronze(
             bronze_result([path], row_count=row_count),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -406,7 +406,7 @@ def test_locations_가_비었으면_실패한다(tmp_path, locations):
     with pytest.raises(ValueError):
         validate_bronze(
             bronze_result(locations),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -419,7 +419,7 @@ def test_collected_date_형식이_틀리면_실패한다(tmp_path, collected_dat
     with pytest.raises(ValueError):
         validate_bronze(
             bronze_result([path], collected_date=collected_date),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -434,7 +434,7 @@ def test_파일이_없으면_실패한다(tmp_path):
     with pytest.raises(FileNotFoundError):
         validate_bronze(
             bronze_result([missing]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -446,7 +446,7 @@ def test_도시_파일이_0바이트면_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="비어 있습니다"):
         validate_silver(
-            silver_result([str(path)]), params={"silver_dir": str(tmp_path)}
+            curated_result([str(path)]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -463,7 +463,7 @@ def test_도시_하나가_0행이면_합계가_맞아도_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="expect_table_row_count_to_be_between"):
         validate_silver(
-            silver_result(paths, row_count=4), params={"silver_dir": str(tmp_path)}
+            curated_result(paths, row_count=4), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -476,7 +476,7 @@ def test_layout_규칙과_다른_경로면_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="layout 규칙"):
         validate_silver(
-            silver_result([str(stray)]), params={"silver_dir": str(tmp_path)}
+            curated_result([str(stray)]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -490,7 +490,7 @@ def test_Bronze_layout_규칙과_다른_경로면_실패한다(tmp_path):
     with pytest.raises(ValueError, match="layout 규칙"):
         validate_bronze(
             bronze_result([str(stray)]),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -501,7 +501,7 @@ def test_Bronze_파일명의_수집일이_다르면_실패한다(tmp_path):
     with pytest.raises(ValueError, match="수집일"):
         validate_bronze(
             bronze_result([path], collected_date="2026-08-12"),
-            params={"bronze_dir": str(tmp_path), "city_slug": CITY},
+            params={"raw_dir": str(tmp_path), "city_slug": CITY},
         )
 
 
@@ -511,7 +511,7 @@ def test_Silver_컬럼_순서가_loader_계약과_다르면_GX가_실패한다(t
 
     with pytest.raises(ValueError, match="expect_table_columns_to_match_ordered_list"):
         validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
+            curated_result([path]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -524,7 +524,7 @@ def test_Silver_string과_large_string은_논리_타입이_같아_통과한다(t
     )
     path = write_silver(tmp_path, CITY, silver_rows(), schema=schema)
 
-    validate_silver(silver_result([path]), params={"silver_dir": str(tmp_path)})
+    validate_silver(curated_result([path]), params={"curated_dir": str(tmp_path)})
 
 
 def test_행_수_합계가_row_count_와_다르면_실패한다(tmp_path):
@@ -532,7 +532,7 @@ def test_행_수_합계가_row_count_와_다르면_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="행 수 합계"):
         validate_silver(
-            silver_result([path], row_count=99), params={"silver_dir": str(tmp_path)}
+            curated_result([path], row_count=99), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -546,7 +546,7 @@ def test_Silver_필수값이_NULL이면_GX가_실패한다(tmp_path, column):
         ValueError, match=rf"expect_column_values_to_not_be_null\[{column}\]"
     ):
         validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
+            curated_result([path]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -560,7 +560,7 @@ def test_Silver_필수_문자열이_공백이면_GX가_실패한다(tmp_path, co
         ValueError, match=rf"expect_column_values_to_match_regex\[{column}\]"
     ):
         validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
+            curated_result([path]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -575,7 +575,7 @@ def test_Silver_min_year가_int16이_아니면_GX가_실패한다(tmp_path):
         ValueError, match=r"expect_column_values_to_be_of_type\[min_year\]"
     ):
         validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
+            curated_result([path]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -591,7 +591,7 @@ def test_Silver_연식이_1980_2100_범위를_벗어나면_GX가_실패한다(
         ValueError, match=r"expect_column_values_to_be_between\[min_year\]"
     ):
         validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
+            curated_result([path]), params={"curated_dir": str(tmp_path)}
         )
 
 
@@ -601,5 +601,5 @@ def test_Silver_차종과_상품이_중복되면_GX가_실패한다(tmp_path):
 
     with pytest.raises(ValueError, match="expect_compound_columns_to_be_unique"):
         validate_silver(
-            silver_result([path]), params={"silver_dir": str(tmp_path)}
+            curated_result([path]), params={"curated_dir": str(tmp_path)}
         )
