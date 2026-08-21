@@ -9,13 +9,14 @@ output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
       --monthly_taxi_trip_path ../data/silver/monthly_taxi_trip/year_month=2026-01 \
       --driver_vehicle_monthly_snapshot_path ../data/silver/driver_vehicle_monthly_snapshot/year_month=2026-01 \
       --lease_vehicle_inventory_path ../data/silver/lease_vehicle_inventory/year_month=2026-01 \
-      --fuel_price_path ../data/silver/gas_ev_price/year_month=2026-01/gas_ev_price.parquet \
+      --fuel_price_path ../data/silver/gas_ev_price \
       --year 2026 --month 1 --threshold_profit_increase 600 --output_dir ../data/gold
 """
 
 import argparse
 import logging
 from pathlib import Path
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 import pandas as pd
@@ -29,10 +30,42 @@ from main.spark.jobs.silver_to_gold.transformer import (
     enrich_trips_with_fuel_cost,
     validate_gold_business_invariants,
 )
+from shared.common.s3_reader import list_keys
 from shared.spark.common.session import get_or_create_spark_session
 
 
 logger = logging.getLogger(__name__)
+
+
+def _is_s3_path(path: str) -> bool:
+    return path.startswith("s3://") or path.startswith("s3a://")
+
+
+def latest_fuel_price_path(fuel_price_dir: str) -> str:
+    """`fuel_price_dir` 아래 가장 최근 `year_month=` 파티션의 파일 경로.
+
+    연료비 Silver는 파티션마다 그 시점까지의 과거 일별 가격을 전부 담고 있어
+    (`eia_fuel_price_silver` 파이프라인 참고), 가장 최근 파티션 하나만 읽으면
+    대상 월의 날짜도 포함됩니다 — 다른 3종처럼 `--year`/`--month` 로 맞춰 넘길
+    필요가 없습니다.
+    """
+    if _is_s3_path(fuel_price_dir):
+        scheme = fuel_price_dir.split("://", 1)[0]
+        parsed = urlsplit(fuel_price_dir)
+        bucket = parsed.netloc
+        prefix = parsed.path.lstrip("/").rstrip("/") + "/"
+        keys = [key for key in list_keys(bucket, prefix) if key.endswith(".parquet")]
+        if not keys:
+            raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {fuel_price_dir}")
+        return f"{scheme}://{bucket}/{max(keys)}"
+
+    partitions = sorted(p for p in Path(fuel_price_dir).glob("year_month=*") if p.is_dir())
+    if not partitions:
+        raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {fuel_price_dir}")
+    parquet_files = sorted(partitions[-1].glob("*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(f"연료비 Silver 파티션이 비어 있습니다: {partitions[-1]}")
+    return str(parquet_files[-1])
 
 
 def _csv_path(output_dir: str, dataset: str, year_month: str) -> Path:
@@ -86,7 +119,9 @@ def main(args_list: list[str] | None = None) -> None:
         "--lease_vehicle_inventory_path", required=True, help="리스 업체 보유 차량 Silver 파티션"
     )
     parser.add_argument(
-        "--fuel_price_path", required=True, help="통합 연료비 Silver 파일 또는 파티션"
+        "--fuel_price_path",
+        required=True,
+        help="통합 연료비 Silver 베이스 디렉터리 — --year/--month 와 무관하게 가장 최근 파티션을 읽음",
     )
     parser.add_argument("--year", type=int, required=True)
     parser.add_argument("--month", type=int, required=True)
@@ -104,7 +139,7 @@ def main(args_list: list[str] | None = None) -> None:
     monthly_taxi_trip: DataFrame = spark.read.parquet(args.monthly_taxi_trip_path)
     driver_snapshot: DataFrame = spark.read.parquet(args.driver_vehicle_monthly_snapshot_path)
     inventory: DataFrame = spark.read.parquet(args.lease_vehicle_inventory_path)
-    fuel_price: DataFrame = spark.read.parquet(args.fuel_price_path)
+    fuel_price: DataFrame = spark.read.parquet(latest_fuel_price_path(args.fuel_price_path))
 
     enriched: DataFrame | None = None
     driver_metrics: DataFrame | None = None
