@@ -1,4 +1,4 @@
-"""Silver → Gold 차량 재고 배정 시나리오. 이슈 #561, #675.
+"""Silver → Gold 차량 재고 배정 시나리오. 이슈 #561, #675, #696.
 
 1. 희소 차량은 예상 순이익 증가액이 큰 기사에게 우선 배정
 2. 현재 차량 유지는 변경용 재고를 소비하지 않음
@@ -7,7 +7,12 @@
 5. Standard 운행 구간에 프리미엄 표본이 없으면 명시적으로 실패
 6. Gold 비즈니스 검증은 재고 초과·기사 누락·음수 수익 추천을 차단
 7. 월간 리포트는 기사 순수익 기준과 회사 객단가 상승을 모두 만족한 기사만 집계
+8. 연료비에 대상 월 외 다른 월 데이터가 섞여 있어도 대상 월만 걸러 정상 처리
+9. 연료비에 대상 월 데이터가 전혀 없으면 명확한 에러로 실패
 """
+
+from calendar import monthrange
+from datetime import date, datetime
 
 import pytest
 from pyspark.sql import functions as F
@@ -300,3 +305,110 @@ def test_실패해도_임시_파일을_남기지_않는다(tmp_path, monkeypatch
         job._write_all_csv(_frames("x"), str(tmp_path), "2026-01")
 
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def _valid_gold_inputs(spark, year_month: str):
+    """`enrich_trips_with_fuel_cost`의 다른 검증을 모두 통과하는 최소 입력 1행씩."""
+    year, month = map(int, year_month.split("-"))
+    trips = spark.createDataFrame([{
+        "taxi_id": "T1",
+        "hvfhs_license_num": "HV0003",
+        "on_scene_datetime": datetime(year, month, 10, 7, 55),
+        "pickup_datetime": datetime(year, month, 10, 8, 0),
+        "dropoff_datetime": datetime(year, month, 10, 8, 30),
+        "PULocationID": 1,
+        "DOLocationID": 2,
+        "pickup_zone": "Zone A",
+        "dropoff_zone": "Zone B",
+        "trip_miles": 5.0,
+        "trip_time": 1800,
+        "driver_pay": 20.0,
+        "tips": 2.0,
+        "estimated_service_tier": "Standard",
+    }])
+    driver_snapshot = spark.createDataFrame([{
+        "snapshot_month": year_month,
+        "driver_id": "D1",
+        "taxi_id": "T1",
+        "vehicle_model_id": "MODEL1",
+        "manufacturer": "Kia",
+        "model_name": "Forte",
+        "fuel_type": "gasoline",
+        "comfort_eligible": False,
+        "extra_comfort_eligible": False,
+        "weekly_lease_fee": 400.0,
+        "join_date": date(year, 1, 1),
+        "exit_date": date(2099, 12, 31),  # None이면 1행뿐인 DF에서 타입 추론이 안 됨
+        "experience_years": 3,
+        "vehicle_since": date(year, 1, 1),
+        "snapshot_created_at": datetime(year, month, 1),
+    }])
+    inventory = spark.createDataFrame([{
+        "vehicle_model_id": "MODEL1",
+        "manufacturer": "Kia",
+        "model_name": "Forte",
+        "model_year": 2026,
+        "fuel_type": "gasoline",
+        "fuel_efficiency": 35.0,
+        "comfort_eligible": False,
+        "extra_comfort_eligible": False,
+        "weekly_lease_fee": 400.0,
+        "image_url": "http://example.com/forte.png",
+        "stock": 3,
+    }])
+    return trips, driver_snapshot, inventory
+
+
+def _full_month_fuel_price(year_month: str) -> list[dict]:
+    """year_month 전체 날짜치 연료비 — `_validate_dimensions`의 일수 검증을 통과."""
+    year, month = map(int, year_month.split("-"))
+    days_in_month = monthrange(year, month)[1]
+    return [
+        {
+            "date": date(year, month, day),
+            "gas_price": 3.0 + day * 0.01,
+            "ev_price": 0.2,
+            "price_source": "eia",
+            "bronze_collected_date": date(year, month, day),
+            "ev_price_status": "Final",
+        }
+        for day in range(1, days_in_month + 1)
+    ]
+
+
+def test_연료비에_다른_달_데이터가_섞여도_대상_월만_걸러_정상_처리된다(spark):
+    year_month = "2026-02"
+    trips, driver_snapshot, inventory = _valid_gold_inputs(spark, year_month)
+    # 연료비 Silver는 누적 파일이라 대상 월 외 데이터가 같이 들어올 수 있습니다.
+    fuel_rows = (
+        _full_month_fuel_price(year_month)
+        + [{
+            "date": date(2026, 1, 15),
+            "gas_price": 999.0,
+            "ev_price": 999.0,
+            "price_source": "eia",
+            "bronze_collected_date": date(2026, 1, 15),
+            "ev_price_status": "Final",
+        }]
+    )
+    fuel_price = spark.createDataFrame(fuel_rows)
+
+    enriched = gold_transformer.enrich_trips_with_fuel_cost(
+        trips, driver_snapshot, inventory, fuel_price, year_month
+    )
+
+    assert enriched.count() == 1
+    assert enriched.first()["gas_price"] != 999.0
+
+
+def test_연료비에_대상월_데이터가_전혀_없으면_명확히_실패한다(spark):
+    year_month = "2026-02"
+    trips, driver_snapshot, inventory = _valid_gold_inputs(spark, year_month)
+    # 누적 파일이 아직 대상 월까지 안 쌓인 상황 — 앞뒤 달만 있음.
+    fuel_rows = _full_month_fuel_price("2026-01") + _full_month_fuel_price("2026-03")
+    fuel_price = spark.createDataFrame(fuel_rows)
+
+    with pytest.raises(ValueError, match="연료비 Silver는"):
+        gold_transformer.enrich_trips_with_fuel_cost(
+            trips, driver_snapshot, inventory, fuel_price, year_month
+        )
