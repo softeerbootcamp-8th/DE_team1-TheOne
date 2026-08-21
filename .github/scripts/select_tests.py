@@ -45,20 +45,20 @@ AIRFLOW_OVERRIDES = {
         "lease_vehicle_inventory_raw_to_silver": {"test_lease_vehicle_inventory_dag.py"},
     },
     "sub": {
-        "fueleconomy_vehicle_specs_raw_to_silver": {
-            "test_fueleconomy_vehicle_specs_raw_to_silver_dag.py",
+        "fueleconomy_vehicle_specs_raw_to_curated": {
+            "test_fueleconomy_vehicle_specs_raw_to_curated_dag.py",
             "test_vehicle_specs_validation.py",
         },
-        "lyft_eligible_vehicles_raw_to_silver": {
-            "test_lyft_eligible_vehicles_raw_to_silver_dag.py",
+        "lyft_eligible_vehicles_raw_to_curated": {
+            "test_lyft_eligible_vehicles_raw_to_curated_dag.py",
             "test_lyft_eligible_validation.py",
         },
-        "uber_eligible_vehicles_raw_to_silver": {
-            "test_uber_eligible_vehicles_raw_to_silver_dag.py",
+        "uber_eligible_vehicles_raw_to_curated": {
+            "test_uber_eligible_vehicles_raw_to_curated_dag.py",
             "test_uber_eligible_validation.py",
         },
-        "vehicle_catalog_raw_to_silver": {
-            "test_vehicle_catalog_raw_to_silver_dag.py",
+        "vehicle_catalog_raw_to_curated": {
+            "test_vehicle_catalog_raw_to_curated_dag.py",
             "test_vehicle_catalog_validation.py",
         },
     },
