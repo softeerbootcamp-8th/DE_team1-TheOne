@@ -7,8 +7,8 @@ from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
 from main.aws_lambda.common.monthly_dataset import YEAR_MONTH_PATTERN
-from .extractor import LeaseVehicleInventoryBronzeExtractor
-from .loader import DATASET, LeaseVehicleInventorySilverLoader
+from .extractor import build_bronze_extractor
+from .loader import DATASET, build_silver_loader
 from .transformer import LeaseVehicleInventorySilverTransformer
 
 
@@ -17,20 +17,20 @@ configure_lambda_logging()
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
-    bronze_path = event.get("bronze_path")
-    if not bronze_path:
-        raise ValueError("bronze_path가 누락되었습니다")
     year_month = str(event.get("year_month") or "")
     if not YEAR_MONTH_PATTERN.fullmatch(year_month):
         raise ValueError("year_month가 YYYY-MM 형식이 아닙니다")
+
+    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
+    bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_dir = event.get("silver_dir") or os.getenv(
         "LEASE_VEHICLE_INVENTORY_SILVER_DIR", f"data/silver/{DATASET}"
     )
 
-    loader = LeaseVehicleInventorySilverLoader(silver_dir, year_month)
     result = Pipeline(
-        LeaseVehicleInventoryBronzeExtractor(bronze_path),
-        loader,
+        build_bronze_extractor(storage, bronze_dir, bucket, year_month),
+        build_silver_loader(storage, silver_dir, bucket, year_month),
         transformer=LeaseVehicleInventorySilverTransformer(),
     ).run()
     return {
