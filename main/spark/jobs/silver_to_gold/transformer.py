@@ -4,7 +4,7 @@ from calendar import monthrange
 from dataclasses import fields
 from datetime import datetime
 
-from pyspark.sql import DataFrame, Window
+from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
 
 from schema.gold import DriverMonthlyProfit, MonthlyReport, MonthlyVehicleRecommendation
@@ -16,8 +16,8 @@ from schema.silver import (
 )
 KWH_PER_GALLON_EQUIVALENT = 33.7
 # 프리미엄 자격을 얻어도 Standard 수요가 모두 전환되지는 않습니다.
-# 현재 사업 시나리오는 기존 Standard 운행 중 80%만 프리미엄으로 전환합니다.
-PREMIUM_TIER_TRIP_SHARE = 0.8
+# 현재 사업 시나리오는 기존 Standard 운행 중 40%만 프리미엄으로 전환합니다.
+PREMIUM_TIER_TRIP_SHARE = 0.4
 
 
 def _columns(model: type) -> list[str]:
@@ -255,10 +255,24 @@ def enrich_trips_with_fuel_cost(
     return enriched
 
 
+def _distance_band(trip_miles: Column) -> Column:
+    """거리별 단가 차이를 보존하는 고정 운행거리 구간입니다."""
+    return (
+        F.when(trip_miles < 2, F.lit("0-2"))
+        .when(trip_miles < 5, F.lit("2-5"))
+        .when(trip_miles < 10, F.lit("5-10"))
+        .when(trip_miles < 20, F.lit("10-20"))
+        .otherwise(F.lit("20+"))
+    )
+
+
 def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:
-    """license·등급별 총수익/총거리 배수를 각 운행의 교체 시나리오에 붙입니다."""
+    """license·거리대·등급별 단가 배수를 각 운행의 교체 시나리오에 붙입니다."""
+    banded = enriched.withColumn("_distance_band", _distance_band(F.col("trip_miles")))
     rates = (
-        enriched.groupBy("hvfhs_license_num", "estimated_service_tier")
+        banded.groupBy(
+            "hvfhs_license_num", "_distance_band", "estimated_service_tier"
+        )
         .agg(
             F.sum("driver_pay").alias("_tier_driver_pay"),
             F.sum("trip_miles").alias("_tier_trip_miles"),
@@ -268,31 +282,42 @@ def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:
             F.col("_tier_driver_pay") / F.col("_tier_trip_miles"),
         )
     )
-    by_license = rates.groupBy("hvfhs_license_num").pivot(
-        "estimated_service_tier",
-        ["Standard", "Comfort", "Extra Comfort"],
+    by_license = rates.groupBy("hvfhs_license_num", "_distance_band").pivot(
+        "estimated_service_tier", ["Standard", "Comfort", "Extra Comfort"]
     ).agg(F.first("_rate_per_mile"))
     multipliers = by_license.select(
         "hvfhs_license_num",
-        F.coalesce(F.col("Comfort") / F.col("Standard"), F.lit(1.0)).alias(
-            "_comfort_multiplier"
+        "_distance_band",
+        (F.col("Comfort") / F.col("Standard")).alias("_comfort_multiplier"),
+        (F.col("Extra Comfort") / F.col("Standard")).alias(
+            "_extra_comfort_multiplier"
         ),
-        F.coalesce(
-            F.col("Extra Comfort") / F.col("Standard"), F.lit(1.0)
-        ).alias("_extra_comfort_multiplier"),
     )
 
-    rows = enriched.join(
-        F.broadcast(multipliers), "hvfhs_license_num", "left"
-    ).fillna(
-        {
-            "_comfort_multiplier": 1.0,
-            "_extra_comfort_multiplier": 1.0,
-        }
+    rows = banded.join(
+        F.broadcast(multipliers),
+        ["hvfhs_license_num", "_distance_band"],
+        "left",
     )
     standard = F.col("estimated_service_tier") == "Standard"
     uber_standard = standard & (F.col("hvfhs_license_num") == "HV0003")
     lyft_standard = standard & (F.col("hvfhs_license_num") == "HV0005")
+    missing = rows.filter(
+        (uber_standard & F.col("_comfort_multiplier").isNull())
+        | (lyft_standard & F.col("_extra_comfort_multiplier").isNull())
+    )
+    missing_samples = [
+        row.asDict(recursive=True)
+        for row in missing.select(
+            "hvfhs_license_num", "_distance_band", "estimated_service_tier"
+        )
+        .distinct()
+        .limit(5)
+        .collect()
+    ]
+    if missing_samples:
+        raise ValueError(f"거리대별 프리미엄 배수 결측: sample={missing_samples}")
+
     comfort_pay = F.col("driver_pay") * (
         F.lit(1.0)
         + F.lit(PREMIUM_TIER_TRIP_SHARE)
@@ -446,6 +471,62 @@ def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
 
     ranked.unpersist()
     return assigned
+
+
+def validate_gold_business_invariants(
+    driver_profit: DataFrame,
+    recommendation: DataFrame,
+    driver_snapshot: DataFrame,
+    inventory: DataFrame,
+) -> None:
+    """Gold 저장 전에 기사 보존·재고 한도·수익 방향을 Spark로 검증합니다."""
+    counts = {}
+    for name, frame in (
+        ("driver_aggregation", driver_profit),
+        ("driver_car_suggestion", recommendation),
+        ("driver_snapshot", driver_snapshot),
+    ):
+        stats = frame.agg(
+            F.count(F.lit(1)).alias("rows"),
+            F.countDistinct("driver_id").alias("drivers"),
+        ).first()
+        counts[name] = stats["rows"]
+        if stats["rows"] != stats["drivers"]:
+            raise ValueError(f"{name}의 driver_id가 null이거나 중복입니다")
+
+    if len(set(counts.values())) != 1:
+        raise ValueError(f"Gold 기사 수 불일치: {counts}")
+
+    current_vehicle = driver_snapshot.select(
+        "driver_id", F.col("vehicle_model_id").alias("_current_vehicle_model_id")
+    )
+    assigned = (
+        recommendation.join(F.broadcast(current_vehicle), "driver_id", "inner")
+        .filter(F.col("vehicle_model_id") != F.col("_current_vehicle_model_id"))
+        .groupBy("vehicle_model_id")
+        .agg(F.count(F.lit(1)).alias("assigned"))
+    )
+    stock = inventory.select("vehicle_model_id", "stock")
+    overstocked = assigned.join(F.broadcast(stock), "vehicle_model_id", "left").filter(
+        F.col("stock").isNull() | (F.col("assigned") > F.col("stock"))
+    )
+    overstocked_samples = [
+        row.asDict(recursive=True) for row in overstocked.limit(5).collect()
+    ]
+    if overstocked_samples:
+        raise ValueError(f"Gold 모델별 재고 초과: sample={overstocked_samples}")
+
+    negative_samples = [
+        row.asDict(recursive=True)
+        for row in recommendation.filter(F.col("expected_net_profit_increase") < 0)
+        .select("driver_id", "vehicle_model_id", "expected_net_profit_increase")
+        .limit(5)
+        .collect()
+    ]
+    if negative_samples:
+        raise ValueError(
+            f"Gold 예상 순수익 증가액이 음수입니다: sample={negative_samples}"
+        )
 
 
 def build_monthly_vehicle_recommendation(
