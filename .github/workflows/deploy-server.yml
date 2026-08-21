@@ -107,10 +107,16 @@ jobs:
             f"docker pull {os.environ['IMAGE_URI']}",
             "docker stop theone-source-server 2>/dev/null || true",
             "docker rm theone-source-server 2>/dev/null || true",
-            # 이름이 다른 컨테이너(손으로 띄운 것, 옛 이름으로 띄운 것)가 8091 을 잡고
-            # 있으면 위 두 줄로는 안 비워집니다. 그 상태로 docker run 을 하면
-            # "port is already allocated" 로 죽고, EC2 는 옛 이미지를 계속 서빙합니다.
+            # 이름으로 지웠는데도 8091 이 안 비어 배포가 4회 연속 죽었습니다
+            # (stop·rm 은 성공했고 docker run 만 "port is already allocated").
+            # 무엇이 잡고 있는지 로그에 남기고, 컨테이너면 지웁니다.
+            "docker ps -a --filter publish=8091 --format '8091 점유: {{.Names}} {{.Image}} ({{.Status}})'",
             "docker ps -q --filter publish=8091 | xargs -r docker rm -f",
+            # 컨테이너를 지운 뒤 커널이 포트를 놓기까지 잠깐 걸리는 경우가 있습니다.
+            "for _ in $(seq 10); do ss -tln 2>/dev/null | grep -q ':8091 ' || break; sleep 2; done",
+            # 여기서도 안 비면 컨테이너가 아닌 것이 잡고 있습니다. docker 의
+            # 불친절한 에러 대신 범인을 찍고 멈춥니다 — 사람이 봐야 하는 상황입니다.
+            "if ss -tlnp 2>/dev/null | grep ':8091 '; then echo '8091 을 잡은 것이 컨테이너가 아닙니다 (위 프로세스 확인)'; exit 1; fi",
             "docker run -d --name theone-source-server --restart unless-stopped "
             f"-p 8091:8091 -e SOURCE_API_S3_BUCKET={os.environ['S3_BUCKET']} {os.environ['IMAGE_URI']}",
             "sleep 3",
