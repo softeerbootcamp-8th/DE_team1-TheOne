@@ -1,0 +1,127 @@
+# =============================================================================
+# source_api(sub/source_api) 컨테이너 이미지 배포 + EC2 재기동.
+#
+# 지금까지는 이미지를 로컬에서 push 하고 EC2에 SSH로 들어가 `docker run` 을 손으로
+# 다시 실행했습니다. 이 워크플로는 그 두 단계(push, EC2 재기동)를 그대로 옮긴 것입니다
+# — 컨테이너 이름·포트·환경변수는 기존에 수동으로 띄울 때 쓰던 값과 반드시 맞춰야
+# 합니다. 실제 값이 다르면 `EC2 재배포` 스텝의 docker run 인자를 고치세요.
+#
+# 자격증명을 저장하지 않습니다 (OIDC, GitHub → ECR push) — deploy-lambda.yml 과 동일.
+# EC2 안에서 ECR 로그인은 인스턴스 프로파일(IAM Role)을 쓴다고 가정합니다 — 그
+# 역할에 ecr:GetAuthorizationToken / BatchGetImage / GetDownloadUrlForLayer 가
+# 있어야 `docker pull` 이 됩니다. SSH 자체는 OIDC 로 대체할 수 없어 private key를
+# GitHub Secret 으로 둡니다.
+#
+# 사전 준비 (AWS 콘솔·EC2 — 1회)
+#   1. IAM Identity provider 로 token.actions.githubusercontent.com 등록 (lambda 배포와 공유 가능)
+#   2. Role `theone-github-actions-server-deploy` 생성 (ECR push 권한만)
+#   3. ECR 리포지토리 `theone-source-api` 생성
+#   4. EC2 인스턴스 프로파일에 ECR pull 권한 부여 (없으면 EC2 재배포 스텝이 docker pull 에서 실패)
+#   5. GitHub 배포용 키페어 생성 후 EC2 `~/.ssh/authorized_keys` 에 공개키 등록
+#   6. GitHub Secrets: EC2_SSH_PRIVATE_KEY (5번 키페어의 개인키)
+#   7. GitHub Variables: AWS_REGION(공유) / AWS_ROLE_ARN_SERVER / ECR_REPOSITORY_SERVER /
+#      EC2_HOST / EC2_SSH_USER / SOURCE_API_S3_BUCKET
+# =============================================================================
+name: Deploy Server
+
+on:
+  push:
+    branches: [develop]
+    # Dockerfile(sub/source_api/Dockerfile) 의 COPY 와 같아야 합니다.
+    paths:
+      - 'sub/__init__.py'
+      - 'sub/source_api/**'
+      - 'shared/__init__.py'
+      - 'shared/common/**'
+      - '.dockerignore'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 이미지 push 와 EC2 재기동
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_SERVER }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 이미지 태그 결정
+        id: image
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          registry="${{ steps.ecr.outputs.registry }}"
+          repo="${{ vars.ECR_REPOSITORY_SERVER }}"
+          echo "uri=${registry}/${repo}:${sha}" >> "$GITHUB_OUTPUT"
+
+      # 빌드 컨텍스트는 저장소 루트, Dockerfile 은 sub/source_api/Dockerfile 입니다.
+      # 이 런타임은 main/spark·main/aws_lambda 처럼 uv 프로젝트가 아니라(자체
+      # pyproject.toml 없음) Makefile 의 RUNTIMES 순회 대상이 아닙니다 — 직접 빌드합니다.
+      - name: 이미지 빌드
+        run: |
+          docker build --platform linux/amd64 --provenance=false --sbom=false \
+            -f sub/source_api/Dockerfile \
+            -t "${{ steps.image.outputs.uri }}" .
+
+      - name: 이미지 푸시
+        run: docker push "${{ steps.image.outputs.uri }}"
+
+      - name: SSH 키 설정
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "${{ vars.EC2_HOST }}" >> ~/.ssh/known_hosts
+
+      # 기존 수동 절차(ECR 로그인 → pull → 기존 컨테이너 정지·삭제 → run)를 그대로
+      # SSH 로 실행합니다. 컨테이너 이름 `theone-source-api`·포트 8091은 Dockerfile
+      # 기본값과 맞춰뒀습니다 — 실제 운영에서 다르게 띄웠다면 여기를 맞추세요.
+      - name: EC2 재배포
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          ssh -i ~/.ssh/deploy_key "${{ vars.EC2_SSH_USER }}@${{ vars.EC2_HOST }}" bash -s <<EOF
+            set -euo pipefail
+            aws ecr get-login-password --region ${{ vars.AWS_REGION }} \
+              | docker login --username AWS --password-stdin "$REGISTRY"
+            docker pull "$IMAGE_URI"
+            docker stop theone-source-api 2>/dev/null || true
+            docker rm theone-source-api 2>/dev/null || true
+            docker run -d --name theone-source-api --restart unless-stopped \
+              -p 8091:8091 \
+              -e SOURCE_API_S3_BUCKET="${{ vars.SOURCE_API_S3_BUCKET }}" \
+              "$IMAGE_URI"
+          EOF
+
+      - name: 헬스체크
+        run: |
+          sleep 3
+          ssh -i ~/.ssh/deploy_key "${{ vars.EC2_SSH_USER }}@${{ vars.EC2_HOST }}" \
+            curl -fsS "http://localhost:8091/health"
+
+      - name: 요약
+        run: |
+          {
+            echo "### source_api 배포 완료"
+            echo ""
+            echo '```'
+            echo "이미지: ${{ steps.image.outputs.uri }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,97 @@
+# =============================================================================
+# Spark 컨테이너 이미지 배포.
+#
+#   지금은 ECR 이미지를 새로 빌드해서 push 하는 것까지만 합니다. EMR Serverless
+#   Application/Job Run 을 이 이미지로 갈아끼우는 단계는 별도 이슈로 미룹니다
+#   (권한 이슈로 EMR Serverless 애플리케이션 생성이 막혀 있었음 — #659 참고).
+#
+# 자격증명을 저장하지 않습니다 (OIDC) — deploy-lambda.yml 과 동일한 방식입니다.
+#
+# 사전 준비 (AWS 콘솔 — 1회)
+#   1. IAM Identity provider 로 token.actions.githubusercontent.com 등록 (lambda 배포와 공유 가능)
+#   2. Role `theone-github-actions-spark-deploy` 생성 (ECR push 권한만, 신뢰관계에 repo·branch 조건)
+#   3. ECR 리포지토리 `theone-spark` 생성
+#   4. GitHub Variables: AWS_REGION(공유) / AWS_ROLE_ARN_SPARK / ECR_REPOSITORY_SPARK
+# =============================================================================
+name: Deploy Spark
+
+on:
+  push:
+    branches: [develop]
+    # Dockerfile(shared/spark/Dockerfile) 의 COPY 와 같아야 합니다. 빠지면 코드가
+    # 바뀌었는데 배포가 스킵됩니다.
+    paths:
+      - 'main/spark/pyproject.toml'
+      - 'main/spark/uv.lock'
+      - 'main/spark/jobs/**'
+      - 'main/__init__.py'
+      - 'sub/__init__.py'
+      - 'sub/spark/**'
+      - 'sub/generators/**'
+      - 'shared/__init__.py'
+      - 'shared/spark/**'
+      - 'shared/common/**'
+      - 'schema/**'
+      - 'libs/pipeline_core/**'
+      - 'Makefile'
+      - '.dockerignore'
+      - '.github/workflows/deploy-spark.yml'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-spark
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 이미지 빌드와 push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_SPARK }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 이미지 태그 결정
+        id: image
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          registry="${{ steps.ecr.outputs.registry }}"
+          repo="${{ vars.ECR_REPOSITORY_SPARK }}"
+          echo "uri=${registry}/${repo}:${sha}" >> "$GITHUB_OUTPUT"
+
+      # 로컬과 같은 명령을 씁니다(make build RUNTIMES=main/spark). IMAGE_NAME 을
+      # ECR_REPOSITORY_SPARK 로 넘겨서, 리포지토리 이름이 Makefile 의 기본 규칙과
+      # 어긋나도(예: theone-main-spark 처럼) 깨지지 않게 합니다.
+      - name: 이미지 빌드
+        run: |
+          make build \
+            RUNTIMES=main/spark \
+            REGISTRY="${{ steps.ecr.outputs.registry }}/" \
+            IMAGE_NAME="${{ vars.ECR_REPOSITORY_SPARK }}"
+
+      - name: 이미지 푸시
+        run: docker push "${{ steps.image.outputs.uri }}"
+
+      - name: 요약
+        run: |
+          {
+            echo "### Spark 이미지 push 완료"
+            echo ""
+            echo '```'
+            echo "이미지: ${{ steps.image.outputs.uri }}"
+            echo '```'
+            echo ""
+            echo "EMR Serverless Application/Job Run 갈아끼우는 건 아직 수동입니다."
+          } >> "$GITHUB_STEP_SUMMARY"
