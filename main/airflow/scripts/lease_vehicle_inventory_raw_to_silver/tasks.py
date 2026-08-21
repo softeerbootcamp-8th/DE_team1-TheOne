@@ -15,7 +15,7 @@ from shared.airflow.common.validation import (
     read_parquet,
 )
 from main.airflow.common.monthly_bronze import (
-    should_process_silver,
+    silver_version_path,
     validate_monthly_parquet_bronze,
 )
 from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
@@ -73,7 +73,7 @@ def _collect_bronze(params: dict) -> dict:
     return lambda_handler_for("lease_vehicle_inventory_raw_to_bronze")(event=event)
 
 
-@task.short_circuit(task_id="validate_bronze")
+@task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> dict:
     params = context.get("params", {})
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
@@ -84,12 +84,11 @@ def validate_bronze_task(result: dict, **context) -> dict:
         _, missing = _validate_bronze_result(result, base_dir)
     if missing:
         raise ValueError(f"보유 차량 Bronze 필수 컬럼 누락: {missing}")
-    if not should_process_silver(result):
-        logger.info(
-            "보유 차량 Bronze가 최신 수집본과 동일해 Silver 후속 처리를 건너뜁니다"
-        )
-        return False
-    return result
+    version_path = silver_version_path(
+        params.get("silver_dir") or DEFAULT_SILVER_DIR,
+        result,
+    )
+    return {**result, "silver_version_path": str(version_path)}
 
 
 def _validate_bronze_result(
@@ -110,6 +109,7 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
     event = {
         "bronze_path": result["locations"][0],
         "year_month": result["year_month"],
+        "silver_file_name": Path(result["silver_version_path"]).name,
         "silver_dir": context["params"].get("silver_dir")
         or DEFAULT_SILVER_DIR,
     }
@@ -120,3 +120,6 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(silver_result: dict, raw_result: dict) -> None:
     validate_silver_result(silver_result, raw_result["row_count"])
+    version_path = Path(raw_result["silver_version_path"])
+    if silver_result["locations"] != [str(version_path)]:
+        raise ValueError("보유 차량 Silver 버전 경로가 Bronze와 다릅니다")

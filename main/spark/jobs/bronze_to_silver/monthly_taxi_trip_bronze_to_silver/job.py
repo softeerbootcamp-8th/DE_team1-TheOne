@@ -2,13 +2,16 @@ import argparse
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 from shared.common.s3_reader import list_keys
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
+from pipeline_core.loader import Loader, WriteResult
 from pipeline_core.pipeline import Pipeline, PipelineResult
 from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver.transformer import (
     MonthlyTaxiTripCleanTransformer,
@@ -51,6 +54,28 @@ def resolve_path(path_str: str) -> str:
     if not path.is_absolute():
         return str(PROJECT_ROOT / path)
     return str(path)
+
+
+class SingleParquetFileLoader(Loader):
+    """Spark part 하나를 최종 collected_at 파일로 원자적으로 교체합니다."""
+
+    def __init__(self, path: str):
+        self._path = path
+
+    def write(self, data) -> WriteResult:
+        row_count = data.count()
+        target = Path(self._path)
+        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
+        try:
+            data.coalesce(1).write.mode("overwrite").parquet(str(temporary))
+            parts = list(temporary.glob("part-*.parquet"))
+            if len(parts) != 1:
+                raise ValueError(f"Spark Parquet part 파일은 하나여야 합니다: {temporary}")
+            target.parent.mkdir(parents=True, exist_ok=True)
+            parts[0].replace(target)
+        finally:
+            shutil.rmtree(temporary, ignore_errors=True)
+        return WriteResult(location=self._path, row_count=row_count)
 
 
 def year_month_range(start_year_month: str, end_year_month: str) -> list[str]:
@@ -125,6 +150,11 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     parser.add_argument("--input_path", default=None, help="Path to bronze raw data. 비우면 --env 기본 경로")
     parser.add_argument("--output_path", default=None, help="Path to save silver clean data. 비우면 --env 기본 경로")
     parser.add_argument(
+        "--output_file",
+        default=None,
+        help="수집 시각 파일명으로 쓸 단일 Silver Parquet 경로",
+    )
+    parser.add_argument(
         "--error_threshold", type=float, default=0.05,
         help="불합격 행 허용 비율 (기본 0.05). DAG 는 HVFHV_ERROR_THRESHOLD 로 넘깁니다.",
     )
@@ -141,9 +171,19 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
         output_path = output_path or default_output
     input_path = resolve_path(input_path)
     output_path = resolve_path(output_path)
+    output_file = resolve_path(args.output_file) if args.output_file else None
+
+    if output_file:
+        if is_s3_path(output_file):
+            raise ValueError("--output_file 원자적 교체는 로컬 파일시스템만 지원합니다")
+        output_name = Path(urlsplit(output_file).path).name
+        if not TIMESTAMP_FILE_PATTERN.fullmatch(output_name):
+            raise ValueError("--output_file은 수집 시각 Parquet 파일명이어야 합니다")
 
     if bool(args.start_year_month) != bool(args.end_year_month):
         raise ValueError("--start_year_month와 --end_year_month는 함께 줘야 합니다")
+    if output_file and args.start_year_month:
+        raise ValueError("--output_file은 여러 월 range 적재와 함께 쓸 수 없습니다")
 
     if args.start_year_month and args.end_year_month:
         target_input_path = []
@@ -171,7 +211,11 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     spark.sparkContext.setLogLevel("WARN")
 
     extractor = SparkParquetExtractor(spark, target_input_path)
-    loader = SparkParquetLoader(output_path, partition_by=["year_month"])
+    loader = (
+        SingleParquetFileLoader(output_file)
+        if output_file
+        else SparkParquetLoader(output_path, partition_by=["year_month"])
+    )
     transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
 
     result = Pipeline(extractor, loader, transformer=transformer).run()

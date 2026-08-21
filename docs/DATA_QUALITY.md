@@ -55,7 +55,11 @@ Spark 쓰기는 `partitionOverwriteMode=dynamic` 을 씁니다 —
 이 옵션이 없으면 `mode("overwrite")` 가 데이터셋 디렉터리 전체를 지우고 다시 씁니다.
 **월 배치가 재시도될 때 지난달이 통째로 사라지는 사고가 여기서 납니다.**
 
-월별 Bronze 원천은 `year_month=YYYY-MM/<UTC 수집시각>.parquet`으로 원본을 보존합니다. 같은 월을 다시 받아도 이전 수집본은 남고, Silver는 이번 실행이 검증한 파일 하나만 처리합니다. 원천의 행 수·checksum은 Main 계약으로 전달하지 않습니다.
+월별 Bronze 원천은 `year_month=YYYY-MM/<UTC 수집시각>.parquet`으로 원본을 보존합니다.
+Silver도 같은 파일명으로 버전을 보존합니다. writer 내부에서 임시 파일을 만든 뒤
+`<UTC 수집시각>.parquet`로 원자적으로 교체하고, Airflow가 최종 파일을 다시 읽어
+검증합니다. 감시 DAG는 하위 DAG가 성공한 뒤에만 ETag 상태를 기록하므로 Silver 검증이
+실패하면 다음 감시 실행에서 같은 원천을 다시 처리합니다.
 
 ---
 
