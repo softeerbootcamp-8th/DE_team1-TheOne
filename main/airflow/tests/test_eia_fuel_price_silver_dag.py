@@ -79,6 +79,13 @@ def _write_silver(silver, year_month, rows, source=EIA, schema=SCHEMA,
     if schema is not SCHEMA:
         records = [{k: v for k, v in r.items() if k in schema.names} for r in records]
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
+    return {"year_month": year_month, "row_count": rows, "locations": [str(path)]}
+
+
+@pytest.fixture(autouse=True)
+def _local_storage(monkeypatch):
+    monkeypatch.delenv("BRONZE_STORAGE", raising=False)
+    monkeypatch.delenv("DATA_LAKE_S3_BUCKET", raising=False)
 
 
 def test_DAG는_월간_스케줄로_확인_통합_검증을_순서대로_처리한다():
@@ -124,6 +131,38 @@ def test_CLEAN_이_하나라도_없으면_어느_DAG를_돌릴지_알려준다(t
         silver_tasks.require_clean_silver(str(tmp_path), "2025-05")
 
 
+def test_S3_CLEAN_두_객체를_고정된_월_키로_확인한다(monkeypatch):
+    seen = []
+    monkeypatch.setenv("BRONZE_STORAGE", "s3")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "data-lake")
+    monkeypatch.setattr(
+        silver_tasks,
+        "require_file",
+        lambda location: seen.append(location) or location,
+    )
+
+    found = silver_tasks.require_clean_silver("unused", "2025-05")
+
+    assert all(isinstance(location, silver_tasks.S3Location) for location in seen)
+    assert set(found.values()) == {
+        "s3://data-lake/silver/eia_gas_price/year_month=2025-05/eia_gas_price.parquet",
+        "s3://data-lake/silver/eia_electricity_price/year_month=2025-05/eia_electricity_price.parquet",
+    }
+
+
+def test_S3_CLEAN_누락도_선행_DAG를_알려준다(monkeypatch):
+    monkeypatch.setenv("BRONZE_STORAGE", "s3")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "data-lake")
+    monkeypatch.setattr(
+        silver_tasks,
+        "require_file",
+        lambda location: (_ for _ in ()).throw(FileNotFoundError(str(location))),
+    )
+
+    with pytest.raises(FileNotFoundError, match="eia_gas_price_raw_to_silver_pipeline"):
+        silver_tasks.require_clean_silver("unused", "2025-05")
+
+
 def test_지정이_없으면_전력_공개지연만큼_물러선다():
     assert silver_tasks.default_year_month(datetime(2024, 5, 1, tzinfo=timezone.utc)) == "2024-02"
 
@@ -143,40 +182,78 @@ def test_형식이_잘못된_year_month는_거부한다(value):
 
 
 def test_정상_산출물은_검증을_통과한다(tmp_path):
-    _write_silver(tmp_path, "2024-03", 31)
+    result = _write_silver(tmp_path, "2024-03", 31)
 
-    silver_tasks.validate_silver(str(tmp_path), "2024-03")
+    silver_tasks.validate_silver(result)
 
 
 def test_행수가_그달_일수와_다르면_실패한다(tmp_path):
-    _write_silver(tmp_path, "2024-03", 30)
+    result = _write_silver(tmp_path, "2024-03", 30)
 
     with pytest.raises(ValueError, match="31일이어야"):
-        silver_tasks.validate_silver(str(tmp_path), "2024-03")
+        silver_tasks.validate_silver(result)
 
 
 def test_스키마가_다르면_실패한다(tmp_path):
     trimmed = pa.schema([("date", pa.date32()), ("gas_price", pa.float64())])
-    _write_silver(tmp_path, "2024-03", 31, schema=trimmed)
+    result = _write_silver(tmp_path, "2024-03", 31, schema=trimmed)
 
     with pytest.raises(ValueError, match="스키마가 다릅니다"):
-        silver_tasks.validate_silver(str(tmp_path), "2024-03")
+        silver_tasks.validate_silver(result)
 
 
 def test_다른_출처가_만든_산출물은_EIA_검증에서_실패한다(tmp_path):
-    _write_silver(tmp_path, "2024-03", 31, source="aaa")
+    result = _write_silver(tmp_path, "2024-03", 31, source="aaa")
 
     with pytest.raises(ValueError, match="price_source"):
-        silver_tasks.validate_silver(str(tmp_path), "2024-03")
+        silver_tasks.validate_silver(result)
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
+    path = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03")
     with pytest.raises(FileNotFoundError):
-        silver_tasks.validate_silver(str(tmp_path), "2024-03")
+        silver_tasks.validate_silver(
+            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
+        )
 
 
 def test_잠정값도_검증을_통과한다(tmp_path):
     """잠정값도 정상 산출물입니다. 다만 재생성 시 값이 바뀐다는 것을 로그로 남깁니다."""
-    _write_silver(tmp_path, "2024-03", 31, status=PRELIMINARY)
+    result = _write_silver(tmp_path, "2024-03", 31, status=PRELIMINARY)
 
-    silver_tasks.validate_silver(str(tmp_path), "2024-03")
+    silver_tasks.validate_silver(result)
+
+
+def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
+    seen = []
+    year, month = 2024, 3
+    rows = [
+        {
+            "date": date(year, month, day),
+            "gas_price": 3.0,
+            "ev_price": 0.4,
+            "price_source": EIA,
+            "bronze_collected_date": COLLECTED,
+            "ev_price_status": FINAL,
+        }
+        for day in range(1, 32)
+    ]
+    table = pa.Table.from_pylist(rows, schema=SCHEMA)
+    monkeypatch.setattr(
+        silver_tasks,
+        "read_parquet",
+        lambda path: seen.append(path) or table,
+    )
+
+    silver_tasks.validate_silver(
+        {
+            "year_month": "2024-03",
+            "row_count": 31,
+            "locations": [
+                "s3://data-lake/silver/gas_ev_price/"
+                "year_month=2024-03/gas_ev_price.parquet"
+            ],
+        }
+    )
+
+    assert isinstance(seen[0], silver_tasks.S3Location)

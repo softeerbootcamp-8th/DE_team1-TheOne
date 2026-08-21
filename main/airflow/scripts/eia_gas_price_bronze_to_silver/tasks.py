@@ -13,12 +13,14 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.airflow.common.validation import (
+    layout_tail, parse_handler_result, parse_year_month, read_parquet,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -69,23 +71,36 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def validate_silver(base_dir: str, year_month: str) -> None:
+def validate_silver(result: object) -> None:
     """스키마·행 수·날짜 완결성을 확인합니다.
 
     날짜가 하루라도 비면 하류의 일자 조인에서 그 날이 통째로 매칭 실패하고, 그건
     실패가 아니라 **조용히 줄어든 집계**로 나타납니다.
     """
-    path = silver_file(base_dir, year_month)
-    if not path.is_file():
-        raise FileNotFoundError(f"휘발유 단가 Silver 가 없습니다: {path}")
+    year_month = parse_year_month(
+        result.get("year_month") if isinstance(result, dict) else None,
+        "year_month",
+    )
+    expected = month_day_count(year_month)
+    parsed = parse_handler_result(result, expected_locations=1)
+    path = parsed.locations[0]
+    if layout_tail(path) != layout_tail(silver_file("", year_month)):
+        raise ValueError(f"휘발유 단가 Silver 경로 규칙이 다릅니다: {path}")
 
     # `pq.read_table` 은 경로의 `year_month=` 를 파티션 컬럼으로 덧붙입니다.
     # 파일에 실제로 쓰인 것만 봐야 하므로 ParquetFile 로 직접 읽습니다.
-    table = pq.ParquetFile(path).read()
+    try:
+        table = read_parquet(path)
+    except FileNotFoundError as exc:
+        raise FileNotFoundError(f"휘발유 단가 Silver 가 없습니다: {path}") from exc
     if table.schema.names != SCHEMA.names:
         raise ValueError(f"휘발유 단가 Silver 스키마가 다릅니다: {table.schema.names}")
 
-    expected = month_day_count(year_month)
+    if table.num_rows != parsed.row_count:
+        raise ValueError(
+            f"휘발유 단가 Silver 파일은 {table.num_rows}행인데 "
+            f"handler는 {parsed.row_count}행을 반환했습니다"
+        )
     if table.num_rows != expected:
         raise ValueError(
             f"{year_month} 는 {expected}일이어야 하는데 {table.num_rows}행입니다"
@@ -115,4 +130,4 @@ def bronze_to_silver_task(**context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="bronze_to_silver")
-    validate_silver(context["params"]["silver_dir"], result["year_month"])
+    validate_silver(result)
