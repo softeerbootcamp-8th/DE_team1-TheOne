@@ -183,11 +183,16 @@ def test_하위DAG_trigger는_확정된_연월과_API주소를_conf로_전달한
         trigger = source_api_refresh_dag.get_task(f"trigger_{dataset}")
 
         assert trigger.conf == {
-            "year": f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] }}}}",
-            "month": f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['month'] }}}}",
-            "api_base_url": (
-                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] }}}}"
+            "year": (
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] | tojson }}}}"
             ),
+            "month": (
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['month'] | tojson }}}}"
+            ),
+            "api_base_url": (
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] | tojson }}}}"
+            ),
+            "dry_run": "{{ params.dry_run }}",
         }
 
 

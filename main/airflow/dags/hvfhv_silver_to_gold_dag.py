@@ -64,7 +64,8 @@ def _local_build_gold() -> BashOperator:
             + "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
             + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
             + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
-            + "--output_dir {{ params.output_dir }}"
+            + "--output_dir {{ params.output_dir }} "
+            + "{% if params.dry_run %}--dry-run{% endif %}"
         ),
         env={
             **os.environ,
@@ -101,6 +102,7 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     "--year", f"{{{{ {xcom}['year'] }}}}",
                     "--month", f"{{{{ {xcom}['month'] }}}}",
                     "--threshold_profit_increase", "{{ params.threshold_profit_increase }}",
+                    "--dry-run", "{{ params.dry_run | lower }}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }
@@ -152,6 +154,11 @@ def _build_gold_operator():
         # (근거: docs/METRICS.md - 4. 추천 기준선)
         "threshold_profit_increase": Param(600.0, type="number"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
+        "dry_run": Param(
+            False,
+            type="boolean",
+            description="입력과 집계를 검증하되 Gold에는 적재하지 않음",
+        ),
     },
 )
 def hvfhv_silver_to_gold_pipeline():

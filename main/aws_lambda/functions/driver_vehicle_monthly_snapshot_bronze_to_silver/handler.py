@@ -32,20 +32,31 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     silver_dir = event.get("silver_dir") or os.getenv(
         "DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER_DIR", f"data/silver/{DATASET}"
     )
+    dry_run = event.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        raise ValueError("dry_run은 boolean이어야 합니다")
 
     result = Pipeline(
         build_bronze_extractor(storage, bronze_dir, bucket, year_month),
         build_silver_loader(
-            storage, silver_dir, bucket, year_month, silver_file_name
+            storage,
+            silver_dir,
+            bucket,
+            year_month,
+            silver_file_name,
+            dry_run=dry_run,
         ),
         transformer=DriverVehicleMonthlySnapshotSilverTransformer(),
     ).run()
-    return {
+    response = {
         "row_count": result.write_result.row_count,
         "locations": [result.write_result.location],
         "year_month": year_month,
         "silver_file_name": silver_file_name,
     }
+    if dry_run:
+        response["dry_run"] = True
+    return response
 
 
 if __name__ == "__main__":

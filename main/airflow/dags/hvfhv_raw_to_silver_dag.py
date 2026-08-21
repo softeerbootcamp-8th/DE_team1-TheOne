@@ -64,6 +64,11 @@ default_args = {
             type="string",
             description="HVFHV+taxi_id 데이터 제공 주소",
         ),
+        "dry_run": Param(
+            False,
+            type="boolean",
+            description="입력과 변환을 검증하되 Silver에는 적재하지 않음",
+        ),
     },
 )
 def hvfhv_raw_to_silver_pipeline():
@@ -76,7 +81,8 @@ def hvfhv_raw_to_silver_pipeline():
             f"--output_path {DEFAULT_SILVER_DIR} "
             "--output_file \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['silver_version_path'] }}\" "
-            f"--error_threshold {HVFHV_ERROR_THRESHOLD}"
+            f"--error_threshold {HVFHV_ERROR_THRESHOLD} "
+            "{% if params.dry_run %}--dry-run{% endif %}"
         ),
         env={
             **os.environ,

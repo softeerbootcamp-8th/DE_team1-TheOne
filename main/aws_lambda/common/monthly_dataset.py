@@ -142,10 +142,18 @@ class MonthlyParquetAPIExtractor(Extractor):
 class MonthlyParquetBronzeLoader(Loader):
     """로컬 월 파티션에 변경된 원본만 수집 시각 파일로 보존합니다."""
 
-    def __init__(self, base_dir: str, dataset: str, dataset_dir: str):
+    def __init__(
+        self,
+        base_dir: str,
+        dataset: str,
+        dataset_dir: str,
+        *,
+        dry_run: bool = False,
+    ):
         self._base_dir = Path(base_dir)
         self._dataset = dataset
         self._dataset_dir = dataset_dir
+        self._dry_run = dry_run
         self.payload: dict = {}
         self.path: Path | None = None
         self.source_changed = True
@@ -168,6 +176,17 @@ class MonthlyParquetBronzeLoader(Loader):
                 "collected_at": _collected_at_from_name(latest.name),
             }
             return WriteResult(str(latest), parquet.metadata.num_rows)
+
+        if self._dry_run:
+            if latest is None:
+                raise FileNotFoundError(
+                    "dry_run은 기존 Bronze 수집본이 있어야 합니다: "
+                    f"{self.path.parent}"
+                )
+            raise ValueError(
+                "dry_run 원본이 기존 Bronze와 다릅니다. 변경 원본은 적재 없이 "
+                "하류 태스크에 전달할 수 없으므로 정상 실행으로 확인하세요."
+            )
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(self.path, lambda temporary: temporary.write_bytes(content))
@@ -203,11 +222,19 @@ class MonthlyParquetBronzeLoader(Loader):
 class S3MonthlyParquetBronzeLoader(Loader):
     """S3 월 파티션에 변경된 원본만 수집 시각 객체로 보존합니다."""
 
-    def __init__(self, dataset: str, dataset_dir: str, bucket: str | None = None):
+    def __init__(
+        self,
+        dataset: str,
+        dataset_dir: str,
+        bucket: str | None = None,
+        *,
+        dry_run: bool = False,
+    ):
         load_local_env()
         self._dataset = dataset
         self._dataset_dir = dataset_dir
         self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
+        self._dry_run = dry_run
         self.payload: dict = {}
         self.source_changed = True
 
@@ -221,9 +248,10 @@ class S3MonthlyParquetBronzeLoader(Loader):
         self.payload = payload
         prefix = self._partition_prefix(payload)
         latest = self._latest_key(prefix)
-        if latest is not None and _same_bytes(
-            get_object_bytes(self._bucket, latest), content
-        ):
+        latest_content = (
+            get_object_bytes(self._bucket, latest) if latest is not None else None
+        )
+        if latest is not None and _same_bytes(latest_content, content):
             self.source_changed = False
             self.payload = {
                 **payload,
@@ -231,6 +259,17 @@ class S3MonthlyParquetBronzeLoader(Loader):
             }
             return WriteResult(
                 f"s3://{self._bucket}/{latest}", parquet.metadata.num_rows
+            )
+
+        if self._dry_run:
+            if latest is None or latest_content is None:
+                raise FileNotFoundError(
+                    "dry_run은 기존 Bronze 수집본이 있어야 합니다: "
+                    f"s3://{self._bucket}/{prefix}"
+                )
+            raise ValueError(
+                "dry_run 원본이 기존 Bronze와 다릅니다. 변경 원본은 적재 없이 "
+                "하류 태스크에 전달할 수 없으므로 정상 실행으로 확인하세요."
             )
 
         key = f"{prefix}{_timestamp_file_name(payload)}"
@@ -258,9 +297,21 @@ def build_bronze_loader(
     dataset: str,
     dataset_dir: str,
     bucket: str | None = None,
+    *,
+    dry_run: bool = False,
 ) -> Loader:
     if storage == "local":
-        return MonthlyParquetBronzeLoader(base_dir, dataset, dataset_dir)
+        return MonthlyParquetBronzeLoader(
+            base_dir,
+            dataset,
+            dataset_dir,
+            dry_run=dry_run,
+        )
     if storage == "s3":
-        return S3MonthlyParquetBronzeLoader(dataset, dataset_dir, bucket=bucket)
+        return S3MonthlyParquetBronzeLoader(
+            dataset,
+            dataset_dir,
+            bucket=bucket,
+            dry_run=dry_run,
+        )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

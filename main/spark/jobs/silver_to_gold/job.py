@@ -210,6 +210,14 @@ def main(args_list: list[str] | None = None) -> None:
         "--gold_secret_id", default=os.getenv("GOLD_DATABASE_SECRET_ID"),
         help="--env prod일 때 PostgreSQL DSN 문자열을 보관한 Secrets Manager Secret ID",
     )
+    parser.add_argument(
+        "--dry-run",
+        nargs="?",
+        const=True,
+        default=False,
+        type=lambda value: str(value).lower() == "true",
+        help="입력과 집계를 실제 실행하되 Gold에는 적재하지 않음",
+    )
     args = parser.parse_args(args_list)
 
     year_month = f"{args.year:04d}-{args.month:02d}"
@@ -279,6 +287,16 @@ def main(args_list: list[str] | None = None) -> None:
         # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
         # 계산 중 실패가 기존 산출물을 남기지 않습니다.
         frames = {name: frame.toPandas() for name, frame in outputs.items()}
+        if args.dry_run:
+            empty = sorted(name for name, frame in frames.items() if frame.empty)
+            if empty:
+                raise ValueError(f"dry-run Gold 산출물이 비어 있습니다: {empty}")
+            logger.info(
+                "dry-run: Gold 적재 생략 year_month=%s rows=%s",
+                year_month,
+                {name: len(frame) for name, frame in frames.items()},
+            )
+            return
         if args.env == "prod":
             written = write_gold_to_postgres(
                 frames,

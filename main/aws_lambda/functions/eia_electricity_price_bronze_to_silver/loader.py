@@ -32,17 +32,35 @@ def silver_key(year_month: str) -> str:
 class EiaElectricityPriceSilverLoader(Loader):
     """대상 월 한 달치를 고정 경로의 로컬 Parquet 하나로 저장합니다."""
 
-    def __init__(self, base_dir: str, year_month: str):
+    def __init__(
+        self,
+        base_dir: str,
+        year_month: str,
+        *,
+        dry_run: bool = False,
+    ):
         self._base_dir = base_dir
         self._year_month = year_month
+        self._dry_run = dry_run
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
             raise ValueError("적재할 충전 단가 Silver 데이터가 없습니다.")
 
-        path = silver_file(self._base_dir, self._year_month)
-        path.parent.mkdir(parents=True, exist_ok=True)
         table = pa.Table.from_pylist(data, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
+        path = silver_file(self._base_dir, self._year_month)
+        if self._dry_run:
+            buffer = io.BytesIO()
+            pq.write_table(table, buffer, compression="snappy")
+            logger.info(
+                "silver_load dry-run path=%s year_month=%s rows=%d",
+                path,
+                self._year_month,
+                table.num_rows,
+            )
+            return WriteResult(location=str(path), row_count=table.num_rows)
+
+        path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
             path,
             lambda temporary: pq.write_table(table, temporary, compression="snappy"),
@@ -58,9 +76,16 @@ class EiaElectricityPriceSilverLoader(Loader):
 class EiaElectricityPriceS3SilverLoader(Loader):
     """대상 월 한 달치를 고정 key의 S3 Parquet 하나로 저장합니다."""
 
-    def __init__(self, year_month: str, bucket: str | None = None):
+    def __init__(
+        self,
+        year_month: str,
+        bucket: str | None = None,
+        *,
+        dry_run: bool = False,
+    ):
         self._year_month = year_month
         self._bucket = bucket
+        self._dry_run = dry_run
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
@@ -70,21 +95,41 @@ class EiaElectricityPriceS3SilverLoader(Loader):
         buffer = io.BytesIO()
         pq.write_table(table, buffer, compression="snappy")
 
-        result = S3Loader(key=silver_key(self._year_month), bucket=self._bucket).write(
+        result = S3Loader(
+            key=silver_key(self._year_month),
+            bucket=self._bucket,
+            dry_run=self._dry_run,
+        ).write(
             S3Object(body=buffer.getvalue(), row_count=table.num_rows)
         )
         logger.info(
-            "silver_load done location=%s year_month=%s rows=%d",
-            result.location, self._year_month, table.num_rows,
+            "silver_load %s location=%s year_month=%s rows=%d",
+            "dry-run" if self._dry_run else "done",
+            result.location,
+            self._year_month,
+            table.num_rows,
         )
         return result
 
 
 def build_silver_loader(
-    storage: str, base_dir: str, bucket: str | None, year_month: str
+    storage: str,
+    base_dir: str,
+    bucket: str | None,
+    year_month: str,
+    *,
+    dry_run: bool = False,
 ) -> Loader:
     if storage == "local":
-        return EiaElectricityPriceSilverLoader(base_dir, year_month)
+        return EiaElectricityPriceSilverLoader(
+            base_dir,
+            year_month,
+            dry_run=dry_run,
+        )
     if storage == "s3":
-        return EiaElectricityPriceS3SilverLoader(year_month, bucket=bucket)
+        return EiaElectricityPriceS3SilverLoader(
+            year_month,
+            bucket=bucket,
+            dry_run=dry_run,
+        )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
