@@ -37,6 +37,9 @@ on:
       # 그 코드는 다음 airflow 배포에 따라옵니다.
       - 'schema/**'
       - 'libs/pipeline_core/**'
+      # 이미지가 COPY 하는 생성 파라미터. 값이 바뀌면 다시 굽고 배포해야
+      # EC2·EMR 이 새 값으로 돕니다.
+      - 'config/**'
       - 'Makefile'
       - '.dockerignore'
       - 'docker-compose.ec2.yml'
