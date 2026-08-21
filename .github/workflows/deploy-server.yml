@@ -12,15 +12,21 @@
 # 있어야 `docker pull` 이 됩니다. SSH 자체는 OIDC 로 대체할 수 없어 private key를
 # GitHub Secret 으로 둡니다.
 #
+# source_api EC2는 private subnet 에 있어 GitHub Actions 러너(퍼블릭 인터넷)에서
+# 직접 못 붙습니다. `.ssh-config` 의 `source-server` 항목과 같은 방식으로 NAT
+# instance 를 bastion 으로 ProxyJump 합니다 — 로컬에서 쓰는 경로와 동일합니다.
+#
 # 사전 준비 (AWS 콘솔·EC2 — 1회)
 #   1. IAM Identity provider 로 token.actions.githubusercontent.com 등록 (lambda 배포와 공유 가능)
 #   2. Role `theone-github-actions-server-deploy` 생성 (ECR push 권한만)
-#   3. ECR 리포지토리 `theone-source-api` 생성
+#   3. ECR 리포지토리 `theone-source-server` 생성
 #   4. EC2 인스턴스 프로파일에 ECR pull 권한 부여 (없으면 EC2 재배포 스텝이 docker pull 에서 실패)
-#   5. GitHub 배포용 키페어 생성 후 EC2 `~/.ssh/authorized_keys` 에 공개키 등록
+#   5. GitHub 배포용 키페어 생성 후 NAT instance·source_api EC2 양쪽
+#      `~/.ssh/authorized_keys` 에 공개키 등록 (둘 다 같은 키를 쓰는 `.ssh-config` 구성 기준)
 #   6. GitHub Secrets: EC2_SSH_PRIVATE_KEY (5번 키페어의 개인키)
 #   7. GitHub Variables: AWS_REGION(공유) / AWS_ROLE_ARN_SERVER / ECR_REPOSITORY_SERVER /
-#      EC2_HOST / EC2_SSH_USER / SOURCE_API_S3_BUCKET
+#      BASTION_HOST(NAT instance 퍼블릭 IP) / EC2_HOST_SERVER(source_api private IP) /
+#      EC2_SSH_USER_SERVER / S3_BUCKET
 # =============================================================================
 name: Deploy Server
 
@@ -82,12 +88,32 @@ jobs:
       - name: 이미지 푸시
         run: docker push "${{ steps.image.outputs.uri }}"
 
-      - name: SSH 키 설정
+      # `.ssh-config` 의 nat/source-server 항목과 같은 구성입니다 — bastion(NAT
+      # instance)을 거쳐야만 private subnet 의 source_api EC2 에 닿습니다. -J 옵션에
+      # -i 를 직접 넘기면 점프 구간에 상속이 안 되는 경우가 있어, 두 홉 모두를 명시한
+      # ssh config 파일로 고정합니다.
+      - name: SSH 키·경로 설정
         run: |
           mkdir -p ~/.ssh
           echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
-          ssh-keyscan -H "${{ vars.EC2_HOST }}" >> ~/.ssh/known_hosts
+          cat > ~/.ssh/config <<EOF
+          Host bastion
+            HostName ${{ vars.BASTION_HOST }}
+            User ${{ vars.EC2_SSH_USER_SERVER }}
+            IdentityFile ~/.ssh/deploy_key
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          Host source-api
+            HostName ${{ vars.EC2_HOST_SERVER }}
+            User ${{ vars.EC2_SSH_USER_SERVER }}
+            IdentityFile ~/.ssh/deploy_key
+            ProxyJump bastion
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+          chmod 600 ~/.ssh/config
 
       # 기존 수동 절차(ECR 로그인 → pull → 기존 컨테이너 정지·삭제 → run)를 그대로
       # SSH 로 실행합니다. 컨테이너 이름 `theone-source-api`·포트 8091은 Dockerfile
@@ -97,7 +123,7 @@ jobs:
           IMAGE_URI: ${{ steps.image.outputs.uri }}
           REGISTRY: ${{ steps.ecr.outputs.registry }}
         run: |
-          ssh -i ~/.ssh/deploy_key "${{ vars.EC2_SSH_USER }}@${{ vars.EC2_HOST }}" bash -s <<EOF
+          ssh source-api bash -s <<EOF
             set -euo pipefail
             aws ecr get-login-password --region ${{ vars.AWS_REGION }} \
               | docker login --username AWS --password-stdin "$REGISTRY"
@@ -106,15 +132,14 @@ jobs:
             docker rm theone-source-api 2>/dev/null || true
             docker run -d --name theone-source-api --restart unless-stopped \
               -p 8091:8091 \
-              -e SOURCE_API_S3_BUCKET="${{ vars.SOURCE_API_S3_BUCKET }}" \
+              -e SOURCE_API_S3_BUCKET="${{ vars.S3_BUCKET }}" \
               "$IMAGE_URI"
           EOF
 
       - name: 헬스체크
         run: |
           sleep 3
-          ssh -i ~/.ssh/deploy_key "${{ vars.EC2_SSH_USER }}@${{ vars.EC2_HOST }}" \
-            curl -fsS "http://localhost:8091/health"
+          ssh source-api curl -fsS "http://localhost:8091/health"
 
       - name: 요약
         run: |
