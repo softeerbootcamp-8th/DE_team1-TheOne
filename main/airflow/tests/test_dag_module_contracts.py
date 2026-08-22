@@ -17,8 +17,8 @@ DAG_VARIABLES = {
     "eia_gas_price_raw_to_silver_dag": "eia_gas_price_raw_to_silver_dag",
     "eia_fuel_price_silver_dag": "eia_fuel_price_silver_dag",
     "lease_vehicle_inventory_raw_to_silver_dag": "lease_vehicle_inventory_raw_to_silver_dag",
+    "monthly_taxi_trip_silver_to_gold_dag": "monthly_taxi_trip_silver_to_gold_dag",
     "monthly_taxi_trip_raw_to_silver_dag": "monthly_taxi_trip_dag",
-    "hvfhv_silver_to_gold_dag": "hvfhv_silver_to_gold_dag",
 }
 
 # sub 에서 이동한 DAG 만 등록합니다 — 셸 글로브가 확장된 cron 이 그대로 통과한 적이
@@ -94,8 +94,8 @@ def test_차량_교체_추천_기준선_기본값은_서비스_조건인_600이�
     올리면 제안할 수 있었던 기사가 빠집니다. 값을 바꾸려면 이 테스트를 함께 고치면서
     docs/METRICS.md 의 근거도 같이 바꾸라는 뜻으로 못박습니다 (#492)."""
     dag = getattr(
-        importlib.import_module("dags.hvfhv_silver_to_gold_dag"),
-        "hvfhv_silver_to_gold_dag",
+        importlib.import_module("dags.monthly_taxi_trip_silver_to_gold_dag"),
+        "monthly_taxi_trip_silver_to_gold_dag",
     )
 
     assert dag.params["threshold_profit_increase"] == 600.0

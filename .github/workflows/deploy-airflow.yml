@@ -19,6 +19,8 @@
 #   IAM 역할  theone-github-actions-airflow-deploy
 #             ECR 은 theone-airflow 만, SSM 은 인스턴스 1대 + AWS-RunShellScript 만
 #   Variables AWS_ROLE_ARN_AIRFLOW / ECR_REPOSITORY_AIRFLOW / AIRFLOW_INSTANCE_ID
+#             EMR_APPLICATION_ID / EMR_EXECUTION_ROLE_ARN
+#   Secrets   GOLD_DATABASE_URL (RDS 마스터 비밀번호 포함 DSN 평문, Secrets Manager 안 씀)
 #   EC2       ~/airflow/.env (compose 가 자동으로 읽음), /root/.docker/config.json
 #             (SSM 명령은 root 로 실행돼 ubuntu 의 credential helper 설정을 못 봅니다)
 # =============================================================================
@@ -100,6 +102,9 @@ jobs:
         env:
           IMAGE_URI: ${{ steps.image.outputs.uri }}
           INSTANCE: ${{ vars.AIRFLOW_INSTANCE_ID }}
+          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
+          EMR_EXECUTION_ROLE_ARN: ${{ vars.EMR_EXECUTION_ROLE_ARN }}
+          GOLD_DATABASE_URL: ${{ secrets.GOLD_DATABASE_URL }}
         run: |
           set -euo pipefail
           # compose 파일도 함께 밀어 저장소와 EC2 가 어긋나지 않게 합니다.
@@ -112,6 +117,9 @@ jobs:
             "cd /home/ubuntu/airflow",
             f"echo {compose} | base64 -d > docker-compose.ec2.yml",
             f"echo AIRFLOW_IMAGE={os.environ['IMAGE_URI']} > .env",
+            f"echo EMR_APPLICATION_ID={os.environ['EMR_APPLICATION_ID']} >> .env",
+            f"echo EMR_EXECUTION_ROLE_ARN={os.environ['EMR_EXECUTION_ROLE_ARN']} >> .env",
+            f"echo GOLD_DATABASE_URL={os.environ['GOLD_DATABASE_URL']} >> .env",
             "chown ubuntu:ubuntu docker-compose.ec2.yml .env",
             "docker compose -f docker-compose.ec2.yml up -d --pull always --force-recreate airflow",
             # 배포마다 4.5GB 이미지가 쌓여 디스크(29GB)가 이틀이면 찹니다.

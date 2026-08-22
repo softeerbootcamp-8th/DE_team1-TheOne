@@ -27,7 +27,7 @@ MAIN_DAGS = {
     "eia_fuel_price_silver_dag": "eia_fuel_price_silver_dag",
     "eia_gas_price_raw_to_silver_dag": "eia_gas_price_raw_to_silver_dag",
     "monthly_taxi_trip_raw_to_silver_dag": "monthly_taxi_trip_dag",
-    "hvfhv_silver_to_gold_dag": "hvfhv_silver_to_gold_dag",
+    "monthly_taxi_trip_silver_to_gold_dag": "monthly_taxi_trip_silver_to_gold_dag",
     "lease_vehicle_inventory_raw_to_silver_dag": (
         "lease_vehicle_inventory_raw_to_silver_dag"
     ),

@@ -41,7 +41,6 @@ AIRFLOW_OVERRIDES = {
             "test_monthly_taxi_trip_raw_to_silver_dag.py",
             "test_monthly_taxi_trip_validation.py",
         },
-        "hvfhv_silver_to_gold": {"test_silver_to_gold_dag.py"},
         "lease_vehicle_inventory_raw_to_silver": {"test_lease_vehicle_inventory_dag.py"},
     },
     "sub": {

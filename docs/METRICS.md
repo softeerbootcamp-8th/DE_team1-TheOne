@@ -81,7 +81,7 @@ Silver는 등급을 다시 추정하지 않고 license–등급 조합을 검증
 기사만 이득이거나 회사 매출이 그대로인 교체는 이 제품의 목적이 아닙니다.
 
 기준선은 DAG 실행 파라미터(`threshold_profit_increase`)로 받고, **기본값은 `600.0`** 입니다
-([hvfhv_silver_to_gold_dag.py](../main/airflow/dags/hvfhv_silver_to_gold_dag.py)).
+([monthly_taxi_trip_silver_to_gold_dag.py](../main/airflow/dags/monthly_taxi_trip_silver_to_gold_dag.py)).
 운영 기준이 바뀌면 코드가 아니라 파라미터로 조정합니다.
 낮추면 대상자가 늘지만 성사율이 떨어지고, 높이면 반대입니다.
 

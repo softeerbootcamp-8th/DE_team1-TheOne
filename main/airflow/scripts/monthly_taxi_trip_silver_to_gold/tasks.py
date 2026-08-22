@@ -1,6 +1,7 @@
 """Silver 4종 → Gold DAG의 월 파티션 경로와 산출물을 검증합니다."""
 
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -201,6 +202,11 @@ def validate_inputs_task(**context) -> dict:
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
     dag_run = context.get("dag_run")
     partition_key = getattr(dag_run, "partition_key", None)
+    job_env = os.getenv("SPARK_JOB_ENV", "local")
+    if job_env == "prod" and not partition_key and not (
+        params.get("year") and params.get("month")
+    ):
+        raise ValueError("운영 수동 실행은 year와 month를 함께 지정해야 합니다")
     year_month = resolve_target_year_month(
         logical_date,
         params,
@@ -208,6 +214,12 @@ def validate_inputs_task(**context) -> dict:
         partition_key,
     )
     logger.info("Gold 대상 연월: %s", year_month)
+    if job_env == "prod":
+        return {
+            "year_month": year_month,
+            "year": year_month.split("-")[0],
+            "month": str(int(year_month.split("-")[1])),
+        }
     try:
         return resolve_input_paths(year_month, params)
     except FileNotFoundError as exc:
@@ -224,6 +236,13 @@ def validate_gold_task(**context) -> None:
     if context["params"].get("dry_run") is True:
         logger.info(
             "dry-run: Spark 내부 Gold 검증 완료, 적재 검증을 생략합니다: year_month=%s",
+            resolved["year_month"],
+        )
+        return
+    if os.getenv("SPARK_JOB_ENV", "local") == "prod":
+        # 운영은 CSV가 아니라 RDS에 적재합니다 — 검증할 로컬 output_dir이 없습니다.
+        logger.info(
+            "운영 Gold 검증은 Spark의 RDS 적재 트랜잭션에서 완료했습니다: year_month=%s",
             resolved["year_month"],
         )
         return
