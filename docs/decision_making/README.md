@@ -44,3 +44,6 @@
 
 ### 8/19 ([상세 정리 문서 링크](/docs/decision_making/0819.md))
 1. Airflow Task v.s. lambda : Lambda
+
+### 8/23 ([상세 정리 문서 링크](/docs/decision_making/0823.md))
+1. EMR Serverless 이미지 배포 : Job 제출 시점에 이미지 digest 해석
