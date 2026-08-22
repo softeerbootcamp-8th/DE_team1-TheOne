@@ -222,7 +222,7 @@ def main(args_list: list[str] | None = None) -> None:
     lease_vehicle_inventory_path = _monthly_path("lease_vehicle_inventory")
     fuel_price_path = resolve_path(given_paths["fuel_price"] or base_paths["fuel_price"])
 
-    spark = get_or_create_spark_session("hvfhv_silver_to_gold")
+    spark = get_or_create_spark_session("monthly_taxi_trip_silver_to_gold")
     monthly_taxi_trip: DataFrame = spark.read.parquet(monthly_taxi_trip_path)
     driver_snapshot: DataFrame = spark.read.parquet(driver_vehicle_monthly_snapshot_path)
     inventory: DataFrame = spark.read.parquet(lease_vehicle_inventory_path)

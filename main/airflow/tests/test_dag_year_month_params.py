@@ -16,7 +16,7 @@ from airflow.exceptions import ParamValidationError
 # (모듈, DAG 변수) — year/month 를 받는 DAG 전부
 DAGS = [
     ("dags.hvfhv_raw_to_silver_dag", "hvfhv_dag"),
-    ("dags.hvfhv_silver_to_gold_dag", "hvfhv_silver_to_gold_dag"),
+    ("dags.monthly_taxi_trip_silver_to_gold_dag", "monthly_taxi_trip_silver_to_gold_dag"),
     ("dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag", "driver_vehicle_monthly_snapshot_raw_to_silver_dag"),
     ("dags.eia_gas_price_raw_to_silver_dag", "eia_gas_price_raw_to_silver_dag"),
     ("dags.eia_electricity_price_raw_to_silver_dag", "eia_electricity_price_raw_to_silver_dag"),

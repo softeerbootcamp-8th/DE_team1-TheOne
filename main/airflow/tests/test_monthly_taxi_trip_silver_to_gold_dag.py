@@ -21,13 +21,13 @@ from airflow.sdk.exceptions import AirflowSkipException
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
 from main.airflow.common import assets
-from main.airflow.scripts.hvfhv_silver_to_gold import tasks as dag_module
+from main.airflow.scripts.monthly_taxi_trip_silver_to_gold import tasks as dag_module
 from shared.airflow.common.slack_failure_callback import slack_success_callback
 
 
 GOLD_DAG = importlib.import_module(
-    "dags.hvfhv_silver_to_gold_dag"
-).hvfhv_silver_to_gold_dag
+    "dags.monthly_taxi_trip_silver_to_gold_dag"
+).monthly_taxi_trip_silver_to_gold_dag
 
 
 def _params(root: Path, **overrides) -> dict:

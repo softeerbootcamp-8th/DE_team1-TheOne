@@ -13,7 +13,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_retry_alert_callback,
     slack_success_callback,
 )
-from main.airflow.scripts.hvfhv_silver_to_gold.tasks import (
+from main.airflow.scripts.monthly_taxi_trip_silver_to_gold.tasks import (
     DEFAULT_PATHS,
     ROOT,
     validate_gold_task,
@@ -32,7 +32,7 @@ default_args = {
 
 
 @dag(
-    dag_id="hvfhv_silver_to_gold_pipeline",
+    dag_id="monthly_taxi_trip_silver_to_gold_pipeline",
     default_args=default_args,
     schedule=PartitionedAssetTimetable(
         assets=assets.GOLD_INPUTS,
@@ -41,7 +41,7 @@ default_args = {
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=["main", "hvfhv", "gold", "spark"],
+    tags=["main", "taxi", "gold", "spark"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
@@ -61,7 +61,7 @@ default_args = {
         ),
     },
 )
-def hvfhv_silver_to_gold_pipeline():
+def monthly_taxi_trip_silver_to_gold_pipeline():
     build = BashOperator(
         task_id="build_gold",
         bash_command=(
@@ -102,4 +102,4 @@ def hvfhv_silver_to_gold_pipeline():
 
 # 다른 DAG 와 같은 규칙 — 팩토리 호출 결과를 모듈 속성으로 노출합니다.
 # 계약 테스트가 `getattr(module, <변수명>)` 으로 DAG 객체를 찾습니다.
-hvfhv_silver_to_gold_dag = hvfhv_silver_to_gold_pipeline()
+monthly_taxi_trip_silver_to_gold_dag = monthly_taxi_trip_silver_to_gold_pipeline()
