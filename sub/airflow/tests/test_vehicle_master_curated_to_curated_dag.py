@@ -3,7 +3,7 @@
  1. 스케줄이 (대장 & Uber & Lyft) | 제원 — 제원을 AND 에 넣으면 월 1회로 묶임
  2. 상류 4개 DAG 가 그 Asset 을 실제로 발행 (생산자와 소비자가 같은 객체를 봄)
  3. 상류는 적재가 아니라 **검증** 태스크에서 발행
- 4. 정상 결과는 통과하고 vehicle_master Asset 을 발행
+ 4. 정상 결과는 통과하고 소비자 없는 vehicle_master Asset 은 발행하지 않음
  5. layout 규칙과 다른 경로면 실패
  6. loader.SCHEMA 와 다른 스키마면 실패
  7. 도시 파일이 0행이면 실패 (합계만 보면 못 잡음)
@@ -124,13 +124,12 @@ def test_상류_DAG_가_검증_태스크에서_Asset_을_발행한다(module_nam
     assert not dag.get_task("raw_to_curated").outlets
 
 
-def test_정상_결과는_통과하고_마스터_Asset_을_발행한다(tmp_path):
+def test_정상_결과는_통과하고_마스터_Asset_은_발행하지_않는다(tmp_path):
     path = write_master(tmp_path, rows=2)
 
     validate_silver(result_for([path], 2), **params_for(tmp_path))
 
-    outlets = DAG.get_task("validate_curated").outlets
-    assert [a.name for a in outlets] == [assets.VEHICLE_MASTER_CURATED.name]
+    assert not DAG.get_task("validate_curated").outlets
 
 
 def test_layout_규칙과_다른_경로면_실패한다(tmp_path):
