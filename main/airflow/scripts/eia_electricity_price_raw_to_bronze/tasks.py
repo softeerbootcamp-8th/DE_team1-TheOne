@@ -7,7 +7,7 @@
 
 import importlib
 import logging
-from datetime import datetime, timezone
+from datetime import datetime
 
 from airflow.sdk import task
 
