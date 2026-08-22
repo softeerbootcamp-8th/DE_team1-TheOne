@@ -313,7 +313,10 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     spark.sparkContext.setLogLevel("WARN")
 
     with ExitStack() as staging:
-        if args.dry_run:
+        # 로컬 Spark는 hadoop-aws가 없어 s3a를 직접 못 읽어 이 우회가 필요합니다.
+        # EMR은 자체 Spark 배포판에 hadoop-aws가 있어 필요 없고, 오히려 dry-run이
+        # 분산 실행되면(드라이버 로컬 /tmp가 익스큐터에서 안 보임) job이 죽습니다(#771).
+        if args.dry_run and args.env == "local":
             (target_input_path,) = staging.enter_context(
                 stage_s3_parquet_inputs(target_input_path)
             )
