@@ -1,5 +1,4 @@
 import argparse
-from contextlib import ExitStack
 import logging
 import os
 import re
@@ -12,11 +11,7 @@ from uuid import uuid4
 import boto3
 
 from shared.common.s3_reader import list_keys
-from shared.spark.common.io import (
-    SparkParquetExtractor,
-    SparkParquetLoader,
-    stage_s3_parquet_inputs,
-)
+from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
 from pipeline_core.loader import Loader, WriteResult
 from pipeline_core.pipeline import Pipeline, PipelineResult
@@ -35,15 +30,6 @@ TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 DEFAULT_LOCAL_INPUT = "data/bronze/monthly_taxi_trip"
 DEFAULT_LOCAL_OUTPUT = "data/silver/monthly_taxi_trip"
-
-
-def _boolean_argument(value: str) -> bool:
-    normalized = value.lower()
-    if normalized == "true":
-        return True
-    if normalized == "false":
-        return False
-    raise argparse.ArgumentTypeError("true 또는 false만 허용합니다")
 
 
 def _silver_file_payload(data):
@@ -149,21 +135,6 @@ class SingleParquetFileLoader(Loader):
                 client.delete_object(Bucket=bucket, Key=key)
 
 
-class DryRunLoader(Loader):
-    """변환을 실제로 계산하고 물리 스키마까지 확인하되 저장하지 않습니다."""
-
-    def __init__(self, location: str):
-        self._location = location
-
-    def write(self, data) -> WriteResult:
-        _silver_file_payload(data)
-        row_count = data.count()
-        if row_count < 1:
-            raise ValueError("dry-run Silver 변환 결과가 비어 있습니다")
-        logger.info("dry-run: Silver 적재 생략 location=%s rows=%d", self._location, row_count)
-        return WriteResult(location=self._location, row_count=row_count)
-
-
 def year_month_range(start_year_month: str, end_year_month: str) -> list[str]:
     """start_year_month 부터 end_year_month 까지(양끝 포함) "YYYY-MM" 목록을 순서대로 반환."""
     start_year, start_month = (int(part) for part in start_year_month.split("-"))
@@ -247,15 +218,6 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
     parser.add_argument("--start_year_month", default=None, help="시작 연월 (예: 2024-01). 한 달만 처리하려면 end와 동일하게")
     parser.add_argument("--end_year_month", default=None, help="종료 연월 (예: 2024-12, 포함)")
-    parser.add_argument(
-        "--dry-run",
-        nargs="?",
-        const=True,
-        default=False,
-        type=_boolean_argument,
-        help="입력과 변환을 실제 실행하되 Silver에는 적재하지 않음",
-    )
-
     args = parser.parse_args(args_list)
 
     input_path, output_path = args.input_path, args.output_path
@@ -312,24 +274,15 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     )
     spark.sparkContext.setLogLevel("WARN")
 
-    with ExitStack() as staging:
-        # 로컬 Spark는 hadoop-aws가 없어 s3a를 직접 못 읽어 이 우회가 필요합니다.
-        # EMR은 자체 Spark 배포판에 hadoop-aws가 있어 필요 없고, 오히려 dry-run이
-        # 분산 실행되면(드라이버 로컬 /tmp가 익스큐터에서 안 보임) job이 죽습니다(#771).
-        if args.dry_run and args.env == "local":
-            (target_input_path,) = staging.enter_context(
-                stage_s3_parquet_inputs(target_input_path)
-            )
-        extractor = SparkParquetExtractor(spark, target_input_path)
-        if args.dry_run:
-            loader = DryRunLoader(output_file or output_path)
-        elif output_file:
-            loader = SingleParquetFileLoader(output_file)
-        else:
-            loader = SparkParquetLoader(output_path, partition_by=["year_month"])
-        transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
+    extractor = SparkParquetExtractor(spark, target_input_path)
+    loader = (
+        SingleParquetFileLoader(output_file)
+        if output_file
+        else SparkParquetLoader(output_path, partition_by=["year_month"])
+    )
+    transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
 
-        result = Pipeline(extractor, loader, transformer=transformer).run()
+    result = Pipeline(extractor, loader, transformer=transformer).run()
     logger.info("Monthly Taxi Trip Bronze to Silver Pipeline completed: %s", result)
     return result
 

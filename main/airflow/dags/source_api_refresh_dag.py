@@ -44,7 +44,6 @@ default_args = {
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=1,
-    render_template_as_native_obj=True,
     tags=["main", "source-api", "silver", "monitor"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
@@ -58,11 +57,6 @@ default_args = {
             type="string",
         ),
         "request_timeout": Param(30, type="integer", minimum=1),
-        "dry_run": Param(
-            False,
-            type="boolean",
-            description="실제 적재와 상태 변경 없이 후속 DAG까지 실행 흐름을 검증",
-        ),
     },
 )
 def source_api_refresh_pipeline():
@@ -81,19 +75,17 @@ def source_api_refresh_pipeline():
                 f"source_refresh__{dataset}__"
                 f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year_month'] }}}}__"
                 f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['version'] }}}}"
-                "{% if params.dry_run %}__dry_run__{{ run_id }}{% endif %}"
             ),
             conf={
                 "year": (
-                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] | tojson }}}}"
+                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] }}}}"
                 ),
                 "month": (
-                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['month'] | tojson }}}}"
+                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['month'] }}}}"
                 ),
                 "api_base_url": (
-                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] | tojson }}}}"
+                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] }}}}"
                 ),
-                "dry_run": "{{ params.dry_run }}",
             },
             reset_dag_run=True,
             wait_for_completion=True,

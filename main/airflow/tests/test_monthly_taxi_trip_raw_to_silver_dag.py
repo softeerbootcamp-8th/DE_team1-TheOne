@@ -86,7 +86,6 @@ def test_로컬은_기존_Bash_Spark_경로를_유지한다():
 
     assert type(operator).__name__ == "BashOperator"
     assert "monthly_taxi_trip_bronze_to_silver/job.py" in operator.bash_command
-    assert "--dry-run" in operator.bash_command
 
 
 def test_운영은_팀변수로_EMR_Serverless_job을_제출하고_완료까지_기다린다(
@@ -108,7 +107,6 @@ def test_운영은_팀변수로_EMR_Serverless_job을_제출하고_완료까지_
     assert spark_submit["entryPoint"] == dag_module.EMR_ENTRY_POINT
     assert "--env" in spark_submit["entryPointArguments"]
     assert "prod" in spark_submit["entryPointArguments"]
-    assert "{{ params.dry_run" in spark_submit["entryPointArguments"][-1]
     assert operator.configuration_overrides["monitoringConfiguration"][
         "s3MonitoringConfiguration"
     ]["logUri"] == "s3://test-lake/emr-logs/"

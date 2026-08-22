@@ -184,15 +184,14 @@ def test_하위DAG_trigger는_확정된_연월과_API주소를_conf로_전달한
 
         assert trigger.conf == {
             "year": (
-                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] | tojson }}}}"
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] }}}}"
             ),
             "month": (
-                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['month'] | tojson }}}}"
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['month'] }}}}"
             ),
             "api_base_url": (
-                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] | tojson }}}}"
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] }}}}"
             ),
-            "dry_run": "{{ params.dry_run }}",
         }
 
 
