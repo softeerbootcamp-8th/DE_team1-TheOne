@@ -9,6 +9,8 @@ from typing import Optional
 from urllib.parse import urlsplit
 from uuid import uuid4
 
+import boto3
+
 from shared.common.s3_reader import list_keys
 from shared.spark.common.io import (
     SparkParquetExtractor,
@@ -35,8 +37,18 @@ DEFAULT_LOCAL_INPUT = "data/bronze/monthly_taxi_trip"
 DEFAULT_LOCAL_OUTPUT = "data/silver/monthly_taxi_trip"
 
 
+def _boolean_argument(value: str) -> bool:
+    normalized = value.lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise argparse.ArgumentTypeError("true 또는 false만 허용합니다")
+
+
 def _silver_file_payload(data):
     """파티션 컬럼을 파일 본문에서 빼고 Silver 물리 스키마를 확인합니다."""
+    # Loader 계약 테스트의 최소 fake 객체는 Spark 스키마를 제공하지 않습니다.
     if not hasattr(data, "columns") or not hasattr(data, "schema"):
         return data
     if "year_month" not in data.columns:
@@ -89,6 +101,10 @@ class SingleParquetFileLoader(Loader):
     def write(self, data) -> WriteResult:
         payload = _silver_file_payload(data)
         row_count = data.count()
+        if is_s3_path(self._path):
+            self._write_s3(payload)
+            return WriteResult(location=self._path, row_count=row_count)
+
         target = Path(self._path)
         temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
@@ -101,6 +117,32 @@ class SingleParquetFileLoader(Loader):
         finally:
             shutil.rmtree(temporary, ignore_errors=True)
         return WriteResult(location=self._path, row_count=row_count)
+
+    def _write_s3(self, data) -> None:
+        parsed = urlsplit(self._path)
+        bucket, final_key = parsed.netloc, parsed.path.lstrip("/")
+        if not bucket or not final_key:
+            raise ValueError(f"S3 Silver 경로가 올바르지 않습니다: {self._path}")
+
+        temporary_prefix = f"{final_key}.tmp-{uuid4().hex}/"
+        temporary_uri = f"s3://{bucket}/{temporary_prefix}"
+        client = boto3.client("s3")
+        try:
+            data.coalesce(1).write.mode("overwrite").parquet(temporary_uri)
+            keys = list_keys(bucket, temporary_prefix)
+            parts = [
+                key
+                for key in keys
+                if Path(key).name.startswith("part-") and key.endswith(".parquet")
+            ]
+            if len(parts) != 1:
+                raise ValueError(
+                    f"Spark Parquet part 파일은 하나여야 합니다: {temporary_uri}"
+                )
+            client.copy({"Bucket": bucket, "Key": parts[0]}, bucket, final_key)
+        finally:
+            for key in list_keys(bucket, temporary_prefix):
+                client.delete_object(Bucket=bucket, Key=key)
 
 
 class DryRunLoader(Loader):
@@ -196,14 +238,17 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     )
     parser.add_argument(
         "--error_threshold", type=float, default=0.05,
-        help="불합격 행 허용 비율 (기본 0.05). DAG 는 HVFHV_ERROR_THRESHOLD 로 넘깁니다.",
+        help="불합격 행 허용 비율 (기본 0.05). DAG 는 MONTHLY_TAXI_TRIP_ERROR_THRESHOLD 로 넘깁니다.",
     )
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
     parser.add_argument("--start_year_month", default=None, help="시작 연월 (예: 2024-01). 한 달만 처리하려면 end와 동일하게")
     parser.add_argument("--end_year_month", default=None, help="종료 연월 (예: 2024-12, 포함)")
     parser.add_argument(
         "--dry-run",
-        action="store_true",
+        nargs="?",
+        const=True,
+        default=False,
+        type=_boolean_argument,
         help="입력과 변환을 실제 실행하되 Silver에는 적재하지 않음",
     )
 
@@ -219,8 +264,6 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     output_file = resolve_path(args.output_file) if args.output_file else None
 
     if output_file:
-        if is_s3_path(output_file) and not args.dry_run:
-            raise ValueError("--output_file 원자적 교체는 로컬 파일시스템만 지원합니다")
         output_name = Path(urlsplit(output_file).path).name
         if not TIMESTAMP_FILE_PATTERN.fullmatch(output_name):
             raise ValueError("--output_file은 수집 시각 Parquet 파일명이어야 합니다")
@@ -252,7 +295,11 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     else:
         target_input_path = input_path
 
-    spark = get_or_create_spark_session("monthly_taxi_trip_bronze_to_silver", driver_memory=args.spark_memory)
+    spark = get_or_create_spark_session(
+        "monthly_taxi_trip_bronze_to_silver",
+        driver_memory=args.spark_memory,
+        local_mode=args.env == "local",
+    )
     spark.sparkContext.setLogLevel("WARN")
 
     with ExitStack() as staging:

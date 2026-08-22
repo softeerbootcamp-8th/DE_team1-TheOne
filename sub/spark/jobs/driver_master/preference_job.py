@@ -23,7 +23,7 @@ def main(args_list: list[str] | None = None) -> Path:
     parser = argparse.ArgumentParser(description="가상 기사 선호 마스터 생성")
     # 실행 위치가 spark/ 라서 저장소 루트가 한 단계 위입니다 (generate.py 와 같은 규칙).
     parser.add_argument("--output_path", default="../data/bronze/driver_preferences.parquet")
-    parser.add_argument("--bronze_dir", default="../data/bronze/hvfhv")
+    parser.add_argument("--bronze_dir", default="../data/bronze/monthly_taxi_trip")
     parser.add_argument("--config", default=None, help=f"비우면 {DEFAULT_CONFIG_PATH}")
     parser.add_argument(
         "--sample_per_month", type=int, default=None,

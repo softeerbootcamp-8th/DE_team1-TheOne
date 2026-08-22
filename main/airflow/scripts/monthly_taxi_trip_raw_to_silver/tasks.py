@@ -1,4 +1,4 @@
-"""HVFHV Raw-to-Silver DAG의 실행·검증 함수."""
+"""월별 택시 운행 데이터 Raw-to-Silver DAG의 실행·검증 함수."""
 
 import logging
 import os
@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 from airflow.sdk import task
 
 from main.airflow.common.dry_run import configure_dry_run_event
@@ -21,11 +20,14 @@ from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.slack_quality_warning import send_quality_warning
 from shared.airflow.common.validation import (
+    S3Location,
     parquet_file,
+    parse_location,
     parse_handler_result,
     parse_year_month,
     run_gx_validation,
 )
+from shared.common.s3_reader import list_keys
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 from schema.silver import (
     CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL as SILVER_REQUIRED_NON_NULL,
@@ -46,13 +48,13 @@ DEFAULT_BRONZE_DIR = os.getenv(
     "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
 )
 DEFAULT_SILVER_DIR = os.getenv(
-    "SILVER_DIR", str(PROJECT_ROOT / "data" / "silver" / "hvfhv")
+    "SILVER_DIR", str(PROJECT_ROOT / "data" / "silver" / "monthly_taxi_trip")
 )
 # Bronze 한 달에서 버려도 되는 행의 비율. 넘으면 원천이 바뀐 것으로 보고 멈춥니다.
 # 0.2 는 초기 관측치를 넉넉히 감싸려고 둔 값이라, 원천 스키마가 통째로 어긋나도
 # 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
-HVFHV_ERROR_THRESHOLD = 0.05
-HVFHV_WARNING_THRESHOLD = 0.01
+MONTHLY_TAXI_TRIP_ERROR_THRESHOLD = 0.05
+MONTHLY_TAXI_TRIP_WARNING_THRESHOLD = 0.01
 DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 
 
@@ -187,7 +189,7 @@ def _silver_quality_summary(parquet_files, required_columns):
 
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
-    """HVFHV+taxi_id 데이터를 Bronze에 저장합니다."""
+    """월별 택시 운행 데이터를 Bronze에 저장합니다."""
     params = context.get("params", {})
     return _collect_bronze(params)
 
@@ -206,7 +208,9 @@ def _collect_bronze(params: dict) -> dict:
     return result
 
 
-def existing_silver_partitions(silver_dir: str | Path) -> list[str]:
+def existing_silver_partitions(
+    silver_dir: str | Path | S3Location,
+) -> list[str]:
     """지금 있는 `year_month=` 파티션 이름들. Spark 쓰기 **전에** 찍어 둡니다.
 
     #165 는 정적 overwrite 가 **기존에 있던** 다른 달을 지운 사고였습니다. 그러니
@@ -214,6 +218,16 @@ def existing_silver_partitions(silver_dir: str | Path) -> list[str]:
     보고 판단하면(예전처럼 "직전 달이 있어야 한다") 과거 달을 새로 채우는 정상 백필을
     구분할 수 없습니다 — 어느 달을 넣든 그 직전 달은 없기 마련이라 항상 막혔습니다.
     """
+    if isinstance(silver_dir, S3Location):
+        prefix = f"{silver_dir.key.rstrip('/')}/"
+        existing = {
+            part
+            for key in list_keys(silver_dir.bucket, prefix)
+            for part in key.removeprefix(prefix).split("/")[:1]
+            if part.startswith("year_month=") and key.endswith(".parquet")
+        }
+        return sorted(existing)
+
     root = Path(silver_dir)
     if not root.is_dir():
         return []
@@ -267,14 +281,14 @@ def validate_bronze_task(result: dict, **context) -> dict:
                 gx.expectations.ExpectColumnValuesToBeBetween(
                     column="invalid_required_row_ratio",
                     min_value=0,
-                    max_value=HVFHV_WARNING_THRESHOLD,
+                    max_value=MONTHLY_TAXI_TRIP_WARNING_THRESHOLD,
                     strict_max=True,
                     meta={"severity": "warning"},
                 ),
                 gx.expectations.ExpectColumnValuesToBeBetween(
                     column="invalid_required_row_ratio",
                     min_value=0,
-                    max_value=HVFHV_ERROR_THRESHOLD,
+                    max_value=MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
                     strict_max=True,
                 ),
             ]
@@ -289,14 +303,14 @@ def validate_bronze_task(result: dict, **context) -> dict:
     run_gx_validation(
         summary,
         expectations,
-        suite_name="hvfhv_bronze_suite",
+        suite_name="monthly_taxi_trip_bronze_suite",
         layer="bronze",
     )
     invalid_ratio = float(summary.at[0, "invalid_required_row_ratio"])
     extra_columns = [
         column for column in summary.at[0, "extra_columns"].split(",") if column
     ]
-    if invalid_ratio >= HVFHV_WARNING_THRESHOLD or extra_columns:
+    if invalid_ratio >= MONTHLY_TAXI_TRIP_WARNING_THRESHOLD or extra_columns:
         send_quality_warning(
             context,
             dataset="monthly_taxi_trip",
@@ -307,11 +321,12 @@ def validate_bronze_task(result: dict, **context) -> dict:
             extra_columns=extra_columns,
         )
     version_path = silver_version_path(DEFAULT_SILVER_DIR, result)
+    silver_root = version_path.parent.parent
     # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
     return {
         **result,
         "silver_version_path": str(version_path),
-        "silver_partitions_before": existing_silver_partitions(DEFAULT_SILVER_DIR),
+        "silver_partitions_before": existing_silver_partitions(silver_root),
     }
 
 
@@ -323,7 +338,7 @@ def _bronze_quality_result(
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     path, _ = validate_monthly_parquet_bronze(
         result,
-        dataset_dir="hvfhv",
+        dataset_dir="monthly_taxi_trip",
         base_dir=base_dir,
     )
     try:
@@ -344,7 +359,7 @@ def _bronze_quality_result(
     on_failure_callback=slack_failure_callback,
 )
 def validate_silver_task(raw_result: dict, **context) -> None:
-    """BashOperator 라 handler 결과 dict 가 없어, Silver 파티션을 직접 열어서 확인합니다."""
+    """Spark 실행이 만든 Silver 버전 파일을 직접 열어서 확인합니다."""
     if context.get("params", {}).get("dry_run") is True:
         logger.info("dry-run: Spark 내부 검증 완료, Silver 적재 검증을 생략합니다")
         return
@@ -354,13 +369,15 @@ def validate_silver_task(raw_result: dict, **context) -> None:
     )
     bronze_rows = parquet_file(parsed.locations[0]).metadata.num_rows
 
-    version_path = Path(raw_result["silver_version_path"])
-    if not version_path.is_file():
-        raise ValueError(f"Silver 버전 파일이 없습니다: {version_path}")
+    version_path = parse_location(raw_result["silver_version_path"])
 
     expected_schema = SILVER_SCHEMA
     required_columns = list(SILVER_SCHEMA.names)
-    parquet_files = [pq.ParquetFile(version_path)]
+    try:
+        silver_file = parquet_file(version_path)
+    except FileNotFoundError as exc:
+        raise ValueError(f"Silver 버전 파일이 없습니다: {version_path}") from exc
+    parquet_files = [silver_file]
     summary = _silver_quality_summary(parquet_files, required_columns)
     import great_expectations as gx
 
@@ -387,7 +404,7 @@ def validate_silver_task(raw_result: dict, **context) -> None:
     run_gx_validation(
         summary,
         expectations,
-        suite_name="hvfhv_silver_suite",
+        suite_name="monthly_taxi_trip_silver_suite",
         layer="silver",
     )
 
@@ -400,7 +417,7 @@ def validate_silver_task(raw_result: dict, **context) -> None:
     # #165 재발 감시 — 쓰기 전에 있던 파티션이 사라졌는지만 봅니다. 이번에 쓴 달은
     # 당연히 새로 생기므로 비교 대상이 아닙니다.
     before = set(raw_result.get("silver_partitions_before") or [])
-    after = set(existing_silver_partitions(DEFAULT_SILVER_DIR))
+    after = set(existing_silver_partitions(version_path.parent.parent))
     lost = sorted(before - after)
     if lost:
         raise ValueError(

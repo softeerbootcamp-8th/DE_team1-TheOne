@@ -105,7 +105,7 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
     assert path.parent.name == f"year_month={YEAR_MONTH}"
-    assert path.parent.parent.name == "hvfhv"
+    assert path.parent.parent.name == "monthly_taxi_trip"
     assert path.name == "20260820T101530123456Z.parquet"
     assert result["collected_at"] == "2026-08-20T10:15:30.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
@@ -138,8 +138,8 @@ def test_같은월의_원본이_변경되면_수집시각파일을_추가해_이
     assert first_path != second_path
     assert first_path.read_bytes() == CONTENT
     assert second_path.read_bytes() == corrected
-    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 2
-    assert not list((tmp_path / "hvfhv").rglob("*.json"))
+    assert len(list((tmp_path / "monthly_taxi_trip").rglob("*.parquet"))) == 2
+    assert not list((tmp_path / "monthly_taxi_trip").rglob("*.json"))
 
 
 def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_path, monkeypatch):
@@ -153,7 +153,7 @@ def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_
     assert second["collected_at"] == first["collected_at"]
     assert first["source_changed"] is True
     assert second["source_changed"] is False
-    assert len(list((tmp_path / "hvfhv").rglob("*.parquet"))) == 1
+    assert len(list((tmp_path / "monthly_taxi_trip").rglob("*.parquet"))) == 1
 
 
 @pytest.mark.parametrize("content", [b"", b"not parquet"], ids=["empty", "invalid"])

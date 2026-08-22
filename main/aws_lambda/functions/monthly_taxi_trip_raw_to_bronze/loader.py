@@ -1,11 +1,11 @@
-"""HVFHV+taxi_id Parquet을 Bronze에 보존합니다."""
+"""월별 택시 운행 Parquet을 Bronze에 보존합니다."""
 
 from pipeline_core.loader import Loader
 
 from main.aws_lambda.common.monthly_dataset import build_bronze_loader
 from .extractor import DATASET
 
-DATASET_DIR = "hvfhv"
+DATASET_DIR = "monthly_taxi_trip"
 
 
 def build_loader(

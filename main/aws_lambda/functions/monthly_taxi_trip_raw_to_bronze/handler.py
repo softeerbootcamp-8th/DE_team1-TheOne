@@ -1,4 +1,4 @@
-"""HVFHV+taxi_id 데이터를 Bronze에 적재합니다."""
+"""월별 택시 운행 데이터를 Bronze에 적재합니다."""
 
 import json
 import os

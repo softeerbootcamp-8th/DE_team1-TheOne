@@ -43,7 +43,7 @@ DAG_MODULES = {
     "dags.fueleconomy_vehicle_specs_raw_to_silver_dag": (
         "fueleconomy_vehicle_specs_dag"
     ),
-    "dags.hvfhv_raw_to_silver_dag": "hvfhv_dag",
+    "dags.monthly_taxi_trip_raw_to_silver_dag": "monthly_taxi_trip_dag",
     "dags.lyft_eligible_vehicles_raw_to_silver_dag": (
         "lyft_eligible_vehicles_dag"
     ),

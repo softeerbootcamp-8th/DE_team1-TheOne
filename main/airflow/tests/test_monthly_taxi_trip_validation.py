@@ -1,4 +1,4 @@
-"""HVFHV DAG의 경계 검사와 GX 데이터 품질 규칙을 검증합니다.
+"""월별 택시 운행 DAG의 경계 검사와 GX 데이터 품질 규칙을 검증합니다.
 
 Bronze 는 제공된 Parquet 원본의 경로·크기·footer 행 수를 검증합니다.
 Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션을
@@ -9,6 +9,7 @@ Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션
 실제 Parquet 을 tmp_path 에 쓰며 네트워크와 Spark 는 사용하지 않습니다.
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 S3 Bronze 위치는 로컬 Path로 변환하지 않고 객체 바이트로 검증합니다.
+S3 Silver 버전은 Bronze와 같은 버킷의 monthly_taxi_trip prefix로 계산합니다.
 """
 
 import io
@@ -19,11 +20,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
-from dags import hvfhv_raw_to_silver_dag as dag_module
-from main.airflow.scripts.hvfhv_raw_to_silver import tasks as task_module
+from dags import monthly_taxi_trip_raw_to_silver_dag as dag_module
+from main.airflow.scripts.monthly_taxi_trip_raw_to_silver import tasks as task_module
 from shared.airflow.common.slack_quality_warning import build_quality_warning
 
-DAG = dag_module.hvfhv_dag
+DAG = dag_module.monthly_taxi_trip_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 YEAR_MONTH = "2026-07"
 SILVER_SCHEMA = task_module.SILVER_SCHEMA
@@ -73,7 +74,7 @@ def write_bronze(
     records = bronze_rows(rows, schema) if records is None else records
     path = (
         Path(base_dir)
-        / "hvfhv"
+        / "monthly_taxi_trip"
         / f"year_month={year_month}"
         / "20260811T085354000000Z.parquet"
     )
@@ -130,7 +131,7 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
     local_path = write_bronze(tmp_path)
     payload = Path(local_path).read_bytes()
     s3_path = (
-        "s3://de-theone/bronze/hvfhv/year_month=2026-07/"
+        "s3://de-theone/bronze/monthly_taxi_trip/year_month=2026-07/"
         "20260811T085354000000Z.parquet"
     )
     result = result_for(local_path)
@@ -151,6 +152,28 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
     )
 
     assert summary.at[0, "row_count"] == 3
+
+
+def test_S3_Bronze의_Silver버전은_같은버킷의_monthly_taxi_trip경로다():
+    file_name = "20260811T085354000000Z.parquet"
+    result = {
+        "row_count": 3,
+        "year_month": YEAR_MONTH,
+        "locations": [
+            f"s3://de-theone/bronze/monthly_taxi_trip/"
+            f"year_month={YEAR_MONTH}/{file_name}"
+        ],
+    }
+
+    actual = task_module.silver_version_path(
+        task_module.DEFAULT_SILVER_DIR,
+        result,
+    )
+
+    assert str(actual) == (
+        f"s3://de-theone/silver/monthly_taxi_trip/"
+        f"year_month={YEAR_MONTH}/{file_name}"
+    )
 
 
 def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_path, monkeypatch):
@@ -206,7 +229,7 @@ def test_필수컬럼보다_컬럼이_많으면_경고후_통과한다(tmp_path,
 
 
 def test_파일이_없으면_막는다(tmp_path):
-    missing = tmp_path / "hvfhv" / f"year_month={YEAR_MONTH}" / "missing.parquet"
+    missing = tmp_path / "monthly_taxi_trip" / f"year_month={YEAR_MONTH}" / "missing.parquet"
     result = {
         "row_count": 1,
         "locations": [str(missing)],
