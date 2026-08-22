@@ -125,6 +125,16 @@ def main() -> int:
             continue
         sources = copy_sources(dockerfile)
 
+        # 없는 경로를 COPY 하면 `docker build` 가 "not found" 로 죽습니다. 이미지를
+        # 굽기 전에 여기서 잡습니다 — 빌드는 몇 분, 이 검사는 즉시입니다.
+        absent = sorted(s for s in sources if not (root / s).exists())
+        status = "ok  " if not absent else "FAIL"
+        print(f"{status} {target['dockerfile']} COPY 대상 존재")
+        if absent:
+            for path in absent:
+                print(f"       COPY 하는데 저장소에 없음: {path}")
+            failures.append(f"{target['dockerfile']} COPY 대상 존재")
+
         for label, patterns in (
             ("ci.yml", ci_filter_paths(root / ".github/workflows/ci.yml", target["ci_filter"])),
             (target["deploy_workflow"], deploy_paths(root / target["deploy_workflow"])),

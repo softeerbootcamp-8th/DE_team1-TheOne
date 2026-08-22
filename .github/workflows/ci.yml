@@ -52,6 +52,7 @@ jobs:
               - 'main/airflow/**'
               - 'main/aws_lambda/__init__.py'
               - 'main/aws_lambda/common/**'
+              - 'main/aws_lambda/functions/**'
               - 'main/spark/**'
               - 'sub/__init__.py'
               - 'sub/airflow/**'

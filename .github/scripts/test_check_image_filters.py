@@ -64,3 +64,21 @@ def test_실제_저장소가_통과한다():
     )
 
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_없는_경로를_COPY_하면_잡는다(tmp_path):
+    """`docker build` 가 "not found" 로 죽기 전에 잡아야 합니다.
+
+    실제로 `main/aws_lambda/__init__.py` 를 COPY 에 적었다가 CI 이미지 빌드가
+    깨졌습니다(#761). 그 파일은 암묵 namespace package 라 존재하지 않습니다.
+    """
+    import subprocess
+
+    dockerfile = tmp_path / "shared" / "airflow" / "Dockerfile"
+    dockerfile.parent.mkdir(parents=True)
+    dockerfile.write_text("FROM scratch\nCOPY main/nonexistent.py /opt/x/\n")
+
+    sources = copy_sources(dockerfile)
+    absent = [s for s in sources if not (tmp_path / s).exists()]
+
+    assert absent == ["main/nonexistent.py"]

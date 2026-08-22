@@ -45,12 +45,14 @@ COPY --chown=airflow:root shared/__init__.py /opt/airflow/project-root/shared/__
 COPY --chown=airflow:root shared/airflow/ /opt/airflow/project-root/shared/airflow/
 COPY --chown=airflow:root shared/common/ /opt/airflow/project-root/shared/common/
 
-# in-process 로 부르는 lambda 핸들러. main 쪽은 common 만 쓰고(handler 는 안 부릅니다),
-# sub 쪽은 functions.* 를 importlib 로 직접 부릅니다.
-# main/aws_lambda/functions/ 를 넣지 않는 것이 핵심입니다 — 넣으면 Lambda 함수 코드만
-# 고친 머지에도 이 이미지가 바뀌어 airflow 가 재배포됩니다.
-COPY --chown=airflow:root main/aws_lambda/__init__.py /opt/airflow/project-root/main/aws_lambda/__init__.py
+# in-process 로 부르는 lambda 핸들러. DAG 가 importlib 로 직접 부릅니다 —
+# main.aws_lambda.functions.{eia_*, lease_vehicle_inventory_*, driver_vehicle_monthly_*},
+# sub.aws_lambda.functions.*. 그래서 functions/ 도 담아야 합니다.
+#
+# `main/aws_lambda` 에는 `__init__.py` 가 없습니다(암묵 namespace package). 없는 파일을
+# COPY 하면 빌드가 죽으므로 적지 않습니다 — `main/__init__.py` 만 있으면 됩니다.
 COPY --chown=airflow:root main/aws_lambda/common/ /opt/airflow/project-root/main/aws_lambda/common/
+COPY --chown=airflow:root main/aws_lambda/functions/ /opt/airflow/project-root/main/aws_lambda/functions/
 COPY --chown=airflow:root sub/aws_lambda/ /opt/airflow/project-root/sub/aws_lambda/
 COPY --chown=airflow:root shared/aws_lambda/ /opt/airflow/project-root/shared/aws_lambda/
 
