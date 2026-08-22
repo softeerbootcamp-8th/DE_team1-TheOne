@@ -98,6 +98,8 @@ def prepare_monthly_state(
     snapshot_date: date,
     config: GenerationConfig,
     vehicle_master_path: str | Path,
+    storage: str = "local",
+    bucket: str | None = None,
 ) -> MonthlyStatePaths:
     """전월 체크포인트를 한 달 진화시켜 완결된 디렉터리로 원자적으로 공개합니다."""
     if snapshot_date.day != 1:
@@ -113,7 +115,9 @@ def prepare_monthly_state(
     run = RunContext.create(target_month, config)
 
     prev_current, prev_events, prev_noise, prev_month, prev_run_id = (
-        checkpoint.resolve_previous_checkpoint(checkpoint_dir, run)
+        checkpoint.resolve_previous_checkpoint(
+            checkpoint_dir, run, storage=storage, bucket=bucket
+        )
     )
     vehicle_pool = adapters.vehicle_pool_from_silver(pd.read_parquet(vehicle_master_path))
     trip_pool = load_bootstrap_pools(
@@ -146,6 +150,8 @@ def prepare_monthly_state(
         previous_month_value=prev_month,
         previous_run_id=prev_run_id,
         clip_rate=result.clip_rate,
+        storage=storage,
+        bucket=bucket,
     )
 
     preferences = adapters.to_driver_preferences(result.profiles)
