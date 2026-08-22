@@ -221,4 +221,10 @@ def validate_inputs_task(**context) -> dict:
 @task(task_id="validate_gold")
 def validate_gold_task(**context) -> None:
     resolved = context["task_instance"].xcom_pull(task_ids="validate_inputs")
+    if context["params"].get("dry_run") is True:
+        logger.info(
+            "dry-run: Spark 내부 Gold 검증 완료, 적재 검증을 생략합니다: year_month=%s",
+            resolved["year_month"],
+        )
+        return
     validate_gold_outputs(context["params"]["output_dir"], resolved["year_month"])

@@ -14,19 +14,29 @@ configure_lambda_logging()
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
     event = event or {}
+    dry_run = event.get("dry_run", False)
+    if not isinstance(dry_run, bool):
+        raise ValueError("dry_run은 boolean이어야 합니다.")
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     collected_date = datetime.now(timezone.utc).date()
 
-    result = Pipeline(
-        EiaGasPriceExtractor(),
-        build_bronze_loader(storage, base_dir, collected_date, bucket=bucket),
-    ).run()
+    loader = build_bronze_loader(
+        storage,
+        base_dir,
+        collected_date,
+        bucket=bucket,
+        dry_run=dry_run,
+    )
+    result = Pipeline(EiaGasPriceExtractor(), loader).run()
 
-    return {
+    response = {
         "row_count": result.write_result.row_count,
         "locations": [result.write_result.location],
         "collected_date": collected_date.isoformat(),
         "source_url": EiaGasPriceExtractor.name.split(":", 1)[1],
     }
+    if dry_run:
+        response.update(dry_run=True, byte_count=loader.byte_count)
+    return response

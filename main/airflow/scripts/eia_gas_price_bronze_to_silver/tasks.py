@@ -15,6 +15,7 @@ from pathlib import Path
 
 from airflow.sdk import task
 
+from main.airflow.common.dry_run import configure_dry_run_event
 from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
@@ -117,12 +118,14 @@ def bronze_to_silver_task(**context) -> dict:
     year_month = resolve_year_month(context)
     logger.info("EIA 휘발유 단가 대상 월: %s", year_month)
 
+    event = {
+        "year_month": year_month,
+        "bronze_dir": params["bronze_dir"],
+        "silver_dir": params["silver_dir"],
+    }
+    configure_dry_run_event(event, params)
     result = lambda_handler_for("eia_gas_price_bronze_to_silver")(
-        event={
-            "year_month": year_month,
-            "bronze_dir": params["bronze_dir"],
-            "silver_dir": params["silver_dir"],
-        }
+        event=event
     )
     return {"year_month": year_month, **result}
 
@@ -130,4 +133,13 @@ def bronze_to_silver_task(**context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="bronze_to_silver")
+    if context["params"].get("dry_run") is True:
+        if result.get("dry_run") is not True:
+            raise ValueError("EIA 휘발유 Silver dry-run 결과 표시가 없습니다")
+        parse_handler_result(
+            result,
+            expected_locations=1,
+            expected_rows=month_day_count(result["year_month"]),
+        )
+        return
     validate_silver(result)

@@ -30,12 +30,20 @@ class LeaseVehicleInventorySilverLoader(Loader):
     새 수집 시각은 새 파일로 보존하고 같은 수집본 재시도는 동일 파일만 교체합니다.
     """
 
-    def __init__(self, base_dir: str, year_month: str, file_name: str):
+    def __init__(
+        self,
+        base_dir: str,
+        year_month: str,
+        file_name: str,
+        *,
+        dry_run: bool = False,
+    ):
         if not TIMESTAMP_FILE_PATTERN.fullmatch(file_name):
             raise ValueError("silver_file_name이 수집 시각 Parquet 형식이 아닙니다")
         self._base_dir = Path(base_dir)
         self._year_month = year_month
         self._file_name = file_name
+        self._dry_run = dry_run
         self.path: Path | None = None
 
     def write(self, data: pa.Table) -> WriteResult:
@@ -46,6 +54,10 @@ class LeaseVehicleInventorySilverLoader(Loader):
             / f"year_month={self._year_month}"
             / self._file_name
         )
+        if self._dry_run:
+            self.path = path
+            logger.info("dry_run: Silver 적재 생략 path=%s rows=%d", path, data.num_rows)
+            return WriteResult(location=str(path), row_count=data.num_rows)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
             path,
@@ -64,13 +76,19 @@ class LeaseVehicleInventoryS3SilverLoader(Loader):
     """
 
     def __init__(
-        self, year_month: str, file_name: str, bucket: str | None = None
+        self,
+        year_month: str,
+        file_name: str,
+        bucket: str | None = None,
+        *,
+        dry_run: bool = False,
     ):
         if not TIMESTAMP_FILE_PATTERN.fullmatch(file_name):
             raise ValueError("silver_file_name이 수집 시각 Parquet 형식이 아닙니다")
         self._year_month = year_month
         self._file_name = file_name
         self._bucket = bucket
+        self._dry_run = dry_run
 
     def write(self, data: pa.Table) -> WriteResult:
         if data.schema != SCHEMA:
@@ -79,7 +97,9 @@ class LeaseVehicleInventoryS3SilverLoader(Loader):
         pq.write_table(data, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month, self._file_name), bucket=self._bucket
+            key=silver_key(self._year_month, self._file_name),
+            bucket=self._bucket,
+            dry_run=self._dry_run,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=data.num_rows)
         )
@@ -95,11 +115,15 @@ def build_silver_loader(
     bucket: str | None,
     year_month: str,
     file_name: str,
+    *,
+    dry_run: bool = False,
 ) -> Loader:
     if storage == "local":
-        return LeaseVehicleInventorySilverLoader(base_dir, year_month, file_name)
+        return LeaseVehicleInventorySilverLoader(
+            base_dir, year_month, file_name, dry_run=dry_run
+        )
     if storage == "s3":
         return LeaseVehicleInventoryS3SilverLoader(
-            year_month, file_name, bucket=bucket
+            year_month, file_name, bucket=bucket, dry_run=dry_run
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

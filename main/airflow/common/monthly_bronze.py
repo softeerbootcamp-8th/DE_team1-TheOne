@@ -9,6 +9,7 @@ from shared.airflow.common.validation import (
     location_size,
     parquet_file,
     parse_handler_result,
+    parse_location,
     parse_year_month,
     require_file,
 )
@@ -17,14 +18,20 @@ from shared.airflow.common.validation import (
 TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 
-def silver_version_path(base_dir: str | Path, result: dict) -> Path:
+def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location:
     """Bronze 수집 시각 파일명을 그대로 쓰는 Silver 버전 경로입니다."""
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
     file_name = parsed.locations[0].name
     if not TIMESTAMP_FILE_PATTERN.fullmatch(file_name):
         raise ValueError(f"Bronze 파일명이 수집 시각 형식이 아닙니다: {file_name}")
-    return Path(base_dir) / f"year_month={year_month}" / file_name
+    base = parse_location(str(base_dir))
+    if isinstance(base, S3Location):
+        return S3Location(
+            base.bucket,
+            f"{base.key.rstrip('/')}/year_month={year_month}/{file_name}",
+        )
+    return base / f"year_month={year_month}" / file_name
 
 
 def validate_monthly_parquet_bronze(

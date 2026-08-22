@@ -163,11 +163,14 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
         result["changed"],
         result["etag"],
     )
-    return result if result["changed"] else False
+    return result if params.get("dry_run") or result["changed"] else False
 
 
 @task(task_id="mark_processed")
-def mark_processed_task(result: dict) -> None:
+def mark_processed_task(result: dict, **context) -> None:
+    if (context.get("params") or {}).get("dry_run"):
+        logger.info("dry-run: 원천 처리 상태를 기록하지 않습니다: %s", result["dataset"])
+        return
     Variable.set(
         f"{STATE_KEY_PREFIX}{result['dataset']}",
         {
@@ -186,6 +189,10 @@ def mark_processed_task(result: dict) -> None:
     trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
 )
 def publish_api_refresh_ready_task(check_task_ids: list[str], **context) -> None:
+    if (context.get("params") or {}).get("dry_run"):
+        assets.disable_outlets_for_dry_run(context)
+        logger.info("dry-run: API Silver 준비 Asset을 발행하지 않습니다")
+        return
     results = context["task_instance"].xcom_pull(task_ids=check_task_ids)
     year_months = {
         result["year_month"]
