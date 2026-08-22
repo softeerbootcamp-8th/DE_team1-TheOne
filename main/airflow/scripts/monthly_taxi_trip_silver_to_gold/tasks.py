@@ -217,8 +217,13 @@ def days_since_last_success(prev_end_date_success, now: datetime) -> int | None:
     staleness 알림은 best-effort입니다 — 운영에서 prev_end_date_success/now 중
     하나가 예상과 달리 None이라 TypeError로 validate_inputs 전체가 죽는 사고가
     실제로 있었습니다. 원인 불문하고 여기서 막습니다.
+
+    `prev_end_date_success`는 `is None`으로 못 거릅니다 — Airflow 3 TaskSDK가
+    이전 성공 DagRun이 없을 때도 `None`을 감싼 `lazy_object_proxy.Proxy`를 주고,
+    Proxy 객체 자체는 `None`이 아니라서 identity 비교가 항상 실패합니다.
+    truthiness(`bool()`)는 Proxy가 감싼 값까지 확인하므로 이걸로 걸러냅니다.
     """
-    if prev_end_date_success is None or now is None:
+    if not prev_end_date_success or now is None:
         return None
     try:
         return (now - prev_end_date_success).days

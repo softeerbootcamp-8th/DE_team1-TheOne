@@ -354,11 +354,30 @@ def test_now가_None이면_경과일은_None이다():
     assert dag_module.days_since_last_success(_logical_date(2026, 7), None) is None
 
 
-def test_경과일_계산이_실패해도_예외없이_None을_반환한다():
+def test_경과일_계산이_실패해도_예외없이_None을_반환한다(caplog):
     class Unsubtractable:
         pass
 
-    assert dag_module.days_since_last_success(Unsubtractable(), _logical_date(2026, 8)) is None
+    with caplog.at_level("WARNING"):
+        result = dag_module.days_since_last_success(Unsubtractable(), _logical_date(2026, 8))
+
+    assert result is None
+    assert "계산 실패" in caplog.text
+
+
+def test_이전_성공_DagRun이_없으면_Proxy로_감싸져도_경고없이_None이다(caplog):
+    """Airflow 3 TaskSDK는 이전 성공이 없어도 plain None이 아니라 None을 감싼
+    lazy_object_proxy.Proxy를 준다(`airflow/sdk/execution_time/task_runner.py`).
+    `is None` 검사가 이걸 못 걸러 매 첫 실행마다 TypeError 경고가 났었다(#760)."""
+    import lazy_object_proxy
+
+    proxy_wrapping_none = lazy_object_proxy.Proxy(lambda: None)
+
+    with caplog.at_level("WARNING"):
+        result = dag_module.days_since_last_success(proxy_wrapping_none, _logical_date(2026, 8))
+
+    assert result is None
+    assert "계산 실패" not in caplog.text
 
 
 def test_SLA기준일은_Param이_있으면_Variable을_보지_않는다(monkeypatch):
