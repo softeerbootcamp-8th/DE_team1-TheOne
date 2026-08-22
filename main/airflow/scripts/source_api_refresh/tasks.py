@@ -163,14 +163,11 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
         result["changed"],
         result["etag"],
     )
-    return result if params.get("dry_run") or result["changed"] else False
+    return result if result["changed"] else False
 
 
 @task(task_id="mark_processed")
-def mark_processed_task(result: dict, **context) -> None:
-    if (context.get("params") or {}).get("dry_run"):
-        logger.info("dry-run: 원천 처리 상태를 기록하지 않습니다: %s", result["dataset"])
-        return
+def mark_processed_task(result: dict) -> None:
     Variable.set(
         f"{STATE_KEY_PREFIX}{result['dataset']}",
         {
@@ -189,17 +186,15 @@ def mark_processed_task(result: dict, **context) -> None:
     trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
 )
 def publish_api_refresh_ready_task(check_task_ids: list[str], **context) -> None:
-    dry_run = (context.get("params") or {}).get("dry_run") is True
     results = context["task_instance"].xcom_pull(task_ids=check_task_ids)
     year_months = {
         result["year_month"]
         for result in results
-        if isinstance(result, dict) and (dry_run or result.get("changed"))
+        if isinstance(result, dict) and result.get("changed")
     }
     for year_month in year_months:
         assets.publish_month_partition(
             context.get("outlet_events"),
             assets.API_SILVER_REFRESH_READY,
             year_month,
-            dry_run=dry_run,
         )
