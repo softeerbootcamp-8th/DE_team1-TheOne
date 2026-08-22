@@ -47,30 +47,53 @@ jobs:
         with:
           filters: |
             airflow:
-              - 'main/airflow/pyproject.toml'
-              - 'main/airflow/uv.lock'
-              - 'main/airflow/dags/**'
-              - 'main/airflow/scripts/**'
+              # `.github/scripts/check_image_filters.py` 가 Dockerfile COPY 와 대조합니다.
+              - 'main/__init__.py'
+              - 'main/airflow/**'
+              - 'main/aws_lambda/__init__.py'
+              - 'main/aws_lambda/common/**'
+              - 'main/aws_lambda/functions/**'
+              - 'main/spark/**'
+              - 'sub/__init__.py'
               - 'sub/airflow/**'
+              - 'sub/generators/**'
+              - 'sub/aws_lambda/**'
+              - 'sub/spark/**'
+              - 'sub/config.py'
+              - 'sub/run_context.py'
+              - 'sub/seeds.py'
+              - 'shared/__init__.py'
               - 'shared/airflow/**'
+              - 'shared/common/**'
+              - 'shared/aws_lambda/**'
+              - 'shared/spark/**'
               - 'schema/**'
               - 'libs/pipeline_core/**'
-              # 생성 파라미터의 값 소유자. 이미지에 들어가므로 바뀌면 다시 구워야 합니다.
               - 'config/**'
               - 'Makefile'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
             spark:
+              # `.github/scripts/check_image_filters.py` 가 Dockerfile COPY 와 대조합니다.
               - 'main/spark/pyproject.toml'
               - 'main/spark/uv.lock'
               - 'sub/spark/**'
               - 'shared/spark/**'
               - 'shared/common/**'
               - 'libs/pipeline_core/**'
-              # 생성 파라미터의 값 소유자. 이미지에 들어가므로 바뀌면 다시 구워야 합니다.
               - 'config/**'
               - 'Makefile'
               - '.dockerignore'
+              - 'main/__init__.py'
+              - 'main/spark/__init__.py'
+              - 'main/spark/jobs/**'
+              - 'sub/__init__.py'
+              - 'sub/generators/**'
+              - 'sub/config.py'
+              - 'sub/run_context.py'
+              - 'sub/seeds.py'
+              - 'shared/__init__.py'
+              - 'schema/**'
               - '.github/workflows/ci.yml'
             aws_lambda:
               - 'main/aws_lambda/pyproject.toml'
@@ -186,6 +209,27 @@ jobs:
         run: |
           python .github/scripts/select_tests.py \
             --base "$BASE_SHA" --head "$HEAD_SHA" --run --only "${{ matrix.project }}"
+
+  # Dockerfile 의 COPY 와 워크플로 paths 필터가 어긋나면 막습니다. 어긋나면 코드가
+  # 바뀌었는데 이미지 빌드·배포가 조용히 스킵됩니다 — #653·#732·#739 가 그 사례입니다.
+  # 이미지를 굽지 않고 목록만 대조하므로 몇 초면 끝납니다.
+  image-filters:
+    name: 이미지 필터 정합성
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dockerfile COPY 와 필터 대조
+        run: |
+          python -m pip install --quiet pyyaml
+          python .github/scripts/check_image_filters.py
+
+      - name: 실패 시 안내
+        if: failure()
+        run: |
+          echo "::error::Dockerfile COPY 와 워크플로 필터가 어긋났습니다."
+          echo "로컬에서 같은 검사를 돌릴 수 있습니다:"
+          echo "  python3 .github/scripts/check_image_filters.py"
 
   # 푸시하지 않고 빌드만 합니다. Dockerfile 이 깨진 PR 을 여기서 막는 게 목적입니다.
   # 세 빌드는 서로 의존이 없어서 런타임별로 러너를 나눠 씁니다 — 벽시계 시간이

@@ -29,6 +29,7 @@ on:
     paths:
       - 'main/spark/pyproject.toml'
       - 'main/spark/uv.lock'
+      - 'main/spark/__init__.py'
       - 'main/spark/jobs/**'
       - 'main/__init__.py'
       - 'sub/__init__.py'

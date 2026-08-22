@@ -31,16 +31,28 @@ on:
     branches: [develop]
     # ci.yml 의 airflow 필터와 같아야 합니다. 빠지면 코드가 바뀌었는데 배포가 스킵됩니다.
     paths:
+      # `.github/scripts/check_image_filters.py` 가 Dockerfile COPY 와 대조합니다.
+      - 'main/__init__.py'
       - 'main/airflow/**'
+      - 'main/aws_lambda/__init__.py'
+      - 'main/aws_lambda/common/**'
+      - 'main/aws_lambda/functions/**'
+      - 'main/spark/**'
+      - 'sub/__init__.py'
       - 'sub/airflow/**'
+      - 'sub/generators/**'
+      - 'sub/aws_lambda/**'
+      - 'sub/spark/**'
+      - 'sub/config.py'
+      - 'sub/run_context.py'
+      - 'sub/seeds.py'
+      - 'shared/__init__.py'
       - 'shared/airflow/**'
-      # aws_lambda 는 넣지 않습니다. 이미지가 COPY 하긴 하지만, Lambda 코드만 고친
-      # 머지에도 배포가 돌면 컨테이너가 재생성되며 실행 중인 DAG 이 끊깁니다.
-      # 그 코드는 다음 airflow 배포에 따라옵니다.
+      - 'shared/common/**'
+      - 'shared/aws_lambda/**'
+      - 'shared/spark/**'
       - 'schema/**'
       - 'libs/pipeline_core/**'
-      # 이미지가 COPY 하는 생성 파라미터. 값이 바뀌면 다시 굽고 배포해야
-      # EC2·EMR 이 새 값으로 돕니다.
       - 'config/**'
       - 'Makefile'
       - '.dockerignore'
