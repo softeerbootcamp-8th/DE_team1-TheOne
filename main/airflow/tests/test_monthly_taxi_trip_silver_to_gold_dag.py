@@ -9,11 +9,15 @@
 7. Gold 검증 성공 태스크에만 Slack 완료 알림 연결
 8. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 9. API Silver는 최신 collected_at 파일만 선택
-10. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
+10. Asset skip 시 Slack skip 알림을 직접 호출
+11. SLA 기준일 초과 시 Slack staleness 경고, 기준 이내면 조용히 통과
+12. SLA 기준일은 Param이 우선, 없으면 Variable, 그마저 없으면 기본값 31
+13. 경과일 계산에 실패해도(now가 None이거나 뺄셈이 안 되는 값) 예외 없이 None
+14. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
 """
 
 import importlib
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -123,6 +127,7 @@ def test_검증된_월이_Asset_파티션키로_기록된다():
     class Recorder:
         def __init__(self):
             self.keys = set()
+            self.extra = {}
 
         def add_partitions(self, keys):
             self.keys.add(keys)
@@ -133,6 +138,7 @@ def test_검증된_월이_Asset_파티션키로_기록된다():
     assets.publish_month_partition(events, assets.FUEL_PRICE_SILVER, "2026-05")
 
     assert recorder.keys == {"2026-05"}
+    assert recorder.extra == {"dry_run": False}
 
 
 def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path):
@@ -227,6 +233,40 @@ def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp
         )
 
 
+def test_skip시_Slack_skip_알림을_직접_호출한다(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        dag_module, "slack_skip_alert_callback", lambda context: calls.append(context)
+    )
+    dag_run = type("DagRun", (), {"partition_key": "2026-05"})()
+
+    with pytest.raises(AirflowSkipException):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path),
+            logical_date=_logical_date(2026, 5),
+            dag_run=dag_run,
+        )
+
+    assert len(calls) == 1
+    assert isinstance(calls[0]["exception"], FileNotFoundError)
+
+
+def test_정상실행에서는_Slack_skip_알림을_호출하지_않는다(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        dag_module, "slack_skip_alert_callback", lambda context: calls.append(context)
+    )
+    _write_inputs(tmp_path, "2026-05")
+
+    dag_module.validate_inputs_task.function(
+        params=_params(tmp_path),
+        logical_date=_logical_date(2026, 5),
+        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+    )
+
+    assert calls == []
+
+
 def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
     with pytest.raises(FileNotFoundError, match="월별 택시 운행 기록 Silver"):
         dag_module.validate_inputs_task.function(
@@ -296,6 +336,124 @@ def test_Gold_산출물이_계약을_어기면_실패한다(tmp_path, violation,
 
     with pytest.raises((FileNotFoundError, ValueError), match=expected):
         dag_module.validate_gold_outputs(str(tmp_path), "2026-05")
+
+
+# --- staleness SLA ------------------------------------------------------------
+
+
+def test_직전성공기록이_없으면_경과일은_None이다():
+    assert dag_module.days_since_last_success(None, _logical_date(2026, 8)) is None
+
+
+def test_경과일은_직전성공_이후_일수다():
+    prev = _logical_date(2026, 7)
+    now = prev + timedelta(days=40)
+
+    assert dag_module.days_since_last_success(prev, now) == 40
+
+
+def test_now가_None이면_경과일은_None이다():
+    assert dag_module.days_since_last_success(_logical_date(2026, 7), None) is None
+
+
+def test_경과일_계산이_실패해도_예외없이_None을_반환한다(caplog):
+    class Unsubtractable:
+        pass
+
+    with caplog.at_level("WARNING"):
+        result = dag_module.days_since_last_success(Unsubtractable(), _logical_date(2026, 8))
+
+    assert result is None
+    assert "계산 실패" in caplog.text
+
+
+def test_이전_성공_DagRun이_없으면_Proxy로_감싸져도_경고없이_None이다(caplog):
+    """Airflow 3 TaskSDK는 이전 성공이 없어도 plain None이 아니라 None을 감싼
+    lazy_object_proxy.Proxy를 준다(`airflow/sdk/execution_time/task_runner.py`).
+    `is None` 검사가 이걸 못 걸러 매 첫 실행마다 TypeError 경고가 났었다(#760)."""
+    import lazy_object_proxy
+
+    proxy_wrapping_none = lazy_object_proxy.Proxy(lambda: None)
+
+    with caplog.at_level("WARNING"):
+        result = dag_module.days_since_last_success(proxy_wrapping_none, _logical_date(2026, 8))
+
+    assert result is None
+    assert "계산 실패" not in caplog.text
+
+
+def test_SLA기준일은_Param이_있으면_Variable을_보지_않는다(monkeypatch):
+    monkeypatch.setattr(
+        dag_module.Variable,
+        "get",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Variable을 조회하면 안 됩니다")),
+    )
+
+    assert dag_module.resolve_stale_sla_days({"gold_stale_sla_days": 10}) == 10
+
+
+def test_SLA기준일은_Param이_없으면_Variable값을_쓴다(monkeypatch):
+    monkeypatch.setattr(
+        dag_module.Variable, "get", lambda key, default=None: 45
+    )
+
+    assert dag_module.resolve_stale_sla_days({"gold_stale_sla_days": None}) == 45
+
+
+def test_SLA기준일은_Variable도_없으면_기본값_31이다(monkeypatch):
+    def fake_get(key, default=None):
+        return default  # 실제 Variable.get의 "미설정 시 default 반환" 동작
+
+    monkeypatch.setattr(dag_module.Variable, "get", fake_get)
+
+    assert dag_module.resolve_stale_sla_days({}) == dag_module.DEFAULT_STALE_SLA_DAYS
+    assert dag_module.DEFAULT_STALE_SLA_DAYS == 31
+
+
+def test_SLA기준일은_Variable조회_실패시에도_기본값으로_내려간다(monkeypatch):
+    def raising_get(*args, **kwargs):
+        raise RuntimeError("실행 컨텍스트 밖")
+
+    monkeypatch.setattr(dag_module.Variable, "get", raising_get)
+
+    assert dag_module.resolve_stale_sla_days({}) == dag_module.DEFAULT_STALE_SLA_DAYS
+
+
+def test_SLA초과시_staleness_Slack알림을_보낸다(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        dag_module, "slack_stale_alert_callback", lambda context: calls.append(context)
+    )
+    _write_inputs(tmp_path, "2026-05")
+    prev_success = datetime.now(timezone.utc) - timedelta(days=40)
+
+    dag_module.validate_inputs_task.function(
+        params=_params(tmp_path, gold_stale_sla_days=10),
+        logical_date=_logical_date(2026, 5),
+        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+        prev_end_date_success=prev_success,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["stale_days"] == 10
+    assert calls[0]["days_since_success"] > 10
+
+
+def test_SLA이내면_staleness_Slack알림을_보내지_않는다(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        dag_module, "slack_stale_alert_callback", lambda context: calls.append(context)
+    )
+    _write_inputs(tmp_path, "2026-05")
+
+    dag_module.validate_inputs_task.function(
+        params=_params(tmp_path, gold_stale_sla_days=31),
+        logical_date=_logical_date(2026, 5),
+        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+        prev_end_date_success=datetime.now(timezone.utc) - timedelta(days=1),
+    )
+
+    assert calls == []
 
 
 # --- 최초완료/재트리거 판정 ----------------------------------------------------

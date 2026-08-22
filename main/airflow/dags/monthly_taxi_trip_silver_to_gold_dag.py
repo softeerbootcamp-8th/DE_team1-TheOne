@@ -16,6 +16,7 @@ from shared.airflow.common.slack_failure_callback import (
 )
 from main.airflow.scripts.monthly_taxi_trip_silver_to_gold.tasks import (
     DEFAULT_PATHS,
+    DEFAULT_STALE_SLA_DAYS,
     ROOT,
     validate_gold_task,
     validate_inputs_task,
@@ -55,7 +56,8 @@ def _local_build_gold() -> BashOperator:
         + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
         + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
         + f"--is_rerun {{{{ 'true' if {is_rerun} else 'false' }}}} "
-        + "{% if params.dry_run %}--dry-run{% endif %}"
+        + "{% if task_instance.xcom_pull(task_ids='validate_inputs')['dry_run'] %}"
+        + "--dry-run{% endif %}"
     )
     return BashOperator(
         task_id="build_gold",
@@ -95,7 +97,10 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
         task_id="build_gold",
         application_id=application_id,
         execution_role_arn=execution_role_arn,
-        name="silver-to-gold-{{ ds_nodash }}",
+        # ds_nodash는 logical_date 기반이라 이 DAG의 Asset 트리거 실행에서 비어
+        # 있을 수 있습니다(#746 배포 중 실제로 UndefinedError 확인). run_id는
+        # 트리거 방식과 무관하게 항상 있습니다.
+        name="silver-to-gold-{{ run_id }}",
         job_driver={
             "sparkSubmit": {
                 "entryPoint": EMR_ENTRY_POINT,
@@ -110,7 +115,8 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     # entryPointArguments 는 셸이 아니라 JSON 리스트라 빈 문자열도
                     # 그대로 하나의 인자로 전달됩니다 — 로컬처럼 Jinja if 로 토큰
                     # 자체를 없앨 수 없어 --dry-run 에 값을 항상 명시적으로 줍니다.
-                    "--dry-run", "{{ 'true' if params.dry_run else 'false' }}",
+                    "--dry-run",
+                    f"{{{{ 'true' if {xcom}['dry_run'] else 'false' }}}}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }
@@ -162,6 +168,19 @@ def _build_gold_operator():
         # (근거: docs/METRICS.md - 4. 추천 기준선)
         "threshold_profit_increase": Param(600.0, type="number"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
+        # 비우면 Variable(gold_stale_sla_days) 또는 기본값을 씁니다 — 절대 날짜가
+        # 아니라 상대 기준을 쓰는 이유는 tasks.resolve_stale_sla_days 참고.
+        "gold_stale_sla_days": Param(
+            None,
+            type=["integer", "null"],
+            description=(
+                "직전 Gold 성공 완료 이후 이 일수를 넘기면 Slack에 staleness 경고를 "
+                f"보냅니다. 비우면 Variable(gold_stale_sla_days) 또는 기본값 "
+                f"{DEFAULT_STALE_SLA_DAYS}을 씁니다."
+            ),
+        ),
+        # 계약 테스트(test_dry_run_contract.py)가 dry_run이 마지막 파라미터임을
+        # 검증합니다 — 새 파라미터는 이 줄보다 위에 추가하세요.
         "dry_run": Param(
             False,
             type="boolean",
