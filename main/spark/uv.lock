@@ -558,6 +558,7 @@ dependencies = [
     { name = "requests" },
     { name = "scipy" },
     { name = "shapely" },
+    { name = "tzdata" },
 ]
 
 [package.dev-dependencies]
@@ -579,6 +580,7 @@ requires-dist = [
     { name = "requests", specifier = "==2.34.2" },
     { name = "scipy", specifier = "==1.17.1" },
     { name = "shapely", specifier = "==2.1.2" },
+    { name = "tzdata", specifier = "==2026.3" },
 ]
 
 [package.metadata.requires-dev]

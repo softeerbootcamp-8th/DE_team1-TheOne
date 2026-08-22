@@ -26,6 +26,14 @@ dependencies = [
     #   public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest -m pip list --format=freeze).
     "boto3==1.42.78",
     "psycopg2-binary==2.9.10",
+    # 직접 import 하지 않지만 **반드시 있어야** 합니다. pandas 는 tzdata 를
+    # `sys_platform == 'emscripten' or sys_platform == 'win32'` marker 로만
+    # 선언해서, Linux 이미지에서는 pip 이 건너뜁니다. 그러면 파이썬 `zoneinfo` 가
+    # 시스템 `/usr/share/zoneinfo` 를 찾는데 EMR Serverless 베이스 이미지에는 없어
+    # `applyInPandas`(driver_assignment/allocator.py)의 Arrow↔pandas 타임스탬프
+    # 변환이 `ZoneInfoNotFoundError: No time zone found with key UTC` 로 죽습니다.
+    # 여기 직접 적어 marker 없이 설치되게 합니다.
+    "tzdata==2026.3",
 ]
 
 [dependency-groups]
