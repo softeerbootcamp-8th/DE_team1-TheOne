@@ -134,6 +134,9 @@ def inject_css(theme_mode: str | None = None) -> None:
             max-width: 1360px;
         }}
         html, body, [class*="st-"] {{ font-family: {FONT_STACK}; }}
+        /* 위 규칙이 너무 광범위해 Streamlit 아이콘(Material Symbols 리거처)까지
+           우리 폰트로 덮어써서 화살표 등이 글리프 대신 원본 텍스트로 보였다. */
+        [data-testid="stIconMaterial"] {{ font-family: "Material Symbols Rounded" !important; }}
 
         /* ── 지표 타일 ── */
         [data-testid="stMetric"] {{
