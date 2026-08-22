@@ -669,6 +669,7 @@ def build_monthly_report(
     recommendation: DataFrame,
     year_month: str,
     threshold_profit_increase: float,
+    is_rerun: bool,
 ) -> DataFrame:
     """기사·회사 기준을 함께 통과한 추천을 월 1행으로 요약합니다."""
     eligible = recommendation.filter(
@@ -693,6 +694,7 @@ def build_monthly_report(
             F.lit(float(threshold_profit_increase)).alias(
                 "threshold_profit_increase"
             ),
+            F.lit(bool(is_rerun)).alias("is_rerun"),
             "recommended_driver_count",
             "avg_net_profit_increase_per_driver",
             "avg_revenue_increase_per_driver",
