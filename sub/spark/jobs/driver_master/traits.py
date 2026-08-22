@@ -16,6 +16,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from shared.common.s3_reader import (
+    is_s3_uri,
+    list_keys,
+    parse_s3_uri,
+    read_parquet_uri,
+)
+
 logger = logging.getLogger(__name__)
 
 # =============================================================================
@@ -76,6 +83,22 @@ def discover_bootstrap_months(bronze_dir: str) -> list[str]:
     return months
 
 
+def _latest_partition_file(bronze_dir: str, year_month: str) -> str | None:
+    """`year_month=` 파티션의 가장 마지막 Parquet 하나. 없으면 None.
+
+    S3 도 봅니다 — EMR 워커는 컨테이너 로컬 디스크를 못 봅니다. 파일 이름이 수집
+    시각을 담아 정렬이 곧 시간 순이라 마지막 하나를 씁니다(원본 코드와 같은 규칙).
+    """
+    if is_s3_uri(bronze_dir):
+        bucket, key_prefix = parse_s3_uri(bronze_dir.rstrip("/") + "/")
+        prefix = f"{key_prefix}year_month={year_month}/"
+        keys = sorted(k for k in list_keys(bucket, prefix) if k.endswith(".parquet"))
+        return f"s3://{bucket}/{keys[-1]}" if keys else None
+
+    files = sorted(glob.glob(str(Path(bronze_dir) / f"year_month={year_month}" / "*.parquet")))
+    return files[-1] if files else None
+
+
 def load_bootstrap_pools(
     *,
     bronze_dir: str,
@@ -104,12 +127,11 @@ def load_bootstrap_pools(
     time_chunks: list[np.ndarray] = []
 
     for year_month in months:
-        partition_dir = Path(bronze_dir) / f"year_month={year_month}"
-        files = sorted(glob.glob(str(partition_dir / "*.parquet")))
-        if not files:
+        latest = _latest_partition_file(bronze_dir, year_month)
+        if latest is None:
             continue
 
-        df = pd.read_parquet(files[-1], columns=["trip_miles", "trip_time", "driver_pay"])
+        df = read_parquet_uri(latest)[["trip_miles", "trip_time", "driver_pay"]]
         valid = (
             df["trip_miles"].notna() & (df["trip_miles"] > 0) & (df["trip_miles"] <= 1000)
             & df["trip_time"].notna() & (df["trip_time"] > 0) & (df["trip_time"] <= 86400)
