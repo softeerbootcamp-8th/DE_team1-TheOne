@@ -92,6 +92,11 @@ jobs:
             f"echo DASHBOARD_IMAGE={os.environ['IMAGE_URI']} > .env",
             f"echo GOLD_DATABASE_URL={os.environ['GOLD_DATABASE_URL']} >> .env",
             "chown ec2-user:ec2-user docker-compose.dashboard.ec2.yml .env",
+            # 수동 검증 때 `docker run -p 8501:8501`로 띄운 컨테이너가 compose 밖에
+            # 남아있으면 compose가 못 건드려서 "port is already allocated"로 죽습니다
+            # (deploy-server.yml과 같은 문제). 이름과 무관하게 8501을 쥔 컨테이너를
+            # 먼저 정리합니다.
+            "docker ps -q --filter publish=8501 | xargs -r docker rm -f",
             "docker compose -f docker-compose.dashboard.ec2.yml up -d --pull always --force-recreate dashboard",
             # 배포마다 이미지가 쌓여 디스크를 채웁니다. 되돌릴 때는 ECR 에서 다시
             # 받으면 되고 pull 은 1초 내입니다.
