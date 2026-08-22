@@ -3,6 +3,7 @@
 import os
 from datetime import datetime, timedelta
 
+from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
@@ -31,32 +32,108 @@ default_args = {
 }
 
 JOB_ENV = os.getenv("SPARK_JOB_ENV", "local")
+EMR_ENTRY_POINT = "/home/hadoop/main/spark/jobs/silver_to_gold/job.py"
+EMR_SPARK_SUBMIT_PARAMETERS = (
+    "--conf spark.driver.cores=2 --conf spark.driver.memory=6g "
+    "--conf spark.executor.cores=2 --conf spark.executor.memory=6g "
+    "--conf spark.emr-serverless.driverEnv.PYTHONPATH=/home/hadoop "
+    "--conf spark.executorEnv.PYTHONPATH=/home/hadoop"
+)
 
 
-def _build_gold_bash_command() -> str:
+def _required_prod_env(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise ValueError(f"SPARK_JOB_ENV=prod는 {name} 환경변수가 필요합니다")
+    return value
+
+
+def _local_build_gold() -> BashOperator:
     common_tail = (
         "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
         + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
         + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
         + "{% if params.dry_run %}--dry-run{% endif %}"
     )
-    if JOB_ENV == "prod":
-        # Silver 4종의 S3 경로 계산·최신 파티션 선택은 job.py --env prod 가 직접
-        # 합니다 (default_input_base_paths) — 여기서는 대상 연월만 넘깁니다.
-        return f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py --env prod {common_tail}"
-    return (
-        f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py "
-        + "--monthly_taxi_trip_path "
-        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['monthly_taxi_trip_path'] }}\" "
-        + "--driver_vehicle_monthly_snapshot_path "
-        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_vehicle_monthly_snapshot_path'] }}\" "
-        + "--lease_vehicle_inventory_path "
-        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['lease_vehicle_inventory_path'] }}\" "
-        + "--fuel_price_path "
-        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }}\" "
-        + f"{common_tail} "
-        + "--output_dir {{ params.output_dir }}"
+    return BashOperator(
+        task_id="build_gold",
+        bash_command=(
+            f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py "
+            + "--monthly_taxi_trip_path "
+            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['monthly_taxi_trip_path'] }}\" "
+            + "--driver_vehicle_monthly_snapshot_path "
+            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_vehicle_monthly_snapshot_path'] }}\" "
+            + "--lease_vehicle_inventory_path "
+            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['lease_vehicle_inventory_path'] }}\" "
+            + "--fuel_price_path "
+            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }}\" "
+            + f"{common_tail} "
+            + "--output_dir {{ params.output_dir }}"
+        ),
+        # BashOperator 가 띄우는 별도 프로세스는 DAG 파싱 때의 sys.path 를 물려받지
+        # 않습니다. spark/common/io.py 가 pipeline_core 를 import 하므로 그 경로까지
+        # 넣어야 합니다 (#351, 앞서 #328 에서 같은 실수).
+        env={
+            **os.environ,
+            "PYTHONPATH": (
+                f"{ROOT}:{ROOT}/main/spark:{ROOT}/libs/pipeline_core"
+                f":{os.getenv('PYTHONPATH', '')}"
+            ),
+        },
     )
+
+
+def _emr_build_gold() -> EmrServerlessStartJobOperator:
+    application_id = _required_prod_env("EMR_APPLICATION_ID")
+    execution_role_arn = _required_prod_env("EMR_EXECUTION_ROLE_ARN")
+    bucket = _required_prod_env("DATA_LAKE_S3_BUCKET")
+    gold_dsn = _required_prod_env("GOLD_DATABASE_URL")
+    xcom = "task_instance.xcom_pull(task_ids='validate_inputs')"
+    return EmrServerlessStartJobOperator(
+        task_id="build_gold",
+        application_id=application_id,
+        execution_role_arn=execution_role_arn,
+        name="silver-to-gold-{{ ds_nodash }}",
+        job_driver={
+            "sparkSubmit": {
+                "entryPoint": EMR_ENTRY_POINT,
+                "entryPointArguments": [
+                    "--env", "prod",
+                    "--bucket", bucket,
+                    "--gold_dsn", gold_dsn,
+                    "--year", f"{{{{ {xcom}['year'] }}}}",
+                    "--month", f"{{{{ {xcom}['month'] }}}}",
+                    "--threshold_profit_increase", "{{ params.threshold_profit_increase }}",
+                    # entryPointArguments 는 셸이 아니라 JSON 리스트라 빈 문자열도
+                    # 그대로 하나의 인자로 전달됩니다 — 로컬처럼 Jinja if 로 토큰
+                    # 자체를 없앨 수 없어 --dry-run 에 값을 항상 명시적으로 줍니다.
+                    "--dry-run", "{{ 'true' if params.dry_run else 'false' }}",
+                ],
+                "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
+            }
+        },
+        configuration_overrides={
+            "monitoringConfiguration": {
+                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/emr-logs/"}
+            }
+        },
+        aws_conn_id="aws_default",
+        region_name=os.getenv("AWS_DEFAULT_REGION", "ap-northeast-2"),
+        wait_for_completion=True,
+        waiter_delay=60,
+        waiter_max_attempts=180,
+        # aiobotocore를 새로 추가하지 않고 LocalExecutor의 worker가 waiter를 폴링합니다.
+        deferrable=False,
+        execution_timeout=timedelta(hours=3),
+    )
+
+
+def _build_gold_operator():
+    if JOB_ENV == "local":
+        return _local_build_gold()
+    if JOB_ENV == "prod":
+        return _emr_build_gold()
+    raise ValueError(f"알 수 없는 SPARK_JOB_ENV: {JOB_ENV!r}")
 
 
 @dag(
@@ -90,20 +167,7 @@ def _build_gold_bash_command() -> str:
     },
 )
 def monthly_taxi_trip_silver_to_gold_pipeline():
-    build = BashOperator(
-        task_id="build_gold",
-        bash_command=_build_gold_bash_command(),
-        # BashOperator 가 띄우는 별도 프로세스는 DAG 파싱 때의 sys.path 를 물려받지
-        # 않습니다. spark/common/io.py 가 pipeline_core 를 import 하므로 그 경로까지
-        # 넣어야 합니다 (#351, 앞서 #328 에서 같은 실수).
-        env={
-            **os.environ,
-            "PYTHONPATH": (
-                f"{ROOT}:{ROOT}/main/spark:{ROOT}/libs/pipeline_core"
-                f":{os.getenv('PYTHONPATH', '')}"
-            ),
-        },
-    )
+    build = _build_gold_operator()
 
     validate_inputs = validate_inputs_task.override(retries=0)()
     validate_gold = validate_gold_task.override(
