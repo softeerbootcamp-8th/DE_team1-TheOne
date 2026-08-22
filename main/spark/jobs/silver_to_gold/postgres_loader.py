@@ -71,6 +71,40 @@ def _next_version(cursor, year_month: str) -> int:
     return row[0] + 1 if row else 1
 
 
+def _validate_written_rows(
+    cursor,
+    written: dict[str, int],
+    year_month: str,
+    version: int,
+) -> None:
+    """커밋 전에 Gold 3종이 기대한 버전·행 수로 들어갔는지 확인합니다.
+
+    `execute_values` 는 영향받은 행 수를 돌려주지 않아 `written`(itertuples 로 센
+    값)이 실제로 반영됐는지 확인할 방법이 없었습니다. 여기서 실제 저장된 행을
+    다시 세어 대조하고, 여기서 실패하면 트랜잭션 전체가 롤백됩니다.
+    """
+    for table in TABLES:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM {table} WHERE year_month = %s AND version = %s",
+            (year_month, version),
+        )
+        actual = cursor.fetchone()[0]
+        expected = written[table]
+        if actual != expected or actual <= 0:
+            raise ValueError(
+                "Gold 적재 검증 실패: "
+                f"table={table} year_month={year_month} version={version} "
+                f"expected={expected} actual={actual}"
+            )
+        logger.info(
+            "Gold 적재 검증 통과: table=%s year_month=%s version=%d rows=%d",
+            table,
+            year_month,
+            version,
+            actual,
+        )
+
+
 def write_gold_to_postgres(
     frames: dict[str, pd.DataFrame], dsn: str, year_month: str
 ) -> dict[str, int]:
@@ -108,6 +142,7 @@ def write_gold_to_postgres(
                     )
                     written[table] = len(rows)
                     logger.info("Gold 적재: table=%s rows=%d", table, len(rows))
+                _validate_written_rows(cursor, written, year_month, version)
         return written
     finally:
         conn.close()
