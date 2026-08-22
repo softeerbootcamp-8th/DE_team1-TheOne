@@ -16,6 +16,7 @@ from shared.airflow.common.slack_failure_callback import (
 )
 from main.airflow.scripts.monthly_taxi_trip_silver_to_gold.tasks import (
     DEFAULT_PATHS,
+    DEFAULT_STALE_SLA_DAYS,
     ROOT,
     validate_gold_task,
     validate_inputs_task,
@@ -162,6 +163,19 @@ def _build_gold_operator():
         # (근거: docs/METRICS.md - 4. 추천 기준선)
         "threshold_profit_increase": Param(600.0, type="number"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
+        # 비우면 Variable(gold_stale_sla_days) 또는 기본값을 씁니다 — 절대 날짜가
+        # 아니라 상대 기준을 쓰는 이유는 tasks.resolve_stale_sla_days 참고.
+        "gold_stale_sla_days": Param(
+            None,
+            type=["integer", "null"],
+            description=(
+                "직전 Gold 성공 완료 이후 이 일수를 넘기면 Slack에 staleness 경고를 "
+                f"보냅니다. 비우면 Variable(gold_stale_sla_days) 또는 기본값 "
+                f"{DEFAULT_STALE_SLA_DAYS}을 씁니다."
+            ),
+        ),
+        # 계약 테스트(test_dry_run_contract.py)가 dry_run이 마지막 파라미터임을
+        # 검증합니다 — 새 파라미터는 이 줄보다 위에 추가하세요.
         "dry_run": Param(
             False,
             type="boolean",

@@ -71,6 +71,14 @@ Slack provider 를 못 불러오는 환경(로컬 테스트 등)에서는 **로�
 알림 설정 하나 때문에 DAG 가 뜨지 않는 상황을 막기 위해서입니다.
 ([slack_failure_callback.py](../shared/airflow/common/slack_failure_callback.py))
 
+Gold DAG(`monthly_taxi_trip_silver_to_gold_pipeline`)는 입력 Asset이 준비되지 않으면
+`AirflowSkipException`으로 조용히 skip되는데, Airflow에서 skip은 실패가 아니라
+`on_failure_callback`이 걸리지 않습니다. 이 blind spot을 메우려고 `validate_inputs_task`가
+skip 직전에 Slack 알림을 직접 호출하고, "직전 성공 이후 N일" 기준의 staleness 경고도
+같은 태스크에서 함께 확인합니다. 대상월 계산이 원천의 "latest" 해석에 달려 있어 절대
+날짜로 SLA를 못 박을 수 없어 상대 기준(N일)을 씁니다 — 기본값은 코드에 있지만
+`Variable("gold_stale_sla_days")`로 재배포 없이 조정할 수 있습니다.
+
 ---
 
 ## 6. 스케줄

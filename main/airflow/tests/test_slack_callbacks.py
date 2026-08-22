@@ -24,11 +24,17 @@ from shared.airflow.common.slack_failure_callback import (
     SLACK_FAILURE_TEXT,
     SLACK_RETRY_ALERT_BLOCKS,
     SLACK_RETRY_ALERT_TEXT,
+    SLACK_SKIP_BLOCKS,
+    SLACK_SKIP_TEXT,
+    SLACK_STALE_BLOCKS,
+    SLACK_STALE_TEXT,
     SLACK_SUCCESS_BLOCKS,
     SLACK_SUCCESS_TEXT,
     SLACK_WEBHOOK_CONN_ID,
     slack_failure_callback,
     slack_retry_alert_callback,
+    slack_skip_alert_callback,
+    slack_stale_alert_callback,
     slack_success_callback,
 )
 
@@ -98,6 +104,28 @@ def test_Gold_Success_알림은_실행정보를_표시한다():
         assert expected in SLACK_SUCCESS_TEXT
 
 
+def test_Gold_Skip_알림은_원인과_실행정보를_표시한다():
+    assert "⚠️ *Gold 파이프라인 입력 대기 (skip)*" in SLACK_SKIP_TEXT
+    for expected in (
+        "{{ dag.dag_id }}",
+        "{{ ti.task_id }}",
+        "run_id",
+        "{{ ti.log_url }}",
+    ):
+        assert expected in SLACK_SKIP_TEXT
+
+
+def test_Gold_Staleness_알림은_경과일과_SLA기준을_표시한다():
+    assert "⏰ *Gold 파이프라인 staleness 경고*" in SLACK_STALE_TEXT
+    for expected in (
+        "{{ dag.dag_id }}",
+        "{{ days_since_success }}",
+        "{{ stale_days }}",
+        "{{ ti.log_url }}",
+    ):
+        assert expected in SLACK_STALE_TEXT
+
+
 @pytest.mark.parametrize("module_name,dag_variable", DAG_MODULES.items())
 def test_모든_DAG_Task에_Retry와_Fail_콜백이_연결된다(
     module_name, dag_variable
@@ -123,6 +151,8 @@ def test_지금_쓰는_콜백은_로깅_fallback_이_아니다():
         slack_retry_alert_callback,
         slack_failure_callback,
         slack_success_callback,
+        slack_skip_alert_callback,
+        slack_stale_alert_callback,
     ):
         assert not getattr(callback, "is_fallback", False), (
             "Slack provider 가 없어 로깅 폴백을 쓰고 있습니다. "
@@ -149,15 +179,21 @@ def test_provider가_없으면_fallback_콜백이_로그로_대체한다(caplog,
 
     assert module.slack_failure_callback.is_fallback
     assert module.slack_success_callback.is_fallback
+    assert module.slack_skip_alert_callback.is_fallback
+    assert module.slack_stale_alert_callback.is_fallback
 
     context = {"task_instance": type("TI", (), {"task_id": "smoke"})()}
     module.slack_retry_alert_callback(context)
     module.slack_failure_callback(context)
     module.slack_success_callback(context)
+    module.slack_skip_alert_callback(context)
+    module.slack_stale_alert_callback({"days_since_success": 40, "stale_days": 31})
 
     assert "Task 재시도 예정: smoke" in caplog.text
     assert "Task 최종 실패: smoke" in caplog.text
     assert "Task 성공: smoke" in caplog.text
+    assert "Task skip: smoke" in caplog.text
+    assert "40일" in caplog.text and "31일" in caplog.text
 
 
 # --- 실제 렌더 결과 (#550) ----------------------------------------------------
@@ -236,10 +272,40 @@ def test_Gold성공_Block은_대상연월과_Asset실행을_보여준다():
     assert "http://airflow/log" in rendered
 
 
+def test_Skip_Block은_원인과_실행정보를_보여준다():
+    rendered = _render_blocks(
+        SLACK_SKIP_BLOCKS,
+        run_id="asset_triggered__2026-08-20T09:22:58",
+        exception=FileNotFoundError("Silver 4종 준비 대기: year_month=2026-08"),
+    )
+
+    for expected in (
+        "⚠️ Gold 파이프라인 입력 대기 (skip)",
+        "Silver 4종 준비 대기: year_month=2026-08",
+        "Asset 트리거",
+        "http://airflow/log",
+    ):
+        assert expected in rendered
+
+
+def test_Staleness_Block은_경과일과_SLA기준을_보여준다():
+    rendered = _render_blocks(
+        SLACK_STALE_BLOCKS,
+        days_since_success=40,
+        stale_days=31,
+    )
+
+    assert "⏰ Gold 파이프라인 staleness 경고" in rendered
+    assert "40일" in rendered
+    assert "31일" in rendered
+
+
 def test_notifier에_각상태_Block이_연결된다():
     assert slack_retry_alert_callback.blocks == SLACK_RETRY_ALERT_BLOCKS
     assert slack_failure_callback.blocks == SLACK_FAILURE_BLOCKS
     assert slack_success_callback.blocks == SLACK_SUCCESS_BLOCKS
+    assert slack_skip_alert_callback.blocks == SLACK_SKIP_BLOCKS
+    assert slack_stale_alert_callback.blocks == SLACK_STALE_BLOCKS
 
 
 @pytest.mark.parametrize("text", ALERT_TEXTS)
