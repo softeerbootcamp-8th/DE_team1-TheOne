@@ -165,8 +165,9 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
     first_cdv = pd.read_parquet(first.current_driver_vehicle_path)
     second_cdv = pd.read_parquet(second.current_driver_vehicle_path)
     assert len(first_cdv) == 400
-    assert first.snapshot_dir.name == "data_month=2026-08"
-    assert second.snapshot_dir.name == "data_month=2026-09"
+    # 경로가 str 인 이유 — `s3://` 도 담습니다(#767). `Path` 로 감싸면 스킴이 깨집니다.
+    assert first.snapshot_dir.endswith("data_month=2026-08")
+    assert second.snapshot_dir.endswith("data_month=2026-09")
 
     new_drivers = set(second_cdv["driver_id"]) - set(first_cdv["driver_id"])
     ended = second_cdv[second_cdv["lease_ended_on"].notna()]

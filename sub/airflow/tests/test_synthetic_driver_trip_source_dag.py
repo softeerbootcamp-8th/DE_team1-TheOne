@@ -27,6 +27,9 @@ from schema.source import (
 )
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from sub.airflow.dags import synthetic_driver_trip_source_dag as dag_module
+from sub.airflow.scripts.synthetic_driver_trip_source import (
+    spark_operator as operator_module,
+)
 from sub.airflow.scripts.synthetic_driver_trip_source import tasks as task_module
 
 sys.path.append(str(PROJECT_ROOT))
@@ -416,3 +419,82 @@ def test_bucket_을_비우면_spark_명령에_플래그가_안_붙는다():
     command = DAG.get_task("build_source_release").bash_command
 
     assert "{% if params.bucket %}--bucket" in command
+
+
+# --- EMR Serverless 분기 (#767) -----------------------------------------------
+#
+# EC2 컨테이너에서 local[3] Spark 로 돌면 Airflow scheduler·Postgres 와 자원을
+# 다투고 t4g 가 오래 붙잡힙니다. main 쪽 DAG 두 개와 같은 JOB_ENV 분기를 씁니다.
+
+def test_기본값은_local_이라_기존_Bash_경로를_쓴다():
+    """로컬 pyspark 는 hadoop-aws jar 이 없어 s3:// 를 못 읽습니다(#712).
+
+    그래서 기본값이 prod 면 로컬 개발이 통째로 깨집니다.
+    """
+    assert operator_module.JOB_ENV == "local"
+
+    operator = operator_module.local_build()
+
+    assert type(operator).__name__ == "BashOperator"
+    assert "driver_assignment/source_job.py" in operator.bash_command
+
+
+def test_운영은_EMR_Serverless_로_제출하고_완료까지_기다린다(monkeypatch):
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    operator = operator_module.emr_build()
+    spark_submit = operator.job_driver["sparkSubmit"]
+
+    assert type(operator).__name__ == "EmrServerlessStartJobOperator"
+    assert operator.application_id == "app-test"
+    assert operator.wait_for_completion is True
+    assert spark_submit["entryPoint"] == operator_module.EMR_ENTRY_POINT
+    assert (
+        operator.configuration_overrides["monitoringConfiguration"][
+            "s3MonitoringConfiguration"
+        ]["logUri"]
+        == "s3://test-lake/emr-logs/"
+    )
+
+
+def test_EMR_은_storage_를_s3_로_고정한다(monkeypatch):
+    """params 의 storage 를 그대로 쓰면 local 로 둔 채 제출될 수 있습니다.
+
+    그러면 EMR 워커가 컨테이너 로컬 디스크(빈 디렉터리)를 보게 됩니다.
+    """
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    arguments = operator_module.emr_build().job_driver["sparkSubmit"]["entryPointArguments"]
+
+    assert arguments[arguments.index("--storage") + 1] == "s3"
+    assert arguments[arguments.index("--bucket") + 1] == "test-lake"
+
+
+@pytest.mark.parametrize(
+    "missing",
+    ["EMR_APPLICATION_ID", "EMR_EXECUTION_ROLE_ARN", "DATA_LAKE_S3_BUCKET"],
+)
+def test_운영_필수변수가_없으면_누락된_이름으로_실패한다(monkeypatch, missing):
+    for name in ("EMR_APPLICATION_ID", "EMR_EXECUTION_ROLE_ARN", "DATA_LAKE_S3_BUCKET"):
+        monkeypatch.setenv(name, "value")
+    monkeypatch.delenv(missing)
+
+    with pytest.raises(ValueError, match=missing):
+        operator_module.emr_build()
+
+
+def test_알_수_없는_SPARK_JOB_ENV는_거부한다(monkeypatch):
+    monkeypatch.setattr(operator_module, "JOB_ENV", "staging")
+
+    with pytest.raises(ValueError, match="알 수 없는 SPARK_JOB_ENV"):
+        operator_module.build_operator()
+
+
+def test_storage_기본값은_SPARK_JOB_ENV를_따라간다():
+    """prod 인데 local 이 기본이면 수집은 컨테이너 디스크, 제출은 s3 로 갈라집니다."""
+    assert operator_module.DEFAULT_STORAGE == "local"
+    assert DAG.params["storage"] == "local"

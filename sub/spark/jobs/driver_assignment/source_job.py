@@ -43,6 +43,7 @@ from schema.source import (
     LEASE_VEHICLE_INVENTORY_SCHEMA,
     MONTHLY_TAXI_TRIP_SCHEMA,
 )
+from shared.common.s3_reader import parent_uri
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
@@ -738,8 +739,21 @@ def main(args_list: list[str] | None = None) -> Path | str:
     parser.add_argument("--test_row_limit", type=int, default=0)
     parser.add_argument("--storage", choices=("local", "s3"), default="local")
     parser.add_argument("--bucket", default=None, help="storage=s3일 때. 비우면 DATA_LAKE_S3_BUCKET")
+    # `--storage` 와 역할이 다릅니다 — storage 는 입출력을 "어디에" 두는지, env 는
+    # Spark 세션을 "어디서" 띄우는지입니다. local 은 컨테이너 안 local[3], prod 는
+    # spark-submit(EMR Serverless) 이 준 세션을 그대로 씁니다. main job 과 같은 규칙.
+    parser.add_argument(
+        "--env",
+        choices=("local", "prod"),
+        default=os.getenv("SPARK_JOB_ENV", "local"),
+        help="local=컨테이너 내 local[3], prod=spark-submit 세션(EMR Serverless)",
+    )
     args = parser.parse_args(args_list)
     bucket = args.bucket or (os.environ["DATA_LAKE_S3_BUCKET"] if args.storage == "s3" else None)
+    # EMR 워커는 Airflow 컨테이너의 로컬 디스크를 볼 수 없습니다. 조합을 허용하면
+    # executor 가 FileNotFoundException 으로 죽는 데까지 수십 분이 걸립니다.
+    if args.env == "prod" and args.storage != "s3":
+        raise ValueError("--env prod 는 --storage s3 가 필요합니다 (EMR 워커는 로컬 디스크를 못 봅니다)")
 
     # lifecycle(join/exit/vehicle_change) 비율은 이제 `--change_rate` 가 아니라
     # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).
@@ -760,7 +774,8 @@ def main(args_list: list[str] | None = None) -> Path | str:
             f"test_row_limit={args.test_row_limit}, output={release_output_dir}"
         )
     state = prepare_monthly_state(
-        hvfhv_input_dir=Path(args.hvfhv_input_path).parent.parent,
+        # `Path` 로 올라가면 `s3://` 가 `s3:/` 로 뭉개집니다.
+        hvfhv_input_dir=parent_uri(args.hvfhv_input_path, 2),
         output_dir=state_output_dir,
         snapshot_date=snapshot_date,
         config=config,
@@ -770,7 +785,9 @@ def main(args_list: list[str] | None = None) -> Path | str:
     )
 
     spark = get_or_create_spark_session(
-        "synthetic_driver_trip_source", driver_memory=args.spark_memory
+        "synthetic_driver_trip_source",
+        driver_memory=args.spark_memory,
+        local_mode=args.env == "local",
     )
     spark.conf.set(
         "spark.sql.files.maxPartitionBytes",

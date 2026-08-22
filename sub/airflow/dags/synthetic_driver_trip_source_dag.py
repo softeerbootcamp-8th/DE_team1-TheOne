@@ -1,18 +1,19 @@
 """검증된 월별 HVFHV로 운행·리스·보유 차량 데이터를 생성합니다."""
 
-import os
 from datetime import datetime, timedelta, timezone
 
-from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
 
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
+from sub.airflow.scripts.synthetic_driver_trip_source.spark_operator import (
+    DEFAULT_STORAGE,
+    build_operator,
+)
 from sub.airflow.scripts.synthetic_driver_trip_source.tasks import (
     DEFAULT_PATHS,
-    ROOT,
     collect_source_input_task,
     validate_inputs_task,
     validate_release_task,
@@ -71,7 +72,7 @@ default_args = {
         # 읽기에도 씁니다. vehicle_master 를 어디서 찾을지가 이 값으로 갈립니다 —
         # EC2 는 바인드 마운트가 없어 local 로 두면 컨테이너 빈 디스크를 보게 됩니다.
         "storage": Param(
-            "local",
+            DEFAULT_STORAGE,
             enum=["local", "s3"],
             description="입력(vehicle_master) 조회와 attribution·published 적재를 어디로 할지",
         ),
@@ -86,35 +87,7 @@ default_args = {
     },
 )
 def synthetic_driver_trip_source_pipeline():
-    build = BashOperator(
-        task_id="build_source_release",
-        bash_command=(
-            f"python {ROOT}/sub/spark/jobs/driver_assignment/source_job.py "
-            + "--hvfhv_input_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['hvfhv_input_path'] }} "
-            + "--zone_lookup_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['zone_lookup_path'] }} "
-            + "--vehicle_master_path "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['vehicle_master_path'] }} "
-            + "--state_output_dir {{ params.state_output_dir }} "
-            + "--attribution_output_dir {{ params.attribution_output_dir }} "
-            + "--release_output_dir {{ params.release_output_dir }} "
-            + "--year_month "
-            + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['year_month'] }} "
-            + "{% if params.seed is not none %}--seed {{ params.seed }} {% endif %}"
-            + "{% if params.bucket_size is not none %}--bucket_size {{ params.bucket_size }} {% endif %}"
-            + "--test_row_limit {{ params.test_row_limit }} "
-            + "--storage {{ params.storage }} "
-            + "{% if params.bucket %}--bucket {{ params.bucket }}{% endif %}"
-        ),
-        env={
-            **os.environ,
-            "PYTHONPATH": (
-                f"{ROOT}:{ROOT}/main/spark:{ROOT}/libs/pipeline_core"
-                f":{os.getenv('PYTHONPATH', '')}"
-            ),
-        },
-    )
+    build = build_operator()
 
     source = collect_source_input_task.override(
         retries=2,

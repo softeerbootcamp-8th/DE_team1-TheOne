@@ -35,3 +35,59 @@ def get_object_stream(bucket: str, key: str) -> tuple[BinaryIO, int]:
     client = boto3.client("s3")
     response = client.get_object(Bucket=bucket, Key=key)
     return response["Body"], response["ContentLength"]
+
+
+def is_s3_uri(path: str) -> bool:
+    return path.startswith("s3://") or path.startswith("s3a://")
+
+
+def parse_s3_uri(uri: str) -> tuple[str, str]:
+    """`s3://bucket/key...` -> `(bucket, key)`.
+
+    `s3a://` 도 받습니다 — Spark 쪽 설정에서 그 스킴을 쓰는 코드와 같은 문자열을
+    pandas 경로로 넘기는 일이 있어서입니다.
+    """
+    if not is_s3_uri(uri):
+        raise ValueError(f"s3:// 또는 s3a:// 로 시작해야 합니다: {uri!r}")
+    without_scheme = uri.split("://", 1)[1]
+    bucket, _, key = without_scheme.partition("/")
+    if not bucket or not key:
+        raise ValueError(f"버킷과 키가 모두 필요합니다: {uri!r}")
+    return bucket, key
+
+
+def read_parquet_uri(uri: str):
+    """`s3://` 또는 로컬 경로의 Parquet 을 DataFrame 으로 읽습니다.
+
+    `pd.read_parquet` 에 `s3://` 를 그대로 넘기지 않는 이유는 `s3fs` 가 필요하고,
+    그것이 `aiobotocore` 를 끌고 와 런타임의 `boto3` 핀과 충돌하기 때문입니다.
+    """
+    import io
+
+    import pandas as pd
+
+    if not is_s3_uri(uri):
+        return pd.read_parquet(uri)
+    bucket, key = parse_s3_uri(uri)
+    return pd.read_parquet(io.BytesIO(get_object_bytes(bucket, key)))
+
+
+def parent_uri(uri: str, levels: int = 1) -> str:
+    """경로에서 상위 `levels` 단계를 올라갑니다. `s3://` 를 보존합니다.
+
+    `pathlib.Path` 를 쓰면 `s3://b/x` 가 `s3:/b/x` 로 뭉개져 스킴이 깨집니다
+    (`//` 를 하나로 접습니다).
+    """
+    if not is_s3_uri(uri):
+        from pathlib import Path
+
+        path = Path(uri)
+        for _ in range(levels):
+            path = path.parent
+        return str(path)
+
+    scheme, _, rest = uri.partition("://")
+    parts = rest.rstrip("/").split("/")
+    if len(parts) <= levels:
+        raise ValueError(f"{levels} 단계를 올라갈 수 없습니다: {uri!r}")
+    return f"{scheme}://" + "/".join(parts[:-levels])
