@@ -11,7 +11,6 @@ from datetime import datetime, timezone
 
 from airflow.sdk import task
 
-from main.airflow.common.dry_run import configure_dry_run_event
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import layout_tail, location_size, parse_handler_result, require_file
@@ -30,7 +29,6 @@ def _layout():
 def raw_to_bronze_task(**context) -> dict:
     params = context["params"]
     event = {"base_dir": params["bronze_dir"]}
-    configure_dry_run_event(event, params)
     result = lambda_handler_for(HANDLER_NAME)(event=event)
     logger.info("Raw -> Bronze 완료: %s", result)
     return result
@@ -43,22 +41,6 @@ def validate_bronze_task(result: dict, **context) -> None:
     layout = _layout()
     collected_date = datetime.strptime(result["collected_date"], "%Y-%m-%d").date()
     expected = layout.electricity_bronze_file(context["params"]["bronze_dir"], collected_date)
-    if context["params"].get("dry_run") is True:
-        if result.get("dry_run") is not True:
-            raise ValueError("EIA 전력 Bronze dry-run 결과 표시가 없습니다")
-        location = parsed.locations[0]
-        if layout_tail(location) != layout_tail(expected):
-            raise ValueError(f"dry-run 예상 적재 경로가 다릅니다: {location}")
-        size = result.get("byte_count")
-        if (
-            isinstance(size, bool)
-            or not isinstance(size, int)
-            or size < layout.ELECTRICITY_MIN_BYTES
-        ):
-            raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({location})")
-        logger.info("bronze dry-run 검증 통과: %s (%d bytes)", location, size)
-        return
-
     path = require_file(parsed.locations[0])
     if layout_tail(path) != layout_tail(expected):
         raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")

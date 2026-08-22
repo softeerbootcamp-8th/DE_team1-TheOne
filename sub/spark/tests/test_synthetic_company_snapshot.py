@@ -12,11 +12,13 @@
 """
 
 from datetime import date
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from conftest import TEST_LEASE_START_MIN, TEST_MODEL_YEAR, TEST_SEED, TEST_SNAPSHOT_DATE
+from shared.common.s3_reader import read_parquet_uri
 from sub.generators.synthetic_company_snapshot.snapshot import (
     build_company_snapshot,
     build_driver_ids,
@@ -347,7 +349,7 @@ def test_알_수_없는_storage는_거부한다(tmp_path):
         resolve_vehicle_master_path(tmp_path, storage="gcs")
 
 
-def test_S3에서_최신_수집분을_내려받아_로컬경로를_돌려준다(tmp_path, monkeypatch):
+def test_S3에서_최신_수집분의_s3_URI를_돌려준다(tmp_path, monkeypatch):
     """`s3://` 를 그대로 넘기면 하류가 못 읽습니다.
 
     Spark 는 `s3a://` + hadoop-aws jar 가, pandas 는 `s3fs` 가 필요합니다. 그래서
@@ -377,13 +379,16 @@ def test_S3에서_최신_수집분을_내려받아_로컬경로를_돌려준다(
                 Body=body,
             )
 
-        path = resolve_vehicle_master_path(tmp_path, storage="s3")
+        uri = resolve_vehicle_master_path(tmp_path, storage="s3")
+        # 내려받지 않습니다 — 이 프로세스 디스크에만 생기면 EMR 워커가 못 봅니다(#782).
+        loaded = read_parquet_uri(uri)
 
-    assert path.is_file()
-    assert "collected_date=2026-03-11" in str(path)
-    # 로컬 파티션 구조를 그대로 재현해야 storage=local 과 경로 모양이 같아집니다.
-    assert path.parent.name == "city=new-york"
-    assert pd.read_parquet(path).shape == _vehicle_pool().shape
+    assert uri == (
+        f"s3://{S3_BUCKET}/{_VM_PREFIX}collected_date=2026-03-11"
+        "/city=new-york/vehicle_master.parquet"
+    )
+    assert not list(Path(tmp_path).rglob("vehicle_master.parquet"))
+    assert loaded.shape == _vehicle_pool().shape
 
 
 def test_S3에_없으면_어느_DAG를_돌릴지_알려준다(tmp_path, monkeypatch):
@@ -487,9 +492,9 @@ def test_버킷_이름_앞뒤_공백은_다듬는다(tmp_path, monkeypatch):
             Body=_vehicle_master_bytes(),
         )
 
-        path = resolve_vehicle_master_path(tmp_path, storage="s3", bucket=f"  {S3_BUCKET}\n")
+        uri = resolve_vehicle_master_path(tmp_path, storage="s3", bucket=f"  {S3_BUCKET}\n")
 
-    assert path.is_file()
+    assert uri.startswith(f"s3://{S3_BUCKET}/")
 
 
 def test_공백만_있는_버킷은_없는_것으로_본다(tmp_path, monkeypatch):

@@ -138,7 +138,7 @@ def test_검증된_월이_Asset_파티션키로_기록된다():
     assets.publish_month_partition(events, assets.FUEL_PRICE_SILVER, "2026-05")
 
     assert recorder.keys == {"2026-05"}
-    assert recorder.extra == {"dry_run": False}
+    assert recorder.extra == {}
 
 
 def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path):

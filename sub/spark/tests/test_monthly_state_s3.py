@@ -259,3 +259,82 @@ def test_env_prod은_storage_s3를_요구한다():
                 "--storage", "local",
             ]
         )
+
+
+# --- vehicle_master 입력 경로 (#782) ------------------------------------------
+#
+# EMR 워커는 Airflow 컨테이너 디스크를 못 봅니다. 내려받은 로컬 경로를 넘기면
+# `FileNotFoundError: /opt/airflow/project-root/data/source/curated/...` 로 죽습니다.
+
+@mock_aws
+def test_vehicle_master는_내려받지_않고_s3_URI를_넘긴다(tmp_path, monkeypatch):
+    from sub.generators.synthetic_company_snapshot.generate import (
+        resolve_vehicle_master_path,
+    )
+
+    client = _make_bucket()
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", BUCKET)
+    monkeypatch.setattr("shared.common.env.load_local_env", lambda: None)
+    prefix = "source/curated/vehicle_master/"
+    for collected in ("2026-08-20", "2026-08-21"):
+        client.put_object(
+            Bucket=BUCKET,
+            Key=f"{prefix}collected_date={collected}/city=new-york/vehicle_master.parquet",
+            Body=b"parquet",
+        )
+
+    uri = resolve_vehicle_master_path(tmp_path, storage="s3")
+
+    assert uri == (
+        f"s3://{BUCKET}/{prefix}collected_date=2026-08-21/city=new-york/vehicle_master.parquet"
+    )
+    assert not list(tmp_path.rglob("*.parquet"))
+
+
+def test_env_local은_s3_입력을_경로_이름과_함께_거부한다():
+    """로컬 pyspark 는 hadoop-aws jar 이 없어 `s3://` 를 못 읽습니다(#712).
+
+    어느 인자가 s3 인지 알려주지 않으면 hadoop 쪽 스택트레이스만 남습니다.
+    """
+    from sub.spark.jobs.driver_assignment import source_job
+
+    with pytest.raises(ValueError, match="--vehicle_master_path"):
+        source_job.main(
+            [
+                "--hvfhv_input_path", "/tmp/a.parquet",
+                "--zone_lookup_path", "/tmp/z.csv",
+                "--vehicle_master_path", f"s3://{BUCKET}/vm.parquet",
+                "--state_output_dir", "/tmp/state",
+                "--release_output_dir", "/tmp/release",
+                "--attribution_output_dir", "/tmp/attribution",
+                "--year_month", "2026-01",
+                "--env", "local",
+                "--storage", "local",
+            ]
+        )
+
+
+def test_env_local에_s3_입력이_없으면_거부하지_않는다(monkeypatch):
+    """`--storage s3` 로 출력만 S3 에 쓰면서 입력은 로컬로 넘기는 실행을 막지 않습니다."""
+    from sub.spark.jobs.driver_assignment import source_job
+
+    def stop_after_guard(**_kwargs):
+        raise RuntimeError("가드를 통과했습니다")
+
+    monkeypatch.setattr(source_job, "prepare_monthly_state", stop_after_guard)
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", BUCKET)
+
+    with pytest.raises(RuntimeError, match="가드를 통과했습니다"):
+        source_job.main(
+            [
+                "--hvfhv_input_path", "/tmp/a.parquet",
+                "--zone_lookup_path", "/tmp/z.csv",
+                "--vehicle_master_path", "/tmp/vm.parquet",
+                "--state_output_dir", "/tmp/state",
+                "--release_output_dir", "/tmp/release",
+                "--attribution_output_dir", "/tmp/attribution",
+                "--year_month", "2026-01",
+                "--env", "local",
+                "--storage", "s3",
+            ]
+        )

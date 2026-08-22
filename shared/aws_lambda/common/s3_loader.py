@@ -35,21 +35,14 @@ class S3Loader(Loader):
         self,
         key: str,
         bucket: str | None = None,
-        *,
-        dry_run: bool = False,
     ):
         load_local_env()
         self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
         self._key = key
-        self._dry_run = dry_run
-        self._client = None if dry_run else boto3.client("s3")
+        self._client = boto3.client("s3")
 
     def write(self, data: S3Object) -> WriteResult:
         location = f"s3://{self._bucket}/{self._key}"
-        if self._dry_run:
-            return WriteResult(location=location, row_count=data.row_count)
-
-        assert self._client is not None
         self._client.put_object(
             Bucket=self._bucket,
             Key=self._key,
