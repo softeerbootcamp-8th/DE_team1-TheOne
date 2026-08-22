@@ -93,7 +93,10 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
         task_id="build_gold",
         application_id=application_id,
         execution_role_arn=execution_role_arn,
-        name="silver-to-gold-{{ ds_nodash }}",
+        # ds_nodash는 logical_date 기반이라 이 DAG의 Asset 트리거 실행에서 비어
+        # 있을 수 있습니다(#746 배포 중 실제로 UndefinedError 확인). run_id는
+        # 트리거 방식과 무관하게 항상 있습니다.
+        name="silver-to-gold-{{ run_id }}",
         job_driver={
             "sparkSubmit": {
                 "entryPoint": EMR_ENTRY_POINT,
