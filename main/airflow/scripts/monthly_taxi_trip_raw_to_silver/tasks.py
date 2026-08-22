@@ -9,7 +9,6 @@ from pathlib import Path
 import pyarrow as pa
 from airflow.sdk import task
 
-from main.airflow.common.dry_run import configure_dry_run_event
 from main.airflow.common.monthly_bronze import (
     STAGED_FILE_PATTERN,
     TIMESTAMP_FILE_PATTERN,
@@ -204,7 +203,6 @@ def _collect_bronze(params: dict) -> dict:
         "year": params.get("year"),
         "month": params.get("month"),
     }
-    configure_dry_run_event(event, params)
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
     result = lambda_handler_for("monthly_taxi_trip_raw_to_bronze")(event=event)
     logger.info("raw_to_bronze 작업 완료: result=%s", result)
@@ -374,9 +372,6 @@ def _bronze_quality_result(
 )
 def validate_silver_task(raw_result: dict, **context) -> None:
     """Spark 실행이 만든 Silver 버전 파일을 직접 열어서 확인합니다."""
-    if context.get("params", {}).get("dry_run") is True:
-        logger.info("dry-run: Spark 내부 검증 완료, Silver 적재 검증을 생략합니다")
-        return
     parsed = parse_handler_result(raw_result, expected_locations=1)
     year_month = parse_year_month(
         raw_result.get("year_month"), field="year_month"

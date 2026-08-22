@@ -77,11 +77,6 @@ default_args = {
             type="string",
             description="월별 택시 운행 데이터 제공 주소",
         ),
-        "dry_run": Param(
-            False,
-            type="boolean",
-            description="입력과 변환을 검증하되 Silver에는 적재하지 않음",
-        ),
     },
 )
 def monthly_taxi_trip_raw_to_silver_pipeline():
@@ -116,8 +111,7 @@ def _local_bronze_to_silver() -> BashOperator:
             f"--output_path {DEFAULT_SILVER_DIR} "
             "--output_file \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['silver_staging_path'] }}\" "
-            f"--error_threshold {MONTHLY_TAXI_TRIP_ERROR_THRESHOLD} "
-            "{% if params.dry_run %}--dry-run{% endif %}"
+            f"--error_threshold {MONTHLY_TAXI_TRIP_ERROR_THRESHOLD}"
         ),
         env={
             **os.environ,
@@ -154,7 +148,6 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
                     f"{{{{ {xcom}['silver_staging_path'] }}}}",
                     "--error_threshold",
                     str(MONTHLY_TAXI_TRIP_ERROR_THRESHOLD),
-                    "--dry-run={{ params.dry_run | string | lower }}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }

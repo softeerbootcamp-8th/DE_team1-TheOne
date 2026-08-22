@@ -1,6 +1,7 @@
 """기사별 월간 차량 추천 대시보드.
 
-data/gold/ 의 CSV(`driver_car_suggestion`, `driver_aggregation`, `monthly_report`)만 읽는다.
+Gold 3종(`driver_car_suggestion`, `driver_aggregation`, `monthly_report`)을 읽는다.
+`DASHBOARD_DATA_SOURCE` 환경변수로 로컬 CSV(기본)/RDS를 전환한다 — `datasource.py` 참고.
 세 데이터셋 모두 `year_month` 단일 그레인 — `main/spark/jobs/silver_to_gold/job.py` 산출물.
 
 화면 구성은 위에서 아래로 한 줄기다.
@@ -8,21 +9,14 @@ data/gold/ 의 CSV(`driver_car_suggestion`, `driver_aggregation`, `monthly_repor
 필터는 화면 전체를 한 번에 스코프한다 (차트별 필터를 두지 않는다).
 """
 
-import os
-from pathlib import Path
-
 import pandas as pd
 import streamlit as st
 
 import charts
 import theme
+from datasource import build_data_source
 
-GOLD_DIR = Path(
-    os.environ.get(
-        "GOLD_DIR",
-        Path(__file__).resolve().parents[2] / "data" / "gold",
-    )
-)
+_DATA_SOURCE = build_data_source()
 
 SUGGESTION_COLUMNS = {
     "driver_id": "기사 ID",
@@ -35,17 +29,9 @@ SUGGESTION_COLUMNS = {
 }
 
 
-def _read_partitions(root: Path, dataset: str) -> pd.DataFrame:
-    """`year_month=` 파티션 전체를 이어붙인다 — 컬럼에도 `year_month` 가 그대로 들어있다."""
-    paths = sorted(root.glob(f"{dataset}/year_month=*/{dataset}.csv"))
-    if not paths:
-        return pd.DataFrame()
-    return pd.concat((pd.read_csv(p) for p in paths), ignore_index=True)
-
-
 @st.cache_data
 def load(dataset: str) -> pd.DataFrame:
-    return _read_partitions(GOLD_DIR, dataset)
+    return _DATA_SOURCE.load(dataset)
 
 
 def recommendation_scope(
