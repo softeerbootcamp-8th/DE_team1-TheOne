@@ -27,7 +27,7 @@ def main(args_list: list[str] | None = None) -> Path:
     parser.add_argument("--n_drivers", type=int, default=10_000)
     # 실행 위치가 spark/ 라서 저장소 루트가 한 단계 위입니다 (preference_job.py 와 같은 규칙).
     parser.add_argument("--output_path", default="../data/bronze/driver_master.csv")
-    parser.add_argument("--bronze_dir", default="../data/bronze/hvfhv")
+    parser.add_argument("--bronze_dir", default="../data/bronze/monthly_taxi_trip")
     parser.add_argument("--sample_per_month", type=int, default=200_000)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument(

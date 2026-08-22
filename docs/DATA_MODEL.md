@@ -36,7 +36,7 @@
 
 | 데이터셋 | 한 행 | 파티션 | 규모 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
-| `hvfhv_taxi_trips` | 운행 1건 | `year_month` | 월 2,040만 행 | [schema/bronze/hvfhv.py](../schema/bronze/hvfhv.py) |
+| `monthly_taxi_trip` | 운행 1건 | `year_month` | 월 2,040만 행 | [schema/bronze/__init__.py](../schema/bronze/__init__.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [schema/silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
 | `lease_vehicle_inventory` | 차종·연식별 재고 | `year_month` | 차종 수준 | [schema/silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 
@@ -50,7 +50,7 @@
 
 | 데이터셋 | 원천 | 한 행 | 파티션 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
-| `hvfhv` | 원천 API | 운행 1건 | `year_month` | [bronze/hvfhv.py](../schema/bronze/hvfhv.py) |
+| `monthly_taxi_trip` | 원천 API | 운행 1건 | `year_month` | [bronze/__init__.py](../schema/bronze/__init__.py) |
 | `driver_vehicle_leases` | 원천 API | 계약 1건 | `year_month` | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
 | `lease_vehicle_inventory` | 원천 API | 차종 × 연식 1개 | `year_month` | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | `vehicle_catalog` | FastTrackLease | 차종 1개 | `collected_date` | [bronze/vehicle_catalog.py](../schema/bronze/vehicle_catalog.py) |
@@ -88,7 +88,7 @@ Spark/Lambda writer는 내부 임시 경로에 쓴 뒤 최종 `collected_at.parq
 같은 수집본 재시도는 같은 버전만 교체하고 이전 수집 버전은 남깁니다. Gold는 각 API
 Silver의 가장 최신 파일만 읽습니다.
 
-HVFHV는 월 2,040만 행을 `coalesce(1)`로 단일 Parquet에 적재하므로 마지막 쓰기 단계는
+`monthly_taxi_trip`은 월 2,040만 행을 `coalesce(1)`로 단일 Parquet에 적재하므로 마지막 쓰기 단계는
 단일 executor 병목입니다. 버전당 파일 하나라는 운영 계약을 위해 선택한 제약이며,
 처리 시간이 SLA를 넘으면 버전 디렉터리 아래 여러 part 파일 구조로 되돌려야 합니다.
 
@@ -104,7 +104,7 @@ HVFHV는 월 2,040만 행을 `coalesce(1)`로 단일 Parquet에 적재하므로 
 
 | 데이터셋 | 한 행 | 파티션 | 규모 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
-| `hvfhv` | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv.py](../schema/silver/hvfhv.py) |
+| `monthly_taxi_trip` | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/__init__.py](../schema/silver/__init__.py) |
 | `driver_vehicle_leases` | 계약 1건 | `year_month` | 2,000행 | [silver/driver_vehicle_leases.py](../schema/silver/driver_vehicle_leases.py) |
 | `lease_vehicle_inventory` | 차종 × 연식 1개 | `year_month` | 차종 수준 | [silver/lease_vehicle_inventory.py](../schema/silver/lease_vehicle_inventory.py) |
 | **`hvfhv_driver_trip`** | 운행 1건 | `year_month` | 월 2,040만 행 | [silver/hvfhv_driver_trip.py](../schema/silver/hvfhv_driver_trip.py) |

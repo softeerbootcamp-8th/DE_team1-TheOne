@@ -1,4 +1,4 @@
-"""HVFHV+taxi_id Parquet을 데이터 제공 경로에서 수집합니다."""
+"""월별 택시 운행 Parquet을 데이터 제공 경로에서 수집합니다."""
 
 from main.aws_lambda.common.monthly_dataset import MonthlyParquetAPIExtractor
 

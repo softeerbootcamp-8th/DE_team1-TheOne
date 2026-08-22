@@ -19,7 +19,7 @@ from shared.airflow.common.slack_failure_callback import (
 
 DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 SOURCES = (
-    ("monthly_taxi_trip", "hvfhv_raw_to_silver_pipeline"),
+    ("monthly_taxi_trip", "monthly_taxi_trip_raw_to_silver_pipeline"),
     (
         "driver_vehicle_monthly_snapshot",
         "driver_vehicle_monthly_snapshot_raw_to_silver_pipeline",

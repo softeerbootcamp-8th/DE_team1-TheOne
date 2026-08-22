@@ -87,8 +87,8 @@ def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된
     ("module_name", "dag_name"),
     [
         (
-            "dags.hvfhv_raw_to_silver_dag",
-            "hvfhv_dag",
+            "dags.monthly_taxi_trip_raw_to_silver_dag",
+            "monthly_taxi_trip_dag",
         ),
         (
             "dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag",

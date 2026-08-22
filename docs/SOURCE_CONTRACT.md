@@ -15,7 +15,7 @@
 메인은 아래 세 데이터셋의 월별 URL만 호출합니다. 응답 본문은 Parquet 파일이며 원천 행 수·SHA-256·실행 계보를 담은 JSON Manifest는 공개하지 않습니다.
 
 ```text
-GET /v1/data/{YYYY-MM}/datasets/hvfhv_taxi_trips
+GET /v1/data/{YYYY-MM}/datasets/monthly_taxi_trip
 GET /v1/data/{YYYY-MM}/datasets/driver_vehicle_leases
 GET /v1/data/{YYYY-MM}/datasets/lease_vehicle_inventory
 ```

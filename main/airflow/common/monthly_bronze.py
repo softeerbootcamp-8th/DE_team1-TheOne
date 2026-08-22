@@ -31,6 +31,12 @@ def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location
             base.bucket,
             f"{base.key.rstrip('/')}/year_month={year_month}/{file_name}",
         )
+    if isinstance(parsed.locations[0], S3Location):
+        dataset_dir = base.name
+        return S3Location(
+            parsed.locations[0].bucket,
+            f"silver/{dataset_dir}/year_month={year_month}/{file_name}",
+        )
     return base / f"year_month={year_month}" / file_name
 
 

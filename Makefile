@@ -200,7 +200,7 @@ travel-times:
 	else \
 		echo "==> building $(TRAVEL_TIMES)"; \
 		$(SPARK_RUN) -m sub.spark.jobs.travel_times.job \
-			--trips_path ../../data/silver/hvfhv --output_path ../../$(TRAVEL_TIMES) || exit 1; \
+			--trips_path ../../data/silver/monthly_taxi_trip --output_path ../../$(TRAVEL_TIMES) || exit 1; \
 	fi
 
 .PHONY: driver-preferences
@@ -210,7 +210,7 @@ driver-preferences:
 	else \
 		echo "==> building $(DRIVER_PREFS)"; \
 		$(SPARK_RUN) -m sub.spark.jobs.driver_master.preference_job \
-			--output_path ../../$(DRIVER_PREFS) --bronze_dir ../../data/bronze/hvfhv || exit 1; \
+			--output_path ../../$(DRIVER_PREFS) --bronze_dir ../../data/bronze/monthly_taxi_trip || exit 1; \
 	fi
 
 .PHONY: company-snapshot

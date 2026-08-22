@@ -11,6 +11,7 @@
 9. `is_s3_path`/`resolve_path`/`latest_partition_file`은 s3://·s3a:// 경로도 처리 (이슈 #646)
 10. `--env local|prod`로 기본 입출력 경로를 고름, `prod`인데 버킷이 없으면 ValueError
 11. 단일 Silver 버전은 coalesce(1) 후 collected_at 파일로 원자적 교체
+12. S3 단일 Silver 버전은 최종 객체만 남기고 임시 객체를 정리
 """
 
 from datetime import datetime
@@ -360,6 +361,53 @@ def test_단일버전_쓰기실패는_기존최종파일을_보존한다(tmp_pat
 
     assert final.read_bytes() == b"previous"
     assert not list(tmp_path.glob(f".{final.name}.*.tmp"))
+
+
+def test_S3_단일버전은_최종객체만_남기고_임시객체를_정리한다(s3_client):
+    final_key = (
+        "silver/monthly_taxi_trip/year_month=2026-08/"
+        "20260821T123456123456Z.parquet"
+    )
+
+    class FakeWriter:
+        def mode(self, value):
+            assert value == "overwrite"
+            return self
+
+        def parquet(self, uri):
+            prefix = uri.split(f"s3://{S3_BUCKET}/", 1)[1]
+            s3_client.put_object(
+                Bucket=S3_BUCKET,
+                Key=f"{prefix}part-00000.parquet",
+                Body=b"silver",
+            )
+            s3_client.put_object(
+                Bucket=S3_BUCKET,
+                Key=f"{prefix}_SUCCESS",
+                Body=b"",
+            )
+
+    class FakeDataFrame:
+        write = FakeWriter()
+
+        def count(self):
+            return 7
+
+        def coalesce(self, partitions):
+            assert partitions == 1
+            return self
+
+    result = job.SingleParquetFileLoader(
+        f"s3://{S3_BUCKET}/{final_key}"
+    ).write(FakeDataFrame())
+    keys = job.list_keys(S3_BUCKET, "silver/monthly_taxi_trip/")
+
+    assert keys == [final_key]
+    assert s3_client.get_object(Bucket=S3_BUCKET, Key=final_key)[
+        "Body"
+    ].read() == b"silver"
+    assert result.location == f"s3://{S3_BUCKET}/{final_key}"
+    assert result.row_count == 7
 
 
 def test_존재하지_않는_단일_월은_FileNotFoundError(tmp_path):
