@@ -215,6 +215,7 @@ def inject_css(theme_mode: str | None = None) -> None:
             letter-spacing: -.035em; font-variant-numeric: proportional-nums;
         }}
         div.hero p.hero__note {{ margin: .6rem 0 0; font-size: .86rem; color: rgba(255,255,255,.8); }}
+        div.hero p.hero__note b {{ color: #fff; font-weight: 600; }}
 
         /* ── 섹션 제목 ── */
         div.sect {{ margin: 2.3rem 0 .95rem; }}

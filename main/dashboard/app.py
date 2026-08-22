@@ -96,7 +96,7 @@ def _head(period: str, generated_rows: int) -> None:
         <div class="dash-head">
           <div>
             <h1>기사별 월간 차량 추천</h1>
-            <p>Gold 산출물 기준 · 기사 순수익과 회사 렌탈 매출이 함께 늘어나는 교체 후보</p>
+            <p>Gold 산출물 기준 예상치 · 기사 순수익과 회사 렌탈 매출이 함께 늘어나는 교체 후보</p>
           </div>
           <div style="display:flex; gap:.5rem; align-items:center;">
             <span class="pill">{period}</span>
@@ -126,10 +126,11 @@ def _hero(
         f"""
         <div class="hero">
           <div>
-            <p class="hero__label">회사 월 렌탈 매출 총 증가</p>
+            <p class="hero__label">예상 월 렌탈 매출 증가액</p>
             <p class="hero__value">{_money(total_revenue_increase)}</p>
             <p class="hero__note">
-              추천 대상 기사 {driver_count:,}명 · 기사 1인당 예상 월 순수익 +${avg_profit:,.0f}
+              추천 대상 기사 {driver_count:,}명이 <b>모두 교체할 경우</b>
+              · 기사 1인당 예상 월 순수익 +${avg_profit:,.0f}
             </p>
           </div>
           <div class="hero__side">
@@ -198,7 +199,7 @@ def render() -> None:
     head_slot = st.container()
 
     # ── 필터 한 줄: 아래 모든 카드·차트·표가 이 값으로 스코프된다 ──
-    f1, f2, f3 = st.columns([1, 1.5, 2], vertical_alignment="bottom")
+    f1, f2 = st.columns([1, 2], vertical_alignment="bottom")
     period = f1.selectbox("월", periods)
 
     report_row = report[report["year_month"] == period].iloc[0]
@@ -216,10 +217,6 @@ def render() -> None:
     )
 
     scope = recommendation_scope(suggestion, aggregation, period, threshold)
-    makers = sorted(scope["manufacturer"].unique()) if not scope.empty else []
-    picked_makers = f3.multiselect("추천 제조사", makers, placeholder="전체 제조사")
-    if picked_makers:
-        scope = scope[scope["manufacturer"].isin(picked_makers)].reset_index(drop=True)
 
     with head_slot:
         _head(period, len(month_suggestion))
@@ -258,7 +255,7 @@ def render() -> None:
         delta=_delta(agg["avg_profit"], prev_agg["avg_profit"] if prev_agg else None),
     )
     t3.metric(
-        "회사 평균 월 렌탈 객단가 증가",
+        "회사 평균 예상 월 렌탈 객단가 증가",
         f"${agg['avg_revenue']:,.0f}",
         delta=_delta(agg["avg_revenue"], prev_agg["avg_revenue"] if prev_agg else None),
     )
@@ -273,7 +270,7 @@ def render() -> None:
     )
 
     if scope.empty:
-        st.info("이 조건에는 해당하는 기사가 없습니다. 하한을 낮추거나 제조사 필터를 지워 보세요.")
+        st.info("이 조건에는 해당하는 기사가 없습니다. 하한을 낮춰 보세요.")
         return
 
     # ── 분포 · 차종 · 사유 ──
