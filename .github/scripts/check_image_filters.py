@@ -46,6 +46,11 @@ TARGETS = [
         "ci_filter": "aws_lambda",
         "deploy_workflow": ".github/workflows/deploy-lambda.yml",
     },
+    {
+        "dockerfile": "shared/dashboard/Dockerfile",
+        "ci_filter": "dashboard",
+        "deploy_workflow": ".github/workflows/deploy-dashboard.yml",
+    },
 ]
 
 # COPY 원본이 아닌 것. 빌드 단계에서만 쓰거나 이미지 내용과 무관합니다.

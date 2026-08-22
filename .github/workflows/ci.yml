@@ -113,6 +113,13 @@ jobs:
               - 'Makefile'
               - '.dockerignore'
               - '.github/workflows/ci.yml'
+            dashboard:
+              # `.github/scripts/check_image_filters.py` 가 Dockerfile COPY 와 대조합니다.
+              - 'main/dashboard/**'
+              - 'schema/**'
+              - 'Makefile'
+              - '.dockerignore'
+              - '.github/workflows/ci.yml'
 
       # DAG 검증은 이미지와 조건이 다릅니다. dags/ 를 고치면 이미지는 그대로지만
       # DAG 는 다시 읽어봐야 합니다.
