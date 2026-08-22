@@ -3,6 +3,10 @@
 1. S3 exact/wildcard 입력은 임시 로컬 파일로 staging 후 정리
 2. HVFHV Silver dry-run은 정상 적재와 같은 물리 스키마를 검증
 3. Gold dry-run은 집계 결과를 계산하되 CSV writer를 호출하지 않음
+
+이슈 #771 (EMR dry-run이 로컬 staging을 잘못 탐):
+4. monthly_taxi_trip Silver dry-run은 prod에서는 S3 입력을 로컬로 내리지 않는다
+5. monthly_taxi_trip Silver dry-run은 local에서는 여전히 S3 입력을 로컬로 내린다
 """
 
 from pathlib import Path
@@ -64,6 +68,88 @@ def test_S3_입력은_임시_staging후_정리한다():
         assert all(path.is_file() for path in staged)
 
     assert all(not path.exists() for path in staged)
+
+
+class _FakeSparkContext:
+    def setLogLevel(self, level):
+        pass
+
+
+class _FakeSpark:
+    def __init__(self):
+        self.sparkContext = _FakeSparkContext()
+
+
+class _FakeFrame:
+    def count(self):
+        return 5
+
+
+def _patch_monthly_taxi_trip_pipeline(monkeypatch, staged_calls):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_stage(*groups):
+        staged_calls.append(groups)
+        yield tuple([group] if isinstance(group, str) else group for group in groups)
+
+    captured_paths = []
+
+    class FakeExtractor:
+        def __init__(self, spark, path):
+            captured_paths.append(path)
+            self.name = "fake"
+
+        def extract(self):
+            return _FakeFrame()
+
+    class FakeTransformer:
+        def __init__(self, error_threshold):
+            pass
+
+        def transform(self, data):
+            return data
+
+    monkeypatch.setattr(silver_job, "get_or_create_spark_session", lambda *a, **k: _FakeSpark())
+    monkeypatch.setattr(silver_job, "stage_s3_parquet_inputs", fake_stage)
+    monkeypatch.setattr(silver_job, "SparkParquetExtractor", FakeExtractor)
+    monkeypatch.setattr(silver_job, "MonthlyTaxiTripCleanTransformer", FakeTransformer)
+    return captured_paths
+
+
+def test_monthly_taxi_trip_dry_run은_prod에서_S3_입력을_로컬로_내리지_않는다(monkeypatch):
+    staged_calls = []
+    captured_paths = _patch_monthly_taxi_trip_pipeline(monkeypatch, staged_calls)
+    input_path = "s3://test-bucket/bronze/monthly_taxi_trip/year_month=2026-05/20260501T000000000000Z.parquet"
+
+    silver_job.main(
+        [
+            "--env", "prod",
+            "--input_path", input_path,
+            "--output_path", "s3://test-bucket/silver/monthly_taxi_trip",
+            "--dry-run",
+        ]
+    )
+
+    assert staged_calls == []
+    assert captured_paths == [input_path]
+
+
+def test_monthly_taxi_trip_dry_run은_local에서는_여전히_S3_입력을_로컬로_내린다(monkeypatch):
+    staged_calls = []
+    _patch_monthly_taxi_trip_pipeline(monkeypatch, staged_calls)
+    input_path = "s3://test-bucket/bronze/monthly_taxi_trip/year_month=2026-05/20260501T000000000000Z.parquet"
+
+    silver_job.main(
+        [
+            "--env", "local",
+            "--input_path", input_path,
+            "--output_path", "data/silver/monthly_taxi_trip",
+            "--dry-run",
+        ]
+    )
+
+    assert len(staged_calls) == 1
 
 
 def test_HVFHV_Silver_dry_run은_물리_스키마를_검증하고_쓰지_않는다():
