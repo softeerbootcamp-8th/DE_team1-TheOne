@@ -101,6 +101,92 @@ def test_차량_교체_추천_기준선_기본값은_서비스_조건인_600이�
     assert dag.params["threshold_profit_increase"] == 600.0
 
 
+def test_EIA_전력_충전단가_markup_기본값은_Variable_미설정시_2다():
+    """#743 — Param 기본값을 Variable(eia_electricity_markup)에서 가져오도록 바꿨다.
+    Variable을 설정하지 않은 상태(테스트 DB는 매번 비어 있음)에서는 이전 리터럴
+    기본값 2.0과 동일하게 동작해야 한다(회귀 없음)."""
+    dag = getattr(
+        importlib.import_module("dags.eia_electricity_price_raw_to_silver_dag"),
+        "eia_electricity_price_raw_to_silver_dag",
+    )
+
+    assert dag.params["markup"] == 2.0
+
+
+def test_HVFHV_불합격_허용비율_기본값은_Variable_미설정시_0_05다():
+    """#743 — MONTHLY_TAXI_TRIP_ERROR_THRESHOLD 모듈 상수를 Param으로 승격하고
+    기본값을 Variable(hvfhv_error_threshold)에서 가져오도록 바꿨다. Variable을
+    설정하지 않은 상태에서는 이전 리터럴 기본값 0.05와 동일해야 한다(회귀 없음)."""
+    dag = getattr(
+        importlib.import_module("dags.monthly_taxi_trip_raw_to_silver_dag"),
+        "monthly_taxi_trip_dag",
+    )
+
+    assert dag.params["error_threshold"] == 0.05
+
+
+def _reload_with_fresh_params(module_path: str, probe_name: str):
+    """DAG 모듈을 별도 이름으로 다시 실행해 top-level Param()을 재평가시킵니다.
+
+    일반 재import는 캐시된 모듈을 그대로 돌려줘 Variable.set() 이후에도 예전
+    Param 기본값을 봅니다. 다른 테스트가 붙들고 있는 정본 DAG 객체와 동일성
+    비교가 어긋나지 않도록, 정본은 그대로 두고 별도 이름으로만 다시 읽습니다.
+    """
+    import importlib.util
+
+    canonical = importlib.import_module(module_path)
+    spec = importlib.util.spec_from_file_location(probe_name, canonical.__file__)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_차량_교체_추천_기준선은_Variable_설정시_그값을_따른다():
+    """#743 — 키 이름이 잘못돼도 Variable.get이 조용히 기본값만 계속 반환해
+    "미설정 시 회귀 없음" 테스트만으로는 못 잡는다. Variable을 실제로 설정해
+    그 값이 그대로 반영되는지까지 확인한다."""
+    from airflow.models import Variable
+
+    Variable.set("gold_profit_threshold", "777.0")
+    try:
+        module = _reload_with_fresh_params(
+            "dags.monthly_taxi_trip_silver_to_gold_dag", "_gold_dag_variable_probe"
+        )
+        assert module.monthly_taxi_trip_silver_to_gold_dag.params[
+            "threshold_profit_increase"
+        ] == 777.0
+    finally:
+        Variable.delete("gold_profit_threshold")
+
+
+def test_EIA_전력_충전단가_markup은_Variable_설정시_그값을_따른다():
+    from airflow.models import Variable
+
+    Variable.set("eia_electricity_markup", "3.5")
+    try:
+        module = _reload_with_fresh_params(
+            "dags.eia_electricity_price_raw_to_silver_dag",
+            "_eia_electricity_dag_variable_probe",
+        )
+        assert module.eia_electricity_price_raw_to_silver_dag.params["markup"] == 3.5
+    finally:
+        Variable.delete("eia_electricity_markup")
+
+
+def test_HVFHV_불합격_허용비율은_Variable_설정시_그값을_따른다():
+    from airflow.models import Variable
+
+    Variable.set("hvfhv_error_threshold", "0.2")
+    try:
+        module = _reload_with_fresh_params(
+            "dags.monthly_taxi_trip_raw_to_silver_dag",
+            "_monthly_taxi_trip_raw_to_silver_dag_variable_probe",
+        )
+        assert module.monthly_taxi_trip_dag.params["error_threshold"] == 0.2
+    finally:
+        Variable.delete("hvfhv_error_threshold")
+
+
 def _decorator_name(decorator: ast.expr) -> str | None:
     target = decorator.func if isinstance(decorator, ast.Call) else decorator
     return target.id if isinstance(target, ast.Name) else None

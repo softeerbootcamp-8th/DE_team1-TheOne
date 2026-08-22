@@ -3,6 +3,7 @@
 import os
 from datetime import datetime, timedelta
 
+from airflow.models import Variable
 from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
@@ -163,7 +164,16 @@ def _build_gold_operator():
         # 는 전제로 콜 리스트를 만듭니다. 낮추면 대상자가 늘지만 성사율이 떨어지고,
         # 높이면 반대입니다. 운영 기준이 바뀌면 코드가 아니라 이 파라미터로 조정하세요.
         # (근거: docs/METRICS.md - 4. 추천 기준선)
-        "threshold_profit_increase": Param(600.0, type="number"),
+        #
+        # 기본값을 Variable(gold_profit_threshold)에서 가져옵니다 — DAG 파싱
+        # 시점(스케줄러/DAG 프로세서)에서 실행되는 코드라 airflow.sdk가 아니라
+        # DB에 직접 접근하는 airflow.models.Variable을 씁니다(#743). 재배포 없이
+        # Airflow UI에서 값을 바꿀 수 있게 하려는 목적이라, 실행마다 override할
+        # 필요가 없다면 이 방식이 맞습니다.
+        "threshold_profit_increase": Param(
+            float(Variable.get("gold_profit_threshold", default_var=600.0)),
+            type="number",
+        ),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
         # 비우면 Variable(gold_stale_sla_days) 또는 기본값을 씁니다 — 절대 날짜가
         # 아니라 상대 기준을 쓰는 이유는 tasks.resolve_stale_sla_days 참고.

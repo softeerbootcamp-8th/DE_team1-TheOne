@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta
 
+from airflow.models import Variable
 from airflow.sdk import Param, dag
 
 from main.airflow.scripts.eia_electricity_price_bronze_to_silver.tasks import (
@@ -44,7 +45,13 @@ default_args = {
             type=["string", "null"],
             pattern=r"^(0?[1-9]|1[0-2])$",
         ),
-        "markup": Param(2.0, type="number"),
+        # 기본값을 Variable(eia_electricity_markup)에서 가져옵니다 — DAG 파싱
+        # 시점 코드라 airflow.sdk가 아니라 DB에 직접 접근하는
+        # airflow.models.Variable을 씁니다(#743).
+        "markup": Param(
+            float(Variable.get("eia_electricity_markup", default_var=2.0)),
+            type="number",
+        ),
         "bronze_dir": Param(BRONZE_DIR, type="string"),
         "silver_dir": Param(SILVER_DIR, type="string"),
         "dry_run": Param(
