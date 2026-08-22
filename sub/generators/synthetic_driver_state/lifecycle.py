@@ -87,7 +87,6 @@ def synthesize_month(
     previous_current: pd.DataFrame | None,
     previous_events: pd.DataFrame | None,
     previous_noise: pd.DataFrame | None,
-    fuel: dict,
 ) -> SynthesizeResult:
     """그 달의 합성. 전월 상태가 없으면 초기 스냅샷을 만듭니다."""
     global_seed = config.global_seed
@@ -181,7 +180,6 @@ def synthesize_month(
         global_seed=global_seed,
         target_month=target_month,
         rationality=config.synthesize.rationality,
-        fuel=fuel,
     )
     for driver_id in joiners:
         taxi_id = assignment.get(driver_id)

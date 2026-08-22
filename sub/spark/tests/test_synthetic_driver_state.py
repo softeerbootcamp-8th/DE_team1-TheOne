@@ -17,7 +17,7 @@ import pytest
 from conftest import TEST_CONFIG_DATA
 
 from sub.config import build_config
-from sub.generators.synthetic_driver_state import adapters, checkpoint, events, fleet
+from sub.generators.synthetic_driver_state import adapters, checkpoint, events
 from sub.generators.synthetic_driver_state.lifecycle import synthesize_month
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.candidates import REQUIRED as CANDIDATES_REQUIRED
@@ -28,7 +28,6 @@ POOL = {
     "trip_miles": np.linspace(0.5, 30.0, 500),
     "trip_time_min": np.linspace(3.0, 90.0, 500),
 }
-FUEL = {"gallon_usd": 4.1471, "kwh_usd": 0.417143}
 
 
 def _config(initial_count: int = 400):
@@ -63,7 +62,7 @@ def test_체크포인트를_쓰고_그대로_읽는다(tmp_path):
     run = RunContext.create("2024-01", config)
     result = synthesize_month(
         target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
-        previous_current=None, previous_events=None, previous_noise=None, fuel=FUEL,
+        previous_current=None, previous_events=None, previous_noise=None,
     )
     checkpoint.write_checkpoint(
         tmp_path, run,
@@ -86,7 +85,7 @@ def test_같은_run_id로_다시_쓰면_그대로_반환한다(tmp_path):
     run = RunContext.create("2024-01", config)
     result = synthesize_month(
         target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
-        previous_current=None, previous_events=None, previous_noise=None, fuel=FUEL,
+        previous_current=None, previous_events=None, previous_noise=None,
     )
     kwargs = dict(
         events=result.events, events_all=result.events, current=result.current,
@@ -103,7 +102,7 @@ def test_다른_설정으로_같은_달을_다시_쓰면_거부한다(tmp_path):
     run = RunContext.create("2024-01", config)
     result = synthesize_month(
         target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
-        previous_current=None, previous_events=None, previous_noise=None, fuel=FUEL,
+        previous_current=None, previous_events=None, previous_noise=None,
     )
     checkpoint.write_checkpoint(
         tmp_path, run,
@@ -126,7 +125,7 @@ def test_config_hash가_다른_전월_체크포인트는_이어받지_않는다(
     first_run = RunContext.create("2024-01", config)
     result = synthesize_month(
         target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
-        previous_current=None, previous_events=None, previous_noise=None, fuel=FUEL,
+        previous_current=None, previous_events=None, previous_noise=None,
     )
     checkpoint.write_checkpoint(
         tmp_path, first_run,
@@ -154,7 +153,7 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     config, master = _config(50), _vehicle_master()
     first = synthesize_month(
         target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
-        previous_current=None, previous_events=None, previous_noise=None, fuel=FUEL,
+        previous_current=None, previous_events=None, previous_noise=None,
     )
     run1 = RunContext.create("2024-01", config)
     checkpoint.write_checkpoint(
@@ -166,7 +165,7 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     second = synthesize_month(
         target_month="2024-02", config=config, vehicle_master=master, trip_pool=POOL,
         previous_current=first.current, previous_events=first.events,
-        previous_noise=first.noise_state, fuel=FUEL,
+        previous_noise=first.noise_state,
     )
     # events_all은 그 달 이벤트만이 아니라 **누적 전체**입니다 — 아니면 다음 재개가
     # 이번 달 이전 역사를 잃습니다.
@@ -222,7 +221,7 @@ def _synthesize_for_adapters(initial_count=50):
     )
     result = synthesize_month(
         target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
-        previous_current=None, previous_events=None, previous_noise=None, fuel=FUEL,
+        previous_current=None, previous_events=None, previous_noise=None,
     )
     return result, pool
 
@@ -320,100 +319,3 @@ def test_실측_vehicle_master의_min_max_제원을_중앙값_하나로_합친�
     # 같은 차종이 여러 vendor/platform 행으로 왔어도 결과는 차종당 한 행.
     assert len(pool) == pool["vehicle_model_id"].nunique()
 
-
-def _write_fuel_price(root, year_month: str, gas: list[float], ev: list[float]):
-    """생산자(`eia_fuel_price_silver_pipeline`)와 같은 자리·같은 컬럼으로 씁니다."""
-    partition = root / "silver" / "gas_ev_price" / f"year_month={year_month}"
-    partition.mkdir(parents=True)
-    pd.DataFrame({"gas_price": gas, "ev_price": ev}).to_parquet(
-        partition / "gas_ev_price.parquet"
-    )
-
-
-def test_실측_유가_전기요금을_평균낸다(tmp_path):
-    # 전에는 없는 데이터셋(gas_price·ev_charging_price / collected_month=)을 만들어
-    # 두고 통과했습니다. 크롤링 제거(#462)로 생산자가 사라진 뒤에도 초록불이라
-    # EC2 에서 터질 때까지 몰랐습니다.
-    _write_fuel_price(tmp_path, "2026-01", [4.0, 4.2], [0.40, 0.42])
-
-    prices = fleet.load_fuel_prices(data_dir=tmp_path)
-
-    assert prices == {"gallon_usd": pytest.approx(4.1), "kwh_usd": pytest.approx(0.41)}
-
-
-def test_여러_달이_있으면_최신_달을_쓴다(tmp_path):
-    _write_fuel_price(tmp_path, "2025-12", [3.0], [0.30])
-    _write_fuel_price(tmp_path, "2026-01", [4.0], [0.40])
-
-    prices = fleet.load_fuel_prices(data_dir=tmp_path)
-
-    assert prices == {"gallon_usd": pytest.approx(4.0), "kwh_usd": pytest.approx(0.40)}
-
-
-def test_연료비_Silver_가_없으면_실패한다(tmp_path):
-    with pytest.raises(FileNotFoundError, match="year_month 파티션이 없습니다"):
-        fleet.load_fuel_prices(data_dir=tmp_path)
-
-
-def test_컬럼이_바뀌면_무엇이_없는지_알려준다(tmp_path):
-    """스키마가 갈렸을 때 KeyError 대신 무엇이 없는지 말해야 합니다."""
-    partition = tmp_path / "silver" / "gas_ev_price" / "year_month=2026-01"
-    partition.mkdir(parents=True)
-    pd.DataFrame({"price_usd_per_gallon": [4.0]}).to_parquet(
-        partition / "gas_ev_price.parquet"
-    )
-
-    with pytest.raises(ValueError, match="ev_price"):
-        fleet.load_fuel_prices(data_dir=tmp_path)
-
-
-def test_알_수_없는_storage는_거부한다(tmp_path):
-    with pytest.raises(ValueError, match="알 수 없는 storage"):
-        fleet.load_fuel_prices(data_dir=tmp_path, storage="gcs")
-
-
-def test_S3에서_최신_달을_읽는다(monkeypatch):
-    """EC2 는 산출물을 S3 에 쓰고 컨테이너에 바인드 마운트가 없습니다."""
-    import io
-
-    import boto3
-    from moto import mock_aws
-
-    bucket, region = "test-de-theone", "ap-northeast-2"
-    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", bucket)
-
-    def body(gas, ev):
-        buffer = io.BytesIO()
-        pd.DataFrame({"gas_price": gas, "ev_price": ev}).to_parquet(buffer)
-        return buffer.getvalue()
-
-    with mock_aws():
-        client = boto3.client("s3", region_name=region)
-        client.create_bucket(
-            Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": region}
-        )
-        for year_month, gas, ev in [("2025-12", [3.0], [0.30]), ("2026-01", [4.0], [0.40])]:
-            client.put_object(
-                Bucket=bucket,
-                Key=f"silver/gas_ev_price/year_month={year_month}/gas_ev_price.parquet",
-                Body=body(gas, ev),
-            )
-
-        prices = fleet.load_fuel_prices(storage="s3")
-
-    assert prices == {"gallon_usd": pytest.approx(4.0), "kwh_usd": pytest.approx(0.40)}
-
-
-def test_S3에_없으면_어느_DAG를_돌릴지_알려준다(monkeypatch):
-    import boto3
-    from moto import mock_aws
-
-    bucket, region = "test-de-theone", "ap-northeast-2"
-    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", bucket)
-
-    with mock_aws():
-        boto3.client("s3", region_name=region).create_bucket(
-            Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": region}
-        )
-        with pytest.raises(FileNotFoundError, match="eia_fuel_price_silver"):
-            fleet.load_fuel_prices(storage="s3")
