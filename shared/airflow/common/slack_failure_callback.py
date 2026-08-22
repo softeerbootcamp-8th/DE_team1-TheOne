@@ -1,4 +1,4 @@
-"""Slack 재시도·최종 실패·Gold 성공 알림 콜백."""
+"""Slack 재시도·최종 실패·Gold 성공/skip/staleness 알림 콜백."""
 
 import logging
 
@@ -50,6 +50,25 @@ SLACK_SUCCESS_TEXT = (
     "*대상 연월*: `{{ (ti.xcom_pull(task_ids='validate_inputs') or {}).get('year_month', '확인 필요') }}`\n"
     f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
     "*파이프라인*: `{{ dag.dag_id }}`\n"
+    "*Run ID*: `{{ run_id | truncate(80, True) }}`\n"
+    "*로그*: <{{ ti.log_url }}|Airflow 로그 열기>"
+)
+
+SLACK_SKIP_TEXT = (
+    "⚠️ *Gold 파이프라인 입력 대기 (skip)*\n"
+    "*DAG*: `{{ dag.dag_id }}`\n"
+    "*Task*: `{{ ti.task_id }}`\n"
+    f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
+    f"*원인*: `{REASON_TEXT}`\n"
+    "*Run ID*: `{{ run_id | truncate(80, True) }}`\n"
+    "*로그*: <{{ ti.log_url }}|Airflow 로그 열기>"
+)
+
+SLACK_STALE_TEXT = (
+    "⏰ *Gold 파이프라인 staleness 경고*\n"
+    "*DAG*: `{{ dag.dag_id }}`\n"
+    f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
+    "*마지막 성공 이후*: `{{ days_since_success }}일` (SLA `{{ stale_days }}일`)\n"
     "*Run ID*: `{{ run_id | truncate(80, True) }}`\n"
     "*로그*: <{{ ti.log_url }}|Airflow 로그 열기>"
 )
@@ -142,6 +161,46 @@ SLACK_SUCCESS_BLOCKS = [
         ],
     },
 ]
+SLACK_SKIP_BLOCKS = _failure_blocks(
+    "⚠️ Gold 파이프라인 입력 대기 (skip)", "Silver 소스 적재 확인, 준비되면 자동 재트리거"
+)
+SLACK_STALE_BLOCKS = [
+    {
+        "type": "header",
+        "text": {"type": "plain_text", "text": "⏰ Gold 파이프라인 staleness 경고"},
+    },
+    {
+        "type": "section",
+        "fields": [
+            {
+                "type": "mrkdwn",
+                "text": "*마지막 성공 이후*\n`{{ days_since_success }}일`",
+            },
+            {"type": "mrkdwn", "text": "*SLA 기준*\n`{{ stale_days }}일`"},
+            {"type": "mrkdwn", "text": f"*실행 유형*\n`{RUN_TYPE_TEXT}`"},
+            {"type": "mrkdwn", "text": "*DAG*\n`{{ dag.dag_id }}`"},
+        ],
+    },
+    {
+        "type": "context",
+        "elements": [
+            {
+                "type": "mrkdwn",
+                "text": "Run ID · `{{ run_id | truncate(80, True) }}`",
+            }
+        ],
+    },
+    {
+        "type": "actions",
+        "elements": [
+            {
+                "type": "button",
+                "text": {"type": "plain_text", "text": "Airflow 로그 열기"},
+                "url": "{{ ti.log_url }}",
+            }
+        ],
+    },
+]
 
 try:
     from airflow.providers.slack.notifications.slack_webhook import (
@@ -171,9 +230,25 @@ except ImportError as exc:
             task_instance.task_id if task_instance else "unknown",
         )
 
+    def slack_skip_alert_callback(context):
+        task_instance = context.get("task_instance")
+        logger.warning(
+            "Task skip: %s",
+            task_instance.task_id if task_instance else "unknown",
+        )
+
+    def slack_stale_alert_callback(context):
+        logger.warning(
+            "Gold staleness 경고: 마지막 성공 이후 %s일 (SLA %s일)",
+            context.get("days_since_success"),
+            context.get("stale_days"),
+        )
+
     slack_retry_alert_callback.is_fallback = True
     slack_failure_callback.is_fallback = True
     slack_success_callback.is_fallback = True
+    slack_skip_alert_callback.is_fallback = True
+    slack_stale_alert_callback.is_fallback = True
 else:
     slack_retry_alert_callback = send_slack_webhook_notification(
         slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
@@ -189,4 +264,14 @@ else:
         slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
         text=SLACK_SUCCESS_TEXT,
         blocks=SLACK_SUCCESS_BLOCKS,
+    )
+    slack_skip_alert_callback = send_slack_webhook_notification(
+        slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
+        text=SLACK_SKIP_TEXT,
+        blocks=SLACK_SKIP_BLOCKS,
+    )
+    slack_stale_alert_callback = send_slack_webhook_notification(
+        slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
+        text=SLACK_STALE_TEXT,
+        blocks=SLACK_STALE_BLOCKS,
     )
