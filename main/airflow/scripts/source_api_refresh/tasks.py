@@ -189,19 +189,17 @@ def mark_processed_task(result: dict, **context) -> None:
     trigger_rule=TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS,
 )
 def publish_api_refresh_ready_task(check_task_ids: list[str], **context) -> None:
-    if (context.get("params") or {}).get("dry_run"):
-        assets.disable_outlets_for_dry_run(context)
-        logger.info("dry-run: API Silver 준비 Asset을 발행하지 않습니다")
-        return
+    dry_run = (context.get("params") or {}).get("dry_run") is True
     results = context["task_instance"].xcom_pull(task_ids=check_task_ids)
     year_months = {
         result["year_month"]
         for result in results
-        if isinstance(result, dict) and result.get("changed")
+        if isinstance(result, dict) and (dry_run or result.get("changed"))
     }
     for year_month in year_months:
         assets.publish_month_partition(
             context.get("outlet_events"),
             assets.API_SILVER_REFRESH_READY,
             year_month,
+            dry_run=dry_run,
         )

@@ -54,7 +54,8 @@ def _local_build_gold() -> BashOperator:
         "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
         + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
         + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
-        + "{% if params.dry_run %}--dry-run{% endif %}"
+        + "{% if task_instance.xcom_pull(task_ids='validate_inputs')['dry_run'] %}"
+        + "--dry-run{% endif %}"
     )
     return BashOperator(
         task_id="build_gold",
@@ -111,7 +112,8 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     # entryPointArguments 는 셸이 아니라 JSON 리스트라 빈 문자열도
                     # 그대로 하나의 인자로 전달됩니다 — 로컬처럼 Jinja if 로 토큰
                     # 자체를 없앨 수 없어 --dry-run 에 값을 항상 명시적으로 줍니다.
-                    "--dry-run", "{{ 'true' if params.dry_run else 'false' }}",
+                    "--dry-run",
+                    f"{{{{ 'true' if {xcom}['dry_run'] else 'false' }}}}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }

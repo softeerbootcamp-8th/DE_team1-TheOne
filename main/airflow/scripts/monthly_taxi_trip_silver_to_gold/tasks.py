@@ -258,7 +258,12 @@ def validate_gold_outputs(output_dir: str, year_month: str) -> None:
 
 @task(task_id="validate_inputs")
 def validate_inputs_task(**context) -> dict:
-    params = context["params"]
+    dry_run = context["params"].get("dry_run") is True or any(
+        (event.extra or {}).get("dry_run") is True
+        for events in (context.get("triggering_asset_events") or {}).values()
+        for event in events
+    )
+    params = {**context["params"], "dry_run": dry_run}
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
     dag_run = context.get("dag_run")
     partition_key = getattr(dag_run, "partition_key", None)
@@ -291,9 +296,13 @@ def validate_inputs_task(**context) -> dict:
             "year_month": year_month,
             "year": year_month.split("-")[0],
             "month": str(int(year_month.split("-")[1])),
+            "dry_run": dry_run,
         }
     try:
-        return resolve_input_paths(year_month, params)
+        return {
+            **resolve_input_paths(year_month, params),
+            "dry_run": dry_run,
+        }
     except FileNotFoundError as exc:
         if partition_key:
             _notify_slack(slack_skip_alert_callback, {**context, "exception": exc})
@@ -306,7 +315,7 @@ def validate_inputs_task(**context) -> dict:
 @task(task_id="validate_gold")
 def validate_gold_task(**context) -> None:
     resolved = context["task_instance"].xcom_pull(task_ids="validate_inputs")
-    if context["params"].get("dry_run") is True:
+    if resolved["dry_run"]:
         logger.info(
             "dry-run: Spark 내부 Gold 검증 완료, 적재 검증을 생략합니다: year_month=%s",
             resolved["year_month"],
