@@ -49,10 +49,12 @@ def _required_prod_env(name: str) -> str:
 
 
 def _local_build_gold() -> BashOperator:
+    is_rerun = "task_instance.xcom_pull(task_ids='validate_inputs')['is_rerun']"
     common_tail = (
         "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
         + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
         + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
+        + f"--is_rerun {{{{ 'true' if {is_rerun} else 'false' }}}} "
         + "{% if params.dry_run %}--dry-run{% endif %}"
     )
     return BashOperator(
@@ -104,6 +106,7 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     "--year", f"{{{{ {xcom}['year'] }}}}",
                     "--month", f"{{{{ {xcom}['month'] }}}}",
                     "--threshold_profit_increase", "{{ params.threshold_profit_increase }}",
+                    "--is_rerun", f"{{{{ 'true' if {xcom}['is_rerun'] else 'false' }}}}",
                     # entryPointArguments 는 셸이 아니라 JSON 리스트라 빈 문자열도
                     # 그대로 하나의 인자로 전달됩니다 — 로컬처럼 Jinja if 로 토큰
                     # 자체를 없앨 수 없어 --dry-run 에 값을 항상 명시적으로 줍니다.

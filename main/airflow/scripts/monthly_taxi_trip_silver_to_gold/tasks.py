@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import psycopg2
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.sdk import task
 
@@ -35,7 +36,7 @@ REQUIRED_COLUMNS = {
         "expected_net_profit_increase", "recommendation_reason",
     },
     "monthly_report": {
-        "year_month", "threshold_profit_increase", "recommended_driver_count",
+        "year_month", "threshold_profit_increase", "is_rerun", "recommended_driver_count",
         "avg_net_profit_increase_per_driver",
     },
 }
@@ -179,6 +180,46 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
     return resolved
 
 
+def _monthly_report_exists_in_postgres(year_month: str) -> bool:
+    """운영 Gold DB에 이 대상월 `monthly_report` 행이 이미 있는지.
+
+    관측용 판정이라 실패해도 파이프라인을 막지 않고 "최초완료"(False)로 내려갑니다 —
+    첫 실행이라 테이블이 없는 경우도 이 경로로 자연스럽게 False가 됩니다.
+    """
+    dsn = os.getenv("GOLD_DATABASE_URL")
+    if not dsn:
+        return False
+    try:
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM monthly_report WHERE year_month = %s LIMIT 1",
+                    (year_month,),
+                )
+                return cursor.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "재트리거 판정용 Postgres 조회에 실패해 최초완료로 간주합니다", exc_info=True
+        )
+        return False
+
+
+def resolve_is_rerun(job_env: str, year_month: str, params: dict) -> bool:
+    """대상월 Gold가 이미 완료된 뒤의 재트리거인지. 기존 산출물 존재로 판정합니다."""
+    if job_env == "prod":
+        return _monthly_report_exists_in_postgres(year_month)
+    path = (
+        Path(params["output_dir"])
+        / "monthly_report"
+        / f"year_month={year_month}"
+        / "monthly_report.csv"
+    )
+    return path.is_file()
+
+
 def validate_gold_outputs(output_dir: str, year_month: str) -> None:
     """산출물 3종의 존재·행 수·필수 컬럼을 확인합니다."""
     for dataset in DATASETS:
@@ -219,9 +260,12 @@ def validate_inputs_task(**context) -> dict:
             "year_month": year_month,
             "year": year_month.split("-")[0],
             "month": str(int(year_month.split("-")[1])),
+            "is_rerun": resolve_is_rerun(job_env, year_month, params),
         }
     try:
-        return resolve_input_paths(year_month, params)
+        resolved = resolve_input_paths(year_month, params)
+        resolved["is_rerun"] = resolve_is_rerun(job_env, year_month, params)
+        return resolved
     except FileNotFoundError as exc:
         if partition_key:
             raise AirflowSkipException(

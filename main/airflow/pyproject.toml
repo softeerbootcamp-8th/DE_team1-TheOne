@@ -45,6 +45,10 @@ dependencies = [
     # ★ marshmallow 를 4.3.0 -> 3.26.2 로 끌어내립니다. providers-amazon 도 같은 걸
     #   쓰므로, 이 버전을 올릴 때 Airflow 기동까지 확인해야 합니다 (#256).
     "great-expectations==1.20.0",
+    # Gold 재트리거 판정(monthly_taxi_trip_silver_to_gold)이 운영 서빙 DB를 직접
+    # 조회합니다. providers-postgres 가 이미 전이 의존성으로 끌고 오지만, 코드에서
+    # 직접 import 하므로 직접 의존성으로 고정합니다 (버전은 이미 설치된 값).
+    "psycopg2-binary==2.9.12",
 ]
 
 [dependency-groups]
