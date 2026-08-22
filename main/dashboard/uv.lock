@@ -1145,6 +1145,7 @@ name = "tlc-dashboard"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "altair" },
     { name = "pandas" },
     { name = "pyarrow" },
     { name = "streamlit" },
@@ -1157,9 +1158,10 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "altair", specifier = ">=5.4" },
     { name = "pandas", specifier = ">=2.2" },
     { name = "pyarrow", specifier = ">=17" },
-    { name = "streamlit", specifier = ">=1.40" },
+    { name = "streamlit", specifier = ">=1.49" },
 ]
 
 [package.metadata.requires-dev]
