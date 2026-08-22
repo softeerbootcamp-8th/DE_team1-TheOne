@@ -112,9 +112,16 @@ def _vehicle_master_silver() -> pd.DataFrame:
     ])
 
 
-def _monthly_config(initial_count: int):
+def _monthly_config(initial_count: int, *, snapshot_date: str = "2026-08-01"):
+    """`snapshot_date` 가 곧 **첫 달**입니다.
+
+    전월 체크포인트가 없어도 되는 달은 이 값 하나뿐입니다. 그보다 뒤인 달을
+    체크포인트 없이 돌리면 `CheckpointLineageError` 로 막힙니다 — 조용히 초기
+    스냅샷을 만들어 기사 연속성을 끊는 것을 방지합니다(#763).
+    """
     data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in TEST_CONFIG_DATA.items()}
     data["driver"] = {**data["driver"], "initial_count": initial_count}
+    data["bootstrap"] = {**data["bootstrap"], "snapshot_date": snapshot_date}
     return build_config(data)
 
 

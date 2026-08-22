@@ -319,3 +319,168 @@ def test_실측_vehicle_master의_min_max_제원을_중앙값_하나로_합친�
     # 같은 차종이 여러 vendor/platform 행으로 왔어도 결과는 차종당 한 행.
     assert len(pool) == pool["vehicle_model_id"].nunique()
 
+
+
+# ── 체크포인트 S3 저장소와 유실 감지 (#763) ─────────────────────────────
+
+S3_BUCKET = "test-de-theone"
+S3_REGION = "ap-northeast-2"
+
+
+def _synthesize(month: str, config):
+    return synthesize_month(
+        target_month=month, config=config, vehicle_master=_vehicle_master(), trip_pool=POOL,
+        previous_current=None, previous_events=None, previous_noise=None,
+    )
+
+
+def _write_kwargs(result):
+    return dict(
+        events=result.events, events_all=result.events, current=result.current,
+        noise=result.noise_state, previous_month_value=None, previous_run_id=None,
+        clip_rate=result.clip_rate,
+    )
+
+
+def _bootstrap_config(month: str, initial_count: int = 50):
+    """`month` 를 첫 달로 지정한 설정. 그 달은 전월 없이 돌 수 있습니다."""
+    data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in TEST_CONFIG_DATA.items()}
+    data["driver"] = {**data["driver"], "initial_count": initial_count}
+    data["bootstrap"] = {**data["bootstrap"], "snapshot_date": f"{month}-01"}
+    return build_config(data)
+
+
+def test_첫_달은_전월_체크포인트가_없어도_된다(tmp_path):
+    config = _bootstrap_config("2024-01")
+    run = RunContext.create("2024-01", config)
+
+    assert checkpoint.resolve_previous_checkpoint(tmp_path, run) == (None, None, None, None, None)
+
+
+def test_첫_달이_아닌데_전월이_없으면_실패한다(tmp_path):
+    """전에는 이때도 부트스트랩으로 취급해 초기 스냅샷을 조용히 만들었습니다.
+
+    EC2 컨테이너에 `data/` 볼륨이 없어 재생성될 때마다 실제로 그랬습니다 — 기사
+    2000명이 그 달에 새로 입사한 데이터가 에러 없이 나왔습니다.
+    """
+    config = _bootstrap_config("2024-01")
+    run = RunContext.create("2024-03", config)
+
+    with pytest.raises(checkpoint.CheckpointLineageError) as error:
+        checkpoint.resolve_previous_checkpoint(tmp_path, run)
+
+    message = str(error.value)
+    assert "2024-02" in message           # 없는 전월을 지목
+    assert "2024-01" in message           # 어디부터 생성해야 하는지
+    assert "기사 연속성" in message        # 그대로 두면 무엇이 깨지는지
+
+
+def test_다른_달은_있는데_전월만_없으면_그것을_알려준다(tmp_path):
+    config = _bootstrap_config("2024-01")
+    result = _synthesize("2024-01", config)
+    checkpoint.write_checkpoint(
+        tmp_path, RunContext.create("2024-01", config), **_write_kwargs(result)
+    )
+    run = RunContext.create("2024-03", config)
+
+    with pytest.raises(checkpoint.CheckpointLineageError, match="다른 달 체크포인트는 있습니다"):
+        checkpoint.resolve_previous_checkpoint(tmp_path, run)
+
+
+def test_알_수_없는_storage는_거부한다(tmp_path):
+    with pytest.raises(ValueError, match="알 수 없는 storage"):
+        checkpoint.build_store(tmp_path, storage="gcs")
+
+
+def test_S3에_버킷이_없으면_무엇을_설정해야_하는지_알려준다(tmp_path):
+    with pytest.raises(ValueError, match="DATA_LAKE_S3_BUCKET"):
+        checkpoint.build_store(tmp_path, storage="s3", bucket=None)
+
+
+def _s3_client():
+    import boto3
+
+    client = boto3.client("s3", region_name=S3_REGION)
+    client.create_bucket(
+        Bucket=S3_BUCKET, CreateBucketConfiguration={"LocationConstraint": S3_REGION}
+    )
+    return client
+
+
+def test_S3에_쓰고_그대로_읽는다(tmp_path):
+    """EMR 워커는 컨테이너 로컬 디스크를 못 봅니다 — S3 왕복이 성립해야 합니다."""
+    from moto import mock_aws
+
+    config = _bootstrap_config("2024-01")
+    result = _synthesize("2024-01", config)
+    run = RunContext.create("2024-01", config)
+
+    with mock_aws():
+        _s3_client()
+        location = checkpoint.write_checkpoint(
+            tmp_path, run, storage="s3", bucket=S3_BUCKET, **_write_kwargs(result)
+        )
+        current, events_all, noise, manifest = checkpoint.read_checkpoint(
+            tmp_path, "2024-01", storage="s3", bucket=S3_BUCKET
+        )
+
+    assert location.startswith(f"s3://{S3_BUCKET}/")
+    pd.testing.assert_frame_equal(current, result.current)
+    pd.testing.assert_frame_equal(events_all, result.events)
+    pd.testing.assert_frame_equal(noise, result.noise_state)
+    assert manifest["run_id"] == run.run_id
+
+
+def test_S3에서도_같은_run_id면_다시_쓰지_않는다(tmp_path):
+    from moto import mock_aws
+
+    config = _bootstrap_config("2024-01")
+    result = _synthesize("2024-01", config)
+    run = RunContext.create("2024-01", config)
+    kwargs = dict(storage="s3", bucket=S3_BUCKET, **_write_kwargs(result))
+
+    with mock_aws():
+        _s3_client()
+        first = checkpoint.write_checkpoint(tmp_path, run, **kwargs)
+        second = checkpoint.write_checkpoint(tmp_path, run, **kwargs)
+
+    assert first == second
+
+
+def test_S3에서_전월을_이어받는다(tmp_path):
+    from moto import mock_aws
+
+    config = _bootstrap_config("2024-01")
+    first = _synthesize("2024-01", config)
+
+    with mock_aws():
+        _s3_client()
+        checkpoint.write_checkpoint(
+            tmp_path, RunContext.create("2024-01", config),
+            storage="s3", bucket=S3_BUCKET, **_write_kwargs(first),
+        )
+        current, events_all, noise, prev_month, prev_run_id = (
+            checkpoint.resolve_previous_checkpoint(
+                tmp_path, RunContext.create("2024-02", config),
+                storage="s3", bucket=S3_BUCKET,
+            )
+        )
+
+    assert prev_month == "2024-01"
+    assert prev_run_id is not None
+    pd.testing.assert_frame_equal(current, first.current)
+
+
+def test_S3에_전월이_없으면_유실로_실패한다(tmp_path):
+    """로컬과 같은 판정을 S3 에서도 해야 합니다."""
+    from moto import mock_aws
+
+    config = _bootstrap_config("2024-01")
+
+    with mock_aws():
+        _s3_client()
+        with pytest.raises(checkpoint.CheckpointLineageError, match="기사 연속성"):
+            checkpoint.resolve_previous_checkpoint(
+                tmp_path, RunContext.create("2024-03", config),
+                storage="s3", bucket=S3_BUCKET,
+            )
