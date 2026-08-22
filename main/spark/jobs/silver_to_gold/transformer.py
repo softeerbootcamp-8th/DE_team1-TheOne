@@ -432,6 +432,11 @@ def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
     ranked = candidates.withColumn(
         "_driver_rank", F.row_number().over(preference)
     ).persist()
+    occupied_stock = (
+        ranked.filter(F.col("_is_current"))
+        .groupBy("_candidate_vehicle_model_id")
+        .agg(F.count(F.lit(1)).alias("_occupied_stock"))
+    )
     max_rank = ranked.agg(F.max("_driver_rank")).first()[0]
     assigned = None
 
@@ -443,7 +448,11 @@ def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
             )
 
         keep_current = proposals.filter(F.col("_is_current"))
-        changes = proposals.filter(~F.col("_is_current"))
+        changes = (
+            proposals.filter(~F.col("_is_current"))
+            .join(occupied_stock, "_candidate_vehicle_model_id", "left")
+            .fillna({"_occupied_stock": 0})
+        )
         if assigned is None:
             changes = changes.withColumn("_used_stock", F.lit(0))
         else:
@@ -465,9 +474,11 @@ def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
             changes.withColumn("_stock_rank", F.row_number().over(stock_priority))
             .filter(
                 F.col("_stock_rank")
-                <= F.col("_candidate_stock") - F.col("_used_stock")
+                <= F.col("_candidate_stock")
+                - F.col("_occupied_stock")
+                - F.col("_used_stock")
             )
-            .drop("_used_stock", "_stock_rank")
+            .drop("_occupied_stock", "_used_stock", "_stock_rank")
         )
         winners = keep_current.unionByName(changes)
         assigned = winners if assigned is None else assigned.unionByName(winners)
@@ -501,13 +512,8 @@ def validate_gold_business_invariants(
     if len(set(counts.values())) != 1:
         raise ValueError(f"Gold 기사 수 불일치: {counts}")
 
-    current_vehicle = driver_snapshot.select(
-        "driver_id", F.col("vehicle_model_id").alias("_current_vehicle_model_id")
-    )
     assigned = (
-        recommendation.join(F.broadcast(current_vehicle), "driver_id", "inner")
-        .filter(F.col("vehicle_model_id") != F.col("_current_vehicle_model_id"))
-        .groupBy("vehicle_model_id")
+        recommendation.groupBy("vehicle_model_id")
         .agg(F.count(F.lit(1)).alias("assigned"))
     )
     stock = inventory.select("vehicle_model_id", "stock")
