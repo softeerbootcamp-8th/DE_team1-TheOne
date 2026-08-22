@@ -219,6 +219,12 @@ def main(args_list: list[str] | None = None) -> None:
         required=True,
         help="차량 교체 추천 기준 순수익 증가액 (USD)",
     )
+    parser.add_argument(
+        "--is_rerun",
+        default=False,
+        type=lambda value: str(value).lower() == "true",
+        help="대상월 Gold가 이미 완료된 뒤의 재트리거인지 (Airflow validate_inputs가 판정)",
+    )
     parser.add_argument("--output_dir", default="data/gold")
     parser.add_argument(
         "--gold_dsn", default=os.getenv("GOLD_DATABASE_URL"),
@@ -293,6 +299,7 @@ def main(args_list: list[str] | None = None) -> None:
             recommendation,
             year_month,
             args.threshold_profit_increase,
+            args.is_rerun,
         )
 
         outputs: dict[str, DataFrame] = {

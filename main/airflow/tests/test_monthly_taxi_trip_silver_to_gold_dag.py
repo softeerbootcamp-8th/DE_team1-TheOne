@@ -13,6 +13,7 @@
 11. SLA 기준일 초과 시 Slack staleness 경고, 기준 이내면 조용히 통과
 12. SLA 기준일은 Param이 우선, 없으면 Variable, 그마저 없으면 기본값 31
 13. 경과일 계산에 실패해도(now가 None이거나 뺄셈이 안 되는 값) 예외 없이 None
+14. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
 """
 
 import importlib
@@ -40,6 +41,7 @@ def _params(root: Path, **overrides) -> dict:
         "driver_vehicle_monthly_snapshot_path": str(root / "driver_vehicle_monthly_snapshot"),
         "lease_vehicle_inventory_path": str(root / "lease_vehicle_inventory"),
         "fuel_price_path": str(root / "gas_ev_price"),
+        "output_dir": str(root / "gold"),
         "year": None,
         "month": None,
     }
@@ -293,7 +295,7 @@ def _write_gold(root: Path, year_month: str) -> None:
             [{"driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
         ),
         "monthly_report": pd.DataFrame(
-            [{"year_month": year_month, "threshold_profit_increase": 100.0, "recommended_driver_count": 1, "avg_net_profit_increase_per_driver": 120.0}]
+            [{"year_month": year_month, "threshold_profit_increase": 100.0, "is_rerun": False, "recommended_driver_count": 1, "avg_net_profit_increase_per_driver": 120.0}]
         ),
     }
     for dataset, frame in frames.items():
@@ -452,3 +454,98 @@ def test_SLA이내면_staleness_Slack알림을_보내지_않는다(tmp_path, mon
     )
 
     assert calls == []
+
+
+# --- 최초완료/재트리거 판정 ----------------------------------------------------
+
+
+def test_로컬은_기존_monthly_report가_없으면_최초완료다(tmp_path):
+    assert dag_module.resolve_is_rerun(
+        "local", "2026-05", _params(tmp_path)
+    ) is False
+
+
+def test_로컬은_기존_monthly_report가_있으면_재트리거다(tmp_path):
+    params = _params(tmp_path)
+    path = Path(params["output_dir"]) / "monthly_report" / "year_month=2026-05" / "monthly_report.csv"
+    path.parent.mkdir(parents=True)
+    path.touch()
+
+    assert dag_module.resolve_is_rerun("local", "2026-05", params) is True
+
+
+def test_운영은_GOLD_DATABASE_URL이_없으면_최초완료로_간주한다(monkeypatch):
+    monkeypatch.delenv("GOLD_DATABASE_URL", raising=False)
+
+    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
+
+
+def test_운영은_Postgres_조회_실패시에도_최초완료로_내려간다(monkeypatch):
+    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://unreachable")
+
+    def raising_connect(dsn):
+        raise RuntimeError("연결 실패")
+
+    monkeypatch.setattr(dag_module.psycopg2, "connect", raising_connect)
+
+    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
+
+
+class _FakeCursor:
+    def __init__(self, row):
+        self.row = row
+        self.executed = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+    def execute(self, sql, parameters):
+        self.executed = (sql, parameters)
+
+    def fetchone(self):
+        return self.row
+
+
+class _FakeConnection:
+    def __init__(self, row):
+        self.cursor_obj = _FakeCursor(row)
+        self.closed = False
+
+    def cursor(self):
+        return self.cursor_obj
+
+    def close(self):
+        self.closed = True
+
+
+def test_운영은_기존_행이_있으면_재트리거다(monkeypatch):
+    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://gold")
+    fake_conn = _FakeConnection(row=(1,))
+    monkeypatch.setattr(dag_module.psycopg2, "connect", lambda dsn: fake_conn)
+
+    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is True
+    assert fake_conn.cursor_obj.executed[1] == ("2026-05",)
+    assert fake_conn.closed is True
+
+
+def test_운영은_기존_행이_없으면_최초완료다(monkeypatch):
+    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://gold")
+    fake_conn = _FakeConnection(row=None)
+    monkeypatch.setattr(dag_module.psycopg2, "connect", lambda dsn: fake_conn)
+
+    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
+
+
+def test_정상실행_결과에_최초완료_재트리거_판정이_실린다(tmp_path):
+    _write_inputs(tmp_path, "2026-05")
+
+    resolved = dag_module.validate_inputs_task.function(
+        params=_params(tmp_path),
+        logical_date=_logical_date(2026, 5),
+        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+    )
+
+    assert resolved["is_rerun"] is False

@@ -232,12 +232,24 @@ def test_월간_리포트는_회사_객단가가_실제로_상승한_기사만_�
         ["driver_id", "expected_net_profit_increase", "expected_revenue_increase"],
     )
 
-    report = build_monthly_report(recommendation, "2026-01", 600.0).first()
+    report = build_monthly_report(recommendation, "2026-01", 600.0, False).first()
 
     assert report.recommended_driver_count == 1
     assert report.avg_net_profit_increase_per_driver == 600.0
     assert report.avg_revenue_increase_per_driver == 1.0
     assert report.total_revenue_increase == 1.0
+    assert report.is_rerun is False
+
+
+def test_월간_리포트는_재트리거_여부를_그대로_기록한다(spark):
+    recommendation = spark.createDataFrame(
+        [("eligible", 600.0, 1.0)],
+        ["driver_id", "expected_net_profit_increase", "expected_revenue_increase"],
+    )
+
+    report = build_monthly_report(recommendation, "2026-01", 600.0, True).first()
+
+    assert report.is_rerun is True
 
 
 # --- Gold 3종 적재 일관성 (#589) ---------------------------------------------

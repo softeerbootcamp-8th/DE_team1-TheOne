@@ -174,6 +174,7 @@ def test_Asset_dry_run은_Gold의_dry_run으로_전달된다(tmp_path):
             tmp_path / "lease_vehicle_inventory"
         ),
         "fuel_price_path": str(tmp_path / "gas_ev_price"),
+        "output_dir": str(tmp_path / "gold"),
         "dry_run": False,
     }
     result = gold_tasks.validate_inputs_task.function(
@@ -202,6 +203,7 @@ def test_Gold_build는_확정된_dry_run_boolean으로_옵션을_렌더링한다
         "year": "2026",
         "month": "8",
         "dry_run": dry_run,
+        "is_rerun": False,
     }
     context = {
         "params": {

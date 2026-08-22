@@ -131,6 +131,9 @@ class MonthlyReport:
     threshold_profit_increase: float
     """차량 교체 추천 기준선 (USD)"""
 
+    is_rerun: bool
+    """이 실행이 최초 완료가 아니라, 이미 완료된 대상월이 다시 계산된 재트리거인지"""
+
     recommended_driver_count: int
     """추천 대상 기사 수 (expected_net_profit_increase >= threshold_profit_increase, expected_revenue_increase >= 0)"""
 
