@@ -1,9 +1,16 @@
-"""silver_to_gold `job.py`의 연료비 최신 파티션 선택. 이슈 #696.
+"""silver_to_gold `job.py`의 최신 파티션 파일 선택.
 
+이슈 #696 (연료비 최신 파티션):
 1. 로컬 여러 파티션 중 가장 최근(year_month 최댓값) 파일을 고른다
 2. 파티션이 하나도 없으면 FileNotFoundError
 3. 파티션 디렉터리는 있는데 parquet 파일이 없으면 FileNotFoundError
 4. S3 경로에서도 같은 로직으로 최신 파티션을 고른다
+
+이슈 #759 (월별 3종의 같은 파티션 안 최신 버전):
+5. 로컬 파티션 안에 타임스탬프 버전 파일이 여러 개면 최신 파일 하나만 고른다
+6. 타임스탬프 버전이 없으면 그냥 있는 parquet 파일 중 마지막(사전순)을 고른다
+7. 파티션이 없으면 FileNotFoundError
+8. S3에서도 같은 파티션 안 여러 버전 중 최신 하나만 고른다
 """
 
 import boto3
@@ -62,3 +69,48 @@ def test_S3에서도_가장_최근_파티션_파일을_고른다(s3_client):
     result = job.latest_fuel_price_path(f"s3://{S3_BUCKET}/{prefix}")
 
     assert result == f"s3://{S3_BUCKET}/{prefix}/year_month=2026-05/gas_ev_price.parquet"
+
+
+def test_같은_파티션에_버전이_여러개면_최신_하나만_고른다(tmp_path):
+    partition = tmp_path / "year_month=2026-05"
+    partition.mkdir()
+    older = partition / "20260820T123456123456Z.parquet"
+    latest = partition / "20260821T123456123456Z.parquet"
+    older.touch()
+    latest.touch()
+
+    result = job.latest_partition_file(str(tmp_path), "2026-05")
+
+    assert result == str(latest)
+
+
+def test_타임스탬프_버전이_없으면_있는_parquet중_마지막을_고른다(tmp_path):
+    partition = tmp_path / "year_month=2026-05"
+    partition.mkdir()
+    (partition / "part-00000.parquet").touch()
+    (partition / "part-00001.parquet").touch()
+
+    result = job.latest_partition_file(str(tmp_path), "2026-05")
+
+    assert result == str(partition / "part-00001.parquet")
+
+
+def test_파티션_디렉터리가_없으면_FileNotFoundError(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        job.latest_partition_file(str(tmp_path), "2026-05")
+
+
+def test_S3에서도_같은_파티션의_최신_버전만_고른다(s3_client):
+    prefix = "silver/driver_vehicle_monthly_snapshot"
+    for name in ("20260820T123456123456Z.parquet", "20260821T123456123456Z.parquet"):
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=f"{prefix}/year_month=2026-05/{name}",
+            Body=b"x",
+        )
+
+    result = job.latest_partition_file(f"s3://{S3_BUCKET}/{prefix}", "2026-05")
+
+    assert result == (
+        f"s3://{S3_BUCKET}/{prefix}/year_month=2026-05/20260821T123456123456Z.parquet"
+    )

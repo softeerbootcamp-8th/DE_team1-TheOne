@@ -19,6 +19,7 @@ output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
 import argparse
 import logging
 import os
+import re
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -55,6 +56,8 @@ DEFAULT_LOCAL_SILVER_BASE = {
     "fuel_price": "data/silver/gas_ev_price",
 }
 
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
+
 
 def _is_s3_path(path: str) -> bool:
     return path.startswith("s3://") or path.startswith("s3a://")
@@ -81,6 +84,38 @@ def default_input_base_paths(env: str, bucket: str | None) -> dict[str, str]:
             for dataset, local_path in DEFAULT_LOCAL_SILVER_BASE.items()
         }
     raise ValueError(f"알 수 없는 --env: {env!r} (local 또는 prod)")
+
+
+def latest_partition_file(base_path: str, year_month: str) -> str:
+    """`year_month=` 파티션 안의 최신 버전 파일 하나.
+
+    monthly_taxi_trip·driver_vehicle_monthly_snapshot·lease_vehicle_inventory는
+    fuel_price와 달리 매번 그달 스냅샷 전체가 새 버전으로 통째로 쌓입니다. 파티션
+    디렉터리째 `spark.read.parquet()`에 넘기면 과거 버전이 다 합쳐져 조인 키
+    (driver_id/taxi_id 등)가 중복됩니다 — 로컬 모드는 DAG(tasks.py)가 미리 최신
+    파일 경로를 골라 넘겨서 안 걸렸지만, `--env prod`는 이 파티션 디렉터리를
+    그대로 읽어 실제로 걸렸습니다 (#759).
+    """
+    resolved = resolve_path(base_path)
+    if _is_s3_path(resolved):
+        scheme = resolved.split("://", 1)[0]
+        parsed = urlsplit(resolved)
+        bucket = parsed.netloc
+        prefix = f"{parsed.path.lstrip('/').rstrip('/')}/year_month={year_month}/"
+        keys = sorted(key for key in list_keys(bucket, prefix) if key.endswith(".parquet"))
+        if not keys:
+            raise FileNotFoundError(f"Silver 파티션이 없습니다: {scheme}://{bucket}/{prefix}")
+        versioned = [key for key in keys if TIMESTAMP_FILE_PATTERN.fullmatch(Path(key).name)]
+        return f"{scheme}://{bucket}/{(versioned or keys)[-1]}"
+
+    partition_dir = Path(resolved) / f"year_month={year_month}"
+    if not partition_dir.is_dir():
+        raise FileNotFoundError(f"Silver 파티션이 없습니다: {partition_dir}")
+    files = sorted(partition_dir.glob("*.parquet"))
+    if not files:
+        raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: {partition_dir}")
+    versioned = [path for path in files if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)]
+    return str((versioned or files)[-1])
 
 
 def latest_fuel_price_path(fuel_price_dir: str) -> str:
@@ -214,8 +249,10 @@ def main(args_list: list[str] | None = None) -> None:
     )
 
     def _monthly_path(dataset: str) -> str:
-        base = given_paths[dataset] or f"{base_paths[dataset]}/year_month={year_month}"
-        return resolve_path(base)
+        given = given_paths[dataset]
+        if given is not None:
+            return resolve_path(given)
+        return latest_partition_file(base_paths[dataset], year_month)
 
     monthly_taxi_trip_path = _monthly_path("monthly_taxi_trip")
     driver_vehicle_monthly_snapshot_path = _monthly_path("driver_vehicle_monthly_snapshot")
