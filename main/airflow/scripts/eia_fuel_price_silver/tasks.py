@@ -218,7 +218,12 @@ def validate_silver_task(**context) -> None:
             expected_locations=1,
             expected_rows=month_day_count(year_month),
         )
-        assets.disable_outlets_for_dry_run(context)
+        assets.publish_month_partition(
+            context.get("outlet_events"),
+            assets.FUEL_PRICE_SILVER,
+            year_month,
+            dry_run=True,
+        )
         return
     validate_silver(result)
     assets.publish_month_partition(

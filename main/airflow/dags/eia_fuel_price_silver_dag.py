@@ -55,7 +55,7 @@ default_args = {
         "dry_run": Param(
             False,
             type="boolean",
-            description="실제 적재와 상태/Asset 발행 없이 실행 흐름을 검증",
+            description="실제 적재 없이 Asset 기반 후속 DAG까지 실행 흐름을 검증",
         ),
     },
 )
