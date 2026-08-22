@@ -12,6 +12,7 @@
 10. Asset skip 시 Slack skip 알림을 직접 호출
 11. SLA 기준일 초과 시 Slack staleness 경고, 기준 이내면 조용히 통과
 12. SLA 기준일은 Param이 우선, 없으면 Variable, 그마저 없으면 기본값 31
+13. 경과일 계산에 실패해도(now가 None이거나 뺄셈이 안 되는 값) 예외 없이 None
 """
 
 import importlib
@@ -345,6 +346,17 @@ def test_경과일은_직전성공_이후_일수다():
     now = prev + timedelta(days=40)
 
     assert dag_module.days_since_last_success(prev, now) == 40
+
+
+def test_now가_None이면_경과일은_None이다():
+    assert dag_module.days_since_last_success(_logical_date(2026, 7), None) is None
+
+
+def test_경과일_계산이_실패해도_예외없이_None을_반환한다():
+    class Unsubtractable:
+        pass
+
+    assert dag_module.days_since_last_success(Unsubtractable(), _logical_date(2026, 8)) is None
 
 
 def test_SLA기준일은_Param이_있으면_Variable을_보지_않는다(monkeypatch):
