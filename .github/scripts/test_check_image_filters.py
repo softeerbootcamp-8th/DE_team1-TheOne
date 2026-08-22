@@ -72,7 +72,6 @@ def test_없는_경로를_COPY_하면_잡는다(tmp_path):
     실제로 `main/aws_lambda/__init__.py` 를 COPY 에 적었다가 CI 이미지 빌드가
     깨졌습니다(#761). 그 파일은 암묵 namespace package 라 존재하지 않습니다.
     """
-    import subprocess
 
     dockerfile = tmp_path / "shared" / "airflow" / "Dockerfile"
     dockerfile.parent.mkdir(parents=True)

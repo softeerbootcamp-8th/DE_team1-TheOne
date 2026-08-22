@@ -37,6 +37,7 @@ help:
 	@echo "uv-bin       - uv 설치 확인/설치 (sync 가 먼저 호출)"
 	@echo "tesseract    - OCR 바이너리 확인/설치 (sync 가 먼저 호출)"
 	@echo "build        - 런타임별 Docker 이미지 빌드 (태그: theone-<runtime>:<git-sha>)"
+	@echo "lint         - ruff 로 버그 냄새 검사 (F·E9). lint-fix 는 자동수정까지"
 	@echo "setup-hooks  - review-engineering 검토 기록 Git 훅 설치"
 	@echo "bootstrap    - DAG 가 없는 로컬 파생 산출물 4개 생성 (있으면 건너뜀)"
 	@echo "               개별: zone-lookup / travel-times / driver-preferences / company-snapshot"
@@ -47,6 +48,21 @@ lock:
 	@for r in $(UV_PROJECTS); do \
 		echo "==> locking $$r"; (cd $$r && uv lock) || exit 1; \
 	done
+
+# ruff 는 프로젝트 가상환경이 필요 없어서(파싱만 함) 런타임별로 돌리지 않고
+# 저장소 전체를 한 번에 봅니다. 규칙은 ruff.toml 에 있습니다 — F·E9 만.
+#
+# 버전을 고정하는 이유: 새 ruff 가 규칙을 추가하면 코드를 안 건드린 PR 이 갑자기
+# 빨간불이 됩니다. CI 도 같은 버전을 씁니다 (.github/workflows/ci.yml).
+RUFF_VERSION ?= 0.16.4
+
+.PHONY: lint
+lint: uv-bin
+	@uvx ruff@$(RUFF_VERSION) check .
+
+.PHONY: lint-fix
+lint-fix: uv-bin
+	@uvx ruff@$(RUFF_VERSION) check --fix .
 
 .PHONY: check
 check:

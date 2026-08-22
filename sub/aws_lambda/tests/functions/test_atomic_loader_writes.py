@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pyarrow as pa
-import pyarrow.parquet as pq
 import pytest
 
 from sub.aws_lambda.functions.fueleconomy_vehicle_specs_raw_to_curated.loader import (

@@ -11,7 +11,6 @@
 9. 잘못된 월·변경률·전월 관계 → 명시적 실패
 """
 
-from datetime import date
 from pathlib import Path
 
 import pandas as pd

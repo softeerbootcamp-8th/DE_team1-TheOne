@@ -3,7 +3,7 @@
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pyarrow as pa
@@ -163,9 +163,12 @@ def _silver_quality_summary(parquet_files, required_columns):
     row_count = 0
     schema_signatures = set()
     null_counts = {column: 0 for column in required_columns}
-    for parquet_file in parquet_files:
-        schema = parquet_file.schema_arrow
-        row_count += parquet_file.metadata.num_rows
+    # 루프 변수 이름을 `parquet_file` 로 두면 이 모듈이 import 한 같은 이름의 함수를
+    # 가립니다. 지금은 루프 안에서 그 함수를 안 부르니 결과가 맞지만, 나중에 부르려
+    # 하면 조용히 루프 변수를 받습니다.
+    for file in parquet_files:
+        schema = file.schema_arrow
+        row_count += file.metadata.num_rows
         schema_signatures.add(_schema_signature(schema, logical_timestamp=True))
         for column in required_columns:
             if column not in schema.names:
@@ -173,7 +176,7 @@ def _silver_quality_summary(parquet_files, required_columns):
             elif null_counts[column] is not None:
                 null_counts[column] += sum(
                     batch.column(column).null_count
-                    for batch in parquet_file.iter_batches(columns=[column])
+                    for batch in file.iter_batches(columns=[column])
                 )
     return pd.DataFrame(
         [
@@ -373,9 +376,9 @@ def _bronze_quality_result(
 def validate_silver_task(raw_result: dict, **context) -> None:
     """Spark 실행이 만든 Silver 버전 파일을 직접 열어서 확인합니다."""
     parsed = parse_handler_result(raw_result, expected_locations=1)
-    year_month = parse_year_month(
-        raw_result.get("year_month"), field="year_month"
-    )
+    # 반환값을 쓰지 않습니다 — 이 호출 자체가 검증입니다. YYYY-MM 이 아니면
+    # ValueError 로 막습니다. 대입으로 두면 미사용 변수로 보여 지워질 수 있습니다.
+    parse_year_month(raw_result.get("year_month"), field="year_month")
     bronze_rows = parquet_file(parsed.locations[0]).metadata.num_rows
 
     version_path = parse_location(raw_result["silver_version_path"])
