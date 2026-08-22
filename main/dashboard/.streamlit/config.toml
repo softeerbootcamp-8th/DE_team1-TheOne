@@ -1,0 +1,60 @@
+# 대시보드 디자인 토큰. 색·라운드·폰트는 여기서 한 곳에서 관리한다.
+# 코드(theme.py)의 LIGHT/DARK 토큰과 값이 같아야 차트와 UI 가 어긋나지 않는다.
+#
+# 브랜드 색은 #002C5F (RGB 0/44/95). 위젯·링크는 이 색을 그대로 쓰고,
+# 차트 마크는 같은 색상(OKLCH hue 255.8°) 램프의 밝은 스텝을 쓴다 —
+# #002C5F 은 L=0.300 으로 마크 밝기 밴드(라이트 0.43~0.77) 밖이고,
+# 다크 표면에서는 대비가 1.21:1 로 보이지 않는다.
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+font = "sans-serif"
+baseFontSize = 15
+baseFontWeight = 400
+
+# 동글동글한 UI 의 핵심 — 위젯은 14px, 버튼·태그는 완전한 pill.
+baseRadius = "0.875rem"
+buttonRadius = "full"
+showWidgetBorder = true
+showSidebarBorder = false
+
+metricValueFontSize = "2rem"
+metricValueFontWeight = 600
+headingFontSizes = ["1.75rem", "1.3rem", "1.05rem", "0.95rem", "0.9rem", "0.85rem"]
+
+# Altair·Plotly 기본 팔레트. 차트별로는 theme.py 의 SERIES 를 명시적으로 넘긴다
+# (chartCategoricalColors 는 라이트/다크 구분을 지원하지 않아 폴백 용도로만 둔다).
+chartCategoricalColors = ["#275DA2", "#008A72", "#E0A008", "#EF7FA8"]
+
+# 브랜드 색상 단일 hue 램프, 밝은 쪽 → 어두운 쪽. 마지막 두 스텝이 브랜드 앵커 근처.
+chartSequentialColors = [
+    "#DCEDFF", "#B3D4FF", "#86B4F0", "#659AE1", "#528BD5",
+    "#427BC6", "#346CB4", "#275DA2", "#194C8C", "#0B3C75",
+]
+
+[theme.light]
+primaryColor = "#002C5F"
+backgroundColor = "#F1F6FE"
+secondaryBackgroundColor = "#FFFFFF"
+textColor = "#0F1B2D"
+linkColor = "#002C5F"
+borderColor = "#E1E9F4"
+dataframeBorderColor = "#E1E9F4"
+dataframeHeaderBackgroundColor = "#F7FAFF"
+codeBackgroundColor = "#F1F6FE"
+
+[theme.dark]
+primaryColor = "#528BD5"
+backgroundColor = "#0A0F15"
+secondaryBackgroundColor = "#181F28"
+textColor = "#EEF3FA"
+linkColor = "#86B4F0"
+borderColor = "#2A323D"
+dataframeBorderColor = "#2A323D"
+dataframeHeaderBackgroundColor = "#212832"
+codeBackgroundColor = "#131A22"
