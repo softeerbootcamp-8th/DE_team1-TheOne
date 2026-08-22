@@ -7,15 +7,24 @@ from pathlib import Path
 
 import pandas as pd
 from airflow.sdk.exceptions import AirflowSkipException
-from airflow.sdk import task
+from airflow.sdk import Variable, task
 
 from main.airflow.common.monthly_bronze import TIMESTAMP_FILE_PATTERN
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.airflow.common.slack_failure_callback import (
+    slack_skip_alert_callback,
+    slack_stale_alert_callback,
+)
 
 logger = logging.getLogger(__name__)
 
 ROOT = PROJECT_ROOT
 SILVER = ROOT / "data" / "silver"
+# 대상월 계산이 원천 API의 "latest" 해석에 달려 있어 절대 날짜로 SLA를 못 박을 수
+# 없다 — 그래서 "직전 성공 이후 N일" 같은 상대 기준을 쓴다. Variable 미설정 시의
+# 기본값이라 재배포 없이 운영 중 조정 가능해야 한다.
+DEFAULT_STALE_SLA_DAYS = 31
+STALE_SLA_DAYS_VARIABLE = "gold_stale_sla_days"
 DEFAULT_PATHS = {
     "monthly_taxi_trip_path": str(SILVER / "monthly_taxi_trip"),
     "driver_vehicle_monthly_snapshot_path": str(SILVER / "driver_vehicle_monthly_snapshot"),
@@ -179,6 +188,44 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
     return resolved
 
 
+def resolve_stale_sla_days(params: dict) -> int:
+    """SLA 기준일. Param이 비어 있으면 Variable(재배포 없이 조정), 없으면 기본값.
+
+    Variable 조회가 실행 컨텍스트 밖(예: 단위 테스트)이라 실패해도 SLA 판정
+    자체가 파이프라인을 막으면 안 되므로 기본값으로 내려갑니다.
+    """
+    configured = params.get("gold_stale_sla_days")
+    if configured is not None:
+        return int(configured)
+    try:
+        return int(
+            Variable.get(STALE_SLA_DAYS_VARIABLE, default=DEFAULT_STALE_SLA_DAYS)
+        )
+    except Exception:
+        logger.warning(
+            "Variable(%s) 조회에 실패해 기본값 %s일을 씁니다",
+            STALE_SLA_DAYS_VARIABLE,
+            DEFAULT_STALE_SLA_DAYS,
+            exc_info=True,
+        )
+        return DEFAULT_STALE_SLA_DAYS
+
+
+def days_since_last_success(prev_end_date_success, now: datetime) -> int | None:
+    """직전 성공 DagRun 종료 이후 지난 일수. 성공 기록이 없으면 None."""
+    if prev_end_date_success is None:
+        return None
+    return (now - prev_end_date_success).days
+
+
+def _notify_slack(callback, context: dict) -> None:
+    """Slack 알림은 best-effort입니다 — 실패해도 파이프라인 판정을 막지 않습니다."""
+    try:
+        callback(context)
+    except Exception:
+        logger.warning("Slack 알림 전송에 실패했습니다", exc_info=True)
+
+
 def validate_gold_outputs(output_dir: str, year_month: str) -> None:
     """산출물 3종의 존재·행 수·필수 컬럼을 확인합니다."""
     for dataset in DATASETS:
@@ -203,6 +250,18 @@ def validate_inputs_task(**context) -> dict:
     dag_run = context.get("dag_run")
     partition_key = getattr(dag_run, "partition_key", None)
     job_env = os.getenv("SPARK_JOB_ENV", "local")
+
+    stale_days = resolve_stale_sla_days(params)
+    days_since = days_since_last_success(
+        context.get("prev_end_date_success"), datetime.now(timezone.utc)
+    )
+    if days_since is not None and days_since > stale_days:
+        logger.warning("Gold staleness SLA 초과: %s일 (기준 %s일)", days_since, stale_days)
+        _notify_slack(
+            slack_stale_alert_callback,
+            {**context, "days_since_success": days_since, "stale_days": stale_days},
+        )
+
     if job_env == "prod" and not partition_key and not (
         params.get("year") and params.get("month")
     ):
@@ -224,6 +283,7 @@ def validate_inputs_task(**context) -> dict:
         return resolve_input_paths(year_month, params)
     except FileNotFoundError as exc:
         if partition_key:
+            _notify_slack(slack_skip_alert_callback, {**context, "exception": exc})
             raise AirflowSkipException(
                 f"Silver 4종 준비 대기: year_month={year_month}; {exc}"
             ) from exc
