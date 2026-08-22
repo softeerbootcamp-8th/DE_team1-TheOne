@@ -2,15 +2,18 @@
 
 1. latest를 찾은 뒤 ETag·Last-Modified를 조건부 HEAD에 함께 전달
 2. 304는 미변경, 200은 변경으로 판정하고 대상 월·version을 반환
-3. 원천별 변경 분기는 서로 독립적으로 하위 DAG를 실행
-4. 성공한 원천만 상태를 기록하고 실패한 분기는 다음 실행에 남김
-5. 변경된 하위 DAG를 모두 기다린 뒤 READY Asset을 정확히 한 번 발행
-6. 모두 미변경이거나 하나라도 실패하면 READY Asset을 발행하지 않음
-7. 확정된 연월과 API 주소를 하위 DAG trigger conf로 전달
-8. refresh DAG가 내부 Source API 기본 주소를 사용
+3. API가 미변경이어도 대상 월 Bronze가 없으면 하위 DAG를 다시 실행
+4. 로컬과 S3에서 대상 월 Bronze가 있으면 미변경 분기를 Skip
+5. 원천별 변경 분기는 서로 독립적으로 하위 DAG를 실행
+6. 성공한 원천만 상태를 기록하고 실패한 분기는 다음 실행에 남김
+7. 변경 또는 복구된 하위 DAG를 모두 기다린 뒤 READY Asset을 정확히 한 번 발행
+8. 모두 미변경이거나 하나라도 실패하면 READY Asset을 발행하지 않음
+9. 확정된 연월과 API 주소를 하위 DAG trigger conf로 전달
+10. refresh DAG가 내부 Source API 기본 주소를 사용
 """
 
 import requests
+import pytest
 from airflow.task.trigger_rule import TriggerRule
 
 from dags.source_api_refresh_dag import SOURCES, source_api_refresh_dag
@@ -42,6 +45,39 @@ def _latest_response(dataset: str) -> requests.Response:
         307,
         f"{API_BASE_URL}/v1/data/latest/datasets/{dataset}",
         {"Location": f"/v1/data/{YEAR_MONTH}/datasets/{dataset}"},
+    )
+
+
+def _inspection_result(dataset: str = "monthly_taxi_trip") -> dict:
+    return {
+        "dataset": dataset,
+        "year_month": YEAR_MONTH,
+        "year": "2026",
+        "month": "08",
+        "etag": ETAG,
+        "last_modified": LAST_MODIFIED,
+        "changed": False,
+        "version": "same",
+        "api_base_url": API_BASE_URL,
+    }
+
+
+def _mock_unchanged_source(monkeypatch, dataset: str) -> None:
+    monkeypatch.setattr(task_module.Variable, "get", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        task_module,
+        "inspect_source",
+        lambda *args, **kwargs: _inspection_result(dataset),
+    )
+
+
+def _check(dataset: str):
+    return task_module.check_and_should_refresh_task.function(
+        dataset,
+        params={
+            "api_base_url": API_BASE_URL,
+            "request_timeout": 30,
+        },
     )
 
 
@@ -118,6 +154,71 @@ def test_조건부_HEAD의_200응답은_변경으로_판정한다(monkeypatch):
         "version": result["version"],
         "api_base_url": API_BASE_URL,
     }
+
+
+def test_API가_미변경이어도_로컬_Bronze가_없으면_재실행한다(
+    tmp_path,
+    monkeypatch,
+):
+    _mock_unchanged_source(monkeypatch, "monthly_taxi_trip")
+    monkeypatch.setenv("BRONZE_STORAGE", "local")
+    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+
+    result = _check("monthly_taxi_trip")
+
+    assert result["refresh_required"] is True
+
+
+@pytest.mark.parametrize(
+    ("dataset", "dataset_dir"),
+    task_module.BRONZE_DATASET_DIRS.items(),
+)
+def test_API가_미변경이고_로컬_Bronze가_있으면_Skip한다(
+    tmp_path,
+    monkeypatch,
+    dataset,
+    dataset_dir,
+):
+    _mock_unchanged_source(monkeypatch, dataset)
+    monkeypatch.setenv("BRONZE_STORAGE", "local")
+    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+    partition = tmp_path / dataset_dir / f"year_month={YEAR_MONTH}"
+    partition.mkdir(parents=True)
+    (partition / "20260822T010203123456Z.parquet").touch()
+
+    assert _check(dataset) is False
+
+
+@pytest.mark.parametrize(
+    ("keys", "refresh_required"),
+    [
+        ([], True),
+        (
+            [
+                "bronze/lease_vehicle_inventory/"
+                "year_month=2026-08/20260822T010203123456Z.parquet"
+            ],
+            False,
+        ),
+    ],
+)
+def test_S3_Bronze_존재여부로_미변경_원천의_재실행을_판정한다(
+    monkeypatch,
+    keys,
+    refresh_required,
+):
+    dataset = "lease_vehicle_inventory"
+    _mock_unchanged_source(monkeypatch, dataset)
+    monkeypatch.setenv("BRONZE_STORAGE", "s3")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "lake")
+    monkeypatch.setattr(task_module, "list_keys", lambda bucket, prefix: keys)
+
+    result = _check(dataset)
+
+    if refresh_required:
+        assert result["refresh_required"] is True
+    else:
+        assert result is False
 
 
 def test_수동_연월은_정규화한_URL과_trigger값으로_반환한다(monkeypatch):
@@ -219,6 +320,34 @@ def test_같은월에_여러원천이_변경돼도_READY_파티션은_한번만_
     recorder = Recorder()
     task_module.publish_api_refresh_ready_task.function(
         [f"check_and_should_refresh_{dataset}" for dataset, _ in SOURCES],
+        task_instance=TaskInstance(),
+        outlet_events={assets.API_SILVER_REFRESH_READY: recorder},
+    )
+
+    assert recorder.keys == {YEAR_MONTH}
+
+
+def test_미변경_Bronze_복구도_READY_파티션을_발행한다():
+    class Recorder:
+        def __init__(self):
+            self.keys = set()
+
+        def add_partitions(self, key):
+            self.keys.add(key)
+
+    class TaskInstance:
+        def xcom_pull(self, task_ids):
+            return [
+                {
+                    "year_month": YEAR_MONTH,
+                    "changed": False,
+                    "refresh_required": True,
+                }
+            ]
+
+    recorder = Recorder()
+    task_module.publish_api_refresh_ready_task.function(
+        ["check_and_should_refresh_monthly_taxi_trip"],
         task_instance=TaskInstance(),
         outlet_events={assets.API_SILVER_REFRESH_READY: recorder},
     )
