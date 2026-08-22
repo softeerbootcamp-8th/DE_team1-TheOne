@@ -92,7 +92,7 @@ def resolve_target_year_month(
 
     최신 월 탐색은 파티션 키가 없는 수동 실행의 폴백입니다. 달력으로 직전 달을
     계산하면 안 됩니다 — 배정이 도는 시점은 TLC 공개 지연에 묶여 있어서
-    (`hvfhv_raw_to_silver_dag` 참고) 직전 달 파티션이 없는 것이 정상입니다. 있는 것 중
+    (`monthly_taxi_trip_raw_to_silver_dag` 참고) 직전 달 파티션이 없는 것이 정상입니다. 있는 것 중
     최신을 고르되 **기준일을 넘지 않습니다.** 과거 날짜로 다시 돌렸을 때 그때 없던
     달이 섞이면 결과를 재현할 수 없습니다.
     """
@@ -112,7 +112,7 @@ def resolve_target_year_month(
     if not candidates:
         raise FileNotFoundError(
             f"기준일({limit}) 이하의 월별 택시 운행 기록 Silver 파티션이 없습니다: {monthly_taxi_trip_path}. "
-            "hvfhv_raw_to_silver_pipeline 을 먼저 돌리세요."
+            "monthly_taxi_trip_raw_to_silver_pipeline 을 먼저 돌리세요."
         )
     return candidates[-1]
 
@@ -134,7 +134,7 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
     else:
         raise FileNotFoundError(
             f"월별 택시 운행 기록 Silver 버전이 없습니다: {monthly_taxi_trip_partition}. "
-            "hvfhv_raw_to_silver_pipeline 을 먼저 돌리세요."
+            "monthly_taxi_trip_raw_to_silver_pipeline 을 먼저 돌리세요."
         )
 
     versioned_files = {

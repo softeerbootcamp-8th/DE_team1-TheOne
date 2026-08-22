@@ -17,8 +17,8 @@ DAG_VARIABLES = {
     "eia_gas_price_raw_to_silver_dag": "eia_gas_price_raw_to_silver_dag",
     "eia_fuel_price_silver_dag": "eia_fuel_price_silver_dag",
     "lease_vehicle_inventory_raw_to_silver_dag": "lease_vehicle_inventory_raw_to_silver_dag",
-    "hvfhv_raw_to_silver_dag": "hvfhv_dag",
     "monthly_taxi_trip_silver_to_gold_dag": "monthly_taxi_trip_silver_to_gold_dag",
+    "monthly_taxi_trip_raw_to_silver_dag": "monthly_taxi_trip_dag",
 }
 
 # sub 에서 이동한 DAG 만 등록합니다 — 셸 글로브가 확장된 cron 이 그대로 통과한 적이

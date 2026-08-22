@@ -38,25 +38,27 @@ def _pin_process_time_zone() -> None:
             time.tzset()
 
 
-def get_or_create_spark_session(app_name: str, driver_memory: Optional[str] = None) -> SparkSession:
-    """local[3] 세션 생성. driver_memory 는 프로세스의 첫 세션 생성 전에만 적용됨(JVM 힙은 이후 재조정 불가)."""
+def get_or_create_spark_session(
+    app_name: str,
+    driver_memory: Optional[str] = None,
+    *,
+    local_mode: bool = True,
+) -> SparkSession:
+    """로컬은 local[3], 운영은 spark-submit이 지정한 EMR 세션을 사용합니다."""
     _pin_process_time_zone()
 
-    builder = (
-        SparkSession.builder.appName(app_name)
-        .master("local[3]")
-        .config("spark.driver.bindAddress", "127.0.0.1")
-        # bindAddress 만 두면 **듣는 주소와 알리는 주소가 갈립니다.** driver.host 는
-        # 미설정 시 hostname 으로 정해지는데, 컨테이너 안에서는 그게 172.18.0.x 라
-        # 드라이버는 127.0.0.1 에서만 듣고 172.18.0.x 로 자기를 광고합니다.
-        #
-        # local 모드는 대부분 프로세스 안에서 끝나 이 불일치가 드러나지 않습니다.
-        # 그러다 BroadcastExchangeExec 가 BlockManager 로 broadcast 를 가져오는
-        # 순간 광고된 주소로 접속해 Connection refused 로 죽습니다 — silver_to_gold
-        # 가 vehicle_master·gas_ev_price 를 broadcast join 하며 처음 걸렸습니다.
-        .config("spark.driver.host", "127.0.0.1")
-        .config("spark.sql.session.timeZone", SESSION_TIME_ZONE)
+    builder = SparkSession.builder.appName(app_name).config(
+        "spark.sql.session.timeZone", SESSION_TIME_ZONE
     )
+    if local_mode:
+        builder = (
+            builder.master("local[3]")
+            .config("spark.driver.bindAddress", "127.0.0.1")
+            # bindAddress 만 두면 듣는 주소와 알리는 주소가 갈립니다.
+            # 로컬 컨테이너에서는 둘 다 loopback 으로 맞춰야 broadcast join 이
+            # 광고된 컨테이너 주소로 접속하다 실패하지 않습니다.
+            .config("spark.driver.host", "127.0.0.1")
+        )
     if driver_memory:
         builder = builder.config("spark.driver.memory", driver_memory)
     session = builder.getOrCreate()

@@ -5,9 +5,9 @@
 
 ## 1. 데이터 범위 및 방법
 
-- 대상: `data/bronze/hvfhv/year_month=2024-01` ~ `year_month=2024-12` (12개월, 원본 그대로)
+- 대상: `data/bronze/monthly_taxi_trip/year_month=2024-01` ~ `year_month=2024-12` (12개월, 원본 그대로)
 - 원본 총 행수: 약 2.4억 건 (월별 1,912만~2,128만 건)
-- 유효성 필터: `spark/jobs/bronze_to_silver/hvfhv/transformer.py`의 검증 조건과 동일하게
+- 유효성 필터: `main/spark/jobs/bronze_to_silver/monthly_taxi_trip_bronze_to_silver/transformer.py`의 검증 조건과 동일하게
   `trip_miles`(0~1000), `trip_time`(0~86400초), `driver_pay`(0~5000) 범위 밖/결측 제외
   → 필터로 빠지는 행은 월별 0.01~0.02% 수준, 무시 가능한 수준
 - 전체 처리 대신 월별 50만 건 무작위 샘플(총 600만 건)로 집계 — 12개월 전체 로드는

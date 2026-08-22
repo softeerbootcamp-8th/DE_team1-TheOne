@@ -51,7 +51,7 @@ Silver는 등급을 다시 추정하지 않고 license–등급 조합을 검증
 등급 배수는 상수로 가정하지 않고 **우리 운행 데이터에서 직접 계산**합니다.
 
 ```
-① Silver — 원천 등급 전달 (bronze_to_silver/hvfhv)
+① Silver — 원천 등급 전달 (`monthly_taxi_trip_bronze_to_silver`)
    HV0003 → Standard / Comfort
    HV0005 → Standard / Extra Comfort
 

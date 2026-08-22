@@ -7,7 +7,7 @@ HVFHV Silver 전체(또는 지정한 월)를 읽어 구역쌍별 이동시간 �
 
 사용 예:
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m sub.spark.jobs.travel_times.job \\
-      --trips_path ../data/silver/hvfhv --output_path ../data/silver/taxi_zone_travel_times
+      --trips_path ../data/silver/monthly_taxi_trip --output_path ../data/silver/taxi_zone_travel_times
 """
 
 import argparse
