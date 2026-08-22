@@ -1,6 +1,6 @@
 """Gold 차량 추천 대시보드 회귀 시나리오. 이슈 #562.
 
-1. 월 파티션별 Gold CSV를 모두 로드
+1. 월 파티션별 Gold CSV를 모두 로드 (`LocalCsvDataSource`, 이슈 #778로 이전)
 2. 월간 리포트와 같은 순이익·회사 매출 기준을 통과한 기사만 표시
 3. 기사·월 기준으로 현재 차량 비용과 최종 추천 차량 비용을 결합
 """
@@ -9,7 +9,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from app import _read_partitions, recommendation_scope
+from app import recommendation_scope
+from datasource import LocalCsvDataSource
 
 
 def _write_partition(
@@ -66,7 +67,7 @@ def test_월별_Gold_파티션을_모두_읽는다(tmp_path):
         [{"year_month": "2026-02", "recommended_driver_count": 2}],
     )
 
-    frame = _read_partitions(tmp_path, "monthly_report")
+    frame = LocalCsvDataSource(tmp_path).load("monthly_report")
 
     assert sorted(frame["year_month"]) == ["2026-01", "2026-02"]
 
