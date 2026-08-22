@@ -43,7 +43,7 @@ from schema.source import (
     LEASE_VEHICLE_INVENTORY_SCHEMA,
     MONTHLY_TAXI_TRIP_SCHEMA,
 )
-from shared.common.s3_reader import parent_uri
+from shared.common.s3_reader import is_s3_uri, parent_uri
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
@@ -754,6 +754,24 @@ def main(args_list: list[str] | None = None) -> Path | str:
     # executor 가 FileNotFoundException 으로 죽는 데까지 수십 분이 걸립니다.
     if args.env == "prod" and args.storage != "s3":
         raise ValueError("--env prod 는 --storage s3 가 필요합니다 (EMR 워커는 로컬 디스크를 못 봅니다)")
+    # 반대 방향 — 로컬 pyspark 는 hadoop-aws jar 이 없어 `s3://` 를 못 읽습니다(#712).
+    # 조합이 아니라 실제로 들어온 경로로 판정합니다. `--storage s3` 로 출력만 S3 에
+    # 쓰면서 입력은 로컬 파일로 직접 지정하는 실행을 막지 않기 위함입니다.
+    if args.env == "local":
+        s3_inputs = [
+            f"{name}={value}"
+            for name, value in (
+                ("--hvfhv_input_path", args.hvfhv_input_path),
+                ("--zone_lookup_path", args.zone_lookup_path),
+                ("--vehicle_master_path", args.vehicle_master_path),
+            )
+            if is_s3_uri(value)
+        ]
+        if s3_inputs:
+            raise ValueError(
+                "--env local 은 s3:// 입력을 읽을 수 없습니다 (로컬 pyspark 에 hadoop-aws jar "
+                f"없음, #712). --env prod 로 실행하거나 로컬 경로를 넘기세요: {s3_inputs}"
+            )
 
     # lifecycle(join/exit/vehicle_change) 비율은 이제 `--change_rate` 가 아니라
     # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).

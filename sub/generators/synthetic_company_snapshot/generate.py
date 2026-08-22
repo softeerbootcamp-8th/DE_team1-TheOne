@@ -9,8 +9,7 @@ import os
 from datetime import date
 from pathlib import Path
 
-import pandas as pd
-
+from shared.common.s3_reader import read_parquet_uri
 from sub.config import DEFAULT_CONFIG_PATH, load_config
 from sub.generators.synthetic_company_snapshot.snapshot import (
     LEASE_START_MIN,
@@ -42,21 +41,23 @@ def resolve_vehicle_master_path(
     *,
     storage: str = "local",
     bucket: str | None = None,
-) -> Path:
-    """가장 최신 `collected_date=` 파티션의 vehicle_master 파일 경로.
+) -> str:
+    """가장 최신 `collected_date=` 파티션의 vehicle_master 경로. `storage="s3"` 면 `s3://` URI.
 
     ISO 날짜라 이름 정렬이 곧 시간 정렬입니다. 도시가 여러 개면 어느 쪽을 쓸지
     정할 근거가 없으므로 조용히 고르지 않고 실패시킵니다.
 
-    `storage="s3"` 이면 S3 에서 찾아 `dataset_dir` 아래로 내려받고 **로컬 경로**를
-    돌려줍니다. `s3://` 를 그대로 넘기지 않는 이유는 소비하는 쪽이 둘 다 그것을
-    읽지 못하기 때문입니다 — Spark 는 `s3a://` + hadoop-aws jar 설정이 필요하고
-    (`sub/spark/jobs/driver_assignment/source_job.py` 의 `spark.read.parquet`),
-    pandas 는 `s3fs` 가 필요합니다(`s3fs` 는 `aiobotocore` 를 끌고 와 airflow 의
-    `boto3` 핀과 충돌합니다). 파일 하나를 내려받는 편이 훨씬 단순합니다.
+    예전에는 `storage="s3"` 일 때 파일을 로컬로 내려받아 그 경로를 돌려줬습니다.
+    소비하는 쪽이 `s3://` 를 못 읽는다는 이유였는데, 둘 다 해소됐습니다 — Spark 는
+    EMR 의 EMRFS 가 `s3://` 를 그대로 읽고(#712), pandas 는 `read_parquet_uri` 가
+    boto3 로 받습니다(`s3fs` 는 `aiobotocore` 를 끌고 와 `boto3` 핀과 충돌해 여전히
+    쓰지 않습니다). 그리고 내려받으면 EMR 워커가 그 디스크를 못 봐서 아예 실패합니다(#782).
+
+    반환형이 `Path` 가 아니라 `str` 인 이유 — `Path("s3://b/x")` 는 `s3:/b/x` 로
+    뭉개져 스킴이 깨집니다.
     """
     if storage == "s3":
-        return _download_latest_from_s3(dataset_dir, bucket)
+        return _latest_s3_uri(bucket)
     if storage != "local":
         raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
 
@@ -77,7 +78,7 @@ def resolve_vehicle_master_path(
             f"도시가 여러 개라 하나를 고를 수 없습니다. --vehicle_master_path 로 직접 지정하세요: "
             f"{[str(f) for f in files]}"
         )
-    return files[0]
+    return str(files[0])
 
 
 def _resolve_bucket(explicit: str | None, from_env: str | None, env_var: str) -> str:
@@ -111,15 +112,16 @@ def _resolve_bucket(explicit: str | None, from_env: str | None, env_var: str) ->
     return bucket
 
 
-def _download_latest_from_s3(dataset_dir: str | Path, bucket: str | None) -> Path:
-    """S3 의 최신 vehicle_master 를 `dataset_dir` 아래 같은 파티션 구조로 내려받습니다.
+def _latest_s3_uri(bucket: str | None) -> str:
+    """S3 의 최신 vehicle_master `s3://` URI. 내려받지 않습니다.
 
-    캐시하지 않고 매번 내려받습니다. 남아 있는 예전 파일을 재사용하면 S3 에 새 수집분이
-    올라와도 조용히 낡은 값으로 계속 돌게 됩니다.
+    내려받으면 그 파일이 이 프로세스의 로컬 디스크에만 생겨서, EMR Serverless 워커가
+    보지 못합니다(#782). URI 를 넘기면 Spark 는 EMRFS, pandas 는 `read_parquet_uri`
+    가 각자 읽습니다.
     """
     from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR
     from shared.common.env import load_local_env
-    from shared.common.s3_reader import get_object_bytes, list_keys
+    from shared.common.s3_reader import list_keys
     from sub.aws_lambda.common import vehicle_master_layout as layout
 
     load_local_env()
@@ -149,14 +151,9 @@ def _download_latest_from_s3(dataset_dir: str | Path, bucket: str | None) -> Pat
             f"{[f's3://{bucket}/{key}' for key in matched]}"
         )
 
-    key = matched[0]
-    # S3 키의 파티션 구조를 그대로 로컬에 재현합니다. 그러면 내려받은 뒤의 경로가
-    # storage=local 로 돌렸을 때와 같아져서, 하류가 저장 위치를 몰라도 됩니다.
-    target = Path(dataset_dir) / key.removeprefix(prefix)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(get_object_bytes(bucket, key))
-    logger.info("vehicle_master 내려받음: s3://%s/%s -> %s", bucket, key, target)
-    return target
+    uri = f"s3://{bucket}/{matched[0]}"
+    logger.info("vehicle_master 입력: %s", uri)
+    return uri
 
 
 def main(args_list: list[str] | None = None):
@@ -214,14 +211,13 @@ def main(args_list: list[str] | None = None):
     )
     # `--storage` 는 출력 위치를 정하는 값인데 입력 조회에도 씁니다. 같은 환경에서
     # 읽고 쓰는 것이 정상이고, 굳이 갈라야 하면 `--vehicle_master_path` 로 직접 지정합니다.
-    vehicle_master_path = (
-        Path(args.vehicle_master_path) if args.vehicle_master_path
-        else resolve_vehicle_master_path(
-            _VEHICLE_MASTER_DIR, storage=args.storage, bucket=args.bucket
-        )
+    vehicle_master_path = args.vehicle_master_path or resolve_vehicle_master_path(
+        _VEHICLE_MASTER_DIR, storage=args.storage, bucket=args.bucket
     )
     vehicle_pool = build_vehicle_pool(
-        pd.read_parquet(vehicle_master_path),
+        # `pd.read_parquet` 를 직접 쓰지 않습니다 — `s3://` 를 받으면 `s3fs` 를
+        # 요구하고, 그것이 `aiobotocore` 를 끌고 와 `boto3` 핀과 충돌합니다.
+        read_parquet_uri(str(vehicle_master_path)),
         model_year=model_year,
     )
     if args.previous_snapshot_dir:
