@@ -22,30 +22,22 @@ import pandas as pd
 
 from sub.seeds import Stage, derive_entity_seed, derive_seed
 
-KWH_PER_100MI_SCALE = 100.0
 # 프리미엄 선호가 이 값 이상인 기사는 자격 있는 차만 봅니다. 근거 없는 가정이고,
 # 손잡이가 하나 더 늘어나는 걸 막으려고 중앙값으로 둡니다.
 PREMIUM_SEEKER_THRESHOLD = 0.5
 
 
-def weekly_miles(base_weekly_hours: float, avg_trip_duration_min: float, distance_pref_mi: float) -> float:
-    """주당 주행거리 추정. 연료비의 입력입니다."""
-    trips_per_week = base_weekly_hours * 60.0 / max(1.0, avg_trip_duration_min)
-    return trips_per_week * distance_pref_mi
-
-
-def model_weekly_cost(models: pd.DataFrame, miles: float, fuel: dict) -> np.ndarray:
-    """모델별 주당 총비용 = 렌트비 + 연료비.
+def model_weekly_cost(models: pd.DataFrame) -> np.ndarray:
+    """모델별 주당 총비용 = 렌트비.
 
     ★ 이 값은 메인 프로덕트의 추천이 **찾아내야 하는 정답**입니다 (D5). 배정이
       이것을 100% 따르면 추천의 효과가 0 으로 측정됩니다.
+
+    연료비는 넣지 않습니다 — 기사 비용·기대수익 계산은 main(Gold)의 몫이고,
+    거기서 이미 같은 연료비 Silver로 실제 순수익을 계산합니다. sub가 main
+    소유 데이터셋을 직접 읽는 건 두 파이프라인의 경계(README 4-4) 위반입니다(#744).
     """
-    price = models["weekly_price_usd"].to_numpy(dtype=float)
-    kwh = models["combined_kwh_per_100mi"].to_numpy(dtype=float)
-    mpg = np.maximum(1.0, models["combined_mpg"].to_numpy(dtype=float))
-    electric = miles / KWH_PER_100MI_SCALE * kwh * fuel["kwh_usd"]
-    gasoline = miles / mpg * fuel["gallon_usd"]
-    return price + np.where(kwh > 0, electric, gasoline)
+    return models["weekly_price_usd"].to_numpy(dtype=float)
 
 
 def assign_vehicles(
@@ -55,7 +47,6 @@ def assign_vehicles(
     global_seed: int,
     target_month: str,
     rationality: float,
-    fuel: dict,
 ) -> dict[str, str]:
     """기사에게 차량 개체 한 대씩. 재고를 소진하며 결정적으로 배정합니다."""
     if drivers.empty or available_units.empty:
@@ -66,8 +57,6 @@ def assign_vehicles(
         available_units.groupby("vehicle_model_id", as_index=False)
         .agg(
             weekly_price_usd=("weekly_price_usd", "first"),
-            combined_mpg=("combined_mpg", "first"),
-            combined_kwh_per_100mi=("combined_kwh_per_100mi", "first"),
             vehicle_group=("vehicle_group", "first"),
         )
         .sort_values("vehicle_model_id")
@@ -99,12 +88,7 @@ def assign_vehicles(
         # 3) weak P(class | profile)
         indexes = np.flatnonzero(eligible)
         if rng.random() < rationality:
-            miles = weekly_miles(
-                float(record["base_weekly_hours"]),
-                float(record["avg_trip_duration_min"]),
-                float(record["distance_pref_mi"]),
-            )
-            cost = model_weekly_cost(models.iloc[indexes], miles, fuel)
+            cost = model_weekly_cost(models.iloc[indexes])
             chosen = int(indexes[int(np.argmin(cost))])
         else:
             chosen = int(indexes[int(rng.integers(0, len(indexes)))])
