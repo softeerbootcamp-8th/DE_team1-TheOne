@@ -10,6 +10,8 @@ Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 S3 Bronze 위치는 로컬 Path로 변환하지 않고 객체 바이트로 검증합니다.
 S3 Silver 버전은 Bronze와 같은 버킷의 monthly_taxi_trip prefix로 계산합니다.
+Silver는 검증 전에는 staging 이름으로만 쓰이고, 검증을 통과해야 최종 이름으로
+커밋됩니다 — 실패하면 최종 경로는 채워지지 않습니다(#742).
 """
 
 import io
@@ -90,6 +92,7 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
         / f"year_month={year_month}"
         / Path(path).name
     )
+    staged_name = f"{version.stem}.staged{version.suffix}"
     return {
         "row_count": parquet.metadata.num_rows,
         "locations": [path],
@@ -98,6 +101,7 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
         "file_size_bytes": Path(path).stat().st_size,
         "source_changed": True,
         "silver_version_path": str(version),
+        "silver_staging_path": str(version.with_name(staged_name)),
     }
 
 
@@ -454,8 +458,29 @@ def write_silver(
     schema=None,
     records: list[dict] | None = None,
 ) -> Path:
+    """`validate_silver`가 커밋 전에 읽는 staging 파일을 씁니다(#742).
+
+    Spark는 검증 전에 이 이름으로만 쓰고, `validate_silver`가 통과시켜야
+    `20260811T085354000000Z.parquet`(최종 이름)로 옮겨집니다.
+    """
     schema = SILVER_SCHEMA if schema is None else schema
     records = silver_rows(rows, schema) if records is None else records
+    partition = Path(silver_dir) / f"year_month={year_month}"
+    partition.mkdir(parents=True, exist_ok=True)
+    target = partition / "20260811T085354000000Z.staged.parquet"
+    pq.write_table(pa.Table.from_pylist(records, schema=schema), target)
+    return partition
+
+
+def write_committed_silver(
+    silver_dir,
+    year_month: str = YEAR_MONTH,
+    rows: int = 3,
+    schema=None,
+) -> Path:
+    """이미 검증을 통과해 최종 이름으로 커밋된 다른 달의 Silver를 흉내냅니다."""
+    schema = SILVER_SCHEMA if schema is None else schema
+    records = silver_rows(rows, schema)
     partition = Path(silver_dir) / f"year_month={year_month}"
     partition.mkdir(parents=True, exist_ok=True)
     target = partition / "20260811T085354000000Z.parquet"
@@ -472,6 +497,21 @@ def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
     validate_silver(result)
 
     assert Path(result["silver_version_path"]).is_file()
+    assert not Path(result["silver_staging_path"]).exists()
+
+
+def test_검증에_실패하면_최종_경로에_파일이_생기지_않는다(tmp_path, monkeypatch):
+    """#742 — 검증 통과 전에는 최종 경로가 채워지면 안 됩니다."""
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    write_silver(tmp_path / "silver", rows=0)  # 행 수 0 -> GX 검증 실패
+
+    result = result_for(bronze_path)
+    with pytest.raises(ValueError):
+        validate_silver(result)
+
+    assert not Path(result["silver_version_path"]).exists()
+    assert Path(result["silver_staging_path"]).is_file()
 
 
 def test_silver_파티션에_파일이_없으면_막는다(tmp_path, monkeypatch):
@@ -634,7 +674,7 @@ def test_과거_달_백필은_통과한다(tmp_path, monkeypatch):
     이걸 항상 막았습니다 (#532) — 어느 달을 넣든 그 직전 달은 없기 마련입니다."""
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    write_silver(tmp_path / "silver", year_month="2026-06", rows=5)
+    write_committed_silver(tmp_path / "silver", year_month="2026-06", rows=5)
     write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
     result = result_for(bronze_path)
     result["silver_partitions_before"] = ["year_month=2026-06"]
@@ -654,10 +694,18 @@ def test_쓰기_전_스냅샷이_없어도_통과한다(tmp_path, monkeypatch):
 def test_쓰기_전_파티션_목록은_parquet_이_있는_것만_센다(tmp_path):
     """빈 디렉터리가 남아 있는 경우가 있습니다. 그걸 세면 "사라졌다" 오탐이 납니다."""
     silver = tmp_path / "silver"
-    write_silver(silver, year_month="2026-06", rows=5)
+    write_committed_silver(silver, year_month="2026-06", rows=5)
     (silver / "year_month=2026-07").mkdir(parents=True)
 
     assert task_module.existing_silver_partitions(str(silver)) == ["year_month=2026-06"]
+
+
+def test_쓰기_전_파티션_목록은_staging_파일은_세지_않는다(tmp_path):
+    """검증 전 staging 파일은 아직 커밋된 게 아니므로 '존재'로 세면 안 됩니다(#742)."""
+    silver = tmp_path / "silver"
+    write_silver(silver, year_month="2026-06", rows=5)
+
+    assert task_module.existing_silver_partitions(str(silver)) == []
 
 
 def test_Silver_디렉터리가_없으면_빈_목록이다(tmp_path):

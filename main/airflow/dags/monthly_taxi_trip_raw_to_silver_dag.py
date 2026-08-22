@@ -115,7 +115,7 @@ def _local_bronze_to_silver() -> BashOperator:
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
             "--output_file \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
-            "['silver_version_path'] }}\" "
+            "['silver_staging_path'] }}\" "
             f"--error_threshold {MONTHLY_TAXI_TRIP_ERROR_THRESHOLD} "
             "{% if params.dry_run %}--dry-run{% endif %}"
         ),
@@ -151,7 +151,7 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
                     "--input_path",
                     f"{{{{ {xcom}['locations'][0] }}}}",
                     "--output_file",
-                    f"{{{{ {xcom}['silver_version_path'] }}}}",
+                    f"{{{{ {xcom}['silver_staging_path'] }}}}",
                     "--error_threshold",
                     str(MONTHLY_TAXI_TRIP_ERROR_THRESHOLD),
                     "--dry-run={{ params.dry_run | string | lower }}",

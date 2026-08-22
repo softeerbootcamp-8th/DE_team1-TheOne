@@ -93,7 +93,11 @@ def resolve_path(path_str: str) -> str:
 
 
 class SingleParquetFileLoader(Loader):
-    """Spark part 하나를 최종 collected_at 파일로 원자적으로 교체합니다."""
+    """Spark part 하나를 `path`로 받은 파일에 원자적으로 교체합니다.
+
+    `path`가 최종 collected_at 이름인지 검증 전 staging 이름(#742)인지는
+    호출부(Airflow)가 정합니다 — 이 Loader는 신경 쓰지 않습니다.
+    """
 
     def __init__(self, path: str):
         self._path = path
@@ -265,8 +269,14 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
 
     if output_file:
         output_name = Path(urlsplit(output_file).path).name
-        if not TIMESTAMP_FILE_PATTERN.fullmatch(output_name):
-            raise ValueError("--output_file은 수집 시각 Parquet 파일명이어야 합니다")
+        # Airflow가 검증 전에는 "<수집시각>.staged.parquet" 이름을 넘깁니다(#742) —
+        # 검증을 통과해야 validate_silver가 수집 시각 이름으로 승격합니다.
+        stem, _, suffix = output_name.partition(".staged.")
+        canonical_name = f"{stem}.{suffix}" if suffix else output_name
+        if not TIMESTAMP_FILE_PATTERN.fullmatch(canonical_name):
+            raise ValueError(
+                "--output_file은 수집 시각 Parquet 파일명(또는 그 staging 이름)이어야 합니다"
+            )
 
     if bool(args.start_year_month) != bool(args.end_year_month):
         raise ValueError("--start_year_month와 --end_year_month는 함께 줘야 합니다")
