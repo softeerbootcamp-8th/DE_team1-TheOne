@@ -8,16 +8,18 @@ Application 하나를 전체 프로젝트가 공용으로 씁니다 (Lambda 이�
 
 | 리소스 | 값 | 어디서 찾나 |
 |---|---|---|
-| Application | 이름 `theone-spark`, release `emr-7.13.0`, x86_64 | AWS 계정 ID·Application ID는 GitHub Variable `EMR_APPLICATION_ID` 또는 EMR Studio 콘솔 |
+| Application | 이름 `theone-spark`, release `emr-7.13.0`, x86_64, pre-initialized capacity 없음 | AWS 계정 ID·Application ID는 GitHub Variable `EMR_APPLICATION_ID` 또는 EMR Studio 콘솔 |
 | 실행 역할 | `theone-spark-emr-exec` (S3 `de-theone` 버킷 전체 read/write/delete) | IAM 콘솔에서 이름으로 검색 |
 | 이미지 | ECR 리포지토리 `theone-spark` | `deploy-spark.yml`이 push 후 이 Application에 자동 반영 |
 | 로그 | `s3://de-theone/emr-logs/` | |
 
 ECR 리포지토리(`theone-spark`)에는 `emr-serverless.amazonaws.com`이 커스텀 이미지를 pull할 수 있게 하는 리포지토리 정책이 걸려 있어야 합니다 (`ecr:BatchGetImage`·`ecr:GetDownloadUrlForLayer`·`ecr:DescribeImages`).
 
+Application은 `applicationLevelDigestResolution=false`를 사용합니다. `deploy-spark.yml`이 실행 중인 Application의 이미지를 갱신해도 기존 Job은 제출 당시 digest로 계속 실행하고, 이후 제출되는 Job부터 새 digest를 사용합니다. 이 모드는 pre-initialized capacity와 함께 쓸 수 없으므로 warm worker를 두지 않으며, 중지된 Application은 Job 제출 시 자동으로 시작합니다.
+
 ### Job Run 제출 (수동 실행 예시)
 
-Job Run은 일회성입니다 — Application은 계속 떠 있지만, 실행할 때마다 새로 제출해야 합니다. `job.py`가 `main.spark...`/`shared...` 절대경로로 import하는데 spark-submit은 스크립트 자기 디렉터리만 `sys.path`에 넣어서, `PYTHONPATH=/home/hadoop`을 명시적으로 conf로 넘겨야 합니다 (로컬의 `PYTHONPATH=../.. uv run`과 같은 이유).
+Job Run은 일회성입니다 — 실행할 때마다 새로 제출하며, 중지된 Application은 자동으로 시작합니다. `job.py`가 `main.spark...`/`shared...` 절대경로로 import하는데 spark-submit은 스크립트 자기 디렉터리만 `sys.path`에 넣어서, `PYTHONPATH=/home/hadoop`을 명시적으로 conf로 넘겨야 합니다 (로컬의 `PYTHONPATH=../.. uv run`과 같은 이유).
 
 Application ID·실행 역할 ARN은 계정 정보라 커밋하지 않습니다 — GitHub Variables(`EMR_APPLICATION_ID` 등) 또는 팀 채널에서 확인하세요.
 
