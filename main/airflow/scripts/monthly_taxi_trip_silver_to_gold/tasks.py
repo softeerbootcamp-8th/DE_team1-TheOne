@@ -212,10 +212,23 @@ def resolve_stale_sla_days(params: dict) -> int:
 
 
 def days_since_last_success(prev_end_date_success, now: datetime) -> int | None:
-    """직전 성공 DagRun 종료 이후 지난 일수. 성공 기록이 없으면 None."""
-    if prev_end_date_success is None:
+    """직전 성공 DagRun 종료 이후 지난 일수. 계산할 수 없으면 None.
+
+    staleness 알림은 best-effort입니다 — 운영에서 prev_end_date_success/now 중
+    하나가 예상과 달리 None이라 TypeError로 validate_inputs 전체가 죽는 사고가
+    실제로 있었습니다. 원인 불문하고 여기서 막습니다.
+    """
+    if prev_end_date_success is None or now is None:
         return None
-    return (now - prev_end_date_success).days
+    try:
+        return (now - prev_end_date_success).days
+    except TypeError:
+        logger.warning(
+            "days_since_last_success 계산 실패: prev_end_date_success=%r now=%r",
+            prev_end_date_success,
+            now,
+        )
+        return None
 
 
 def _notify_slack(callback, context: dict) -> None:
