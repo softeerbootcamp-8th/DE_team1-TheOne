@@ -484,6 +484,19 @@ def _write_one_parquet_s3(frame: DataFrame, *, bucket: str, key: str) -> None:
     이미 SparkSession이 있으므로 boto3 대신 Spark가 쓰는 Hadoop FileSystem의
     `rename()`(내부적으로 copy+delete)을 그대로 씁니다 — Spark/Hadoop 세계 밖으로
     안 나가는 유일한 방법입니다.
+
+    목적지를 먼저 지우는 이유 (#791)
+    ------------------------------
+    Hadoop `FileSystem.rename()` 에는 overwrite 옵션이 없어 목적지가 있으면
+    `FileAlreadyExistsException` 을 던집니다. POSIX `Path.rename()` 과 다릅니다.
+    발행 도중 죽으면 데이터셋 일부만 남고 manifest 는 없는 상태가 되는데,
+    manifest 가 없으니 다음 실행은 재생성을 시도하고 그 남은 객체에 막힙니다.
+    사람이 S3 를 손으로 지우지 않으면 그 월은 영구히 발행 불가였습니다.
+
+    목적지 삭제와 rename 사이에 객체가 없는 짧은 구간이 생깁니다. `source_api` 는
+    manifest 없이 Parquet 을 직접 읽으므로(#547) 그 순간 404 가 날 수 있습니다.
+    재발행은 월 1회 배치라 감수합니다 — 없애려면 Hadoop rename 대신 boto3
+    `copy_object` 로 제자리 덮어써야 하고, 그건 별도 판단 사항입니다.
     """
     staging_uri = f"s3a://{bucket}/.staging/{uuid.uuid4().hex}/"
     final_uri = f"s3a://{bucket}/{key}"
@@ -494,15 +507,21 @@ def _write_one_parquet_s3(frame: DataFrame, *, bucket: str, key: str) -> None:
     staging_path = hadoop_path(staging_uri)
     fs = staging_path.getFileSystem(frame.sparkSession._jsc.hadoopConfiguration())
 
-    parts = [
-        status.getPath()
-        for status in fs.listStatus(staging_path)
-        if status.getPath().getName().startswith("part-")
-    ]
-    if len(parts) != 1:
-        raise ValueError(f"단일 Parquet 파일을 만들지 못했습니다: {staging_uri}")
-    fs.rename(parts[0], hadoop_path(final_uri))
-    fs.delete(staging_path, True)
+    # rename 이 던져도 staging 을 지웁니다. 안 지우면 실패한 실행마다 `.staging/` 에
+    # 잔여물이 쌓이고, 그건 누구도 다시 보지 않는 데이터입니다.
+    try:
+        parts = [
+            status.getPath()
+            for status in fs.listStatus(staging_path)
+            if status.getPath().getName().startswith("part-")
+        ]
+        if len(parts) != 1:
+            raise ValueError(f"단일 Parquet 파일을 만들지 못했습니다: {staging_uri}")
+        # 없으면 false 를 돌려줄 뿐 예외를 던지지 않습니다 (Hadoop FS 계약).
+        fs.delete(hadoop_path(final_uri), False)
+        fs.rename(parts[0], hadoop_path(final_uri))
+    finally:
+        fs.delete(staging_path, True)
 
 
 def _sha256(path: Path) -> str:

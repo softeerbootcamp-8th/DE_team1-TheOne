@@ -559,7 +559,12 @@ def test_write_one_parquet_s3는_유일한_part_파일만_최종_key로_옮기�
     fs.listStatus.assert_called_once_with(path_registry[staging_uri])
     # _SUCCESS는 걸러지고 part- 파일만 최종 key로 rename됩니다.
     fs.rename.assert_called_once_with(part_status.getPath.return_value, path_registry[final_uri])
-    fs.delete.assert_called_once_with(path_registry[staging_uri], True)
+    # 목적지를 **먼저** 지웁니다 — Hadoop rename 은 overwrite 옵션이 없어 목적지가
+    # 있으면 던집니다(#791). 그다음 staging 을 정리합니다.
+    assert fs.delete.call_args_list == [
+        ((path_registry[final_uri], False),),
+        ((path_registry[staging_uri], True),),
+    ]
 
 
 def test_write_one_parquet_s3는_part_파일이_하나가_아니면_실패한다():
@@ -576,3 +581,57 @@ def test_write_one_parquet_s3는_part_파일이_하나가_아니면_실패한다
 
     with pytest.raises(ValueError, match="단일 Parquet 파일을 만들지 못했습니다"):
         _write_one_parquet_s3(frame, bucket="my-bucket", key="k")
+
+
+def test_write_one_parquet_s3는_목적지가_있어도_덮어쓴다():
+    """부분 산출물이 남아 있어도 같은 월을 다시 발행할 수 있어야 합니다(#791).
+
+    Hadoop `rename()` 은 목적지가 있으면 `FileAlreadyExistsException` 을 던집니다.
+    로컬판 `_write_one_parquet` 은 `Path.rename()` 이라 덮어쓰므로, 여기서만
+    멱등성이 깨져 그 월이 영구히 발행 불가가 됐습니다.
+    """
+    fs = MagicMock(name="fs")
+    frame = MagicMock(name="frame")
+    path_registry: dict[str, MagicMock] = {}
+    frame.sparkSession._jvm.org.apache.hadoop.fs.Path.side_effect = (
+        lambda uri: path_registry.setdefault(uri, _fake_hadoop_path(uri, fs=fs))
+    )
+    part_status = MagicMock()
+    part_status.getPath.return_value = _fake_hadoop_path("part-00000-abc.snappy.parquet")
+    fs.listStatus.return_value = [part_status]
+
+    def rename(_src, destination):
+        # 실제 S3A 처럼, 목적지가 안 지워졌다면 던집니다.
+        if (destination, False) not in [call.args for call in fs.delete.call_args_list]:
+            raise AssertionError("목적지를 지우지 않고 rename 했습니다")
+        return True
+
+    fs.rename.side_effect = rename
+
+    _write_one_parquet_s3(frame, bucket="my-bucket", key="source/published/x/data.parquet")
+
+    fs.rename.assert_called_once()
+
+
+def test_write_one_parquet_s3는_rename이_실패해도_스테이징을_지운다():
+    """안 지우면 실패한 실행마다 `.staging/` 에 아무도 안 보는 잔여물이 쌓입니다."""
+    fs = MagicMock(name="fs")
+    frame = MagicMock(name="frame")
+    written_uris = []
+    frame.coalesce.return_value.write.mode.return_value.parquet.side_effect = written_uris.append
+    path_registry: dict[str, MagicMock] = {}
+    frame.sparkSession._jvm.org.apache.hadoop.fs.Path.side_effect = (
+        lambda uri: path_registry.setdefault(uri, _fake_hadoop_path(uri, fs=fs))
+    )
+    part_status = MagicMock()
+    part_status.getPath.return_value = _fake_hadoop_path("part-00000-abc.snappy.parquet")
+    fs.listStatus.return_value = [part_status]
+    fs.rename.side_effect = RuntimeError("FileAlreadyExistsException")
+
+    with pytest.raises(RuntimeError, match="FileAlreadyExistsException"):
+        _write_one_parquet_s3(frame, bucket="my-bucket", key="k")
+
+    staging_uri = written_uris[0]
+    assert ((path_registry[staging_uri], True),) in [
+        (call.args,) for call in fs.delete.call_args_list
+    ]
