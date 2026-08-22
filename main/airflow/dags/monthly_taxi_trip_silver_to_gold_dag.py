@@ -30,6 +30,34 @@ default_args = {
     "on_failure_callback": slack_failure_callback,
 }
 
+JOB_ENV = os.getenv("SPARK_JOB_ENV", "local")
+
+
+def _build_gold_bash_command() -> str:
+    common_tail = (
+        "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
+        + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
+        + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
+        + "{% if params.dry_run %}--dry-run{% endif %}"
+    )
+    if JOB_ENV == "prod":
+        # Silver 4종의 S3 경로 계산·최신 파티션 선택은 job.py --env prod 가 직접
+        # 합니다 (default_input_base_paths) — 여기서는 대상 연월만 넘깁니다.
+        return f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py --env prod {common_tail}"
+    return (
+        f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py "
+        + "--monthly_taxi_trip_path "
+        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['monthly_taxi_trip_path'] }}\" "
+        + "--driver_vehicle_monthly_snapshot_path "
+        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_vehicle_monthly_snapshot_path'] }}\" "
+        + "--lease_vehicle_inventory_path "
+        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['lease_vehicle_inventory_path'] }}\" "
+        + "--fuel_price_path "
+        + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }}\" "
+        + f"{common_tail} "
+        + "--output_dir {{ params.output_dir }}"
+    )
+
 
 @dag(
     dag_id="monthly_taxi_trip_silver_to_gold_pipeline",
@@ -64,22 +92,7 @@ default_args = {
 def monthly_taxi_trip_silver_to_gold_pipeline():
     build = BashOperator(
         task_id="build_gold",
-        bash_command=(
-            f"python {ROOT}/main/spark/jobs/silver_to_gold/job.py "
-            + "--monthly_taxi_trip_path "
-            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['monthly_taxi_trip_path'] }}\" "
-            + "--driver_vehicle_monthly_snapshot_path "
-            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['driver_vehicle_monthly_snapshot_path'] }}\" "
-            + "--lease_vehicle_inventory_path "
-            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['lease_vehicle_inventory_path'] }}\" "
-            + "--fuel_price_path "
-            + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }}\" "
-            + "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
-            + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
-            + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
-            + "--output_dir {{ params.output_dir }} "
-            + "{% if params.dry_run %}--dry-run{% endif %}"
-        ),
+        bash_command=_build_gold_bash_command(),
         # BashOperator 가 띄우는 별도 프로세스는 DAG 파싱 때의 sys.path 를 물려받지
         # 않습니다. spark/common/io.py 가 pipeline_core 를 import 하므로 그 경로까지
         # 넣어야 합니다 (#351, 앞서 #328 에서 같은 실수).
