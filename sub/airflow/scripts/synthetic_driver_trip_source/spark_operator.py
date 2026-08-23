@@ -14,9 +14,10 @@ DAG 파일이 아니라 여기 있는 이유 — `sub` 의 DAG 파일은 `@dag` 
 import os
 from datetime import timedelta
 
-from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 
+# provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
+from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
 from sub.airflow.scripts.synthetic_driver_trip_source.tasks import ROOT
 
 JOB_ENV = os.getenv("SPARK_JOB_ENV", "local")
