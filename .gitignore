@@ -1,0 +1,44 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# uv / lock artifacts (uncomment if lockfiles should not be tracked)
+# uv.lock
+
+# Airflow
+airflow/logs/
+airflow/**/*.pyc
+
+# Terraform (.terraform.lock.hcl 은 프로바이더 버전 잠금이라 커밋합니다)
+.terraform/
+*.tfstate
+*.tfstate.*
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+.ssh-config
+
+# Editor
+.vscode/
+.idea/
+
+# 로컬 수집 결과 (bronze parquet 등)
+data/
+
+# AI
+.claude/settings.local.json
+graphify-out
+CLAUDE.md
+.claude/skills/skill-creator
+.claude/.review-cache/
+*.pem

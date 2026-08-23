@@ -1,0 +1,171 @@
+# =============================================================================
+# source_api(sub/source_api) 컨테이너 이미지 배포 + EC2 재기동.
+#
+# develop 에 머지되면 이미지를 굽고 ECR 에 올린 뒤, EC2(theone-source-server)의
+# 컨테이너를 그 이미지로 갈아끼웁니다. 지금까지는 이 두 단계를 손으로 했습니다.
+#
+# 왜 SSH 가 아니라 SSM 인가 (deploy-airflow.yml 과 동일한 이유)
+# -----------------------------------------------------------
+# EC2 가 private 서브넷에 있고 공인 IP 가 없습니다. 처음엔 NAT instance 를 bastion 으로
+# ProxyJump 하는 SSH 를 시도했는데, bastion 보안그룹이 팀원 개인 IP만 허용해서 GitHub
+# 호스팅 러너(매번 다른 IP)는 22번 포트 자체가 타임아웃 났습니다. SSM 은 인스턴스가
+# 밖으로 나가서 명령을 받아오는 구조라 인바운드 포트도 개인키도 필요 없습니다.
+#
+# 사전 준비 (AWS 콘솔·EC2 — 1회)
+#   1. IAM Identity provider 로 token.actions.githubusercontent.com 등록 (lambda 배포와 공유)
+#   2. Role `theone-github-actions-server-deploy` 생성. 신뢰 정책의 sub 조건은
+#      `repo:softeerbootcamp-8th@<org-id>/DE_team1-TheOne@<repo-id>:ref:refs/heads/develop`
+#      형태로 org/repo 불변 ID(`@<id>`)까지 붙여야 합니다 — 이 저장소는 이름이 과거
+#      한 번 바뀌어서 GitHub OIDC sub 클레임에 이 접미사가 붙습니다. 없으면 항상 거부됩니다.
+#      권한은 ECR 은 theone-source-server 만, SSM 은 인스턴스 1대 + AWS-RunShellScript 만.
+#   3. ECR 리포지토리 `theone-source-server` 생성
+#   4. EC2(theone-source-server) 인스턴스 프로파일(theone-source-api-server)에
+#      ECR pull 권한 + AmazonSSMManagedInstanceCore(또는 동등한 커스텀 정책) 부여,
+#      SSM Agent 가 떠 있는지 확인 (`aws ssm describe-instance-information` 에 나오는지)
+#   5. GitHub Variables: AWS_REGION(공유) / AWS_ROLE_ARN_SERVER / ECR_REPOSITORY_SERVER /
+#      SERVER_INSTANCE_ID / S3_BUCKET
+# =============================================================================
+name: Deploy Server
+
+on:
+  push:
+    branches: [develop]
+    # Dockerfile(sub/source_api/Dockerfile) 의 COPY 와 같아야 합니다.
+    paths:
+      - 'sub/__init__.py'
+      - 'sub/source_api/**'
+      - 'shared/__init__.py'
+      - 'shared/common/**'
+      - '.dockerignore'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+# ★ id-token 이 없으면 OIDC 가 조용히 실패합니다. 가장 흔한 실수입니다.
+permissions:
+  id-token: write
+  contents: read
+
+# 배포가 겹치면 컨테이너가 어느 이미지로 끝날지 알 수 없습니다. 취소하지도 않습니다.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 이미지 push 와 EC2 재기동
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_SERVER }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 이미지 URI 결정
+        id: image
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          echo "uri=${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_SERVER }}:${sha}" >> "$GITHUB_OUTPUT"
+
+      # 빌드 컨텍스트는 저장소 루트, Dockerfile 은 sub/source_api/Dockerfile 입니다.
+      # 이 런타임은 main/spark·main/aws_lambda 처럼 uv 프로젝트가 아니라(자체
+      # pyproject.toml 없음) Makefile 의 RUNTIMES 순회 대상이 아닙니다 — 직접 빌드합니다.
+      - name: 이미지 빌드
+        run: |
+          docker build --platform linux/amd64 --provenance=false --sbom=false \
+            -f sub/source_api/Dockerfile \
+            -t "${{ steps.image.outputs.uri }}" .
+
+      - name: 이미지 푸시
+        run: docker push "${{ steps.image.outputs.uri }}"
+
+      # 기존 수동 절차(ECR 로그인 → pull → 기존 컨테이너 정지·삭제 → run → 헬스체크)를
+      # SSM RunCommand 로 그대로 실행합니다. 셸 따옴표로 JSON 을 조립하면 깨지기 쉬워
+      # 파일로 만들어 넘깁니다. 컨테이너 이름은 AWS 쪽 다른 리소스와 맞춰
+      # `theone-source-server`, 포트 8091은 Dockerfile 기본값입니다.
+      - name: EC2 재배포 (SSM)
+        id: ssm
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          S3_BUCKET: ${{ vars.S3_BUCKET }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' > /tmp/params.json
+          import json, os
+
+          cmds = [
+            "set -euo pipefail",
+            f"aws ecr get-login-password --region {os.environ['AWS_REGION']} | docker login --username AWS --password-stdin {os.environ['REGISTRY']}",
+            f"docker pull {os.environ['IMAGE_URI']}",
+            "docker stop theone-source-server 2>/dev/null || true",
+            "docker rm theone-source-server 2>/dev/null || true",
+            # 이름으로 지웠는데도 8091 이 안 비어 배포가 4회 연속 죽었습니다
+            # (stop·rm 은 성공했고 docker run 만 "port is already allocated").
+            # 무엇이 잡고 있는지 로그에 남기고, 컨테이너면 지웁니다.
+            "docker ps -a --filter publish=8091 --format '8091 점유: {{.Names}} {{.Image}} ({{.Status}})'",
+            "docker ps -q --filter publish=8091 | xargs -r docker rm -f",
+            # 컨테이너를 지운 뒤 커널이 포트를 놓기까지 잠깐 걸리는 경우가 있습니다.
+            "for _ in $(seq 10); do ss -tln 2>/dev/null | grep -q ':8091 ' || break; sleep 2; done",
+            # 여기서도 안 비면 컨테이너가 아닌 것이 잡고 있습니다. docker 의
+            # 불친절한 에러 대신 범인을 찍고 멈춥니다 — 사람이 봐야 하는 상황입니다.
+            "if ss -tlnp 2>/dev/null | grep ':8091 '; then echo '8091 을 잡은 것이 컨테이너가 아닙니다 (위 프로세스 확인)'; exit 1; fi",
+            "docker run -d --name theone-source-server --restart unless-stopped "
+            f"-p 8091:8091 -e SOURCE_API_S3_BUCKET={os.environ['S3_BUCKET']} {os.environ['IMAGE_URI']}",
+            "sleep 3",
+            "curl -fsS http://localhost:8091/health",
+            # health 만 보면 옛 컨테이너가 응답해도 초록불입니다. 실제로 방금 푸시한
+            # 이미지가 돌고 있는지 태그로 확인합니다.
+            "docker inspect -f '{{.Config.Image}}' theone-source-server | grep -qx "
+            + os.environ["IMAGE_URI"],
+          ]
+          print(json.dumps({"commands": cmds}))
+          PY
+          cid=$(aws ssm send-command \
+            --instance-ids "${{ vars.SERVER_INSTANCE_ID }}" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy-server ${{ github.sha }}" \
+            --parameters file:///tmp/params.json \
+            --query 'Command.CommandId' --output text)
+          echo "command_id=$cid" >> "$GITHUB_OUTPUT"
+          echo "CommandId=$cid"
+
+      # 기다리지 않으면 명령이 실패해도 워크플로가 초록불로 끝납니다.
+      - name: SSM 명령 결과 확인
+        run: |
+          set -uo pipefail
+          # 방금 보낸 명령이 아직 등록 전이면 wait 이 InvocationDoesNotExist 로 죽습니다.
+          sleep 5
+          aws ssm wait command-executed \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.SERVER_INSTANCE_ID }}" || true
+          status=$(aws ssm get-command-invocation \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.SERVER_INSTANCE_ID }}" \
+            --query Status --output text)
+          echo "상태: $status"
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.SERVER_INSTANCE_ID }}" \
+            --query StandardOutputContent --output text
+          if [ "$status" != "Success" ]; then
+            aws ssm get-command-invocation \
+              --command-id "${{ steps.ssm.outputs.command_id }}" \
+              --instance-id "${{ vars.SERVER_INSTANCE_ID }}" \
+              --query StandardErrorContent --output text
+            echo "::error::EC2 반영이 실패했습니다. 이미지는 푸시됐습니다: ${{ steps.image.outputs.uri }}"
+            exit 1
+          fi
+
+      - name: 배포 요약
+        run: |
+          echo "### source_api 배포 완료" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 이미지: \`${{ steps.image.outputs.uri }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 인스턴스: \`${{ vars.SERVER_INSTANCE_ID }}\`" >> "$GITHUB_STEP_SUMMARY"

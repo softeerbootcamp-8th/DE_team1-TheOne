@@ -1,0 +1,123 @@
+# =============================================================================
+# Spark 컨테이너 이미지 배포 + EMR Serverless Application 이미지 갱신.
+#
+#   Job Run 제출은 하지 않습니다 — Job Run은 일회성이라(#646 참고) DAG나 사람이
+#   그때그때 제출하는 게 맞고, 여기서는 그 다음 Job Run이 새 이미지를 쓰도록
+#   Application 의 imageConfiguration 만 갱신합니다.
+#
+# 자격증명을 저장하지 않습니다 (OIDC) — deploy-lambda.yml 과 동일한 방식입니다.
+#
+# 사전 준비 (AWS 콘솔 — 1회, 완료됨)
+#   1. IAM Identity provider 로 token.actions.githubusercontent.com 등록 (lambda 배포와 공유 가능)
+#   2. Role `theone-github-actions-spark-deploy` 생성. ECR 은 theone-spark 만,
+#      EMR 은 emr-serverless:UpdateApplication(해당 Application ARN 로 제한)
+#   3. ECR 리포지토리 `theone-spark` 생성 + 리포지토리 정책으로
+#      emr-serverless.amazonaws.com 의 이미지 pull 허용(BatchGetImage·
+#      GetDownloadUrlForLayer·DescribeImages)
+#   4. EMR Serverless Application `theone-spark` 생성 (release emr-7.13.0, x86_64,
+#      pre-initialized capacity 없음) — 상세는 shared/spark/README.md 참고
+#   5. GitHub Variables: AWS_REGION(공유) / AWS_ROLE_ARN_SPARK / ECR_REPOSITORY_SPARK /
+#      EMR_APPLICATION_ID
+# =============================================================================
+name: Deploy Spark
+
+on:
+  push:
+    branches: [develop]
+    # Dockerfile(shared/spark/Dockerfile) 의 COPY 와 같아야 합니다. 빠지면 코드가
+    # 바뀌었는데 배포가 스킵됩니다.
+    paths:
+      - 'main/spark/pyproject.toml'
+      - 'main/spark/uv.lock'
+      - 'main/spark/__init__.py'
+      - 'main/spark/jobs/**'
+      - 'main/__init__.py'
+      - 'sub/__init__.py'
+      - 'sub/spark/**'
+      - 'sub/generators/**'
+      # 이미지가 COPY 하는 sub/ 최상위 모듈. 디렉터리 패턴에 안 걸립니다.
+      - 'sub/config.py'
+      - 'sub/run_context.py'
+      - 'sub/seeds.py'
+      - 'shared/__init__.py'
+      - 'shared/spark/**'
+      - 'shared/common/**'
+      - 'schema/**'
+      - 'libs/pipeline_core/**'
+      # 이미지가 COPY 하는 생성 파라미터. 값이 바뀌면 다시 굽고 배포해야
+      # EC2·EMR 이 새 값으로 돕니다.
+      - 'config/**'
+      - 'Makefile'
+      - '.dockerignore'
+      - '.github/workflows/deploy-spark.yml'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-spark
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 이미지 빌드와 push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_SPARK }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 이미지 태그 결정
+        id: image
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          registry="${{ steps.ecr.outputs.registry }}"
+          repo="${{ vars.ECR_REPOSITORY_SPARK }}"
+          echo "uri=${registry}/${repo}:${sha}" >> "$GITHUB_OUTPUT"
+
+      # 로컬과 같은 명령을 씁니다(make build RUNTIMES=main/spark). IMAGE_NAME 을
+      # ECR_REPOSITORY_SPARK 로 넘겨서, 리포지토리 이름이 Makefile 의 기본 규칙과
+      # 어긋나도(예: theone-main-spark 처럼) 깨지지 않게 합니다.
+      - name: 이미지 빌드
+        run: |
+          make build \
+            RUNTIMES=main/spark \
+            REGISTRY="${{ steps.ecr.outputs.registry }}/" \
+            IMAGE_NAME="${{ vars.ECR_REPOSITORY_SPARK }}"
+
+      - name: 이미지 푸시
+        run: docker push "${{ steps.image.outputs.uri }}"
+
+      # EMR 7.13 의 기본값(true)은 Application 시작 시 이미지 digest 를 고정합니다.
+      # workload 단위(false)로 유지하면 실행 중인 Job 은 기존 digest 로 계속 돌고,
+      # 이 갱신 뒤 제출되는 Job 부터 새 이미지를 씁니다.
+      - name: EMR Serverless 이미지 갱신
+        run: |
+          aws emr-serverless update-application \
+            --application-id "${{ vars.EMR_APPLICATION_ID }}" \
+            --image-configuration "{\"imageUri\":\"${{ steps.image.outputs.uri }}\",\"applicationLevelDigestResolution\":false}" \
+            --region "${{ vars.AWS_REGION }}"
+
+      - name: 요약
+        run: |
+          {
+            echo "### Spark 이미지 push + EMR 갱신 완료"
+            echo ""
+            echo '```'
+            echo "이미지: ${{ steps.image.outputs.uri }}"
+            echo "Application: ${{ vars.EMR_APPLICATION_ID }}"
+            echo "Digest 해석: Job Run 제출 시점"
+            echo '```'
+            echo ""
+            echo "Job Run 제출은 별도입니다 — shared/spark/README.md 참고."
+          } >> "$GITHUB_STEP_SUMMARY"

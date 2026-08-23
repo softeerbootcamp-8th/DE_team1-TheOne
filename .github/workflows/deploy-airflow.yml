@@ -1,0 +1,184 @@
+# =============================================================================
+# Airflow 이미지 배포.
+#
+#   develop 에 머지되면 arm64 이미지를 굽고 ECR 에 올린 뒤, EC2 의 컨테이너를
+#   그 이미지로 갈아끼웁니다. 팀원은 머지만 하면 됩니다.
+#
+# 왜 SSH 가 아니라 SSM 인가
+# -----------------------
+# EC2 가 private 서브넷에 있고 공인 IP 가 없습니다. GitHub 러너에서 SSH 로 붙으려면
+# 보안그룹을 러너 IP 대역(유동)만큼 열어야 하고, 개인키를 Secrets 에 넣어야 합니다.
+# SSM 은 인스턴스가 밖으로 나가서 명령을 받아오는 구조라 인바운드도 키도 필요 없습니다.
+#
+# 왜 arm64 러너인가
+# ---------------
+# 인스턴스가 t4g(Graviton)입니다. ubuntu-latest(x86_64)에서 구우면 QEMU 에뮬레이션이
+# 걸려 매우 느려집니다. ubuntu-24.04-arm 은 네이티브라 로컬과 같은 속도입니다.
+#
+# 사전 준비 (1회, 완료됨)
+#   IAM 역할  theone-github-actions-airflow-deploy
+#             ECR 은 theone-airflow 만, SSM 은 인스턴스 1대 + AWS-RunShellScript 만
+#   Variables AWS_ROLE_ARN_AIRFLOW / ECR_REPOSITORY_AIRFLOW / AIRFLOW_INSTANCE_ID
+#             EMR_APPLICATION_ID / EMR_EXECUTION_ROLE_ARN
+#   Secrets   GOLD_DATABASE_URL (RDS 마스터 비밀번호 포함 DSN 평문, Secrets Manager 안 씀)
+#   EC2       ~/airflow/.env (compose 가 자동으로 읽음), /root/.docker/config.json
+#             (SSM 명령은 root 로 실행돼 ubuntu 의 credential helper 설정을 못 봅니다)
+# =============================================================================
+name: Deploy Airflow
+
+on:
+  push:
+    branches: [develop]
+    # ci.yml 의 airflow 필터와 같아야 합니다. 빠지면 코드가 바뀌었는데 배포가 스킵됩니다.
+    paths:
+      # `.github/scripts/check_image_filters.py` 가 Dockerfile COPY 와 대조합니다.
+      - 'main/__init__.py'
+      - 'main/airflow/**'
+      - 'main/aws_lambda/__init__.py'
+      - 'main/aws_lambda/common/**'
+      - 'main/aws_lambda/functions/**'
+      - 'main/spark/**'
+      - 'sub/__init__.py'
+      - 'sub/airflow/**'
+      - 'sub/generators/**'
+      - 'sub/aws_lambda/**'
+      - 'sub/spark/**'
+      - 'sub/config.py'
+      - 'sub/run_context.py'
+      - 'sub/seeds.py'
+      - 'shared/__init__.py'
+      - 'shared/airflow/**'
+      - 'shared/common/**'
+      - 'shared/aws_lambda/**'
+      - 'shared/spark/**'
+      - 'schema/**'
+      - 'libs/pipeline_core/**'
+      - 'config/**'
+      - 'Makefile'
+      - '.dockerignore'
+      - 'docker-compose.ec2.yml'
+      - '.github/workflows/deploy-airflow.yml'
+  workflow_dispatch:
+
+# ★ id-token 이 없으면 OIDC 가 조용히 실패합니다. 가장 흔한 실수입니다.
+permissions:
+  id-token: write
+  contents: read
+
+# 배포가 겹치면 컨테이너가 어느 이미지로 끝날지 알 수 없습니다. 취소하지도 않습니다.
+concurrency:
+  group: deploy-airflow
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: 이미지 푸시와 EC2 반영
+    # ★ t4g(Graviton) 대상이라 arm64 네이티브 러너를 씁니다.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_AIRFLOW }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: ECR 로그인
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: 이미지 URI 결정
+        id: image
+        run: |
+          sha="$(git rev-parse --short HEAD)"
+          echo "uri=${{ steps.ecr.outputs.registry }}/${{ vars.ECR_REPOSITORY_AIRFLOW }}:${sha}" >> "$GITHUB_OUTPUT"
+
+      # 로컬과 같은 명령을 씁니다 — CI 에서만 통하는 빌드가 되지 않도록.
+      # IMAGE_NAME 으로 ECR 리포지토리 이름을 그대로 넘겨 이름이 어긋나지 않게 합니다.
+      - name: 이미지 빌드 (arm64)
+        run: |
+          make build \
+            RUNTIMES=main/airflow \
+            PLATFORM=linux/arm64 \
+            REGISTRY="${{ steps.ecr.outputs.registry }}/" \
+            IMAGE_NAME="${{ vars.ECR_REPOSITORY_AIRFLOW }}"
+
+      - name: 이미지 푸시
+        run: docker push "${{ steps.image.outputs.uri }}"
+
+      # .env 에 태그를 적어두면 재부팅 후 compose 가 같은 버전으로 올립니다.
+      # 명령줄 변수만 쓰면 재기동 때 파일의 기본값으로 되돌아갑니다.
+      - name: EC2 반영 (SSM)
+        id: ssm
+        env:
+          IMAGE_URI: ${{ steps.image.outputs.uri }}
+          INSTANCE: ${{ vars.AIRFLOW_INSTANCE_ID }}
+          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
+          EMR_EXECUTION_ROLE_ARN: ${{ vars.EMR_EXECUTION_ROLE_ARN }}
+          GOLD_DATABASE_URL: ${{ secrets.GOLD_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          # compose 파일도 함께 밀어 저장소와 EC2 가 어긋나지 않게 합니다.
+          # 셸 따옴표로 JSON 을 조립하면 깨지기 쉬워 파일로 만들어 넘깁니다.
+          python3 - <<'PY' > /tmp/params.json
+          import base64, json, os
+          compose = base64.b64encode(open("docker-compose.ec2.yml","rb").read()).decode()
+          cmds = [
+            "set -eu",
+            "cd /home/ubuntu/airflow",
+            f"echo {compose} | base64 -d > docker-compose.ec2.yml",
+            f"echo AIRFLOW_IMAGE={os.environ['IMAGE_URI']} > .env",
+            f"echo EMR_APPLICATION_ID={os.environ['EMR_APPLICATION_ID']} >> .env",
+            f"echo EMR_EXECUTION_ROLE_ARN={os.environ['EMR_EXECUTION_ROLE_ARN']} >> .env",
+            f"echo GOLD_DATABASE_URL={os.environ['GOLD_DATABASE_URL']} >> .env",
+            "chown ubuntu:ubuntu docker-compose.ec2.yml .env",
+            "docker compose -f docker-compose.ec2.yml up -d --pull always --force-recreate airflow",
+            # 배포마다 4.5GB 이미지가 쌓여 디스크(29GB)가 이틀이면 찹니다.
+            # until 필터를 두지 않는 이유: 하루 배포 횟수가 많아 24시간분도 디스크를
+            # 넘깁니다. 되돌릴 때는 ECR 에서 다시 받으면 되고 pull 은 1초 내입니다.
+            "docker image prune -af",
+          ]
+          print(json.dumps({"commands": cmds}))
+          PY
+          cid=$(aws ssm send-command \
+            --instance-ids "$INSTANCE" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy-airflow ${{ github.sha }}" \
+            --parameters file:///tmp/params.json \
+            --query 'Command.CommandId' --output text)
+          echo "command_id=$cid" >> "$GITHUB_OUTPUT"
+          echo "CommandId=$cid"
+
+      # 기다리지 않으면 명령이 실패해도 워크플로가 초록불로 끝납니다.
+      - name: SSM 명령 결과 확인
+        run: |
+          set -uo pipefail
+          # 방금 보낸 명령이 아직 등록 전이면 wait 이 InvocationDoesNotExist 로 죽습니다.
+          sleep 5
+          aws ssm wait command-executed \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.AIRFLOW_INSTANCE_ID }}" || true
+          status=$(aws ssm get-command-invocation \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.AIRFLOW_INSTANCE_ID }}" \
+            --query Status --output text)
+          echo "상태: $status"
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.AIRFLOW_INSTANCE_ID }}" \
+            --query StandardOutputContent --output text
+          if [ "$status" != "Success" ]; then
+            aws ssm get-command-invocation \
+              --command-id "${{ steps.ssm.outputs.command_id }}" \
+              --instance-id "${{ vars.AIRFLOW_INSTANCE_ID }}" \
+              --query StandardErrorContent --output text
+            echo "::error::EC2 반영이 실패했습니다. 이미지는 푸시됐습니다: ${{ steps.image.outputs.uri }}"
+            exit 1
+          fi
+
+      - name: 배포 요약
+        run: |
+          echo "### Airflow 배포 완료" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 이미지: \`${{ steps.image.outputs.uri }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 인스턴스: \`${{ vars.AIRFLOW_INSTANCE_ID }}\`" >> "$GITHUB_STEP_SUMMARY"

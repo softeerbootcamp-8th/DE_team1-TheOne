@@ -1,104 +1,179 @@
-# DE 1조 
+<div align="center">
+<h1> 서비스 이름</h1>
+<h4><b>택시 차량 리스 업체를 위한 <span style="color:yellow;">운행 데이터 기반 차량 교체 추천</span> 대시보드</b></h4>
 
-1. [프로젝트 소개](#프로젝트-소개)
-2. [아키텍처](#아키텍처)
-3. 실행 방법
-4. 문서화
-5. [Team Rule](#team-rule)
+<p>OO는 운행 데이터를 기반으로 차량 교체를 제안할 고객을 확인할 수 있는 대시보드입니다.<br/>
+이때, 추천 대상은 <b>상위 등급 차량 교체시 고객의 순수익이 월 $600 이상 증가</b>하는 고객입니다.</p>
 
-## 프로젝트 소개
-### 기능
+<a href="https://43-200-202-72.sslip.io/"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a>
+</div>
 
-## 아키텍처
-![System Architecture](architecture.png)
 
-## Team Rule
-### Ground Rule
-1. 10:00 - 10:15에 점심밥 정하기
-2. 생각나는 의견 있으면 숨기지 않고 말하기
-3. 작업은 항상 Branch에서 진행하기 ([Branch 규칙](#branch-rule) 참고)
-4. 개발 시 주석은 항상 본인이 작성하기
-5. PR은 항상 24시간 이내로 다른 사람이 리뷰 후 Merge 해주기
-    - PR은 리뷰하기 편하도록 작업 목록 Checklist로 작성하기
-6. 모든 작업은 항상 개발 전, Issue 만들기
-    - 작업 목적
-    - 완료 조건
-    - 담당자
-    - 예상 완료일
+## 목차
 
-### Branch Rule
-- 소문자만 사용
-- 띄어쓰기 대신 `-` 사용
-- Branch 형상
-    ```
-    main
-    └─ develop
-        ├─ feature/12-bike-dag
-        ├─ fix/24-spark-xxx
-        ├─ refactor/31-docker-xxxx
-        └─ docs/35-readme
-    ```
+1. [프로젝트 개요](#프로젝트-개요)
+2. [데이터 파이프라인](#데이터-파이프라인)
+3. [문서화](#문서화)
+4. [기술 스택](#기술-스택)
+5. [팀원](#팀원)
 
-- main: 배포 가능한 안정 버전
-    - 직접 Commit,Push 금지
-    - 항상 PR 병합
-    - Test 및 Build 성공한 코드만 병합
-    - 일반 기능 개발 Branch 바로 병합 금지 (develop 통해서 병합)
-    - 태그 붙이기
-         - EX) `v1.0.0   최종 발표 버전`
-    - 배포된 버전에서 발생한 긴급 오류만 hotfix 브랜치로 수정 병합
-- develop: 기능이 통합되는 개발 버전
-    - 모든 작업 Branch 여기서 생성/병합
-    - 직접 Push 금지
-- 작업 브랜치: 하나의 Issue 단위로 생성
-    - EX) `feature/12-bike-station-dag`
 
-    |타입|사용 시점|예시|
-    |---|------|---|
-    |feature|새로운 기능 개발|feature/12-bike-station-dag|
-    |fix|개발 중 발견된 버그 수정|fix/21-spark-null-handling|
-    |refactor|동작 변화 없는 코드 구조 개선|refactor/31-etl-pipeline-split|
-    |docs|문서 수정|docs/35-readme|
-    |test|테스트 추가 및 개선|test/40-dag-unit-test|
-    |chore|설정 및 유지보수|chore/44-airflow-docker-setup|
-    |hotfix|main 버전 긴급 오류 수정|hotfix/50-kafka-consumer-crash|
 
-### Commit Rule
-> `Conventional Commits` 기준 작성
-- 형식
-    ```bash
-    type(scope): subject
+## 프로젝트 개요 
+### 대상 
+- 뉴욕 Uber·Lyft 기사 대상 차량 리스 업체의 고객 담당자
+### 문제점
+- 객단가 향상을 통한 매출 상승 기회 상실 
+  - 기사에게 더 높은 순수익을 주면서도 리스 업체의 객단가를 끌어올릴 수 있는 차량을 데이터 기반으로 추천하지 못함
+### 해결방안
+- 차량 교체 권장 고객 및 제안 차량 추천 대시보드
+  - 대시보드 조건 : 차량 변경 시 '기사 순수익 월 600$ 이상 증가 & 리스 업체 렌탈 객단가 상승'
+### 결과 이미지
+![대시보드 이미지](dashboard_reference.png)
 
-    body
 
-    footer
-    ```
-- 예시
-    ```bash
-    feat(dag): 따릉이 대여소 수집 DAG 추가
+### 기대 효과
 
-    Airflow DAG를 등록해 공공 API로부터
-    대여소 현황 데이터를 매시간 수집하도록 구현
+| 관점 | AS-IS | TO-BE |
+| --- | --- | --- |
+| **차량 추천** | 판단 기준 부재, 감에 의존 | 운행 기록 기반 순수익을 고려한 데이터 기반 추천 |
+| **고객 우선순위** | 수천명 중 누구에게 전화할지 불명확 | 순수익 증가폭 순 정렬 |
+| **비즈니스 효과** | 수익 증가 기회 놓침 | 기사 만족도 향상, 객단가 증가 |
 
-    Closes #12
-    ```
-- 커밋 타입
-    | 타입 | 사용 시점 | 예시 |
-    |---|---|---|
-    | `feat` | 새로운 기능 추가 | `feat(dag): 따릉이 대여소 수집 DAG 추가` |
-    | `fix` | 버그 수정 | `fix(spark): null 값으로 인한 job 실패 수정` |
-    | `docs` | 문서 추가/변경 | `docs: 데이터 파이프라인 실행 방법 추가` |
-    | `style` | 동작 변화 없는 코드 형식 수정 | `style: PEP8 기준 들여쓰기 정리` |
-    | `refactor` | 기능 변화 없는 코드 구조 개선 | `refactor(etl): 적재 로직 함수 분리` |
-    | `test` | 테스트 추가 또는 수정 | `test(dag): DAG 태스크 순서 테스트 추가` |
-    | `chore` | 설정/패키지/기타 유지보수 | `chore: Airflow Docker 이미지 버전 업데이트` |
-    | `build` | 빌드 시스템이나 의존성 변경 | `build: pyspark 의존성 추가` |
-    | `ci` | CI/CD 설정 변경 | `ci: GitHub Actions DAG 검증 작업 추가` |
-    | `perf` | 성능 개선 | `perf(spark): 파티셔닝으로 셔플 비용 절감` |
-    | `revert` | 이전 커밋 되돌리기 | `revert: 카프카 컨슈머 변경 사항 되돌리기` |
+[목차로 이동](#목차])
 
-### 팀원
-|[<img src="https://github.com/kingrangE.png">](https://github.com/kingrangE)|[<img src="https://github.com/taeju-moon.png">](https://github.com/taeju-moon.png)|[<img src="https://github.com/HongJunseong.png">](https://github.com/HongJunseong)|[<img src="https://github.com/inerasable0203.png">](https://github.com/inerasable0203)|
-|---------|-----|-----|----|
-|전길원|문태주|홍준성|최지욱|
-|DE|DE|DE|DE|
+## 데이터 파이프라인
+
+### 1. INPUT
+
+| 출처 | 수집 대상 | 수집 방식 | 수집 주기 | 규모 |
+| --- | --- | --- | --- | --- |
+| 회사 가상 원천 DB | 월별 택시 운행 기록 | API 요청 | 일 1회 | 월 **70-90만 행** |
+| 회사 가상 원천 DB | 렌탈 차종, 등급, 제원, 주간 렌트료 등 | API 요청 | 주 1회 | 12종 |
+| 회사 가상 원천 DB | 월별 기사-택시 테이블 | API 요청 | 월 1회 | 약 2000 행 |
+| **EIA** | 뉴욕주 휘발유 주간 소매가 | XLS 다운로드 | 월 1회 | 월 1행 |
+| **EIA** | 뉴욕주 전기 요금 | XLSX 다운로드 | 월 1회 | 월 1행 |
+
+### 2. OUTPUT
+
+| 데이터 | 주요 정보 | 계산 방식 |
+|---|---|---|
+| 기사 현재 예상 순수익 | 기사의 현재 운행 예상 수익 | 수익 - 주간 유류비 + 주간 렌트료 |
+| 기사별 차량 교체시 예상 수익 | 기사-차량 조합별 예상 수익 | 현재 운행 예상 수익 산식을 각 차량에 적용 |
+| 월간 리포트 요약 정보 | 골드 데이터 버전, 추천 대상 기사 수, 기사 평균 순수익 증가액/매출 증가액, 기사 매출 증가액 합계 | 위 두 테이블을 기반으로 변경 시 값 계산 |
+
+
+### 3. 파이프라인
+![메인 데이터 파이프라인 아키텍처](main_data_product_architecture.png)
+> 가상 사내 시스템과 EIA에서 데이터를 수집해 **메달리온 정제 구조** 설계
+
+| 계층 | 역할 | 실행 런타임 | 적재 위치|
+| --- | --- | --- | --- |
+| **Bronze** | 원본 적재, 수집 품질 검증 | Lambda | S3 |
+| **Silver** | 원본별 정제, 연료비 통합, 레코드 품질 검증 | Lambda or Spark(EMR) | S3|
+| **Gold** | 비즈니스 로직 적용, 조인, 집계, 시뮬레이션, 추천 | Lambda or Spark | RDS |
+
+<details>
+<summary>원천 DB 파이프라인</summary>
+
+> HVFHV 데이터에 택시 ID/기사 ID가 없기에 합성을 진행하는 **가상의 회사 DB**입니다.
+
+#### 1. INPUT
+| 출처 | 수집 대상 | 수집 방식 | 수집 주기 | 규모 |
+| --- | --- | --- | --- | --- |
+| TLC | HVFHV(Uber/Lyft 운행 기록) | parquet 다운로드 | 일 1회 | 월 **2000만행** |
+| FastTrackLease(렌탈사 사이트) | 렌탈 차종 및 주간 렌트료 | 웹 크롤링 | 월 1회 | 차량 12종 |
+| Fuel Economy(미국 정부 사이트) | 차량 제원(연비 등) | API 요청 | 월 1회 | 약 50000행 |
+| Uber Eligible List(Uber 사이트) | Uber 차량별 서비스 등급 | 웹 크롤링 | 월 1회 | 월 1행 |
+| Lyft Eligible List(Lyft 사이트) | Lyft 차량별 서비스 등급 | 웹 크롤링 | 월 1회 | 월 1행 |
+
+#### 2. OUTPUT
+| 데이터 | 한 행 | 규모 | 생성 방식 | 공개 |
+| --- | --- | --- | --- | --- |
+| `월별 택시 운행 기록` | 운행 1건 | 월 **2,040만 행** | TLC 실데이터에 `taxi_id` 를 시공간 제약하에 배정 | **API** |
+| `기사-택시 마스터 데이터` | 기사 1명 | 2,000행 | 내부 원장에서 파생 | **API** |
+| `리스 업체 보유 차량 데이터` | 차량 1대 | 2,000행 | 내부 원장에서 파생 | **API** |
+
+#### 3. 배정 알고리즘 (데이터 합성)
+- 목표 : 현실적인 기사 데이터 배정
+- 방식 : **결정적(deterministic) 배정 알고리즘**
+  - 기사 선호도 / 근무 한도 / 공차 이동시간 제약을 만족하는 알고리즘
+
+#### 4. 파이프라인
+![원천 DB 파이프라인 아키텍처](source_company_architecture.png)
+> 원천 DB에서 생성한 데이터를 **API로 메인 데이터 파이프라인에서 수집**합니다.
+
+| 계층 | 내용 |
+| --- | --- |
+| **RAW** | 실제 원천 데이터의 원본 저장 |
+| **Curated** | 표준화, 정제된 데이터 저장 |
+| **Synthesize** | 데이터 합성 과정 저장 |
+| **Attribution** | 합성된 데이터와 실제 데이터를 매핑|
+| **Published** | 해당 원천 시스템에서 제공하는 데이터 |
+
+</details>
+
+
+---
+
+## 문서화
+
+> 추가 예정
+
+- 의사결정 기록
+  > 팀내 의견 공유를 통해 의사결정한 내용(기술/기획 등) 정리
+  - [링크](./docs/decision_making/README.md)
+
+## 기술 스택
+
+<div align="center">
+
+### Data Processing
+![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![PySpark](https://img.shields.io/badge/PySpark-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white)
+![Pandas](https://img.shields.io/badge/Pandas-150458?style=for-the-badge&logo=pandas&logoColor=white)
+![Apache Iceberg](https://img.shields.io/badge/Apache_Iceberg-1E4FFF?style=for-the-badge&logo=apacheiceberg&logoColor=white)
+
+### Storage
+![AWS S3](https://img.shields.io/badge/S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white)
+![Amazon RDS](https://img.shields.io/badge/RDS-527FFF?style=for-the-badge&logo=amazonrds&logoColor=white)
+
+### Compute / Infrastructure
+![AWS EMR](https://img.shields.io/badge/EMR-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)
+![AWS Lambda](https://img.shields.io/badge/Lambda-FF9900?style=for-the-badge&logo=awslambda&logoColor=white)
+![AWS EC2](https://img.shields.io/badge/EC2-FF9900?style=for-the-badge&logo=amazonec2&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
+
+### Orchestration / Quality
+![Airflow](https://img.shields.io/badge/Airflow-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white)
+![Great Expectations](https://img.shields.io/badge/Great_Expectations-FF6310?style=for-the-badge&logo=greatexpectations&logoColor=white)
+![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)
+![Slack](https://img.shields.io/badge/Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white)
+
+### Visualization
+![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+
+</div>
+
+## 팀원
+
+<table align="center">
+  <tr>
+    <td align="center"><a href="https://github.com/kingrangE"><b>전길원</b></a></td>
+    <td align="center"><a href="https://github.com/taeju-moon"><b>문태주</b></a></td>
+    <td align="center"><a href="https://github.com/HongJunseong"><b>홍준성</b></a></td>
+    <td align="center"><a href="https://github.com/inerasable0203"><b>최지욱</b></a></td>
+  </tr>
+  <tr>
+    <td align="center"><a href="https://github.com/kingrangE"><img src="https://github.com/kingrangE.png" width="150px" alt="전길원"/></a></td>
+    <td align="center"><a href="https://github.com/taeju-moon"><img src="https://github.com/taeju-moon.png" width="150px" alt="문태주"/></a></td>
+    <td align="center"><a href="https://github.com/HongJunseong"><img src="https://github.com/HongJunseong.png" width="150px" alt="홍준성"/></a></td>
+    <td align="center"><a href="https://github.com/inerasable0203"><img src="https://github.com/inerasable0203.png" width="150px" alt="최지욱"/></a></td>
+  </tr>
+  <tr>
+    <td align="center"><b>DE</b></td>
+    <td align="center"><b>DE</b></td>
+    <td align="center"><b>DE</b></td>
+    <td align="center"><b>DE</b></td>
+  </tr>
+</table>

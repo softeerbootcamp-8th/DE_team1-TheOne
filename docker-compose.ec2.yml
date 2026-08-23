@@ -1,0 +1,92 @@
+# =============================================================================
+# EC2 운영용 Airflow — 로컬 개발용 docker-compose.yml 과 별개 파일입니다.
+#
+#   docker compose -f docker-compose.ec2.yml up -d
+#   docker compose -f docker-compose.ec2.yml exec airflow airflow dags list
+#
+# 로컬용과 다른 점:
+#   * 이미지를 ECR 에서 받습니다(빌드하지 않음). DAG·프로젝트 코드는 이미지 안에 있습니다.
+#   * 바인드 마운트가 없습니다 — 이미지 태그가 곧 코드 버전입니다. 코드를 바꾸면
+#     커밋 → `make build RUNTIMES=main/airflow PLATFORM=linux/arm64` → push → pull 순서를
+#     다시 밟아야 반영됩니다. 파일만 고쳐도 안 바뀝니다.
+#   * 로그인을 두지 않습니다 (SIMPLE_AUTH_MANAGER_ALL_ADMINS). 근거는 아래 환경변수 주석.
+#
+# 이미지는 arm64 로 굽습니다 (인스턴스가 t4g = Graviton). Makefile 기본값은 amd64 이고,
+# 그 기본값을 바꾸면 x86_64 로 배포된 Lambda 가 함께 깨지니 호출할 때만 넘기세요.
+# =============================================================================
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: airflow
+      # TODO: 평문입니다. private 서브넷의 컨테이너 사이 통신이라 당장 노출은 없지만
+      #       .env 나 Secrets Manager 로 빼야 합니다.
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD", "pg_isready", "-U", "airflow" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  airflow:
+    # 기본값은 검증된 배포 태그입니다. 개발 중에는 AIRFLOW_IMAGE 로 다른 태그를 지정하세요.
+    #   AIRFLOW_IMAGE=<레지스트리>/theone-airflow:dev \
+    #     docker compose -f docker-compose.ec2.yml up -d --pull always --force-recreate airflow
+    image: ${AIRFLOW_IMAGE:-572660899671.dkr.ecr.ap-northeast-2.amazonaws.com/theone-airflow:01c60a0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      # ★ 로그인을 없앱니다. 인증된 모든 요청을 admin 으로 취급합니다.
+      #
+      # 왜 괜찮은가 — SimpleAuthManager 는 비밀번호를 컨테이너 안 평문 파일
+      # (/opt/airflow/simple_auth_manager_passwords.json.generated) 에 둡니다. SSH 로
+      # 들어올 수 있는 사람은 `docker compose exec` 로 그걸 그대로 읽습니다. 즉 비밀번호를
+      # 아는 집합과 SSH 키를 가진 집합이 같아서, 실제 접근 통제는 private 서브넷과 SSH 키가
+      # 합니다. 게다가 그 파일은 볼륨이 아니라 이미지 경로에 있어 배포마다 새로 생성되고,
+      # 그때마다 로그인이 풀립니다 — 방어력 없이 마찰만 남습니다.
+      #
+      # ★★ 아래 두 전제가 깨지면 반드시 되돌리고 auth manager 를 교체하세요.
+      #     1) 8080 을 127.0.0.1 에만 바인딩 (이 파일 ports 절)
+      #     2) 인스턴스에 공인 IP 없음
+      #     ALB 를 붙이거나 공인 IP 를 주는 순간 이 설정은 인증 없는 공개가 됩니다.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      # 없으면 Lambda 핸들러 계열 산출물이 S3 가 아니라 컨테이너 디스크에 쌓입니다
+      # (핸들러의 기본값이 local). 그 디스크는 배포마다 지워집니다.
+      #
+      # ★ 스위치가 두 개입니다. 핸들러마다 보는 이름이 달라서 둘 다 켜야 합니다.
+      #   RAW_STORAGE     8개  (source_to_raw / raw_to_curated 계열)
+      #   BRONZE_STORAGE 11개  (raw_to_bronze / bronze_to_silver 계열 + vehicle_master)
+      # 하나만 켜면 생산자는 S3 에 쓰고 소비자는 로컬을 읽어 FileNotFoundError 가 납니다.
+      RAW_STORAGE: s3
+      BRONZE_STORAGE: s3
+      SPARK_JOB_ENV: prod
+      DATA_LAKE_S3_BUCKET: de-theone
+      EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:?~/airflow/.env 의 EMR_APPLICATION_ID가 필요합니다}
+      EMR_EXECUTION_ROLE_ARN: ${EMR_EXECUTION_ROLE_ARN:?~/airflow/.env 의 EMR_EXECUTION_ROLE_ARN이 필요합니다}
+      GOLD_DATABASE_URL: ${GOLD_DATABASE_URL:?~/airflow/.env 의 GOLD_DATABASE_URL이 필요합니다}
+      AWS_DEFAULT_REGION: ap-northeast-2
+    volumes:
+      # 이미지에 이미 있는 경로라 named volume 이 소유권을 물려받습니다. 이미지에 없는
+      # 경로에 볼륨을 붙이면 마운트 지점이 root 소유로 생겨 uid 50000 이 쓰지 못합니다.
+      - airflow-logs:/opt/airflow/logs
+    ports:
+      # 127.0.0.1 에만 바인딩 — 보안그룹이 열려도 외부에서 붙지 못합니다.
+      # UI 는 SSH 터널로 봅니다: ssh -N -L 8080:localhost:8080 <인스턴스>
+      - "127.0.0.1:8080:8080"
+    # standalone = api-server + scheduler + dag-processor + triggerer 를 한 컨테이너에서
+    command: standalone
+    restart: unless-stopped
+
+volumes:
+  postgres-db:
+  airflow-logs:
