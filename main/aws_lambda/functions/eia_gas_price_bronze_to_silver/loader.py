@@ -45,6 +45,21 @@ def silver_key(year_month: str, service_area: str | None = None) -> str:
     )
 
 
+def staged_silver_file(
+    base_dir: str, year_month: str, service_area: str | None = None
+) -> Path:
+    """검증 전 씁니다. `silver_file`과 격리된 디렉터리라 검증 실패해도 최종
+    경로는 이전 상태 그대로 남습니다(#757)."""
+    final = silver_file(base_dir, year_month, service_area)
+    return final.parent / ".staging" / final.name
+
+
+def staged_silver_key(year_month: str, service_area: str | None = None) -> str:
+    final = silver_key(year_month, service_area)
+    parent, name = final.rsplit("/", 1)
+    return f"{parent}/.staging/{name}"
+
+
 class EiaGasPriceSilverLoader(Loader):
     """대상 월 한 달치를 고정 경로의 로컬 Parquet 하나로 저장합니다."""
 
@@ -63,7 +78,7 @@ class EiaGasPriceSilverLoader(Loader):
             raise ValueError("적재할 휘발유 단가 Silver 데이터가 없습니다.")
 
         table = pa.Table.from_pylist(data, schema=SCHEMA)
-        path = silver_file(self._base_dir, self._year_month, self._service_area)
+        path = staged_silver_file(self._base_dir, self._year_month, self._service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
             path,
@@ -99,7 +114,7 @@ class EiaGasPriceS3SilverLoader(Loader):
         pq.write_table(table, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month, self._service_area),
+            key=staged_silver_key(self._year_month, self._service_area),
             bucket=self._bucket,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=table.num_rows)

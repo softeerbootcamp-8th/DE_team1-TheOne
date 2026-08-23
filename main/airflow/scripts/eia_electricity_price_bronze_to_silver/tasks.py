@@ -10,17 +10,24 @@ EIA 파일 하나에 이력이 통째로 들어 있어 **어느 달이든** 만�
 
 import calendar
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from airflow.sdk import task
 
-from main.airflow.common.assets import service_area_segment
+from main.airflow.common.assets import join_segments, service_area_segment
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
-    layout_tail, parse_handler_result, parse_year_month, read_parquet,
+    S3Location,
+    commit_staged_file,
+    layout_tail,
+    parse_handler_result,
+    parse_location,
+    parse_year_month,
+    read_parquet,
 )
 
 logger = logging.getLogger(__name__)
@@ -71,6 +78,31 @@ def silver_file(base_dir: str, year_month: str, service_area: str | None = None)
     )
 
 
+def silver_key(year_month: str, service_area: str | None = None) -> str:
+    return join_segments(
+        "silver",
+        DATASET,
+        service_area_segment(service_area),
+        f"{SILVER_PARTITION_KEY}={year_month}",
+        FILE_NAME,
+    )
+
+
+def staged_silver_file(
+    base_dir: str, year_month: str, service_area: str | None = None
+) -> Path:
+    """검증 전 위치. lambda loader의 `staged_silver_file`과 같은 규칙이어야
+    합니다(#757) — 어긋나면 이 검증이 엉뚱한 자리를 보고도 통과합니다."""
+    final = silver_file(base_dir, year_month, service_area)
+    return final.parent / ".staging" / final.name
+
+
+def staged_silver_key(year_month: str, service_area: str | None = None) -> str:
+    final = silver_key(year_month, service_area)
+    parent, name = final.rsplit("/", 1)
+    return f"{parent}/.staging/{name}"
+
+
 def month_day_count(year_month: str) -> int:
     year, month = (int(part) for part in year_month.split("-"))
     return calendar.monthrange(year, month)[1]
@@ -89,7 +121,9 @@ def validate_silver(result: object, service_area: str | None = None) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    expected_path = silver_file("", year_month, service_area)
+    # 검증 전이라 아직 staged 위치입니다 — 최종 위치는 검증 통과 후 commit_staged_file
+    # 로만 채워집니다(#757).
+    expected_path = staged_silver_file("", year_month, service_area)
     if layout_tail(path, service_area=service_area) != layout_tail(
         expected_path, service_area=service_area
     ):
@@ -141,4 +175,18 @@ def bronze_to_silver_task(**context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="bronze_to_silver")
-    validate_silver(result, context["params"]["service_area"])
+    service_area = context["params"]["service_area"]
+    validate_silver(result, service_area)
+
+    # 검증을 통과했으니 이제 최종 경로로 승격합니다 — 그 전에는 실패해도 최종
+    # 경로가 이전 상태 그대로 남습니다(#757).
+    year_month = result["year_month"]
+    staged = parse_location(result["locations"][0])
+    storage = os.getenv("BRONZE_STORAGE", "local")
+    bucket = os.getenv("DATA_LAKE_S3_BUCKET")
+    final = (
+        S3Location(bucket, silver_key(year_month, service_area))
+        if storage == "s3"
+        else silver_file(context["params"]["silver_dir"], year_month, service_area)
+    )
+    commit_staged_file(staged, final)

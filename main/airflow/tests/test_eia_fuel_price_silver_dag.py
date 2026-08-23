@@ -74,7 +74,7 @@ def _write_clean(
 
 def _write_silver(silver, year_month, rows, source=EIA, schema=SCHEMA,
                   collected=COLLECTED, status=FINAL):
-    path = silver_tasks.integrated_silver_file(str(silver), year_month)
+    path = silver_tasks.staged_integrated_silver_file(str(silver), year_month)
     path.parent.mkdir(parents=True, exist_ok=True)
     year, month = (int(part) for part in year_month.split("-"))
     records = [
@@ -250,7 +250,7 @@ def test_다른_출처가_만든_산출물은_EIA_검증에서_실패한다(tmp_
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
-    path = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03")
+    path = silver_tasks.staged_integrated_silver_file(str(tmp_path), "2024-03")
     with pytest.raises(FileNotFoundError):
         silver_tasks.validate_silver(
             {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
@@ -291,7 +291,7 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
             "row_count": 31,
             "locations": [
                 "s3://data-lake/silver/gas_ev_price/"
-                "year_month=2024-03/gas_ev_price.parquet"
+                "year_month=2024-03/.staging/gas_ev_price.parquet"
             ],
         }
     )

@@ -92,7 +92,7 @@ def test_연도와_월중_하나만_지정하면_실패한다(params):
 
 
 def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):
-    path = task_module.silver_file(str(tmp_path), "2024-03")
+    path = task_module.staged_silver_file(str(tmp_path), "2024-03")
     _write(path, _march())
 
     task_module.validate_silver(
@@ -102,7 +102,7 @@ def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):
 
 @pytest.mark.parametrize("violation", ["missing_day", "duplicate_day", "schema"])
 def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, violation):
-    path = task_module.silver_file(str(tmp_path), "2024-03")
+    path = task_module.staged_silver_file(str(tmp_path), "2024-03")
     if violation == "missing_day":
         _write(path, _march(30))
     elif violation == "duplicate_day":
@@ -120,7 +120,7 @@ def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, 
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
-    path = task_module.silver_file(str(tmp_path), "2024-03")
+    path = task_module.staged_silver_file(str(tmp_path), "2024-03")
     with pytest.raises(FileNotFoundError, match="휘발유 단가 Silver"):
         task_module.validate_silver(
             {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
@@ -142,7 +142,7 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
             "row_count": 31,
             "locations": [
                 "s3://data-lake/silver/eia_gas_price/"
-                "year_month=2024-03/eia_gas_price.parquet"
+                "year_month=2024-03/.staging/eia_gas_price.parquet"
             ],
         }
     )
