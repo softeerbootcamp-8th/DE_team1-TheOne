@@ -244,6 +244,15 @@ def main(args_list: list[str] | None = None) -> None:
         help="--env prod일 때 쓸 S3 버킷 (기본 DATA_LAKE_S3_BUCKET 환경변수)",
     )
     parser.add_argument(
+        "--enable_s3",
+        default=False,
+        type=lambda value: str(value).lower() == "true",
+        help=(
+            "로컬 pyspark에 hadoop-aws를 얹어 --env prod의 s3:// 를 직접 읽음. "
+            "EMR 제출 시에는 이미 세션이 있어 무시됨(#712)"
+        ),
+    )
+    parser.add_argument(
         "--monthly_taxi_trip_path", default=None,
         help="월별 택시 운행 기록 Silver 파티션. 비우면 --env 기본 경로",
     )
@@ -313,7 +322,9 @@ def main(args_list: list[str] | None = None) -> None:
     lease_vehicle_inventory_path = _monthly_path("lease_vehicle_inventory")
     fuel_price_path = resolve_path(given_paths["fuel_price"] or base_paths["fuel_price"])
 
-    spark = get_or_create_spark_session("monthly_taxi_trip_silver_to_gold")
+    spark = get_or_create_spark_session(
+        "monthly_taxi_trip_silver_to_gold", enable_s3=args.enable_s3
+    )
     monthly_taxi_trip: DataFrame = spark.read.parquet(monthly_taxi_trip_path)
     driver_snapshot: DataFrame = spark.read.parquet(driver_vehicle_monthly_snapshot_path)
     inventory: DataFrame = spark.read.parquet(lease_vehicle_inventory_path)

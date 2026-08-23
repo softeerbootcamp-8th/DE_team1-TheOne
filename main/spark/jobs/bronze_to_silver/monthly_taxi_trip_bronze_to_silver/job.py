@@ -211,6 +211,15 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
         "--bucket", default=os.getenv("DATA_LAKE_S3_BUCKET"),
         help="--env prod일 때 쓸 S3 버킷 (기본 DATA_LAKE_S3_BUCKET 환경변수)",
     )
+    parser.add_argument(
+        "--enable_s3",
+        default=False,
+        type=lambda value: str(value).lower() == "true",
+        help=(
+            "로컬 pyspark에 hadoop-aws를 얹어 --env prod의 s3:// 를 직접 읽음. "
+            "EMR 제출 시에는 이미 세션이 있어 무시됨(#712)"
+        ),
+    )
     parser.add_argument("--input_path", default=None, help="Path to bronze raw data. 비우면 --env 기본 경로")
     parser.add_argument("--output_path", default=None, help="Path to save silver clean data. 비우면 --env 기본 경로")
     parser.add_argument(
@@ -281,6 +290,7 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
         "monthly_taxi_trip_bronze_to_silver",
         driver_memory=args.spark_memory,
         local_mode=args.env == "local",
+        enable_s3=args.enable_s3,
     )
     spark.sparkContext.setLogLevel("WARN")
 
