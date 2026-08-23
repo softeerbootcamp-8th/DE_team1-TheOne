@@ -5,6 +5,7 @@
 3. 빈 응답과 잘못된 Parquet은 완료 파일을 공개하지 않음
 4. latest 응답의 최종 URL에서 실제 월을 확인
 5. 다른 host로 이동한 응답은 저장 전에 거부
+6. service_area를 지정하면 데이터셋과 월 사이의 지역 경로에 저장
 """
 
 from datetime import datetime, timezone
@@ -121,6 +122,20 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
         "year",
         "year_month",
     }
+
+
+def test_service_area를_데이터셋과_월사이의_Bronze경로에_저장한다(
+    tmp_path, monkeypatch
+):
+    _api(monkeypatch)
+    _clock(monkeypatch, FIRST_COLLECTED_AT)
+    event = {**_event(tmp_path), "service_area": "TX"}
+
+    result = lambda_handler(event)
+
+    path = Path(result["locations"][0])
+    assert path.parent.parent.parent.name == "service_area=TX"
+    assert path.parent.parent.parent.parent.name == "monthly_taxi_trip"
 
 
 def test_같은월의_원본이_변경되면_수집시각파일을_추가해_이력을_보존한다(

@@ -71,15 +71,14 @@ def write_bronze(
     rows: int = 3,
     schema=None,
     records: list[dict] | None = None,
+    service_area: str | None = None,
 ) -> str:
     schema = task_module.SCHEMA if schema is None else schema
     records = bronze_rows(rows, schema) if records is None else records
-    path = (
-        Path(base_dir)
-        / "monthly_taxi_trip"
-        / f"year_month={year_month}"
-        / "20260811T085354000000Z.parquet"
-    )
+    dataset_root = Path(base_dir) / "monthly_taxi_trip"
+    if service_area:
+        dataset_root /= f"service_area={service_area}"
+    path = dataset_root / f"year_month={year_month}" / "20260811T085354000000Z.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
     return str(path)
@@ -121,8 +120,11 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
     }
 
 
-def bronze_params(base_dir) -> dict:
-    return {"base_dir": str(base_dir)}
+def bronze_params(base_dir, service_area: str | None = None) -> dict:
+    params = {"base_dir": str(base_dir)}
+    if service_area:
+        params["service_area"] = service_area
+    return params
 
 
 def test_품질경고메시지는_판정근거와_처리결과를_표시한다():
@@ -145,6 +147,34 @@ def test_Validation_Task에_Slack_실패_콜백이_연결된다():
 def test_정상_적재는_통과한다(tmp_path):
     path = write_bronze(tmp_path)
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_TX_Bronze를_검증하고_같은지역의_Silver경로를_만든다(
+    tmp_path, monkeypatch
+):
+    bronze_dir = tmp_path / "bronze"
+    silver_dir = tmp_path / "silver" / "monthly_taxi_trip"
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(silver_dir))
+    path = write_bronze(bronze_dir, service_area="TX")
+
+    result = validate_bronze(
+        result_for(path),
+        params=bronze_params(bronze_dir, "TX"),
+    )
+
+    expected_root = silver_dir / "service_area=TX" / f"year_month={YEAR_MONTH}"
+    assert Path(result["silver_version_path"]).parent == expected_root
+    assert Path(result["silver_staging_path"]).parent.parent == expected_root
+
+
+def test_요청지역과_Bronze경로지역이_다르면_거부한다(tmp_path):
+    path = write_bronze(tmp_path, service_area="TX")
+
+    with pytest.raises(ValueError, match="월 파티션 계약과 다릅니다"):
+        validate_bronze(
+            result_for(path),
+            params=bronze_params(tmp_path, "NYC"),
+        )
 
 
 def test_collected_at_디렉터리_Bronze도_검증을_통과한다(tmp_path):
@@ -774,7 +804,7 @@ def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않
     records = bronze_rows(10)
     records[0]["pickup_datetime"] = None
     records[1]["dropoff_datetime"] = None
-    path = write_bronze(tmp_path, records=records)
+    path = write_bronze(tmp_path, records=records, service_area="NYC")
     result = result_for(path)
     result.update({"year": "2026", "month": "07"})
 
@@ -794,6 +824,7 @@ def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않
             "year": "2026",
             "month": "07",
             "base_dir": str(tmp_path),
+            "service_area": "NYC",
         },
     )
     instances = {instance.task_id: instance for instance in run.get_task_instances()}
