@@ -5,6 +5,7 @@
 3. 생성 Spark 명령은 source 입력과 상태·릴리스 경로만 사용
 4. 내부 manifest 행 수·checksum·필수 컬럼 검증
 5. API는 manifest를 공개하지 않고 세 Parquet만 다운로드
+6. EMR build_source_release는 병렬 자원과 executor 상한을 함께 지정
 """
 
 import hashlib
@@ -457,6 +458,26 @@ def test_운영은_EMR_Serverless_로_제출하고_완료까지_기다린다(mon
         ]["logUri"]
         == "s3://test-lake/emr-logs/"
     )
+
+
+def test_EMR_build_source_release는_병렬_자원과_상한을_지정한다(monkeypatch):
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    parameters = operator_module.emr_build().job_driver["sparkSubmit"][
+        "sparkSubmitParameters"
+    ]
+
+    for expected in (
+        "spark.executor.cores=4",
+        "spark.executor.memory=12g",
+        "spark.executor.memoryOverhead=4g",
+        "spark.dynamicAllocation.minExecutors=1",
+        "spark.dynamicAllocation.initialExecutors=3",
+        "spark.dynamicAllocation.maxExecutors=5",
+    ):
+        assert f"--conf {expected}" in parameters
 
 
 def test_EMR_은_storage_를_s3_로_고정한다(monkeypatch):
