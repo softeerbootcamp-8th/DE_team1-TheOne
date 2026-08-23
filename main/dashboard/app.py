@@ -29,7 +29,7 @@ SUGGESTION_COLUMNS = {
 }
 
 
-@st.cache_data
+@st.cache_data(ttl=5)
 def load(dataset: str) -> pd.DataFrame:
     return _DATA_SOURCE.load(dataset)
 
