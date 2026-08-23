@@ -472,7 +472,7 @@ def test_EMR_build_source_release는_병렬_자원과_상한을_지정한다(mon
     for expected in (
         "spark.executor.cores=4",
         "spark.executor.memory=12g",
-        "spark.executor.memoryOverhead=4g",
+        "spark.executor.memoryOverhead=8g",
         "spark.dynamicAllocation.minExecutors=1",
         "spark.dynamicAllocation.initialExecutors=3",
         "spark.dynamicAllocation.maxExecutors=5",
