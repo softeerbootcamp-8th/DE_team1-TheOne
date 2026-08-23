@@ -56,3 +56,4 @@ COPY config/ /home/hadoop/config/
 # (전용 파일 하나만 — env.py 는 spark 에 없는 dotenv 의존성을 끌고 옵니다).
 COPY shared/common/__init__.py /home/hadoop/shared/common/__init__.py
 COPY shared/common/s3_reader.py /home/hadoop/shared/common/s3_reader.py
+COPY shared/common/source_published_layout.py /home/hadoop/shared/common/source_published_layout.py

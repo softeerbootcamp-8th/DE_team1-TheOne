@@ -44,6 +44,13 @@ from schema.source import (
     MONTHLY_TAXI_TRIP_SCHEMA,
 )
 from shared.common.s3_reader import is_s3_uri, parent_uri
+from shared.common.source_published_layout import (
+    PUBLISHED_DATASETS,
+    S3_PUBLISHED_PREFIX,
+    dataset_key,
+    manifest_key,
+    quality_report_key,
+)
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
@@ -626,7 +633,7 @@ def write_source_release_s3(
     run: RunContext,
     input_scope: str,
 ) -> str:
-    """`write_source_release()`의 S3 대응 — PUBLISHED 3종을 `source/published/`에 공개합니다.
+    """`write_source_release()`의 S3 대응 — PUBLISHED 3종을 NYC 아래 공개합니다.
 
     로컬의 "staging 디렉터리 + rename" 같은 디렉터리 단위 원자성이 S3에는 없습니다.
     대신 데이터셋마다 `_write_one_parquet_s3()`가 개별 원자성(rename)을 갖고,
@@ -643,15 +650,16 @@ def write_source_release_s3(
 
     _validate_temporal_links(trips, snapshots)
     year_month = run.target_month
-    prefix = "source/published"
     datasets = {
         "monthly_taxi_trip": trips,
         "driver_vehicle_monthly_snapshot": snapshots,
         "lease_vehicle_inventory": inventory,
     }
+    if datasets.keys() != PUBLISHED_DATASETS:
+        raise ValueError(f"published 데이터셋 계약이 다릅니다: {sorted(datasets)}")
     manifest_datasets = {}
     for name, frame in datasets.items():
-        key = f"{prefix}/{name}/year_month={year_month}/data.parquet"
+        key = dataset_key(name, year_month)
         _write_one_parquet_s3(frame, bucket=bucket, key=key)
         manifest_datasets[name] = {"key": key, "row_count": frame.count()}
 
@@ -667,14 +675,14 @@ def write_source_release_s3(
         "provenance": PROVENANCE,
         "datasets": manifest_datasets,
     }
-    manifest_key = f"{prefix}/_manifests/year_month={year_month}.json"
+    release_manifest_key = manifest_key(year_month)
     boto3.client("s3").put_object(
         Bucket=bucket,
-        Key=manifest_key,
+        Key=release_manifest_key,
         Body=json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"),
         ServerSideEncryption="AES256",
     )
-    return f"s3://{bucket}/{prefix}"
+    return f"s3://{bucket}/{S3_PUBLISHED_PREFIX}"
 
 
 def _capacity_drive_minutes(preferences: DataFrame, service_dates: list[date]) -> int:
@@ -943,7 +951,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
 
             boto3.client("s3").put_object(
                 Bucket=bucket,
-                Key=f"source/published/_quality_reports/year_month={args.year_month}.json",
+                Key=quality_report_key(args.year_month),
                 Body=json.dumps(quality_report, ensure_ascii=False, indent=2).encode("utf-8"),
                 ServerSideEncryption="AES256",
             )
