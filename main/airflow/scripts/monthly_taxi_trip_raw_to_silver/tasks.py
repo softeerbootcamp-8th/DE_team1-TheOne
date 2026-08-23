@@ -267,6 +267,13 @@ def existing_silver_partitions(
 def validate_bronze_task(result: dict, **context) -> dict:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
     params = context.get("params", {})
+    # Param이 없는 호출(단위 테스트 등)에서도 기존 리터럴과 같게 동작해야 합니다.
+    configured_threshold = params.get("error_threshold")
+    error_threshold = float(
+        configured_threshold
+        if configured_threshold is not None
+        else MONTHLY_TAXI_TRIP_ERROR_THRESHOLD
+    )
     summary = _bronze_quality_result(result, params, list(SCHEMA.names))
     missing = summary.at[0, "missing_required_columns"]
     if missing:
@@ -299,7 +306,7 @@ def validate_bronze_task(result: dict, **context) -> dict:
                 gx.expectations.ExpectColumnValuesToBeBetween(
                     column="invalid_required_row_ratio",
                     min_value=0,
-                    max_value=MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
+                    max_value=error_threshold,
                     strict_max=True,
                 ),
             ]
