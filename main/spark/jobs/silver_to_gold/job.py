@@ -39,6 +39,7 @@ from main.spark.jobs.silver_to_gold.transformer import (
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
     validate_gold_business_invariants,
+    validate_vehicle_profit_simulation,
 )
 from shared.common.s3_reader import list_keys
 from main.spark.jobs.silver_to_gold.monthly_silver import (
@@ -303,7 +304,9 @@ def main(args_list: list[str] | None = None) -> None:
         given = given_paths[dataset]
         if given is not None:
             return resolve_path(given)
-        return latest_partition_file(base_paths[dataset], year_month)
+        return latest_partition_file(
+            base_paths[dataset], year_month, args.service_area
+        )
 
     monthly_taxi_trip_path = _monthly_path("monthly_taxi_trip")
     driver_vehicle_monthly_snapshot_path = _monthly_path("driver_vehicle_monthly_snapshot")
@@ -314,7 +317,9 @@ def main(args_list: list[str] | None = None) -> None:
     monthly_taxi_trip: DataFrame = spark.read.parquet(monthly_taxi_trip_path)
     driver_snapshot: DataFrame = spark.read.parquet(driver_vehicle_monthly_snapshot_path)
     inventory: DataFrame = spark.read.parquet(lease_vehicle_inventory_path)
-    fuel_price: DataFrame = spark.read.parquet(latest_fuel_price_path(fuel_price_path))
+    fuel_price: DataFrame = spark.read.parquet(
+        latest_fuel_price_path(fuel_price_path, args.service_area)
+    )
 
     enriched: DataFrame | None = None
     driver_metrics: DataFrame | None = None
@@ -337,9 +342,13 @@ def main(args_list: list[str] | None = None) -> None:
         )
         simulation = simulation.persist()
         allocated_recommendation = allocated_recommendation.persist()
-        validate_gold_business_invariants(
+        validate_vehicle_profit_simulation(
             driver_profit,
             simulation,
+            inventory,
+        )
+        validate_gold_business_invariants(
+            driver_profit,
             allocated_recommendation,
             driver_snapshot,
             inventory,

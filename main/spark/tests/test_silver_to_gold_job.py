@@ -13,6 +13,7 @@
 8. S3에서도 같은 파티션 안 여러 버전 중 최신 하나만 고른다
 9. `_SUCCESS`가 있는 source_collected_at 디렉터리만 공개 버전으로 고른다
 10. S3에서도 미완료 디렉터리를 무시하고 완료된 최신 버전을 고른다
+11. Spark 잡 기본 입력 탐색은 `--service_area`의 지역 경로를 사용한다
 """
 
 import boto3
@@ -226,3 +227,45 @@ def test_S3_source_collected_at은_SUCCESS가_있는_최신버전만_고른다(s
     result = job.latest_partition_file(f"s3://{S3_BUCKET}/{prefix}", "2026-05")
 
     assert result == f"s3://{S3_BUCKET}/{completed}"
+
+
+def test_Spark잡_기본입력탐색은_실행지역을_사용한다(monkeypatch):
+    monthly_calls = []
+    fuel_calls = []
+
+    def latest_monthly(base_path, year_month, service_area):
+        monthly_calls.append((base_path, year_month, service_area))
+        return f"{base_path}/service_area={service_area}/year_month={year_month}/data"
+
+    class StopAfterPathResolution(Exception):
+        pass
+
+    def latest_fuel(base_path, service_area):
+        fuel_calls.append((base_path, service_area))
+        raise StopAfterPathResolution
+
+    class FakeRead:
+        @staticmethod
+        def parquet(_path):
+            return object()
+
+    fake_spark = type("FakeSpark", (), {"read": FakeRead()})()
+    monkeypatch.setattr(job, "latest_partition_file", latest_monthly)
+    monkeypatch.setattr(job, "latest_fuel_price_path", latest_fuel)
+    monkeypatch.setattr(job, "get_or_create_spark_session", lambda _name: fake_spark)
+
+    with pytest.raises(StopAfterPathResolution):
+        job.main(
+            [
+                "--env", "prod",
+                "--bucket", "de-theone",
+                "--service_area", "TX",
+                "--year", "2026",
+                "--month", "1",
+                "--threshold_profit_increase", "600",
+            ]
+        )
+
+    assert len(monthly_calls) == 3
+    assert all(call[2] == "TX" for call in monthly_calls)
+    assert fuel_calls == [("s3://de-theone/silver/gas_ev_price", "TX")]
