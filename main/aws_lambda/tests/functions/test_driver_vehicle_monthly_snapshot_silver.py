@@ -8,7 +8,7 @@
 6. storage=s3 로 실행하면 같은 수집 버전 key 로 S3 silver 에 적재
 7. S3 bronze 파티션에 파일이 여러 개면 최신 것만 읽음
 8. 같은 수집 시각을 S3로 재실행해도 오브젝트가 늘지 않음
-9. service_area가 있으면 로컬·S3 모두 해당 지역 Bronze를 읽음
+9. 로컬·S3 모두 service_area 지역 Bronze만 읽음
 """
 
 from datetime import date, datetime
@@ -34,6 +34,7 @@ S3_REGION = "ap-northeast-2"
 FILE_NAME = "20260821T123456123456Z.parquet"
 SOURCE_TOKEN = Path(FILE_NAME).stem
 VERSION_DIR = f"source_collected_at={SOURCE_TOKEN}"
+SERVICE_AREA = "NYC"
 
 
 def _rows():
@@ -59,25 +60,23 @@ def _rows():
 
 
 def _bronze(
-    tmp_path: Path, rows: list[dict], service_area: str | None = None
+    tmp_path: Path, rows: list[dict], service_area: str = SERVICE_AREA
 ) -> Path:
     dataset_root = tmp_path / "bronze" / DATASET
     partition = (
-        dataset_root / f"service_area={service_area}"
-        if service_area
-        else dataset_root
-    ) / f"year_month={YEAR_MONTH}"
+        dataset_root
+        / f"service_area={service_area}"
+        / f"year_month={YEAR_MONTH}"
+    )
     partition.mkdir(parents=True, exist_ok=True)
     path = partition / "20260801T000000000000Z.parquet"
     pq.write_table(pa.Table.from_pylist(rows), path)
     return path
 
 
-def _event(tmp_path: Path, service_area: str | None = None) -> dict:
-    silver_root = tmp_path / "silver"
-    if service_area:
-        silver_root /= f"service_area={service_area}"
-    event = {
+def _event(tmp_path: Path, service_area: str = SERVICE_AREA) -> dict:
+    silver_root = tmp_path / "silver" / f"service_area={service_area}"
+    return {
         "bronze_dir": str(tmp_path / "bronze"),
         "year_month": YEAR_MONTH,
         "silver_output_path": str(
@@ -86,10 +85,8 @@ def _event(tmp_path: Path, service_area: str | None = None) -> dict:
             / ".staging"
             / VERSION_DIR
         ),
+        "service_area": service_area,
     }
-    if service_area:
-        event["service_area"] = service_area
-    return event
 
 
 @pytest.fixture
@@ -110,11 +107,11 @@ def _put_bronze(
     year_month: str = YEAR_MONTH,
     *,
     directory_layout: bool = False,
-    service_area: str | None = None,
+    service_area: str = SERVICE_AREA,
 ) -> None:
     sink = pa.BufferOutputStream()
     pq.write_table(pa.Table.from_pylist(rows), sink)
-    area = f"service_area={service_area}/" if service_area else ""
+    area = f"service_area={service_area}/"
     prefix = f"bronze/{DATASET}/{area}year_month={year_month}/"
     key = (
         f"{prefix}collected_at={timestamp}/data.parquet"
@@ -129,9 +126,9 @@ def _put_bronze(
 
 
 def _s3_event(
-    year_month: str = YEAR_MONTH, service_area: str | None = None
+    year_month: str = YEAR_MONTH, service_area: str = SERVICE_AREA
 ) -> dict:
-    area = f"service_area={service_area}/" if service_area else ""
+    area = f"service_area={service_area}/"
     event = {
         "storage": "s3",
         "bucket": S3_BUCKET,
@@ -140,16 +137,15 @@ def _s3_event(
             f"s3://{S3_BUCKET}/silver/{DATASET}/{area}year_month={year_month}/"
             f".staging/{VERSION_DIR}"
         ),
+        "service_area": service_area,
     }
-    if service_area:
-        event["service_area"] = service_area
     return event
 
 
 def _silver_key(
-    year_month: str = YEAR_MONTH, service_area: str | None = None
+    year_month: str = YEAR_MONTH, service_area: str = SERVICE_AREA
 ) -> str:
-    area = f"service_area={service_area}/" if service_area else ""
+    area = f"service_area={service_area}/"
     return (
         f"silver/{DATASET}/{area}year_month={year_month}/.staging/"
         f"{VERSION_DIR}/data.parquet"
@@ -166,7 +162,7 @@ def test_정제한_기사차량스냅샷을_검증전_버전디렉터리_part로
 
     path = Path(result["locations"][0])
     assert path == (
-        tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+        tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
         / VERSION_DIR / "data.parquet"
     )
     assert result["row_count"] == 1
@@ -209,7 +205,7 @@ def test_새수집시각은_별도_파일로_적재한다(tmp_path):
     second_event = {
         **first_event,
         "silver_output_path": str(
-            tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
             / "source_collected_at=20260822T123456123456Z"
         ),
     }
@@ -276,7 +272,7 @@ def test_교체중_실패해도_기존월파일과_임시파일이_남지않는�
 def test_Silver스키마가_아닌_테이블은_적재하지_않는다(tmp_path):
     loader = DriverVehicleMonthlySnapshotSilverLoader(
         str(
-            tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
             / VERSION_DIR
         )
     )
@@ -305,9 +301,10 @@ def test_bronze_파티션이_없으면_실패한다(tmp_path):
         "bronze_dir": str(tmp_path / "bronze"),
         "year_month": YEAR_MONTH,
         "silver_output_path": str(
-            tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
             / VERSION_DIR
         ),
+        "service_area": SERVICE_AREA,
     }
     with pytest.raises(FileNotFoundError, match="파티션이 없습니다"):
         lambda_handler(event)
@@ -380,6 +377,6 @@ def test_같은월을_S3로_다시_실행해도_오브젝트가_늘지않는다(
     second = lambda_handler(_s3_event())
 
     assert first == second
-    prefix = f"silver/{DATASET}/year_month={YEAR_MONTH}/"
+    prefix = f"silver/{DATASET}/service_area=NYC/year_month={YEAR_MONTH}/"
     response = s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)
     assert response["KeyCount"] == 1

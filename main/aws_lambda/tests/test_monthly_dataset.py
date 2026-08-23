@@ -20,6 +20,7 @@ FIRST_KEY = "collected_at=20260820T101530123456Z/data.parquet"
 SECOND_KEY = "collected_at=20260820T112205654321Z/data.parquet"
 S3_BUCKET = "test-de-theone"
 S3_REGION = "ap-northeast-2"
+SERVICE_AREA = "NYC"
 
 
 def _parquet_bytes(value: int = 1) -> bytes:
@@ -38,14 +39,16 @@ def _payload(content: bytes, collected_at: str = FIRST_COLLECTED_AT) -> dict:
 
 
 def test_build_bronze_loader는_local_loader를_돌려준다(tmp_path):
-    loader = build_bronze_loader("local", str(tmp_path), DATASET, DATASET)
+    loader = build_bronze_loader(
+        "local", str(tmp_path), DATASET, DATASET, SERVICE_AREA
+    )
 
     assert isinstance(loader, MonthlyParquetBronzeLoader)
 
 
 def test_build_bronze_loader는_알수없는_storage면_실패한다(tmp_path):
     with pytest.raises(ValueError, match="알 수 없는 storage"):
-        build_bronze_loader("nope", str(tmp_path), DATASET, DATASET)
+        build_bronze_loader("nope", str(tmp_path), DATASET, DATASET, SERVICE_AREA)
 
 
 @pytest.fixture
@@ -60,12 +63,14 @@ def s3_client():
 
 
 def test_S3_loader는_변경된_원본을_수집시각_키로_append한다(s3_client):
-    loader = S3MonthlyParquetBronzeLoader(DATASET, DATASET, bucket=S3_BUCKET)
+    loader = S3MonthlyParquetBronzeLoader(
+        DATASET, DATASET, SERVICE_AREA, bucket=S3_BUCKET
+    )
     first = loader.write(_payload(_parquet_bytes()))
     second_content = _parquet_bytes(2)
     second = loader.write(_payload(second_content, SECOND_COLLECTED_AT))
 
-    prefix = f"bronze/{DATASET}/year_month={YEAR_MONTH}/"
+    prefix = f"bronze/{DATASET}/service_area={SERVICE_AREA}/year_month={YEAR_MONTH}/"
     keys = [
         obj["Key"]
         for obj in s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)[
@@ -84,7 +89,9 @@ def test_S3_loader는_변경된_원본을_수집시각_키로_append한다(s3_cl
 
 def test_S3_loader는_동일한_최신원본을_재사용한다(s3_client):
     content = _parquet_bytes()
-    loader = S3MonthlyParquetBronzeLoader(DATASET, DATASET, bucket=S3_BUCKET)
+    loader = S3MonthlyParquetBronzeLoader(
+        DATASET, DATASET, SERVICE_AREA, bucket=S3_BUCKET
+    )
 
     first = loader.write(_payload(content))
     second = loader.write(_payload(content, SECOND_COLLECTED_AT))
@@ -94,17 +101,22 @@ def test_S3_loader는_동일한_최신원본을_재사용한다(s3_client):
     assert loader.payload["collected_at"] == FIRST_COLLECTED_AT
     response = s3_client.list_objects_v2(
         Bucket=S3_BUCKET,
-        Prefix=f"bronze/{DATASET}/year_month={YEAR_MONTH}/",
+        Prefix=(
+            f"bronze/{DATASET}/service_area={SERVICE_AREA}/"
+            f"year_month={YEAR_MONTH}/"
+        ),
     )
     assert response["KeyCount"] == 1
 
 
 def test_S3_loader는_기존_flat파일도_동일원본이면_재사용한다(s3_client):
     content = _parquet_bytes()
-    prefix = f"bronze/{DATASET}/year_month={YEAR_MONTH}/"
+    prefix = f"bronze/{DATASET}/service_area={SERVICE_AREA}/year_month={YEAR_MONTH}/"
     legacy_key = f"{prefix}20260820T101530123456Z.parquet"
     s3_client.put_object(Bucket=S3_BUCKET, Key=legacy_key, Body=content)
-    loader = S3MonthlyParquetBronzeLoader(DATASET, DATASET, bucket=S3_BUCKET)
+    loader = S3MonthlyParquetBronzeLoader(
+        DATASET, DATASET, SERVICE_AREA, bucket=S3_BUCKET
+    )
 
     result = loader.write(_payload(content, SECOND_COLLECTED_AT))
 
@@ -115,22 +127,30 @@ def test_S3_loader는_기존_flat파일도_동일원본이면_재사용한다(s3
 
 
 def test_local_loader는_collected_at_디렉터리에_data파일을_쓴다(tmp_path):
-    loader = MonthlyParquetBronzeLoader(tmp_path, DATASET, DATASET)
+    loader = MonthlyParquetBronzeLoader(tmp_path, DATASET, DATASET, SERVICE_AREA)
 
     result = loader.write(_payload(_parquet_bytes()))
 
-    path = tmp_path / DATASET / f"year_month={YEAR_MONTH}" / FIRST_KEY
+    path = (
+        tmp_path
+        / DATASET
+        / f"service_area={SERVICE_AREA}"
+        / f"year_month={YEAR_MONTH}"
+        / FIRST_KEY
+    )
     assert result.location == str(path)
     assert path.is_file()
 
 
 def test_local_loader는_기존_flat파일도_동일원본이면_재사용한다(tmp_path):
     content = _parquet_bytes()
-    partition = tmp_path / DATASET / f"year_month={YEAR_MONTH}"
+    partition = (
+        tmp_path / DATASET / f"service_area={SERVICE_AREA}" / f"year_month={YEAR_MONTH}"
+    )
     partition.mkdir(parents=True)
     legacy = partition / "20260820T101530123456Z.parquet"
     legacy.write_bytes(content)
-    loader = MonthlyParquetBronzeLoader(tmp_path, DATASET, DATASET)
+    loader = MonthlyParquetBronzeLoader(tmp_path, DATASET, DATASET, SERVICE_AREA)
 
     result = loader.write(_payload(content, SECOND_COLLECTED_AT))
 
@@ -141,7 +161,9 @@ def test_local_loader는_기존_flat파일도_동일원본이면_재사용한다
 
 
 def test_S3_loader는_dataset이_다르면_실패한다(s3_client):
-    loader = S3MonthlyParquetBronzeLoader(DATASET, DATASET, bucket=S3_BUCKET)
+    loader = S3MonthlyParquetBronzeLoader(
+        DATASET, DATASET, SERVICE_AREA, bucket=S3_BUCKET
+    )
 
     with pytest.raises(ValueError, match="수집 dataset이 다릅니다"):
         loader.write(_payload(_parquet_bytes()) | {"dataset": "other"})
@@ -149,7 +171,9 @@ def test_S3_loader는_dataset이_다르면_실패한다(s3_client):
 
 @pytest.mark.parametrize("content", [b"", b"not parquet"])
 def test_S3_loader는_읽을수없는_원본이면_실패한다(s3_client, content):
-    loader = S3MonthlyParquetBronzeLoader(DATASET, DATASET, bucket=S3_BUCKET)
+    loader = S3MonthlyParquetBronzeLoader(
+        DATASET, DATASET, SERVICE_AREA, bucket=S3_BUCKET
+    )
 
     with pytest.raises(ValueError, match="비어 있습니다|Parquet이 아닙니다"):
         loader.write(_payload(content))

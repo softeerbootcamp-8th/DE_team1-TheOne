@@ -28,6 +28,7 @@ from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver import 
 
 S3_BUCKET = "test-de-theone"
 S3_REGION = "ap-northeast-2"
+SERVICE_AREA = "NYC"
 
 
 @pytest.fixture
@@ -70,8 +71,14 @@ def _row(**overrides) -> dict:
 
 
 def _write_partition(spark, bronze_dir: Path, year_month: str, rows: list[dict]) -> None:
-    partition_dir = bronze_dir / f"year_month={year_month}"
+    partition_dir = (
+        bronze_dir / f"service_area={SERVICE_AREA}" / f"year_month={year_month}"
+    )
     spark.createDataFrame(rows).write.mode("overwrite").parquet(str(partition_dir))
+
+
+def _main(args: list[str]):
+    return job.main(["--service_area", SERVICE_AREA, *args])
 
 
 def test_year_month_range은_양끝을_포함해_순서대로_반환한다():
@@ -89,51 +96,52 @@ def test_year_month_range은_start가_end보다_늦으면_ValueError():
 
 
 def test_latest_partition_file은_파티션_디렉터리가_없으면_None(tmp_path):
-    assert job.latest_partition_file(str(tmp_path), "2024-01") is None
+    assert job.latest_partition_file(str(tmp_path), "2024-01", SERVICE_AREA) is None
 
 
 def test_latest_partition_file은_파일이_없는_빈_파티션이면_None(tmp_path):
-    (tmp_path / "year_month=2024-01").mkdir()
-    assert job.latest_partition_file(str(tmp_path), "2024-01") is None
+    (tmp_path / f"service_area={SERVICE_AREA}/year_month=2024-01").mkdir(parents=True)
+    assert job.latest_partition_file(str(tmp_path), "2024-01", SERVICE_AREA) is None
 
 
 def test_latest_partition_file은_최신_수집시각_파일을_반환한다(tmp_path):
-    partition = tmp_path / "year_month=2024-01"
-    partition.mkdir()
+    partition = tmp_path / f"service_area={SERVICE_AREA}/year_month=2024-01"
+    partition.mkdir(parents=True)
     (partition / "data.parquet").touch()
     older = partition / "20240820T101530123456Z.parquet"
     latest = partition / "20240820T112205654321Z.parquet"
     older.touch()
     latest.touch()
 
-    result = job.latest_partition_file(str(tmp_path), "2024-01")
+    result = job.latest_partition_file(str(tmp_path), "2024-01", SERVICE_AREA)
 
     assert result == str(latest)
 
 
 def test_latest_partition_file은_신구구조중_최신수집본을_반환한다(tmp_path):
-    partition = tmp_path / "year_month=2024-01"
-    partition.mkdir()
+    partition = tmp_path / f"service_area={SERVICE_AREA}/year_month=2024-01"
+    partition.mkdir(parents=True)
     (partition / "20240820T101530123456Z.parquet").touch()
     latest = partition / "collected_at=20240820T112205654321Z" / "data.parquet"
     latest.parent.mkdir()
     latest.touch()
 
-    assert job.latest_partition_file(str(tmp_path), "2024-01") == str(latest)
+    assert job.latest_partition_file(str(tmp_path), "2024-01", SERVICE_AREA) == str(latest)
 
 
 def test_latest_partition_files는_각_월의_최신파일만_고른다(tmp_path):
-    january = tmp_path / "year_month=2024-01"
-    february = tmp_path / "year_month=2024-02"
-    january.mkdir()
-    february.mkdir()
+    area = tmp_path / f"service_area={SERVICE_AREA}"
+    january = area / "year_month=2024-01"
+    february = area / "year_month=2024-02"
+    january.mkdir(parents=True)
+    february.mkdir(parents=True)
     (january / "20240820T101530123456Z.parquet").touch()
     january_latest = january / "20240820T112205654321Z.parquet"
     february_latest = february / "20240821T112205654321Z.parquet"
     january_latest.touch()
     february_latest.touch()
 
-    assert job.latest_partition_files(str(tmp_path)) == [
+    assert job.latest_partition_files(str(tmp_path), SERVICE_AREA) == [
         str(january_latest),
         str(february_latest),
     ]
@@ -161,7 +169,7 @@ def test_input_output_path를_둘다_명시하면_env_bucket_검증을_안한다
     bronze_dir = tmp_path / "bronze"
     _write_partition(spark, bronze_dir, "2024-01", [_row()])
 
-    result = job.main([
+    result = _main([
         "--env", "prod",
         "--input_path", str(bronze_dir),
         "--output_path", str(tmp_path / "silver"),
@@ -183,22 +191,26 @@ def test_resolve_path는_S3_경로를_그대로_둔다():
 
 
 def test_latest_partition_file은_S3에_파티션이_없으면_None(s3_client):
-    assert job.latest_partition_file(f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01") is None
+    assert job.latest_partition_file(
+        f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01", SERVICE_AREA
+    ) is None
 
 
 def test_latest_partition_file은_S3에서_최신_파일_경로를_반환한다(s3_client):
-    prefix = "bronze/monthly_taxi_trip/year_month=2024-01"
+    prefix = "bronze/monthly_taxi_trip/service_area=NYC/year_month=2024-01"
     s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/part-0.parquet", Body=b"x")
     s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/part-1.parquet", Body=b"x")
     s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/_SUCCESS", Body=b"")
 
-    result = job.latest_partition_file(f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01")
+    result = job.latest_partition_file(
+        f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01", SERVICE_AREA
+    )
 
     assert result == f"s3://{S3_BUCKET}/{prefix}/part-1.parquet"
 
 
 def test_latest_partition_file은_S3_신구구조중_최신수집본을_반환한다(s3_client):
-    prefix = "bronze/monthly_taxi_trip/year_month=2024-01"
+    prefix = "bronze/monthly_taxi_trip/service_area=NYC/year_month=2024-01"
     s3_client.put_object(
         Bucket=S3_BUCKET, Key=f"{prefix}/20240820T101530123456Z.parquet", Body=b"x"
     )
@@ -206,7 +218,7 @@ def test_latest_partition_file은_S3_신구구조중_최신수집본을_반환�
     s3_client.put_object(Bucket=S3_BUCKET, Key=latest, Body=b"x")
 
     result = job.latest_partition_file(
-        f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01"
+        f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01", SERVICE_AREA
     )
 
     assert result == f"s3://{S3_BUCKET}/{latest}"
@@ -222,7 +234,7 @@ def test_range로_여러_달_파티션을_한번에_읽어_silver로_적재한�
         _row(trip_miles=2.0, pickup_datetime=datetime(2024, 2, 15, 10, 0, 0), dropoff_datetime=datetime(2024, 2, 15, 10, 20, 0)),
     ])
 
-    job.main([
+    _main([
         "--input_path", str(bronze_dir),
         "--output_path", str(silver_dir),
         "--error_threshold", "1.0",
@@ -245,7 +257,7 @@ def test_range_중간에_없는_달이_있으면_FileNotFoundError(spark, tmp_pa
     ])
 
     with pytest.raises(FileNotFoundError):
-        job.main([
+        _main([
             "--input_path", str(bronze_dir),
             "--output_path", str(tmp_path / "silver"),
             "--error_threshold", "1.0",
@@ -265,7 +277,7 @@ def test_없는_달이_여러_개면_전부_모아서_보고한다(spark, tmp_pa
     ])
 
     with pytest.raises(FileNotFoundError) as exc_info:
-        job.main([
+        _main([
             "--input_path", str(bronze_dir),
             "--output_path", str(tmp_path / "silver"),
             "--error_threshold", "1.0",
@@ -282,7 +294,7 @@ def test_range_안에_파티션이_하나도_없으면_FileNotFoundError(tmp_pat
     bronze_dir.mkdir()
 
     with pytest.raises(FileNotFoundError):
-        job.main([
+        _main([
             "--input_path", str(bronze_dir),
             "--output_path", str(tmp_path / "silver"),
             "--start_year_month", "2024-01",
@@ -297,7 +309,7 @@ def test_start와_end가_같으면_한_달만_처리한다(spark, tmp_path):
         _row(trip_miles=5.0, pickup_datetime=datetime(2024, 5, 15, 10, 0, 0), dropoff_datetime=datetime(2024, 5, 15, 10, 20, 0)),
     ])
 
-    job.main([
+    _main([
         "--input_path", str(bronze_dir),
         "--output_path", str(silver_dir),
         "--error_threshold", "1.0",
@@ -318,7 +330,7 @@ def test_수집버전은_source_collected_at_디렉터리에_part파일로_적�
         "source_collected_at=20260821T123456123456Z"
     )
 
-    job.main([
+    _main([
         "--input_path", str(bronze),
         "--output_path", str(tmp_path / "silver"),
         "--output_version", str(staged),
@@ -331,7 +343,7 @@ def test_수집버전은_source_collected_at_디렉터리에_part파일로_적�
 
 def test_output_version은_검증전_source_collected_at_경로만_허용한다(tmp_path):
     with pytest.raises(ValueError, match=".staging/source_collected_at"):
-        job.main(
+        _main(
             [
                 "--input_path",
                 str(tmp_path / "bronze.parquet"),
@@ -433,7 +445,7 @@ def test_존재하지_않는_단일_월은_FileNotFoundError(tmp_path):
     bronze_dir.mkdir()
 
     with pytest.raises(FileNotFoundError):
-        job.main([
+        _main([
             "--input_path", str(bronze_dir),
             "--output_path", str(tmp_path / "silver"),
             "--start_year_month", "2024-01",
@@ -443,7 +455,7 @@ def test_존재하지_않는_단일_월은_FileNotFoundError(tmp_path):
 
 def test_start만_주고_end를_안_주면_ValueError(tmp_path):
     with pytest.raises(ValueError):
-        job.main([
+        _main([
             "--input_path", str(tmp_path / "bronze"),
             "--output_path", str(tmp_path / "silver"),
             "--start_year_month", "2024-01",
@@ -452,7 +464,7 @@ def test_start만_주고_end를_안_주면_ValueError(tmp_path):
 
 def test_end만_주고_start를_안_주면_ValueError(tmp_path):
     with pytest.raises(ValueError):
-        job.main([
+        _main([
             "--input_path", str(tmp_path / "bronze"),
             "--output_path", str(tmp_path / "silver"),
             "--end_year_month", "2024-01",

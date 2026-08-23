@@ -71,23 +71,26 @@ def write_bronze(
     rows: int = 3,
     schema=None,
     records: list[dict] | None = None,
-    service_area: str | None = None,
+    service_area: str = "NYC",
 ) -> str:
     schema = task_module.SCHEMA if schema is None else schema
     records = bronze_rows(rows, schema) if records is None else records
     dataset_root = Path(base_dir) / "monthly_taxi_trip"
-    if service_area:
-        dataset_root /= f"service_area={service_area}"
+    dataset_root /= f"service_area={service_area}"
     path = dataset_root / f"year_month={year_month}" / "20260811T085354000000Z.parquet"
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
     return str(path)
 
 
-def write_directory_bronze(base_dir, year_month: str = YEAR_MONTH, rows: int = 3) -> str:
+def write_directory_bronze(
+    base_dir, year_month: str = YEAR_MONTH, rows: int = 3,
+    service_area: str = "NYC",
+) -> str:
     path = (
         Path(base_dir)
         / "monthly_taxi_trip"
+        / f"service_area={service_area}"
         / f"year_month={year_month}"
         / "collected_at=20260811T085354000000Z"
         / "data.parquet"
@@ -100,10 +103,13 @@ def write_directory_bronze(base_dir, year_month: str = YEAR_MONTH, rows: int = 3
     return str(path)
 
 
-def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
+def result_for(
+    path: str, year_month: str = YEAR_MONTH, service_area: str = "NYC"
+) -> dict:
     parquet = pq.ParquetFile(path)
     version = (
         Path(task_module.DEFAULT_SILVER_DIR)
+        / f"service_area={service_area}"
         / f"year_month={year_month}"
         / "source_collected_at=20260811T085354000000Z"
     )
@@ -120,11 +126,8 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
     }
 
 
-def bronze_params(base_dir, service_area: str | None = None) -> dict:
-    params = {"base_dir": str(base_dir)}
-    if service_area:
-        params["service_area"] = service_area
-    return params
+def bronze_params(base_dir, service_area: str = "NYC") -> dict:
+    return {"base_dir": str(base_dir), "service_area": service_area}
 
 
 def test_품질경고메시지는_판정근거와_처리결과를_표시한다():
@@ -187,7 +190,8 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
     local_path = write_bronze(tmp_path)
     payload = Path(local_path).read_bytes()
     s3_path = (
-        "s3://de-theone/bronze/monthly_taxi_trip/year_month=2026-07/"
+        "s3://de-theone/bronze/monthly_taxi_trip/service_area=NYC/"
+        "year_month=2026-07/"
         "20260811T085354000000Z.parquet"
     )
     result = result_for(local_path)
@@ -203,7 +207,7 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
 
     summary = task_module._bronze_quality_result(
         result,
-        {"base_dir": "s3://de-theone/bronze"},
+        {"base_dir": "s3://de-theone/bronze", "service_area": "NYC"},
         list(task_module.SCHEMA.names),
     )
 
@@ -217,18 +221,20 @@ def test_S3_Bronze의_Silver버전은_같은버킷의_monthly_taxi_trip경로다
         "year_month": YEAR_MONTH,
         "locations": [
             f"s3://de-theone/bronze/monthly_taxi_trip/"
-            f"year_month={YEAR_MONTH}/{file_name}"
+            f"service_area=NYC/year_month={YEAR_MONTH}/{file_name}"
         ],
     }
 
     actual = task_module.silver_version_path(
         task_module.DEFAULT_SILVER_DIR,
         result,
+        "NYC",
     )
 
     assert str(actual) == (
         f"s3://de-theone/silver/monthly_taxi_trip/"
-        f"year_month={YEAR_MONTH}/source_collected_at={Path(file_name).stem}"
+        f"service_area=NYC/year_month={YEAR_MONTH}/"
+        f"source_collected_at={Path(file_name).stem}"
     )
 
 
@@ -509,11 +515,15 @@ def write_silver(
     rows: int = 3,
     schema=None,
     records: list[dict] | None = None,
+    service_area: str = "NYC",
 ) -> Path:
     """`validate_silver`가 커밋 전에 읽는 staging part를 씁니다(#742)."""
     schema = SILVER_SCHEMA if schema is None else schema
     records = silver_rows(rows, schema) if records is None else records
-    partition = Path(silver_dir) / f"year_month={year_month}"
+    partition = (
+        Path(silver_dir) / f"service_area={service_area}"
+        / f"year_month={year_month}"
+    )
     target = (
         partition
         / ".staging/source_collected_at=20260811T085354000000Z/part-00000.parquet"
@@ -528,11 +538,15 @@ def write_committed_silver(
     year_month: str = YEAR_MONTH,
     rows: int = 3,
     schema=None,
+    service_area: str = "NYC",
 ) -> Path:
     """검증을 통과해 `_SUCCESS`까지 공개된 Silver를 흉내냅니다."""
     schema = SILVER_SCHEMA if schema is None else schema
     records = silver_rows(rows, schema)
-    partition = Path(silver_dir) / f"year_month={year_month}"
+    partition = (
+        Path(silver_dir) / f"service_area={service_area}"
+        / f"year_month={year_month}"
+    )
     partition.mkdir(parents=True, exist_ok=True)
     version = partition / "source_collected_at=20260811T085354000000Z"
     version.mkdir(parents=True, exist_ok=True)
@@ -750,9 +764,11 @@ def test_쓰기_전_파티션_목록은_parquet_이_있는_것만_센다(tmp_pat
     """빈 디렉터리가 남아 있는 경우가 있습니다. 그걸 세면 "사라졌다" 오탐이 납니다."""
     silver = tmp_path / "silver"
     write_committed_silver(silver, year_month="2026-06", rows=5)
-    (silver / "year_month=2026-07").mkdir(parents=True)
+    (silver / "service_area=NYC/year_month=2026-07").mkdir(parents=True)
 
-    assert task_module.existing_silver_partitions(str(silver)) == ["year_month=2026-06"]
+    assert task_module.existing_silver_partitions(
+        str(silver / "service_area=NYC")
+    ) == ["year_month=2026-06"]
 
 
 def test_쓰기_전_파티션_목록은_staging_파일은_세지_않는다(tmp_path):
@@ -760,7 +776,9 @@ def test_쓰기_전_파티션_목록은_staging_파일은_세지_않는다(tmp_p
     silver = tmp_path / "silver"
     write_silver(silver, year_month="2026-06", rows=5)
 
-    assert task_module.existing_silver_partitions(str(silver)) == []
+    assert task_module.existing_silver_partitions(
+        str(silver / "service_area=NYC")
+    ) == []
 
 
 def test_Silver_디렉터리가_없으면_빈_목록이다(tmp_path):
@@ -776,7 +794,9 @@ def test_지역_계층_아래_파티션도_센다(tmp_path):
     그 루트 아래를 정상적으로 세는지 확인합니다.
     """
     scoped_root = tmp_path / "silver" / "service_area=NYC"
-    write_committed_silver(scoped_root, year_month="2026-06", rows=5)
+    write_committed_silver(
+        tmp_path / "silver", year_month="2026-06", rows=5
+    )
 
     assert task_module.existing_silver_partitions(str(scoped_root)) == [
         "year_month=2026-06"
@@ -786,8 +806,12 @@ def test_지역_계층_아래_파티션도_센다(tmp_path):
 def test_지역_스코프_루트는_다른_지역_파티션을_섞지_않는다(tmp_path):
     """before/after 가 서로 다른 지역을 보면 가드가 거짓 실패합니다."""
     silver = tmp_path / "silver"
-    write_committed_silver(silver / "service_area=NYC", year_month="2026-06", rows=5)
-    write_committed_silver(silver / "service_area=TX", year_month="2026-07", rows=5)
+    write_committed_silver(
+        silver, year_month="2026-06", rows=5, service_area="NYC"
+    )
+    write_committed_silver(
+        silver, year_month="2026-07", rows=5, service_area="TX"
+    )
 
     assert task_module.existing_silver_partitions(
         str(silver / "service_area=NYC")

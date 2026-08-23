@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 class EiaGasPriceBronzeExtractor(Extractor):
     """휘발유 원본 bytes 를 로컬에서 읽습니다."""
 
-    def __init__(self, base_dir: str, year_month: str, service_area: str | None = None):
+    def __init__(self, base_dir: str, year_month: str, service_area: str):
         self._base_dir = base_dir
         self._year_month = year_month
         self._service_area = service_area
@@ -41,7 +41,7 @@ class EiaGasPriceBronzeExtractor(Extractor):
 class EiaGasPriceS3BronzeExtractor(Extractor):
     """휘발유 원본 bytes 를 S3 에서 읽습니다."""
 
-    def __init__(self, bucket: str, year_month: str, service_area: str | None = None):
+    def __init__(self, bucket: str, year_month: str, service_area: str):
         self._bucket = bucket
         self._year_month = year_month
         self._service_area = service_area
@@ -66,7 +66,7 @@ def build_bronze_extractor(
     base_dir: str,
     bucket: str | None,
     year_month: str,
-    service_area: str | None = None,
+    service_area: str,
 ) -> Extractor:
     if storage == "local":
         return EiaGasPriceBronzeExtractor(base_dir, year_month, service_area)

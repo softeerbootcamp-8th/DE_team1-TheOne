@@ -28,9 +28,9 @@ from pyspark.sql import DataFrame
 
 from main.spark.jobs.silver_to_gold.postgres_loader import write_gold_to_postgres
 from main.spark.jobs.service_area_path import (
-    candidate_prefixes,
-    candidate_roots,
     gold_csv_path,
+    service_area_prefix,
+    service_area_root,
 )
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
@@ -93,7 +93,7 @@ def default_input_base_paths(env: str, bucket: str | None) -> dict[str, str]:
 
 
 def latest_partition_file(
-    base_path: str, year_month: str, service_area: str | None = None
+    base_path: str, year_month: str, service_area: str
 ) -> str:
     """`year_month=` 파티션 안의 최신 버전 파일 하나.
 
@@ -110,43 +110,36 @@ def latest_partition_file(
         parsed = urlsplit(resolved)
         bucket = parsed.netloc
         base_key = parsed.path.lstrip("/").rstrip("/")
-        attempted = []
-        # 지역 경로를 먼저 보고, 아직 안 옮겨진 데이터셋은 지역 없는 경로에서 찾습니다
-        # (#851). 이 폴백이 있어야 #840~#845 를 하나씩 머지할 수 있습니다.
-        for area_prefix in candidate_prefixes(base_key, service_area=service_area):
-            prefix = f"{area_prefix}/year_month={year_month}/"
-            attempted.append(f"{scheme}://{bucket}/{prefix}")
-            keys = list_keys(bucket, prefix)
-            if not keys:
-                continue
-            versioned = latest_s3_silver_version(keys, prefix)
-            if versioned is not None:
-                return f"{scheme}://{bucket}/{versioned}"
-            if any(
-                "/" not in key.removeprefix(prefix)
-                and Path(key).name.startswith("part-")
-                and key.endswith(".parquet")
-                for key in keys
-            ):
-                return f"{scheme}://{bucket}/{prefix}part-*.parquet"
-        raise FileNotFoundError(f"Silver 파티션이 없습니다: {attempted}")
+        area_prefix = service_area_prefix(base_key, service_area=service_area)
+        prefix = f"{area_prefix}/year_month={year_month}/"
+        keys = list_keys(bucket, prefix)
+        versioned = latest_s3_silver_version(keys, prefix)
+        if versioned is not None:
+            return f"{scheme}://{bucket}/{versioned}"
+        if any(
+            "/" not in key.removeprefix(prefix)
+            and Path(key).name.startswith("part-")
+            and key.endswith(".parquet")
+            for key in keys
+        ):
+            return f"{scheme}://{bucket}/{prefix}part-*.parquet"
+        raise FileNotFoundError(
+            f"Silver 파티션이 없습니다: {scheme}://{bucket}/{prefix}"
+        )
 
-    attempted_dirs = []
-    for root in candidate_roots(resolved, service_area):
-        partition_dir = root / f"year_month={year_month}"
-        attempted_dirs.append(partition_dir)
-        if not partition_dir.is_dir():
-            continue
+    root = service_area_root(resolved, service_area)
+    partition_dir = root / f"year_month={year_month}"
+    if partition_dir.is_dir():
         versioned = latest_local_silver_version(partition_dir)
         if versioned is not None:
             return str(versioned)
         if sorted(partition_dir.glob("part-*.parquet")):
             return str(partition_dir / "part-*.parquet")
-    raise FileNotFoundError(f"Silver 파티션이 없습니다: {attempted_dirs}")
+    raise FileNotFoundError(f"Silver 파티션이 없습니다: {partition_dir}")
 
 
 def latest_fuel_price_path(
-    fuel_price_dir: str, service_area: str | None = None
+    fuel_price_dir: str, service_area: str
 ) -> str:
     """`fuel_price_dir` 아래 가장 최근 `year_month=` 파티션의 파일 경로.
 
@@ -160,40 +153,36 @@ def latest_fuel_price_path(
         parsed = urlsplit(fuel_price_dir)
         bucket = parsed.netloc
         base_key = parsed.path.lstrip("/").rstrip("/")
-        attempted = []
         # max(keys) 는 사전순입니다. 지역으로 스코프하지 않으면 `service_area=TX` 가
         # 뒤로 정렬돼 **월과 무관하게 이기고, 다른 지역의 유가로 이 지역 Gold 를
         # 계산합니다** — 에러 없이 틀린 값이 나오는 경로라 스코프가 필수입니다.
-        for area_prefix in candidate_prefixes(base_key, service_area=service_area):
-            prefix = f"{area_prefix}/"
-            attempted.append(f"{scheme}://{bucket}/{prefix}")
-            keys = [
-                key for key in list_keys(bucket, prefix) if key.endswith(".parquet")
-            ]
-            if keys:
-                return f"{scheme}://{bucket}/{max(keys)}"
-        raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {attempted}")
+        area_prefix = service_area_prefix(base_key, service_area=service_area)
+        prefix = f"{area_prefix}/"
+        keys = [
+            key for key in list_keys(bucket, prefix) if key.endswith(".parquet")
+        ]
+        if keys:
+            return f"{scheme}://{bucket}/{max(keys)}"
+        raise FileNotFoundError(
+            f"연료비 Silver 파티션이 없습니다: {scheme}://{bucket}/{prefix}"
+        )
 
-    attempted_dirs = []
-    for root in candidate_roots(fuel_price_dir, service_area):
-        attempted_dirs.append(root)
-        partitions = sorted(p for p in root.glob("year_month=*") if p.is_dir())
-        if not partitions:
-            continue
-        parquet_files = sorted(partitions[-1].glob("*.parquet"))
-        if not parquet_files:
-            raise FileNotFoundError(
-                f"연료비 Silver 파티션이 비어 있습니다: {partitions[-1]}"
-            )
-        return str(parquet_files[-1])
-    raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {attempted_dirs}")
+    root = service_area_root(fuel_price_dir, service_area)
+    partitions = sorted(p for p in root.glob("year_month=*") if p.is_dir())
+    if not partitions:
+        raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {root}")
+    parquet_files = sorted(partitions[-1].glob("*.parquet"))
+    if not parquet_files:
+        raise FileNotFoundError(
+            f"연료비 Silver 파티션이 비어 있습니다: {partitions[-1]}"
+        )
+    return str(parquet_files[-1])
 
 
 def _csv_path(
-    output_dir: str, dataset: str, year_month: str, service_area: str | None = None
+    output_dir: str, dataset: str, year_month: str, service_area: str
 ) -> Path:
-    """경로 규칙은 shared.common 이 소유합니다 — Airflow 의 validate_gold_outputs 와
-    같은 함수를 써야 검증이 엉뚱한 곳을 보지 않습니다(#839)."""
+    """Airflow 검증과 같은 공용 규칙으로 지역별 Gold 경로를 만듭니다."""
     return gold_csv_path(output_dir, dataset, year_month, service_area)
 
 

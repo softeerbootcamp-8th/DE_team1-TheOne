@@ -19,7 +19,7 @@ class EiaElectricityPriceBronzeLoader(Loader):
         self,
         base_dir: str,
         collected_date: date,
-        service_area: str | None = None,
+        service_area: str,
     ):
         self._base_dir = base_dir
         self._collected_date = collected_date
@@ -57,8 +57,8 @@ class EiaElectricityPriceS3BronzeLoader(Loader):
     def __init__(
         self,
         collected_date: date,
+        service_area: str,
         bucket: str | None = None,
-        service_area: str | None = None,
     ):
         self._collected_date = collected_date
         self._bucket = bucket
@@ -82,8 +82,8 @@ def build_bronze_loader(
     storage: str,
     base_dir: str,
     collected_date: date,
+    service_area: str,
     bucket: str | None = None,
-    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
         return EiaElectricityPriceBronzeLoader(
@@ -94,7 +94,7 @@ def build_bronze_loader(
     if storage == "s3":
         return EiaElectricityPriceS3BronzeLoader(
             collected_date,
+            service_area,
             bucket=bucket,
-            service_area=service_area,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

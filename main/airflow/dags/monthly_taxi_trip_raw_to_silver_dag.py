@@ -136,6 +136,7 @@ def _local_bronze_to_silver() -> BashOperator:
             f"--output_path {DEFAULT_SILVER_DIR} "
             "--output_version \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['silver_staging_path'] }}\" "
+            "--service_area {{ params.service_area }} "
             "--error_threshold {{ params.error_threshold }}"
         ),
         env={
@@ -175,6 +176,8 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
                     f"{{{{ {xcom}['locations'][0] }}}}",
                     "--output_version",
                     f"{{{{ {xcom}['silver_staging_path'] }}}}",
+                    "--service_area",
+                    "{{ params.service_area }}",
                     "--error_threshold",
                     "{{ params.error_threshold }}",
                 ],
