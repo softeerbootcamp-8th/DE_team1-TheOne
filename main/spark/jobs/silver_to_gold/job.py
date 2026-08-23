@@ -314,7 +314,9 @@ def main(args_list: list[str] | None = None) -> None:
     monthly_taxi_trip: DataFrame = spark.read.parquet(monthly_taxi_trip_path)
     driver_snapshot: DataFrame = spark.read.parquet(driver_vehicle_monthly_snapshot_path)
     inventory: DataFrame = spark.read.parquet(lease_vehicle_inventory_path)
-    fuel_price: DataFrame = spark.read.parquet(latest_fuel_price_path(fuel_price_path))
+    fuel_price: DataFrame = spark.read.parquet(
+        latest_fuel_price_path(fuel_price_path, args.service_area)
+    )
 
     enriched: DataFrame | None = None
     driver_metrics: DataFrame | None = None
