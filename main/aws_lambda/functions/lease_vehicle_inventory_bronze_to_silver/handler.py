@@ -28,7 +28,13 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         raise ValueError("silver_output_path가 필요합니다")
 
     result = Pipeline(
-        build_bronze_extractor(storage, bronze_dir, bucket, year_month),
+        build_bronze_extractor(
+            storage,
+            bronze_dir,
+            bucket,
+            year_month,
+            service_area=event.get("service_area"),
+        ),
         build_silver_loader(
             storage,
             silver_output_path,
