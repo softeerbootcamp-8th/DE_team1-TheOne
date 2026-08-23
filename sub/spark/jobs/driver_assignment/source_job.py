@@ -49,7 +49,7 @@ from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
     HVFHVCleanTransformer,
 )
-from sub.config import load_config
+from sub.config import GenerationConfig, load_config
 from sub.generators.synthetic_driver_trip_source.monthly import prepare_monthly_state
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.allocator import allocate_trips
@@ -743,6 +743,32 @@ def _quality_report(
     }
 
 
+def _optional_config_int(value: str) -> int | None:
+    """EMR의 선택 인자에서 `config`를 설정 파일 사용 표식으로 해석합니다."""
+    return None if value == "config" else int(value)
+
+
+def _config_with_overrides(
+    config: GenerationConfig,
+    *,
+    seed: int | None,
+    bucket_size: int | None,
+) -> GenerationConfig:
+    """CLI 재정의를 실제 실행 설정과 config_hash 입력에 함께 반영합니다."""
+    return replace(
+        config,
+        global_seed=config.global_seed if seed is None else seed,
+        allocation=replace(
+            config.allocation,
+            bucket_size=(
+                config.allocation.bucket_size
+                if bucket_size is None
+                else bucket_size
+            ),
+        ),
+    )
+
+
 def main(args_list: list[str] | None = None) -> Path | str:
     parser = argparse.ArgumentParser(description="월별 가짜 기사-운행 원천 릴리스 생성")
     parser.add_argument("--hvfhv_input_path", required=True)
@@ -752,8 +778,18 @@ def main(args_list: list[str] | None = None) -> Path | str:
     parser.add_argument("--release_output_dir", required=True)
     parser.add_argument("--attribution_output_dir", required=True)
     parser.add_argument("--year_month", required=True)
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--bucket_size", type=int, default=5)
+    parser.add_argument(
+        "--seed",
+        type=_optional_config_int,
+        default=None,
+        help="비우거나 config면 generation.json의 global_seed",
+    )
+    parser.add_argument(
+        "--bucket_size",
+        type=_optional_config_int,
+        default=None,
+        help="비우거나 config면 generation.json의 allocation.bucket_size",
+    )
     parser.add_argument("--spark_memory", default="4g")
     parser.add_argument("--test_row_limit", type=int, default=0)
     parser.add_argument("--storage", choices=("local", "s3"), default="local")
@@ -794,7 +830,9 @@ def main(args_list: list[str] | None = None) -> Path | str:
 
     # lifecycle(join/exit/vehicle_change) 비율은 이제 `--change_rate` 가 아니라
     # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).
-    config = replace(load_config(), global_seed=args.seed)
+    config = _config_with_overrides(
+        load_config(), seed=args.seed, bucket_size=args.bucket_size
+    )
     run = RunContext.create(args.year_month, config)
     input_scope = "full" if args.test_row_limit == 0 else f"test_row_limit={args.test_row_limit}"
 
@@ -828,7 +866,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
     )
     spark.conf.set(
         "spark.sql.files.maxPartitionBytes",
-        str(128 * 1024 * 1024 // max(1, args.bucket_size)),
+        str(128 * 1024 * 1024 // config.allocation.bucket_size),
     )
     read = spark.read.parquet
     raw_trips = _apply_test_row_limit(
@@ -846,8 +884,8 @@ def main(args_list: list[str] | None = None) -> Path | str:
         trips,
         preferences,
         current_driver_vehicle,
-        seed=args.seed,
-        bucket_size=args.bucket_size,
+        seed=config.global_seed,
+        bucket_size=config.allocation.bucket_size,
         score_weights=config.allocation.score_weights,
     )
     candidates = candidates.persist(StorageLevel.DISK_ONLY)
@@ -885,7 +923,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
         vehicle_master,
         snapshot_date=snapshot_date,
         year_month=args.year_month,
-        seed=args.seed,
+        seed=config.global_seed,
     ).persist(StorageLevel.DISK_ONLY)
     inventory_source = build_lease_vehicle_inventory(
         current_driver_vehicle, vehicle_master
