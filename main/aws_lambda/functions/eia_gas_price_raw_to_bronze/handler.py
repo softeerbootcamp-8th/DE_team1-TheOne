@@ -17,19 +17,22 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
+    service_area = event.get("service_area") or os.getenv("SERVICE_AREA", "NYC")
     collected_date = datetime.now(timezone.utc).date()
 
+    extractor = EiaGasPriceExtractor(service_area)
     loader = build_bronze_loader(
         storage,
         base_dir,
         collected_date,
         bucket=bucket,
+        service_area=service_area,
     )
-    result = Pipeline(EiaGasPriceExtractor(), loader).run()
+    result = Pipeline(extractor, loader).run()
 
     return {
         "row_count": result.write_result.row_count,
         "locations": [result.write_result.location],
         "collected_date": collected_date.isoformat(),
-        "source_url": EiaGasPriceExtractor.name.split(":", 1)[1],
+        "source_url": extractor.name.split(":", 1)[1],
     }
