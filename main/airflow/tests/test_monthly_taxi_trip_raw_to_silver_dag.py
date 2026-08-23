@@ -75,10 +75,10 @@ def test_Spark명령은_수집결과의_정확한_HVFHV파일을_사용한다():
     command = DAG.get_task("bronze_to_silver").bash_command
     assert "task_ids='validate_bronze'" in command
     assert "['locations'][0]" in command
-    assert "['silver_version_path']" in command
+    assert "['silver_staging_path']" in command
     assert "--output_file" in command
     assert "--zone_lookup_path" not in command
-    assert "--error_threshold {{ params.error_threshold }}" in command
+    assert "--error_threshold 0.05" in command
 
 
 def test_로컬은_기존_Bash_Spark_경로를_유지한다():
@@ -86,7 +86,6 @@ def test_로컬은_기존_Bash_Spark_경로를_유지한다():
 
     assert type(operator).__name__ == "BashOperator"
     assert "monthly_taxi_trip_bronze_to_silver/job.py" in operator.bash_command
-    assert "--dry-run" in operator.bash_command
 
 
 def test_운영은_팀변수로_EMR_Serverless_job을_제출하고_완료까지_기다린다(
@@ -108,7 +107,6 @@ def test_운영은_팀변수로_EMR_Serverless_job을_제출하고_완료까지_
     assert spark_submit["entryPoint"] == dag_module.EMR_ENTRY_POINT
     assert "--env" in spark_submit["entryPointArguments"]
     assert "prod" in spark_submit["entryPointArguments"]
-    assert "{{ params.dry_run" in spark_submit["entryPointArguments"][-1]
     assert operator.configuration_overrides["monitoringConfiguration"][
         "s3MonitoringConfiguration"
     ]["logUri"] == "s3://test-lake/emr-logs/"

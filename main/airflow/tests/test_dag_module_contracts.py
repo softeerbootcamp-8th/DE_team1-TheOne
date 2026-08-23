@@ -113,18 +113,6 @@ def test_EIA_전력_충전단가_markup_기본값은_Variable_미설정시_2다(
     assert dag.params["markup"] == 2.0
 
 
-def test_HVFHV_불합격_허용비율_기본값은_Variable_미설정시_0_05다():
-    """#743 — MONTHLY_TAXI_TRIP_ERROR_THRESHOLD 모듈 상수를 Param으로 승격하고
-    기본값을 Variable(hvfhv_error_threshold)에서 가져오도록 바꿨다. Variable을
-    설정하지 않은 상태에서는 이전 리터럴 기본값 0.05와 동일해야 한다(회귀 없음)."""
-    dag = getattr(
-        importlib.import_module("dags.monthly_taxi_trip_raw_to_silver_dag"),
-        "monthly_taxi_trip_dag",
-    )
-
-    assert dag.params["error_threshold"] == 0.05
-
-
 def _reload_with_fresh_params(module_path: str, probe_name: str):
     """DAG 모듈을 별도 이름으로 다시 실행해 top-level Param()을 재평가시킵니다.
 
@@ -171,20 +159,6 @@ def test_EIA_전력_충전단가_markup은_Variable_설정시_그값을_따른�
         assert module.eia_electricity_price_raw_to_silver_dag.params["markup"] == 3.5
     finally:
         Variable.delete("eia_electricity_markup")
-
-
-def test_HVFHV_불합격_허용비율은_Variable_설정시_그값을_따른다():
-    from airflow.models import Variable
-
-    Variable.set("hvfhv_error_threshold", "0.2")
-    try:
-        module = _reload_with_fresh_params(
-            "dags.monthly_taxi_trip_raw_to_silver_dag",
-            "_monthly_taxi_trip_raw_to_silver_dag_variable_probe",
-        )
-        assert module.monthly_taxi_trip_dag.params["error_threshold"] == 0.2
-    finally:
-        Variable.delete("hvfhv_error_threshold")
 
 
 def _decorator_name(decorator: ast.expr) -> str | None:

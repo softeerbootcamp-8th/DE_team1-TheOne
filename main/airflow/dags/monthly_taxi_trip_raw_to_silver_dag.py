@@ -3,7 +3,6 @@
 import os
 from datetime import datetime, timedelta
 
-from airflow.models import Variable
 from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
@@ -78,26 +77,6 @@ default_args = {
             type="string",
             description="월별 택시 운행 데이터 제공 주소",
         ),
-        # 기본값을 Variable(hvfhv_error_threshold)에서 가져옵니다 — DAG 파싱
-        # 시점 코드라 airflow.sdk가 아니라 DB에 직접 접근하는
-        # airflow.models.Variable을 씁니다(#743).
-        "error_threshold": Param(
-            float(
-                Variable.get(
-                    "hvfhv_error_threshold",
-                    default_var=MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
-                )
-            ),
-            type="number",
-            description="Bronze 불합격 행 허용 비율. 넘으면 원천이 바뀐 것으로 보고 멈춤",
-        ),
-        # 계약 테스트(test_dry_run_contract.py)가 dry_run이 마지막 파라미터임을
-        # 검증합니다 — 새 파라미터는 이 줄보다 위에 추가하세요.
-        "dry_run": Param(
-            False,
-            type="boolean",
-            description="입력과 변환을 검증하되 Silver에는 적재하지 않음",
-        ),
     },
 )
 def monthly_taxi_trip_raw_to_silver_pipeline():
@@ -131,9 +110,8 @@ def _local_bronze_to_silver() -> BashOperator:
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
             "--output_file \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
-            "['silver_version_path'] }}\" "
-            "--error_threshold {{ params.error_threshold }} "
-            "{% if params.dry_run %}--dry-run{% endif %}"
+            "['silver_staging_path'] }}\" "
+            f"--error_threshold {MONTHLY_TAXI_TRIP_ERROR_THRESHOLD}"
         ),
         env={
             **os.environ,
@@ -167,10 +145,9 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
                     "--input_path",
                     f"{{{{ {xcom}['locations'][0] }}}}",
                     "--output_file",
-                    f"{{{{ {xcom}['silver_version_path'] }}}}",
+                    f"{{{{ {xcom}['silver_staging_path'] }}}}",
                     "--error_threshold",
-                    "{{ params.error_threshold }}",
-                    "--dry-run={{ params.dry_run | string | lower }}",
+                    str(MONTHLY_TAXI_TRIP_ERROR_THRESHOLD),
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }

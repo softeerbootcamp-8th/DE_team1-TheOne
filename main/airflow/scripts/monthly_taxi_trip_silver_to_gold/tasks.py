@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
+import psycopg2
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.sdk import Variable, task
 
@@ -44,7 +45,7 @@ REQUIRED_COLUMNS = {
         "expected_net_profit_increase", "recommendation_reason",
     },
     "monthly_report": {
-        "year_month", "threshold_profit_increase", "recommended_driver_count",
+        "year_month", "threshold_profit_increase", "is_rerun", "recommended_driver_count",
         "avg_net_profit_increase_per_driver",
     },
 }
@@ -188,6 +189,46 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
     return resolved
 
 
+def _monthly_report_exists_in_postgres(year_month: str) -> bool:
+    """운영 Gold DB에 이 대상월 `monthly_report` 행이 이미 있는지.
+
+    관측용 판정이라 실패해도 파이프라인을 막지 않고 "최초완료"(False)로 내려갑니다 —
+    첫 실행이라 테이블이 없는 경우도 이 경로로 자연스럽게 False가 됩니다.
+    """
+    dsn = os.getenv("GOLD_DATABASE_URL")
+    if not dsn:
+        return False
+    try:
+        conn = psycopg2.connect(dsn)
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    "SELECT 1 FROM monthly_report WHERE year_month = %s LIMIT 1",
+                    (year_month,),
+                )
+                return cursor.fetchone() is not None
+        finally:
+            conn.close()
+    except Exception:
+        logger.warning(
+            "재트리거 판정용 Postgres 조회에 실패해 최초완료로 간주합니다", exc_info=True
+        )
+        return False
+
+
+def resolve_is_rerun(job_env: str, year_month: str, params: dict) -> bool:
+    """대상월 Gold가 이미 완료된 뒤의 재트리거인지. 기존 산출물 존재로 판정합니다."""
+    if job_env == "prod":
+        return _monthly_report_exists_in_postgres(year_month)
+    path = (
+        Path(params["output_dir"])
+        / "monthly_report"
+        / f"year_month={year_month}"
+        / "monthly_report.csv"
+    )
+    return path.is_file()
+
+
 def resolve_stale_sla_days(params: dict) -> int:
     """SLA 기준일. Param이 비어 있으면 Variable(재배포 없이 조정), 없으면 기본값.
 
@@ -217,8 +258,13 @@ def days_since_last_success(prev_end_date_success, now: datetime) -> int | None:
     staleness 알림은 best-effort입니다 — 운영에서 prev_end_date_success/now 중
     하나가 예상과 달리 None이라 TypeError로 validate_inputs 전체가 죽는 사고가
     실제로 있었습니다. 원인 불문하고 여기서 막습니다.
+
+    `prev_end_date_success`는 `is None`으로 못 거릅니다 — Airflow 3 TaskSDK가
+    이전 성공 DagRun이 없을 때도 `None`을 감싼 `lazy_object_proxy.Proxy`를 주고,
+    Proxy 객체 자체는 `None`이 아니라서 identity 비교가 항상 실패합니다.
+    truthiness(`bool()`)는 Proxy가 감싼 값까지 확인하므로 이걸로 걸러냅니다.
     """
-    if prev_end_date_success is None or now is None:
+    if not prev_end_date_success or now is None:
         return None
     try:
         return (now - prev_end_date_success).days
@@ -258,12 +304,7 @@ def validate_gold_outputs(output_dir: str, year_month: str) -> None:
 
 @task(task_id="validate_inputs")
 def validate_inputs_task(**context) -> dict:
-    dry_run = context["params"].get("dry_run") is True or any(
-        (event.extra or {}).get("dry_run") is True
-        for events in (context.get("triggering_asset_events") or {}).values()
-        for event in events
-    )
-    params = {**context["params"], "dry_run": dry_run}
+    params = context["params"]
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
     dag_run = context.get("dag_run")
     partition_key = getattr(dag_run, "partition_key", None)
@@ -296,12 +337,12 @@ def validate_inputs_task(**context) -> dict:
             "year_month": year_month,
             "year": year_month.split("-")[0],
             "month": str(int(year_month.split("-")[1])),
-            "dry_run": dry_run,
+            "is_rerun": resolve_is_rerun(job_env, year_month, params),
         }
     try:
         return {
             **resolve_input_paths(year_month, params),
-            "dry_run": dry_run,
+            "is_rerun": resolve_is_rerun(job_env, year_month, params),
         }
     except FileNotFoundError as exc:
         if partition_key:
@@ -315,12 +356,6 @@ def validate_inputs_task(**context) -> dict:
 @task(task_id="validate_gold")
 def validate_gold_task(**context) -> None:
     resolved = context["task_instance"].xcom_pull(task_ids="validate_inputs")
-    if resolved["dry_run"]:
-        logger.info(
-            "dry-run: Spark 내부 Gold 검증 완료, 적재 검증을 생략합니다: year_month=%s",
-            resolved["year_month"],
-        )
-        return
     if os.getenv("SPARK_JOB_ENV", "local") == "prod":
         # 운영은 CSV가 아니라 RDS에 적재합니다 — 검증할 로컬 output_dir이 없습니다.
         logger.info(

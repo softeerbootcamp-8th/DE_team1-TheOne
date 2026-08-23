@@ -43,6 +43,7 @@ from schema.source import (
     LEASE_VEHICLE_INVENTORY_SCHEMA,
     MONTHLY_TAXI_TRIP_SCHEMA,
 )
+from shared.common.s3_reader import is_s3_uri, parent_uri
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
@@ -483,6 +484,19 @@ def _write_one_parquet_s3(frame: DataFrame, *, bucket: str, key: str) -> None:
     이미 SparkSession이 있으므로 boto3 대신 Spark가 쓰는 Hadoop FileSystem의
     `rename()`(내부적으로 copy+delete)을 그대로 씁니다 — Spark/Hadoop 세계 밖으로
     안 나가는 유일한 방법입니다.
+
+    목적지를 먼저 지우는 이유 (#791)
+    ------------------------------
+    Hadoop `FileSystem.rename()` 에는 overwrite 옵션이 없어 목적지가 있으면
+    `FileAlreadyExistsException` 을 던집니다. POSIX `Path.rename()` 과 다릅니다.
+    발행 도중 죽으면 데이터셋 일부만 남고 manifest 는 없는 상태가 되는데,
+    manifest 가 없으니 다음 실행은 재생성을 시도하고 그 남은 객체에 막힙니다.
+    사람이 S3 를 손으로 지우지 않으면 그 월은 영구히 발행 불가였습니다.
+
+    목적지 삭제와 rename 사이에 객체가 없는 짧은 구간이 생깁니다. `source_api` 는
+    manifest 없이 Parquet 을 직접 읽으므로(#547) 그 순간 404 가 날 수 있습니다.
+    재발행은 월 1회 배치라 감수합니다 — 없애려면 Hadoop rename 대신 boto3
+    `copy_object` 로 제자리 덮어써야 하고, 그건 별도 판단 사항입니다.
     """
     staging_uri = f"s3a://{bucket}/.staging/{uuid.uuid4().hex}/"
     final_uri = f"s3a://{bucket}/{key}"
@@ -493,15 +507,21 @@ def _write_one_parquet_s3(frame: DataFrame, *, bucket: str, key: str) -> None:
     staging_path = hadoop_path(staging_uri)
     fs = staging_path.getFileSystem(frame.sparkSession._jsc.hadoopConfiguration())
 
-    parts = [
-        status.getPath()
-        for status in fs.listStatus(staging_path)
-        if status.getPath().getName().startswith("part-")
-    ]
-    if len(parts) != 1:
-        raise ValueError(f"단일 Parquet 파일을 만들지 못했습니다: {staging_uri}")
-    fs.rename(parts[0], hadoop_path(final_uri))
-    fs.delete(staging_path, True)
+    # rename 이 던져도 staging 을 지웁니다. 안 지우면 실패한 실행마다 `.staging/` 에
+    # 잔여물이 쌓이고, 그건 누구도 다시 보지 않는 데이터입니다.
+    try:
+        parts = [
+            status.getPath()
+            for status in fs.listStatus(staging_path)
+            if status.getPath().getName().startswith("part-")
+        ]
+        if len(parts) != 1:
+            raise ValueError(f"단일 Parquet 파일을 만들지 못했습니다: {staging_uri}")
+        # 없으면 false 를 돌려줄 뿐 예외를 던지지 않습니다 (Hadoop FS 계약).
+        fs.delete(hadoop_path(final_uri), False)
+        fs.rename(parts[0], hadoop_path(final_uri))
+    finally:
+        fs.delete(staging_path, True)
 
 
 def _sha256(path: Path) -> str:
@@ -738,8 +758,39 @@ def main(args_list: list[str] | None = None) -> Path | str:
     parser.add_argument("--test_row_limit", type=int, default=0)
     parser.add_argument("--storage", choices=("local", "s3"), default="local")
     parser.add_argument("--bucket", default=None, help="storage=s3일 때. 비우면 DATA_LAKE_S3_BUCKET")
+    # `--storage` 와 역할이 다릅니다 — storage 는 입출력을 "어디에" 두는지, env 는
+    # Spark 세션을 "어디서" 띄우는지입니다. local 은 컨테이너 안 local[3], prod 는
+    # spark-submit(EMR Serverless) 이 준 세션을 그대로 씁니다. main job 과 같은 규칙.
+    parser.add_argument(
+        "--env",
+        choices=("local", "prod"),
+        default=os.getenv("SPARK_JOB_ENV", "local"),
+        help="local=컨테이너 내 local[3], prod=spark-submit 세션(EMR Serverless)",
+    )
     args = parser.parse_args(args_list)
     bucket = args.bucket or (os.environ["DATA_LAKE_S3_BUCKET"] if args.storage == "s3" else None)
+    # EMR 워커는 Airflow 컨테이너의 로컬 디스크를 볼 수 없습니다. 조합을 허용하면
+    # executor 가 FileNotFoundException 으로 죽는 데까지 수십 분이 걸립니다.
+    if args.env == "prod" and args.storage != "s3":
+        raise ValueError("--env prod 는 --storage s3 가 필요합니다 (EMR 워커는 로컬 디스크를 못 봅니다)")
+    # 반대 방향 — 로컬 pyspark 는 hadoop-aws jar 이 없어 `s3://` 를 못 읽습니다(#712).
+    # 조합이 아니라 실제로 들어온 경로로 판정합니다. `--storage s3` 로 출력만 S3 에
+    # 쓰면서 입력은 로컬 파일로 직접 지정하는 실행을 막지 않기 위함입니다.
+    if args.env == "local":
+        s3_inputs = [
+            f"{name}={value}"
+            for name, value in (
+                ("--hvfhv_input_path", args.hvfhv_input_path),
+                ("--zone_lookup_path", args.zone_lookup_path),
+                ("--vehicle_master_path", args.vehicle_master_path),
+            )
+            if is_s3_uri(value)
+        ]
+        if s3_inputs:
+            raise ValueError(
+                "--env local 은 s3:// 입력을 읽을 수 없습니다 (로컬 pyspark 에 hadoop-aws jar "
+                f"없음, #712). --env prod 로 실행하거나 로컬 경로를 넘기세요: {s3_inputs}"
+            )
 
     # lifecycle(join/exit/vehicle_change) 비율은 이제 `--change_rate` 가 아니라
     # config의 driver.{join,exit,vehicle_change}_rate 가 소유합니다 (#605/#628).
@@ -760,15 +811,20 @@ def main(args_list: list[str] | None = None) -> Path | str:
             f"test_row_limit={args.test_row_limit}, output={release_output_dir}"
         )
     state = prepare_monthly_state(
-        hvfhv_input_dir=Path(args.hvfhv_input_path).parent.parent,
+        # `Path` 로 올라가면 `s3://` 가 `s3:/` 로 뭉개집니다.
+        hvfhv_input_dir=parent_uri(args.hvfhv_input_path, 2),
         output_dir=state_output_dir,
         snapshot_date=snapshot_date,
         config=config,
         vehicle_master_path=args.vehicle_master_path,
+        storage=args.storage,
+        bucket=bucket,
     )
 
     spark = get_or_create_spark_session(
-        "synthetic_driver_trip_source", driver_memory=args.spark_memory
+        "synthetic_driver_trip_source",
+        driver_memory=args.spark_memory,
+        local_mode=args.env == "local",
     )
     spark.conf.set(
         "spark.sql.files.maxPartitionBytes",

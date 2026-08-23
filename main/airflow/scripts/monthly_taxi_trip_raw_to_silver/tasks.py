@@ -3,16 +3,18 @@
 import logging
 import os
 import sys
-from datetime import datetime, timedelta
+from datetime import timedelta
 from pathlib import Path
 
 import pyarrow as pa
 from airflow.sdk import task
 
-from main.airflow.common.dry_run import configure_dry_run_event
 from main.airflow.common.monthly_bronze import (
+    STAGED_FILE_PATTERN,
     TIMESTAMP_FILE_PATTERN,
+    commit_staged_silver,
     silver_version_path,
+    staged_silver_version_path,
     validate_monthly_parquet_bronze,
 )
 from shared.airflow.common.lambda_runtime import lambda_handler_for
@@ -161,9 +163,12 @@ def _silver_quality_summary(parquet_files, required_columns):
     row_count = 0
     schema_signatures = set()
     null_counts = {column: 0 for column in required_columns}
-    for parquet_file in parquet_files:
-        schema = parquet_file.schema_arrow
-        row_count += parquet_file.metadata.num_rows
+    # 루프 변수 이름을 `parquet_file` 로 두면 이 모듈이 import 한 같은 이름의 함수를
+    # 가립니다. 지금은 루프 안에서 그 함수를 안 부르니 결과가 맞지만, 나중에 부르려
+    # 하면 조용히 루프 변수를 받습니다.
+    for file in parquet_files:
+        schema = file.schema_arrow
+        row_count += file.metadata.num_rows
         schema_signatures.add(_schema_signature(schema, logical_timestamp=True))
         for column in required_columns:
             if column not in schema.names:
@@ -171,7 +176,7 @@ def _silver_quality_summary(parquet_files, required_columns):
             elif null_counts[column] is not None:
                 null_counts[column] += sum(
                     batch.column(column).null_count
-                    for batch in parquet_file.iter_batches(columns=[column])
+                    for batch in file.iter_batches(columns=[column])
                 )
     return pd.DataFrame(
         [
@@ -201,7 +206,6 @@ def _collect_bronze(params: dict) -> dict:
         "year": params.get("year"),
         "month": params.get("month"),
     }
-    configure_dry_run_event(event, params)
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
     result = lambda_handler_for("monthly_taxi_trip_raw_to_bronze")(event=event)
     logger.info("raw_to_bronze 작업 완료: result=%s", result)
@@ -224,7 +228,9 @@ def existing_silver_partitions(
             part
             for key in list_keys(silver_dir.bucket, prefix)
             for part in key.removeprefix(prefix).split("/")[:1]
-            if part.startswith("year_month=") and key.endswith(".parquet")
+            if part.startswith("year_month=")
+            and key.endswith(".parquet")
+            and not STAGED_FILE_PATTERN.fullmatch(Path(key).name)
         }
         return sorted(existing)
 
@@ -235,7 +241,12 @@ def existing_silver_partitions(
     for partition in root.glob("year_month=*"):
         if not partition.is_dir():
             continue
-        files = list(partition.glob("*.parquet"))
+        # 검증 전 staging 파일(#742)은 아직 커밋된 게 아니므로 "존재"로 세지 않습니다.
+        files = [
+            path
+            for path in partition.glob("*.parquet")
+            if not STAGED_FILE_PATTERN.fullmatch(path.name)
+        ]
         has_legacy = any(
             not TIMESTAMP_FILE_PATTERN.fullmatch(path.name) for path in files
         )
@@ -256,12 +267,6 @@ def existing_silver_partitions(
 def validate_bronze_task(result: dict, **context) -> dict:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
     params = context.get("params", {})
-    configured_threshold = params.get("error_threshold")
-    error_threshold = float(
-        configured_threshold
-        if configured_threshold is not None
-        else MONTHLY_TAXI_TRIP_ERROR_THRESHOLD
-    )
     summary = _bronze_quality_result(result, params, list(SCHEMA.names))
     missing = summary.at[0, "missing_required_columns"]
     if missing:
@@ -294,7 +299,7 @@ def validate_bronze_task(result: dict, **context) -> dict:
                 gx.expectations.ExpectColumnValuesToBeBetween(
                     column="invalid_required_row_ratio",
                     min_value=0,
-                    max_value=error_threshold,
+                    max_value=MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
                     strict_max=True,
                 ),
             ]
@@ -327,11 +332,15 @@ def validate_bronze_task(result: dict, **context) -> dict:
             extra_columns=extra_columns,
         )
     version_path = silver_version_path(DEFAULT_SILVER_DIR, result)
+    staging_path = staged_silver_version_path(DEFAULT_SILVER_DIR, result)
     silver_root = version_path.parent.parent
     # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
     return {
         **result,
         "silver_version_path": str(version_path),
+        # Spark는 검증 전이라 여기(staging)에만 씁니다 — validate_silver가 통과시켜야
+        # silver_version_path로 옮겨집니다(#742).
+        "silver_staging_path": str(staging_path),
         "silver_partitions_before": existing_silver_partitions(silver_root),
     }
 
@@ -366,23 +375,21 @@ def _bronze_quality_result(
 )
 def validate_silver_task(raw_result: dict, **context) -> None:
     """Spark 실행이 만든 Silver 버전 파일을 직접 열어서 확인합니다."""
-    if context.get("params", {}).get("dry_run") is True:
-        logger.info("dry-run: Spark 내부 검증 완료, Silver 적재 검증을 생략합니다")
-        return
     parsed = parse_handler_result(raw_result, expected_locations=1)
-    year_month = parse_year_month(
-        raw_result.get("year_month"), field="year_month"
-    )
+    # 반환값을 쓰지 않습니다 — 이 호출 자체가 검증입니다. YYYY-MM 이 아니면
+    # ValueError 로 막습니다. 대입으로 두면 미사용 변수로 보여 지워질 수 있습니다.
+    parse_year_month(raw_result.get("year_month"), field="year_month")
     bronze_rows = parquet_file(parsed.locations[0]).metadata.num_rows
 
     version_path = parse_location(raw_result["silver_version_path"])
+    staged_path = parse_location(raw_result["silver_staging_path"])
 
     expected_schema = SILVER_SCHEMA
     required_columns = list(SILVER_SCHEMA.names)
     try:
-        silver_file = parquet_file(version_path)
+        silver_file = parquet_file(staged_path)
     except FileNotFoundError as exc:
-        raise ValueError(f"Silver 버전 파일이 없습니다: {version_path}") from exc
+        raise ValueError(f"Silver 버전 파일이 없습니다: {staged_path}") from exc
     parquet_files = [silver_file]
     summary = _silver_quality_summary(parquet_files, required_columns)
     import great_expectations as gx
@@ -429,3 +436,7 @@ def validate_silver_task(raw_result: dict, **context) -> None:
         raise ValueError(
             f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
+
+    # 검증을 모두 통과한 뒤에만 최종 경로로 승격합니다(#742) — 그전까지는
+    # staging 이름이라 다른 태스크의 "최신 버전" 탐색에 걸리지 않습니다.
+    commit_staged_silver(staged_path, version_path)

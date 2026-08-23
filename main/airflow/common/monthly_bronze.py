@@ -4,6 +4,8 @@ import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+import boto3
+
 from shared.airflow.common.validation import (
     S3Location,
     location_size,
@@ -16,6 +18,9 @@ from shared.airflow.common.validation import (
 
 
 TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
+# staged_silver_version_path()가 만드는 이름과 짝을 맞춥니다 — 검증 전 파일을
+# "이미 존재하는 버전"으로 세지 않으려면 이 패턴으로 걸러내야 합니다(#742).
+STAGED_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.staged\.parquet$")
 
 
 def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location:
@@ -38,6 +43,37 @@ def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location
             f"silver/{dataset_dir}/year_month={year_month}/{file_name}",
         )
     return base / f"year_month={year_month}" / file_name
+
+
+def staged_silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location:
+    """`silver_version_path`의 검증 전 임시 위치입니다.
+
+    확장자는 그대로 `.parquet`로 남겨 `parquet_file()`의 확장자 검사를 통과시키되,
+    `TIMESTAMP_FILE_PATTERN`과는 겹치지 않게 해 Gold의 "최신 버전" 탐색에서 자연히
+    제외됩니다 — 적재 태스크가 검증 통과 전에 최종 경로를 먼저 채우는 사고(#742)를
+    막습니다.
+    """
+    final = silver_version_path(base_dir, result)
+    staged_name = f"{Path(final.name).stem}.staged{Path(final.name).suffix}"
+    if isinstance(final, S3Location):
+        parent = final.key.rsplit("/", 1)[0]
+        return S3Location(final.bucket, f"{parent}/{staged_name}")
+    return final.with_name(staged_name)
+
+
+def commit_staged_silver(staged: Path | S3Location, final: Path | S3Location) -> None:
+    """검증을 통과한 staging 파일만 최종 Silver 버전 경로로 승격합니다."""
+    if isinstance(final, S3Location):
+        if not isinstance(staged, S3Location):
+            raise TypeError("staged와 final의 위치 종류가 다릅니다")
+        client = boto3.client("s3")
+        client.copy({"Bucket": staged.bucket, "Key": staged.key}, final.bucket, final.key)
+        client.delete_object(Bucket=staged.bucket, Key=staged.key)
+        return
+    if isinstance(staged, S3Location):
+        raise TypeError("staged와 final의 위치 종류가 다릅니다")
+    Path(final).parent.mkdir(parents=True, exist_ok=True)
+    Path(staged).replace(final)
 
 
 def validate_monthly_parquet_bronze(

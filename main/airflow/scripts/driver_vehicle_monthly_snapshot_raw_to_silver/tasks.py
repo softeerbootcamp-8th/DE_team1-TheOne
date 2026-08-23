@@ -7,7 +7,6 @@ from pathlib import Path
 
 from airflow.sdk import task
 
-from main.airflow.common.dry_run import configure_dry_run_event
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
@@ -71,7 +70,6 @@ def _collect_bronze(params: dict) -> dict:
         "year": params.get("year"),
         "month": params.get("month"),
     }
-    configure_dry_run_event(event, params)
     logger.info("기사 차량 스냅샷 Raw→Bronze 수집 시작: %s", event)
     return lambda_handler_for("driver_vehicle_monthly_snapshot_raw_to_bronze")(event=event)
 
@@ -118,7 +116,6 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
     }
     if isinstance(bronze_location, S3Location):
         event.update(storage="s3", bucket=bronze_location.bucket)
-    configure_dry_run_event(event, context["params"])
     logger.info("기사 차량 스냅샷 Bronze→Silver 정제 시작: %s", event)
     return lambda_handler_for("driver_vehicle_monthly_snapshot_bronze_to_silver")(event=event)
 
@@ -126,15 +123,6 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> None:
     version_path = raw_result["silver_version_path"]
-    if context.get("params", {}).get("dry_run") is True:
-        parsed = parse_handler_result(silver_result, expected_locations=1)
-        if (
-            silver_result.get("dry_run") is not True
-            or silver_result.get("row_count") != raw_result["row_count"]
-            or parsed.locations[0].name != parse_location(version_path).name
-        ):
-            raise ValueError("기사 차량 스냅샷 dry_run 변환 결과가 Bronze와 다릅니다")
-        return
     if silver_result["locations"] != [version_path]:
         raise ValueError("기사 차량 스냅샷 Silver 버전 경로가 Bronze와 다릅니다")
     validate_silver_result(silver_result, raw_result["row_count"])

@@ -1,7 +1,7 @@
-"""Silver → Gold 차량 재고 배정 시나리오. 이슈 #561, #675, #696.
+"""Silver → Gold 차량 재고 배정 시나리오. 이슈 #561, #675, #696, #772.
 
 1. 희소 차량은 예상 순이익 증가액이 큰 기사에게 우선 배정
-2. 현재 차량 유지는 변경용 재고를 소비하지 않음
+2. 현재 운행 차량을 제외한 남은 재고만 변경 추천에 사용
 3. 재고에서 밀린 기사는 다음 순위 차량을 배정받음
 4. 프리미엄 배수는 5개 거리 구간별 실측값을 각 운행에 적용
 5. Standard 운행 구간에 프리미엄 표본이 없으면 명시적으로 실패
@@ -71,7 +71,7 @@ def test_재고_한대는_순이익_증가가_큰_기사에게_우선_배정한�
     assert assigned == {"high": "rare", "low": "low-current"}
 
 
-def test_현재차량_유지자는_변경용_재고를_소비하지_않는다(spark):
+def test_현재운행차량을_제외한_남은재고만_변경추천에_쓴다(spark):
     candidates = spark.createDataFrame(
         [
             _candidate("owner", "shared", 100.0, 1, current=True),
@@ -83,7 +83,7 @@ def test_현재차량_유지자는_변경용_재고를_소비하지_않는다(sp
     rows = _allocate_candidates_by_stock(candidates).collect()
     assigned = {row.driver_id: row._candidate_vehicle_model_id for row in rows}
 
-    assert assigned == {"owner": "shared", "changer": "shared"}
+    assert assigned == {"owner": "shared", "changer": "changer-current"}
 
 
 def test_재고에서_밀린_기사는_차선_차량을_받는다(spark):
@@ -191,7 +191,7 @@ def test_Gold_비즈니스검증은_모델별_재고초과를_차단한다(spark
         gold_transformer.validate_gold_business_invariants(*frames)
 
 
-def test_Gold_비즈니스검증은_현재차량_유지를_재고에서_제외한다(spark):
+def test_Gold_비즈니스검증은_현재차량_유지도_재고에_포함한다(spark):
     driver_profit, recommendation, snapshot, inventory = _gold_frames(
         spark, stock=1
     )
@@ -202,9 +202,10 @@ def test_Gold_비즈니스검증은_현재차량_유지를_재고에서_제외�
         ),
     )
 
-    gold_transformer.validate_gold_business_invariants(
-        driver_profit, recommendation, snapshot, inventory
-    )
+    with pytest.raises(ValueError, match="재고 초과"):
+        gold_transformer.validate_gold_business_invariants(
+            driver_profit, recommendation, snapshot, inventory
+        )
 
 
 def test_Gold_비즈니스검증은_기사누락을_차단한다(spark):
@@ -232,12 +233,24 @@ def test_월간_리포트는_회사_객단가가_실제로_상승한_기사만_�
         ["driver_id", "expected_net_profit_increase", "expected_revenue_increase"],
     )
 
-    report = build_monthly_report(recommendation, "2026-01", 600.0).first()
+    report = build_monthly_report(recommendation, "2026-01", 600.0, False).first()
 
     assert report.recommended_driver_count == 1
     assert report.avg_net_profit_increase_per_driver == 600.0
     assert report.avg_revenue_increase_per_driver == 1.0
     assert report.total_revenue_increase == 1.0
+    assert report.is_rerun is False
+
+
+def test_월간_리포트는_재트리거_여부를_그대로_기록한다(spark):
+    recommendation = spark.createDataFrame(
+        [("eligible", 600.0, 1.0)],
+        ["driver_id", "expected_net_profit_increase", "expected_revenue_increase"],
+    )
+
+    report = build_monthly_report(recommendation, "2026-01", 600.0, True).first()
+
+    assert report.is_rerun is True
 
 
 # --- Gold 3종 적재 일관성 (#589) ---------------------------------------------

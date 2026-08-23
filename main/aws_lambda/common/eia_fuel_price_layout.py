@@ -24,8 +24,6 @@ Silver 는 만들지 않습니다 — 두 원본을 합쳐 `gas_ev_price` Silver
 from datetime import date
 from pathlib import Path
 
-from shared.common.s3_reader import get_object_bytes, list_keys
-
 GAS_DATASET = "eia_gas_price"
 ELECTRICITY_DATASET = "eia_electricity_price"
 BRONZE_PARTITION_KEY = "collected_date"
@@ -89,24 +87,6 @@ def newest_bronze_s3_key(keys: list[str], dataset: str, file_name: str) -> tuple
     if not partitions:
         raise FileNotFoundError(f"EIA Bronze S3 파티션이 없습니다: {prefix}")
     return sorted(partitions)[-1]
-
-
-def is_duplicate_of_newest_s3(
-    bucket: str,
-    dataset: str,
-    file_name: str,
-    body: bytes,
-) -> str | None:
-    """받은 내용이 최신 S3 수집분과 같으면 그 key를 반환합니다."""
-    try:
-        _, key = newest_bronze_s3_key(
-            list_keys(bucket, bronze_s3_prefix(dataset)),
-            dataset,
-            file_name,
-        )
-    except FileNotFoundError:
-        return None
-    return key if get_object_bytes(bucket, key) == body else None
 
 
 def bronze_partitions(base_dir: str, dataset: str) -> list[tuple[date, Path]]:

@@ -52,11 +52,6 @@ default_args = {
         # 비우면 전력 공개 지연(약 3개월)만큼 물러선 달을 채웁니다.
         "year_month": Param(None, type=["string", "null"]),
         "silver_dir": Param(SILVER_DIR, type="string"),
-        "dry_run": Param(
-            False,
-            type="boolean",
-            description="실제 적재 없이 Asset 기반 후속 DAG까지 실행 흐름을 검증",
-        ),
     },
 )
 def eia_fuel_price_silver_pipeline():

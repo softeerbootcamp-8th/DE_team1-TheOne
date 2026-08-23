@@ -1,0 +1,26 @@
+# =============================================================================
+# EC2 운영용 대시보드 — docker-compose.ec2.yml(airflow)과 다른 인스턴스에서 돕니다.
+#
+#   docker compose -f docker-compose.dashboard.ec2.yml up -d
+#
+# 로컬용과 다른 점:
+#   * 이미지를 ECR 에서 받습니다(빌드하지 않음). 코드는 이미지 안에 있습니다.
+#   * 바인드 마운트가 없습니다 — 이미지 태그가 곧 코드 버전입니다.
+#
+# 8501을 127.0.0.1로 묶지 않습니다 — gateway 인스턴스의 Nginx가 이 인스턴스의
+# 사설 IP:8501로 접속해야 하므로(다른 호스트), 인스턴스 인터페이스에 열어둬야
+# 합니다. 외부 차단은 보안그룹(theone-dashboard-sg, gateway에서만 허용)이 합니다.
+# =============================================================================
+
+services:
+  dashboard:
+    # 기본값은 검증된 배포 태그입니다. 개발 중에는 DASHBOARD_IMAGE 로 다른 태그를 지정하세요.
+    #   DASHBOARD_IMAGE=<레지스트리>/theone-dashboard-server:dev \
+    #     docker compose -f docker-compose.dashboard.ec2.yml up -d --pull always --force-recreate dashboard
+    image: ${DASHBOARD_IMAGE:-572660899671.dkr.ecr.ap-northeast-2.amazonaws.com/theone-dashboard-server:latest}
+    environment:
+      DASHBOARD_DATA_SOURCE: rds
+      GOLD_DATABASE_URL: ${GOLD_DATABASE_URL:?~/dashboard/.env 의 GOLD_DATABASE_URL이 필요합니다}
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

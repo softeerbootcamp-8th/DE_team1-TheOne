@@ -22,16 +22,13 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
-    dry_run = event.get("dry_run", False)
-    if not isinstance(dry_run, bool):
-        raise ValueError("dry_run은 boolean이어야 합니다")
-    loader = build_loader(storage, base_dir, bucket=bucket, dry_run=dry_run)
+    loader = build_loader(storage, base_dir, bucket=bucket)
     result = Pipeline(
         LeaseVehicleInventoryExtractor(api_base_url, requested_year_month(event)),
         loader,
     ).run()
     payload = loader.payload
-    response = {
+    return {
         "year_month": payload["year_month"],
         "collected_at": payload["collected_at"],
         "year": payload["year_month"][:4],
@@ -41,9 +38,6 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "locations": [result.write_result.location],
         "file_size_bytes": len(payload["content"]),
     }
-    if dry_run:
-        response["dry_run"] = True
-    return response
 
 
 if __name__ == "__main__":

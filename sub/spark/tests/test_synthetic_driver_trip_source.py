@@ -112,9 +112,16 @@ def _vehicle_master_silver() -> pd.DataFrame:
     ])
 
 
-def _monthly_config(initial_count: int):
+def _monthly_config(initial_count: int, *, snapshot_date: str = "2026-08-01"):
+    """`snapshot_date` 가 곧 **첫 달**입니다.
+
+    전월 체크포인트가 없어도 되는 달은 이 값 하나뿐입니다. 그보다 뒤인 달을
+    체크포인트 없이 돌리면 `CheckpointLineageError` 로 막힙니다 — 조용히 초기
+    스냅샷을 만들어 기사 연속성을 끊는 것을 방지합니다(#763).
+    """
     data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in TEST_CONFIG_DATA.items()}
     data["driver"] = {**data["driver"], "initial_count": initial_count}
+    data["bootstrap"] = {**data["bootstrap"], "snapshot_date": snapshot_date}
     return build_config(data)
 
 
@@ -158,8 +165,9 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
     first_cdv = pd.read_parquet(first.current_driver_vehicle_path)
     second_cdv = pd.read_parquet(second.current_driver_vehicle_path)
     assert len(first_cdv) == 400
-    assert first.snapshot_dir.name == "data_month=2026-08"
-    assert second.snapshot_dir.name == "data_month=2026-09"
+    # 경로가 str 인 이유 — `s3://` 도 담습니다(#767). `Path` 로 감싸면 스킴이 깨집니다.
+    assert first.snapshot_dir.endswith("data_month=2026-08")
+    assert second.snapshot_dir.endswith("data_month=2026-09")
 
     new_drivers = set(second_cdv["driver_id"]) - set(first_cdv["driver_id"])
     ended = second_cdv[second_cdv["lease_ended_on"].notna()]
@@ -551,7 +559,12 @@ def test_write_one_parquet_s3는_유일한_part_파일만_최종_key로_옮기�
     fs.listStatus.assert_called_once_with(path_registry[staging_uri])
     # _SUCCESS는 걸러지고 part- 파일만 최종 key로 rename됩니다.
     fs.rename.assert_called_once_with(part_status.getPath.return_value, path_registry[final_uri])
-    fs.delete.assert_called_once_with(path_registry[staging_uri], True)
+    # 목적지를 **먼저** 지웁니다 — Hadoop rename 은 overwrite 옵션이 없어 목적지가
+    # 있으면 던집니다(#791). 그다음 staging 을 정리합니다.
+    assert fs.delete.call_args_list == [
+        ((path_registry[final_uri], False),),
+        ((path_registry[staging_uri], True),),
+    ]
 
 
 def test_write_one_parquet_s3는_part_파일이_하나가_아니면_실패한다():
@@ -568,3 +581,57 @@ def test_write_one_parquet_s3는_part_파일이_하나가_아니면_실패한다
 
     with pytest.raises(ValueError, match="단일 Parquet 파일을 만들지 못했습니다"):
         _write_one_parquet_s3(frame, bucket="my-bucket", key="k")
+
+
+def test_write_one_parquet_s3는_목적지가_있어도_덮어쓴다():
+    """부분 산출물이 남아 있어도 같은 월을 다시 발행할 수 있어야 합니다(#791).
+
+    Hadoop `rename()` 은 목적지가 있으면 `FileAlreadyExistsException` 을 던집니다.
+    로컬판 `_write_one_parquet` 은 `Path.rename()` 이라 덮어쓰므로, 여기서만
+    멱등성이 깨져 그 월이 영구히 발행 불가가 됐습니다.
+    """
+    fs = MagicMock(name="fs")
+    frame = MagicMock(name="frame")
+    path_registry: dict[str, MagicMock] = {}
+    frame.sparkSession._jvm.org.apache.hadoop.fs.Path.side_effect = (
+        lambda uri: path_registry.setdefault(uri, _fake_hadoop_path(uri, fs=fs))
+    )
+    part_status = MagicMock()
+    part_status.getPath.return_value = _fake_hadoop_path("part-00000-abc.snappy.parquet")
+    fs.listStatus.return_value = [part_status]
+
+    def rename(_src, destination):
+        # 실제 S3A 처럼, 목적지가 안 지워졌다면 던집니다.
+        if (destination, False) not in [call.args for call in fs.delete.call_args_list]:
+            raise AssertionError("목적지를 지우지 않고 rename 했습니다")
+        return True
+
+    fs.rename.side_effect = rename
+
+    _write_one_parquet_s3(frame, bucket="my-bucket", key="source/published/x/data.parquet")
+
+    fs.rename.assert_called_once()
+
+
+def test_write_one_parquet_s3는_rename이_실패해도_스테이징을_지운다():
+    """안 지우면 실패한 실행마다 `.staging/` 에 아무도 안 보는 잔여물이 쌓입니다."""
+    fs = MagicMock(name="fs")
+    frame = MagicMock(name="frame")
+    written_uris = []
+    frame.coalesce.return_value.write.mode.return_value.parquet.side_effect = written_uris.append
+    path_registry: dict[str, MagicMock] = {}
+    frame.sparkSession._jvm.org.apache.hadoop.fs.Path.side_effect = (
+        lambda uri: path_registry.setdefault(uri, _fake_hadoop_path(uri, fs=fs))
+    )
+    part_status = MagicMock()
+    part_status.getPath.return_value = _fake_hadoop_path("part-00000-abc.snappy.parquet")
+    fs.listStatus.return_value = [part_status]
+    fs.rename.side_effect = RuntimeError("FileAlreadyExistsException")
+
+    with pytest.raises(RuntimeError, match="FileAlreadyExistsException"):
+        _write_one_parquet_s3(frame, bucket="my-bucket", key="k")
+
+    staging_uri = written_uris[0]
+    assert ((path_registry[staging_uri], True),) in [
+        (call.args,) for call in fs.delete.call_args_list
+    ]

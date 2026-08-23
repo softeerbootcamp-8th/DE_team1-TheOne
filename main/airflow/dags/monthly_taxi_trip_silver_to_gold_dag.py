@@ -51,12 +51,12 @@ def _required_prod_env(name: str) -> str:
 
 
 def _local_build_gold() -> BashOperator:
+    is_rerun = "task_instance.xcom_pull(task_ids='validate_inputs')['is_rerun']"
     common_tail = (
         "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
         + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
         + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
-        + "{% if task_instance.xcom_pull(task_ids='validate_inputs')['dry_run'] %}"
-        + "--dry-run{% endif %}"
+        + f"--is_rerun {{{{ 'true' if {is_rerun} else 'false' }}}}"
     )
     return BashOperator(
         task_id="build_gold",
@@ -110,11 +110,7 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     "--year", f"{{{{ {xcom}['year'] }}}}",
                     "--month", f"{{{{ {xcom}['month'] }}}}",
                     "--threshold_profit_increase", "{{ params.threshold_profit_increase }}",
-                    # entryPointArguments 는 셸이 아니라 JSON 리스트라 빈 문자열도
-                    # 그대로 하나의 인자로 전달됩니다 — 로컬처럼 Jinja if 로 토큰
-                    # 자체를 없앨 수 없어 --dry-run 에 값을 항상 명시적으로 줍니다.
-                    "--dry-run",
-                    f"{{{{ 'true' if {xcom}['dry_run'] else 'false' }}}}",
+                    "--is_rerun", f"{{{{ 'true' if {xcom}['is_rerun'] else 'false' }}}}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }
@@ -185,13 +181,6 @@ def _build_gold_operator():
                 f"보냅니다. 비우면 Variable(gold_stale_sla_days) 또는 기본값 "
                 f"{DEFAULT_STALE_SLA_DAYS}을 씁니다."
             ),
-        ),
-        # 계약 테스트(test_dry_run_contract.py)가 dry_run이 마지막 파라미터임을
-        # 검증합니다 — 새 파라미터는 이 줄보다 위에 추가하세요.
-        "dry_run": Param(
-            False,
-            type="boolean",
-            description="입력과 집계를 검증하되 Gold에는 적재하지 않음",
         ),
     },
 )
