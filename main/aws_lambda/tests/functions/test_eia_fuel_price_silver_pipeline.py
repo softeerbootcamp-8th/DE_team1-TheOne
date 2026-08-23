@@ -14,6 +14,8 @@
 7. 지역 경로와 옛 경로가 모두 있으면 지역 경로를 읽는다 (#843/#851 — 탐색 순서가
    뒤집히면 옛 경로의 낡은 값을 조용히 집음)
 8. 지역 경로가 없으면 옛 경로로 폴백한다 (아직 안 옮긴 데이터셋과의 하위호환)
+9. service_area를 TX로 주면 읽기·쓰기 모두 그 경로로 나간다 — 두 CLEAN을 읽는 지역과
+   결합 결과를 쓰는 지역이 같음을 함께 증명 (#845)
 """
 
 from datetime import date
@@ -61,12 +63,12 @@ def _ev_rows(days=31, price=0.4, collected=EV_COLLECTED, status="Final"):
     ]
 
 
-def _write_clean(silver, gas_rows, ev_rows, year_month="2025-05"):
+def _write_clean(silver, gas_rows, ev_rows, year_month="2025-05", service_area=None):
     for dataset, rows, schema in (
         ("eia_gas_price", gas_rows, GAS_SCHEMA),
         ("eia_electricity_price", ev_rows, EV_SCHEMA),
     ):
-        path = clean_silver_file(str(silver), dataset, year_month)
+        path = clean_silver_file(str(silver), dataset, year_month, service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
 
@@ -140,7 +142,10 @@ def test_산출물_경로는_데이터의_달을_쓴다(tmp_path):
 
     result = lambda_handler({"year_month": "2025-05", "silver_dir": str(tmp_path)})
 
-    assert "gas_ev_price/year_month=2025-05/gas_ev_price.parquet" in result["locations"][0]
+    assert (
+        "gas_ev_price/service_area=NYC/year_month=2025-05/gas_ev_price.parquet"
+        in result["locations"][0]
+    )
 
 
 # --- S3 배포 (#577) — 키 포맷 --------------------------------------------
@@ -188,3 +193,19 @@ def test_지역_경로가_없으면_옛_경로로_폴백한다(tmp_path):
     rows = _read(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
 
     assert {row["gas_price"] for row in rows} == {3.4}
+
+
+def test_service_area를_TX로_주면_읽기_쓰기_모두_그_경로로_나간다(tmp_path):
+    """이슈 완료 조건 — 읽는 두 CLEAN Silver와 쓰는 결합 결과가 같은 지역을 써야
+    합니다. 어긋나면 다른 지역의 유가로 이 지역 Gold를 계산하는, 조용히 틀린 값이
+    나오는 가장 위험한 사고입니다(#845)."""
+    _write_clean(tmp_path, _gas_rows(), _ev_rows(), service_area="TX")
+
+    result = lambda_handler(
+        {"year_month": "2025-05", "silver_dir": str(tmp_path), "service_area": "TX"}
+    )
+
+    assert (
+        "gas_ev_price/service_area=TX/year_month=2025-05/gas_ev_price.parquet"
+        in result["locations"][0]
+    )
