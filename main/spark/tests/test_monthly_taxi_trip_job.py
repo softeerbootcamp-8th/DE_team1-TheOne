@@ -10,7 +10,7 @@
 8. start/end 중 하나만 주면 ValueError
 9. `is_s3_path`/`resolve_path`/`latest_partition_file`은 s3://·s3a:// 경로도 처리 (이슈 #646)
 10. `--env local|prod`로 기본 입출력 경로를 고름, `prod`인데 버킷이 없으면 ValueError
-11. 단일 Silver 버전은 coalesce(1) 후 collected_at 파일로 원자적 교체
+11. 단일 Silver 버전은 repartition(1) 후 collected_at 파일로 원자적 교체 (#818)
 12. S3 단일 Silver 버전은 최종 객체만 남기고 임시 객체를 정리
 """
 
@@ -309,7 +309,7 @@ def test_start와_end가_같으면_한_달만_처리한다(spark, tmp_path):
     assert {row["year_month"] for row in result.collect()} == {"2024-05"}
 
 
-def test_단일버전은_coalesce한_collected_at_Parquet하나로_적재한다(spark, tmp_path):
+def test_단일버전은_repartition한_collected_at_Parquet하나로_적재한다(spark, tmp_path):
     file_name = "20260821T123456123456Z.parquet"
     bronze = tmp_path / "bronze" / "year_month=2024-03" / file_name
     bronze.parent.mkdir(parents=True)
@@ -327,7 +327,7 @@ def test_단일버전은_coalesce한_collected_at_Parquet하나로_적재한다(
     assert not list(final.parent.glob(f".{final.name}.*.tmp"))
 
 
-def test_단일버전_loader는_coalesce_1후_최종파일로_교체한다(tmp_path):
+def test_단일버전_loader는_repartition_1후_최종파일로_교체한다(tmp_path):
     final = tmp_path / "20260821T123456123456Z.parquet"
     calls = []
 
@@ -348,13 +348,13 @@ def test_단일버전_loader는_coalesce_1후_최종파일로_교체한다(tmp_p
         def count(self):
             return 7
 
-        def coalesce(self, partitions):
-            calls.append(("coalesce", partitions))
+        def repartition(self, partitions):
+            calls.append(("repartition", partitions))
             return self
 
     result = job.SingleParquetFileLoader(str(final)).write(FakeDataFrame())
 
-    assert calls[:2] == [("coalesce", 1), ("mode", "overwrite")]
+    assert calls[:2] == [("repartition", 1), ("mode", "overwrite")]
     assert calls[2][0] == "parquet"
     assert calls[2][1] != str(final)
     assert final.is_file()
@@ -379,7 +379,7 @@ def test_단일버전_쓰기실패는_기존최종파일을_보존한다(tmp_pat
         def count(self):
             return 7
 
-        def coalesce(self, partitions):
+        def repartition(self, partitions):
             return self
 
     with pytest.raises(OSError, match="Spark 쓰기 실패"):
@@ -419,7 +419,7 @@ def test_S3_단일버전은_최종객체만_남기고_임시객체를_정리한�
         def count(self):
             return 7
 
-        def coalesce(self, partitions):
+        def repartition(self, partitions):
             assert partitions == 1
             return self
 
