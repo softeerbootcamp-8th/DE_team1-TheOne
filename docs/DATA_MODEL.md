@@ -204,11 +204,10 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 | --- | --- | --- | --- | --- |
 | `driver_aggregation` | 기사 × 월 | `year_month` | 2,000행/월 | [gold/driver_aggregation.py](../schema/gold/driver_aggregation.py) |
 | `driver_vehicle_profit_simulation` | 기사 × 후보 차량 모델 × 월 | `year_month` | 기사 수 × 차량 모델 수/월 | [schema/gold](../schema/gold/__init__.py) |
-| `vw_driver_car_suggestion` (view) | 기사 × 월 | – | 기사 수/월 | `driver_vehicle_profit_simulation`에서 계산 |
 | `monthly_report` | 월 | `year_month` | 1행/월 | [gold/monthly_report.py](../schema/gold/monthly_report.py) |
 
 세 물리 테이블은 월, 기사×월, 기사×후보 차량 모델×월을 각각 자연 키로 갖습니다.
-최종 추천은 시뮬레이션 팩트에 정책 순위와 재고 한도를 적용한 뷰이며 기사당 1행입니다.
+최종 추천 객체는 이 Gold 적재 범위에서 생성하거나 변경하지 않습니다.
 
 ### 4.1 `driver_aggregation` — 기사 월간 집계
 
@@ -227,20 +226,14 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 | 컬럼 | 내용 |
 | --- | --- |
 | `candidate_vehicle_model_id` / `model_year` | 평가한 후보 차량 (연식은 스펙 트림 범위 중 최신) |
-| `candidate_stock` | 해당 월 후보 차량 재고. 최종 추천 뷰의 재고 제약에 사용 |
+| `candidate_stock` | 해당 월 후보 차량 재고 스냅샷 |
 | `recommendation_reason` | `연비` / `차량등급` / `더 저렴한 렌트료` 중 해당 항목을 `, ` 로 나열. 셋 다 아니면 `현재 차량 유지` |
 | `expected_net_profit_increase` | 기사 예상 순수익 증가액 |
 | `expected_revenue_increase` | 회사 렌탈 객단가 증가액 |
 
 `recommendation_reason` 이 없으면 CSM이 *"이 차 왜 추천됐어요?"* 에 답을 못 합니다.
 
-### 4.3 `vw_driver_car_suggestion` — 기사별 최종 추천
-
-현재 운행 차량을 먼저 재고로 보존하고, 남은 재고는 예상 순수익 증가액이 큰 기사에게
-우선 배정합니다. 배정 가능한 후보 중 예상 순수익이 가장 큰 차량 1대를 반환합니다.
-기존 조회 호환용 `driver_car_suggestion` 뷰도 동일한 결과를 제공합니다.
-
-### 4.4 `monthly_report` — 월 1행 요약 + 계보
+### 4.3 `monthly_report` — 월 1행 요약 + 계보
 
 | 컬럼 | 내용 |
 | --- | --- |

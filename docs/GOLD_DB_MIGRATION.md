@@ -39,10 +39,7 @@ f"CREATE TABLE IF NOT EXISTS {table} (\n    " + ... + f",\n    PRIMARY KEY ({pri
 ```
 
 거꾸로 하면 1번과 2번 사이에 도는 잡이 전부 실패합니다. 반대로 1번을 먼저 하면,
-일반적인 컬럼 추가는 옛 코드도 계속 동작하도록 구성해야 합니다. 다만 이번
-`driver_car_suggestion` 테이블 이름 변경은 옛 적재 코드와 호환되지 않으므로 마이그레이션과
-코드 배포 사이에 Gold 실행을 멈추는 짧은 유지보수 창이 필요합니다. 조회 호환성은 같은
-마이그레이션에서 `driver_car_suggestion` 뷰를 다시 만들어 보존합니다.
+일반적인 컬럼 추가는 옛 코드도 계속 동작하도록 구성해야 합니다.
 
 그래서 **`NOT NULL` 컬럼을 추가할 때는 1번과 2번 사이의 창을 짧게** 하거나,
 nullable로 넣고 배포 후 `SET NOT NULL`을 따로 거는 2단계로 나눕니다. 아래 스크립트는
@@ -55,8 +52,6 @@ nullable로 넣고 배포 후 `SET NOT NULL`을 따로 거는 2단계로 나눕�
 # DSN 은 Airflow Variable/환경변수 GOLD_DATABASE_URL 과 같은 값입니다.
 psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
   -f main/spark/jobs/silver_to_gold/migrations/2026-08-23_add_service_area.sql
-psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f main/spark/jobs/silver_to_gold/migrations/2026-08-23_expand_vehicle_recommendations.sql
 ```
 
 `ON_ERROR_STOP=1`을 빼면 중간 문장이 실패해도 계속 진행해 **일부만 반영된 상태**가
@@ -69,26 +64,24 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 \d monthly_report
 \d driver_aggregation
 \d driver_vehicle_profit_simulation
-\d+ vw_driver_car_suggestion
 ```
 
 세 테이블 모두 `service_area` 컬럼이 `not null`이고, PK가
 `(service_area, year_month, version[, driver_id[, candidate_vehicle_model_id]])`인지
-확인합니다. 최종 추천 뷰는 기사당 1행이어야 합니다.
+확인합니다. 기존 `driver_car_suggestion` 물리 테이블은 이 적재 범위에서 변경하지 않습니다.
 
 ## 이력
 
 | 날짜 | 스크립트 | 내용 | 관련 |
 |---|---|---|---|
 | 2026-08-23 | `2026-08-23_add_service_area.sql` | 3종에 `service_area` 추가, PK를 `(service_area, ...)`로 확장. 기존 행은 `'NYC'` 백필 | #809, #674, #805 |
-| 2026-08-23 | `2026-08-23_expand_vehicle_recommendations.sql` | 추천 테이블을 N×M 시뮬레이션 팩트로 전환하고 최종 추천 뷰 생성 | – |
 
 ### 추천 후보 확장 주의사항
 
 - 새 Gold 실행부터 `driver_vehicle_profit_simulation`은 기사 수 × 차량 모델 수 행을
   저장하며 별도 추천 여부 컬럼은 두지 않습니다.
-- `vw_driver_car_suggestion`은 재고·순위를 적용해 기사당 1행을 반환합니다.
-- 기존 `driver_car_suggestion` 이름은 대시보드 호환 뷰로 유지합니다.
+- 적재기가 새 물리 테이블을 생성하므로 별도 전환 마이그레이션은 실행하지 않습니다.
+- 기존 `driver_car_suggestion` 물리 테이블은 그대로 유지합니다.
 
 ### 2026-08-23 주의사항
 

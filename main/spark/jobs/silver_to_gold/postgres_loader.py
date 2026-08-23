@@ -247,8 +247,6 @@ def write_gold_to_postgres(
             with conn.cursor() as cursor:
                 for table in TABLES:
                     cursor.execute(_create_table_sql(table))
-                cursor.execute(_create_suggestion_view_sql())
-                cursor.execute(_create_compatibility_view_sql())
 
                 version = _next_version(cursor, service_area, year_month)
                 logger.info(
