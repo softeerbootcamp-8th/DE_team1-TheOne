@@ -497,6 +497,12 @@ def test_운영은_EMR_Serverless_로_제출하고_완료까지_기다린다(mon
     assert type(operator).__name__ == "EmrServerlessStartJobOperator"
     assert operator.application_id == "app-test"
     assert operator.wait_for_completion is True
+    assert operator.deferrable is True
+    assert operator.cancel_on_kill is True
+    assert (
+        operator.waiter_delay * operator.waiter_max_attempts
+        < operator.execution_timeout.total_seconds()
+    )
     assert spark_submit["entryPoint"] == operator_module.EMR_ENTRY_POINT
     assert (
         operator.configuration_overrides["monitoringConfiguration"][

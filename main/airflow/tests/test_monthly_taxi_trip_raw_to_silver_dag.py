@@ -4,7 +4,8 @@
 2. 데이터 제공 주소와 선택적 연월을 월별 택시 운행 수집 핸들러에 전달
 3. Spark 명령은 검증 또는 재수집된 월만 정제
 4. 로컬은 Bash Spark, 운영은 공용 EMR Serverless에 같은 Spark job을 제출
-5. 운영 필수 환경변수가 없으면 DAG 구성이 즉시 실패
+5. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
+6. 운영 필수 환경변수가 없으면 DAG 구성이 즉시 실패
 """
 
 from datetime import timedelta
@@ -104,6 +105,12 @@ def test_운영은_팀변수로_EMR_Serverless_job을_제출하고_완료까지_
     assert type(operator).__name__ == "EmrServerlessStartJobOperator"
     assert operator.application_id == "app-test"
     assert operator.wait_for_completion is True
+    assert operator.deferrable is True
+    assert operator.cancel_on_kill is True
+    assert (
+        operator.waiter_delay * operator.waiter_max_attempts
+        < operator.execution_timeout.total_seconds()
+    )
     assert spark_submit["entryPoint"] == dag_module.EMR_ENTRY_POINT
     assert "--env" in spark_submit["entryPointArguments"]
     assert "prod" in spark_submit["entryPointArguments"]

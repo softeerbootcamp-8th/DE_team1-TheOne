@@ -130,9 +130,11 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
         wait_for_completion=True,
         waiter_delay=60,
         waiter_max_attempts=180,
-        # aiobotocore를 새로 추가하지 않고 LocalExecutor의 worker가 waiter를 폴링합니다.
-        deferrable=False,
-        execution_timeout=timedelta(hours=3),
+        # 배포로 triggerer가 재시작돼도 deferred 상태는 메타DB에서 이어받습니다.
+        # cancel_on_kill은 사용자 취소에만 EMR Job을 정리해 비용 누수를 막습니다.
+        deferrable=True,
+        cancel_on_kill=True,
+        execution_timeout=timedelta(hours=3, minutes=10),
     )
 
 

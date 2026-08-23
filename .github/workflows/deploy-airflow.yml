@@ -133,7 +133,9 @@ jobs:
             f"echo EMR_EXECUTION_ROLE_ARN={os.environ['EMR_EXECUTION_ROLE_ARN']} >> .env",
             f"echo GOLD_DATABASE_URL={os.environ['GOLD_DATABASE_URL']} >> .env",
             "chown ubuntu:ubuntu docker-compose.ec2.yml .env",
-            "docker compose -f docker-compose.ec2.yml up -d --pull always --force-recreate airflow",
+            # 커밋 SHA 이미지가 바뀌면 Compose가 자동 재생성합니다. 같은 SHA의 워크플로를
+            # 재실행할 때까지 강제 재생성하면 실행 중인 task만 불필요하게 끊깁니다.
+            "docker compose -f docker-compose.ec2.yml up -d --pull always airflow",
             # 배포마다 4.5GB 이미지가 쌓여 디스크(29GB)가 이틀이면 찹니다.
             # until 필터를 두지 않는 이유: 하루 배포 횟수가 많아 24시간분도 디스크를
             # 넘깁니다. 되돌릴 때는 ECR 에서 다시 받으면 되고 pull 은 1초 내입니다.

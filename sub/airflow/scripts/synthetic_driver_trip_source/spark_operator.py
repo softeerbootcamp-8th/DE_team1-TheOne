@@ -134,8 +134,12 @@ def emr_build() -> EmrServerlessStartJobOperator:
         wait_for_completion=True,
         waiter_delay=60,
         waiter_max_attempts=180,
-        deferrable=False,
-        execution_timeout=timedelta(hours=3),
+        # EMR 대기는 triggerer로 넘겨 Airflow 이미지 배포로 task process가 종료돼도
+        # Job을 유지합니다. 사용자가 task를 취소할 때는 고아 Job 방지를 위해 함께 취소합니다.
+        deferrable=True,
+        cancel_on_kill=True,
+        # EMR waiter가 3시간에 먼저 종료·취소하고 Airflow timeout은 정리 여유를 둡니다.
+        execution_timeout=timedelta(hours=3, minutes=10),
     )
 
 

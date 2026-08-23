@@ -14,6 +14,7 @@
 12. SLA 기준일은 Param이 우선, 없으면 Variable, 그마저 없으면 기본값 31
 13. 경과일 계산에 실패해도(now가 None이거나 뺄셈이 안 되는 값) 예외 없이 None
 14. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
+15. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
 """
 
 import importlib
@@ -30,9 +31,31 @@ from main.airflow.scripts.monthly_taxi_trip_silver_to_gold import tasks as dag_m
 from shared.airflow.common.slack_failure_callback import slack_success_callback
 
 
-GOLD_DAG = importlib.import_module(
-    "dags.monthly_taxi_trip_silver_to_gold_dag"
-).monthly_taxi_trip_silver_to_gold_dag
+GOLD_DAG_MODULE = importlib.import_module("dags.monthly_taxi_trip_silver_to_gold_dag")
+GOLD_DAG = GOLD_DAG_MODULE.monthly_taxi_trip_silver_to_gold_dag
+
+
+def test_운영_Gold_EMR은_배포재시작에_안전하게_대기한다(monkeypatch):
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv(
+        "EMR_EXECUTION_ROLE_ARN",
+        "arn:aws:iam::123456789012:role/theone-spark-emr-exec",
+    )
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+    monkeypatch.setenv(
+        "GOLD_DATABASE_URL",
+        "postgresql://airflow:secret@example.internal:5432/gold",
+    )
+
+    operator = GOLD_DAG_MODULE._emr_build_gold()
+
+    assert operator.wait_for_completion is True
+    assert operator.deferrable is True
+    assert operator.cancel_on_kill is True
+    assert (
+        operator.waiter_delay * operator.waiter_max_attempts
+        < operator.execution_timeout.total_seconds()
+    )
 
 
 def _params(root: Path, **overrides) -> dict:
