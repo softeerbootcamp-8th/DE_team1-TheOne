@@ -11,6 +11,7 @@ Bronze 원본 검증은 여기 없습니다 — `test_eia_raw_to_bronze_validati
 5. 잠정값(`Preliminary`)은 실패시키지 않고 통과 — 정상 산출물이지만 재생성 시 값이 바뀜
 6. gas는 service_area 경로, electricity는 옛 경로인 혼재 상태에서도 둘 다 찾음
    (#843만 머지되고 #844는 아직인 지금의 실제 상태)
+7. gas·electricity 둘 다 지역 경로에 있는 완전 이관 상태도 찾음 (#843+#844 이후)
 
 Lambda 핸들러는 부르지 않습니다 — 파일을 직접 놓고 검증 함수만 확인합니다.
 """
@@ -42,7 +43,9 @@ DAG = dag_module.eia_fuel_price_silver_dag
 COLLECTED = date(2026, 8, 17)
 
 
-def _write_clean(silver, year_month="2025-05", *, gas=True, electricity=True) -> None:
+def _write_clean(
+    silver, year_month="2025-05", *, gas=True, electricity=True, service_area=None
+) -> None:
     year, month = (int(part) for part in year_month.split("-"))
     import calendar
 
@@ -53,7 +56,7 @@ def _write_clean(silver, year_month="2025-05", *, gas=True, electricity=True) ->
              "bronze_collected_date": COLLECTED}
             for d in range(1, days + 1)
         ]
-        path = clean_silver_file(str(silver), "eia_gas_price", year_month)
+        path = clean_silver_file(str(silver), "eia_gas_price", year_month, service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=GAS_SCHEMA), path)
     if electricity:
@@ -62,7 +65,9 @@ def _write_clean(silver, year_month="2025-05", *, gas=True, electricity=True) ->
              "bronze_collected_date": COLLECTED, "ev_price_status": FINAL}
             for d in range(1, days + 1)
         ]
-        path = clean_silver_file(str(silver), "eia_electricity_price", year_month)
+        path = clean_silver_file(
+            str(silver), "eia_electricity_price", year_month, service_area
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=EV_SCHEMA), path)
 
@@ -139,6 +144,17 @@ def test_gas는_지역_경로_electricity는_옛_경로인_혼재_상태도_통�
 
     assert set(found) == {"eia_gas_price", "eia_electricity_price"}
     assert "service_area=NYC" in found["eia_gas_price"]
+
+
+def test_gas_electricity_모두_지역_경로에_있어도_통과한다(tmp_path):
+    """#843/#844가 둘 다 머지된 뒤(완전 이관 상태)도 여전히 통과해야 합니다."""
+    _write_clean(tmp_path, service_area="NYC")
+
+    found = silver_tasks.require_clean_silver(str(tmp_path), "2025-05", "NYC")
+
+    assert set(found) == {"eia_gas_price", "eia_electricity_price"}
+    assert "service_area=NYC" in found["eia_gas_price"]
+    assert "service_area=NYC" in found["eia_electricity_price"]
 
 
 @pytest.mark.parametrize(

@@ -9,7 +9,7 @@
 3. 수집(lambda)과 검증(airflow)이 **같은 하한**을 봄. 예전에 airflow 쪽만 10_000 으로
    굳어 있어 전력 xlsx 가 lambda 하한(100_000)에 못 미쳐도 통과처럼 보였습니다
 4. service_area가 있으면 layout_tail 세그먼트 폭이 늘어나 데이터셋 이름이 다른
-   엉뚱한 경로도 여전히 잡힘 (#843)
+   엉뚱한 경로도 여전히 잡힘 (gas #843, electricity #844)
 """
 
 import importlib
@@ -66,22 +66,31 @@ def test_원본이_하한보다_작으면_실패한다(tmp_path, tasks, bronze_f
         )
 
 
-def test_service_area가_있으면_데이터셋_이름이_달라도_경로_검증이_잡는다(tmp_path):
+@pytest.mark.parametrize(
+    ("tasks", "file_name_attr"),
+    [
+        pytest.param(gas_tasks, "GAS_FILE_NAME", id="gas"),
+        pytest.param(electricity_tasks, "ELECTRICITY_FILE_NAME", id="electricity"),
+    ],
+)
+def test_service_area가_있으면_데이터셋_이름이_달라도_경로_검증이_잡는다(
+    tmp_path, tasks, file_name_attr
+):
     """layout_tail이 service_area만큼 세그먼트 폭을 안 늘리면, tail 3칸 비교에서
     맨 앞 데이터셋 이름이 잘려 나갑니다. 그러면 지역·날짜·파일명만 같고 데이터셋
     이름이 다른 엉뚱한 경로도 통과해 버립니다(#839가 경고한 함정) — 폭이 실제로
-    늘어났는지 여기서 고정합니다."""
+    늘어났는지 각 데이터셋의 validate_bronze_task 호출부에서 고정합니다."""
     layout = _layout()
     wrong = (
-        tmp_path / "not_eia_gas_price" / "service_area=NYC"
-        / "collected_date=2026-08-17" / layout.GAS_FILE_NAME
+        tmp_path / "not_the_real_dataset" / "service_area=NYC"
+        / "collected_date=2026-08-17" / getattr(layout, file_name_attr)
     )
     wrong.parent.mkdir(parents=True, exist_ok=True)
     wrong.write_bytes(BIG_ENOUGH)
     result = {"row_count": 1, "locations": [str(wrong)], "collected_date": "2026-08-17"}
 
     with pytest.raises(ValueError, match="적재 경로가 예상과 다릅니다"):
-        gas_tasks.validate_bronze_task.function(
+        tasks.validate_bronze_task.function(
             result, params={"bronze_dir": str(tmp_path), "service_area": "NYC"}
         )
 
