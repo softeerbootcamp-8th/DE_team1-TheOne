@@ -482,7 +482,7 @@ def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
         )
         winners = keep_current.unionByName(changes)
         assigned = winners if assigned is None else assigned.unionByName(winners)
-        assigned = assigned.coalesce(8).localCheckpoint(eager=True)
+        assigned = assigned.coalesce(8).localCheckpoint(eager=False)
 
     ranked.unpersist()
     return assigned
