@@ -18,6 +18,9 @@ from pathlib import Path
 from airflow.sdk import task
 
 from main.airflow.common import assets
+from main.airflow.common.assets import (
+    candidate_prefixes, candidate_roots, service_area_segment,
+)
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
@@ -27,9 +30,6 @@ from shared.airflow.common.validation import (
     parse_year_month,
     read_parquet,
     require_file,
-)
-from shared.common.service_area_path import (
-    candidate_prefixes, candidate_roots, service_area_segment,
 )
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
 

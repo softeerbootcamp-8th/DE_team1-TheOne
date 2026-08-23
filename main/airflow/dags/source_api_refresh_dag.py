@@ -105,6 +105,9 @@ def source_api_refresh_pipeline():
                 "api_base_url": (
                     f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] }}}}"
                 ),
+                "service_area": (
+                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['service_area'] }}}}"
+                ),
             },
             reset_dag_run=True,
             wait_for_completion=True,

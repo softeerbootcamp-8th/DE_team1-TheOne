@@ -27,7 +27,7 @@ import pandas as pd
 from pyspark.sql import DataFrame
 
 from main.spark.jobs.silver_to_gold.postgres_loader import write_gold_to_postgres
-from shared.common.service_area_path import (
+from main.spark.jobs.service_area_path import (
     candidate_prefixes,
     candidate_roots,
     gold_csv_path,

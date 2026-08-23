@@ -5,7 +5,7 @@
 3. 릴리스 재실행 → 완결된 기존 결과를 중복 생성하지 않음
 4. 정제 코드 소유권 → source job의 HVFHV 정제는 shared/ 를 그대로 쓰고, sub/ 자체
    스키마(schema/source)는 shared/ 가 쓰는 main 쪽 스키마와 구조가 같아야 함
-5. S3 발행 키 → 발행이 쓴 키를 source_api 가 같은 dataset 이름으로 읽을 수 있음 (#859)
+5. S3 발행 키 → `published/NYC` 아래에서 source_api 와 dataset 이름이 같음 (#859)
 """
 
 from datetime import date, datetime
@@ -518,7 +518,7 @@ def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_�
     assert (first / "manifest.json").is_file()
 
 
-def test_S3_발행이_쓴_키를_API가_같은_dataset_이름으로_읽는다(spark, monkeypatch):
+def test_S3_발행이_쓴_키를_API가_같은_dataset_이름으로_읽는다(monkeypatch):
     """발행(`write_source_release_s3`)과 서빙(`S3DatasetStorage`)이 같은 폴더를 봐야 합니다.
 
     이름이 갈려도 발행은 성공하고 행 수도 맞아서, 발행 로그만 보면 정상으로 보입니다 —
@@ -535,20 +535,11 @@ def test_S3_발행이_쓴_키를_API가_같은_dataset_이름으로_읽는다(sp
     from sub.spark.jobs.driver_assignment import source_job
 
     bucket, region = "test-source-bucket", "ap-northeast-2"
-    trips = spark.createDataFrame([{
-        "pickup_datetime": datetime(2026, 1, 2, 9), "taxi_id": "taxi-1"
-    }])
-    snapshots = spark.createDataFrame([{
-        "driver_id": "driver-1", "taxi_id": "taxi-1",
-        "vehicle_since": date(2026, 1, 1), "exit_date": None,
-    }], "driver_id string, taxi_id string, vehicle_since date, exit_date date")
-    inventory = spark.createDataFrame(
-        [(
-            "vehicle-model-1", "KIA", "SPORTAGE", 2023, "GAS", 26.0,
-            True, False, 574.0, "https://example.com/sportage.png", 1,
-        )],
-        INVENTORY_COLUMNS,
-    )
+    trips = MagicMock(name="monthly_taxi_trip")
+    snapshots = MagicMock(name="driver_vehicle_monthly_snapshot")
+    inventory = MagicMock(name="lease_vehicle_inventory")
+    for frame in (trips, snapshots, inventory):
+        frame.count.return_value = 1
 
     written: list[str] = []
     monkeypatch.setattr(
@@ -556,6 +547,7 @@ def test_S3_발행이_쓴_키를_API가_같은_dataset_이름으로_읽는다(sp
         "_write_one_parquet_s3",
         lambda frame, *, bucket, key: written.append(key),
     )
+    monkeypatch.setattr(source_job, "_validate_temporal_links", lambda *_: None)
 
     with mock_aws():
         client = boto3.client("s3", region_name=region)
@@ -574,6 +566,11 @@ def test_S3_발행이_쓴_키를_API가_같은_dataset_이름으로_읽는다(sp
         )
 
         assert len(written) == len(DATASETS)
+        assert all(key.startswith("source/published/NYC/") for key in written)
+        assert {
+            item["Key"]
+            for item in client.list_objects_v2(Bucket=bucket).get("Contents", [])
+        } == {"source/published/NYC/_manifests/year_month=2026-01.json"}
         for key in written:
             client.put_object(Bucket=bucket, Key=key, Body=b"PAR1")
 

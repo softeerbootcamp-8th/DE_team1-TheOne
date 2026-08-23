@@ -13,7 +13,7 @@
 4. 라우팅 거부 — 모르는 데이터셋·대문자·한 자리 월·datasets 없는 경로·루트
 5. manifest 상태 — 없으면 404, 깨졌으면 500
 6. `/health`·HEAD·쿼리스트링·트레일링 슬래시
-7. `S3DatasetStorage` — prod 저장소가 고정 키를 스트림으로 읽고, 없는 키는 None
+7. `S3DatasetStorage` — prod 저장소가 `published/NYC` 고정 키를 읽고, 없는 키는 None
 8. HEAD validator — ETag·Last-Modified 제공, 조건이 맞으면 본문 없이 304
 9. HEAD 감시는 파일 스트림을 열지 않고 S3는 object metadata를 그대로 사용
 
@@ -32,7 +32,13 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from sub.source_api.server import DATASETS, LocalDatasetStorage, S3DatasetStorage, create_server
+from sub.source_api.server import (
+    DATASETS,
+    LocalDatasetStorage,
+    S3DatasetStorage,
+    create_server,
+    storage_from_env,
+)
 
 YEAR_MONTH = "2026-01"
 BODIES = {name: f"PAR1-{name}".encode() for name in sorted(DATASETS)}
@@ -325,7 +331,7 @@ S3_REGION = "ap-northeast-2"
 
 
 def _s3_key(dataset: str, year_month: str) -> str:
-    return f"source/published/{dataset}/year_month={year_month}/data.parquet"
+    return f"source/published/NYC/{dataset}/year_month={year_month}/data.parquet"
 
 
 @pytest.fixture
@@ -414,3 +420,16 @@ def test_S3저장소의_latest는_데이터가_없으면_None(s3_client):
     storage = S3DatasetStorage(S3_BUCKET)
 
     assert storage.latest_year_month("lease_vehicle_inventory") is None
+
+
+def test_prod_기본저장소는_빈_환경변수여도_NYC_prefix를_쓴다(monkeypatch):
+    monkeypatch.setenv("SOURCE_API_ENV", "prod")
+    monkeypatch.setenv("SOURCE_API_S3_BUCKET", S3_BUCKET)
+    monkeypatch.setenv("SOURCE_API_S3_PREFIX", "")
+
+    storage = storage_from_env()
+
+    assert isinstance(storage, S3DatasetStorage)
+    assert storage._key("monthly_taxi_trip", YEAR_MONTH) == _s3_key(
+        "monthly_taxi_trip", YEAR_MONTH
+    )
