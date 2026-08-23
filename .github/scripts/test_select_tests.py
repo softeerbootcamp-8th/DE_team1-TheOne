@@ -15,6 +15,7 @@
 13. Skill 문서는 제품 테스트를 선택하지 않음
 14. Skill 검사기 변경은 해당 자체 검사만 선택
 15. GitHub CI 스크립트는 파일별 전용 테스트만 선택
+16. 모니터링 경로는 모니터링 전용 CI가 소유하므로 제품 테스트를 선택하지 않음
 """
 
 import importlib.util
@@ -111,6 +112,14 @@ def test_분류되지_않은_GitHub_CI_스크립트는_스크립트_테스트만
 
     assert result.full == {".github/scripts"}
     assert result.tests == {}
+
+
+def test_모니터링_변경은_제품_테스트를_선택하지_않는다():
+    result = select_tests.select_tests(
+        ["monitoring/tests/test_monitoring.py", "monitoring/cloudformation.yml"]
+    )
+
+    assert select_tests.render(result) == "NONE"
 
 
 def test_테스트_파일_변경은_그_테스트만_선택한다():

@@ -1,0 +1,27 @@
+{
+  "agent": {
+    "metrics_collection_interval": 60,
+    "run_as_user": "root"
+  },
+  "metrics": {
+    "namespace": "TheOne/EC2",
+    "append_dimensions": {
+      "InstanceId": "${aws:InstanceId}"
+    },
+    "aggregation_dimensions": [
+      ["InstanceId"]
+    ],
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["used_percent"],
+        "drop_original_metrics": ["used_percent"]
+      },
+      "disk": {
+        "measurement": ["used_percent"],
+        "resources": ["/"],
+        "drop_device": true,
+        "drop_original_metrics": ["used_percent"]
+      }
+    }
+  }
+}
