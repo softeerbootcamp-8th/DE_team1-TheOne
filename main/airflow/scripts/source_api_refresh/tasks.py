@@ -233,9 +233,11 @@ def publish_api_refresh_ready_task(check_task_ids: list[str], **context) -> None
         if isinstance(result, dict)
         and result.get("refresh_required", result.get("changed"))
     }
+    service_area = assets.resolve_service_area(context.get("params", {}))
     for year_month in year_months:
         assets.publish_month_partition(
             context.get("outlet_events"),
             assets.API_SILVER_REFRESH_READY,
             year_month,
+            service_area,
         )

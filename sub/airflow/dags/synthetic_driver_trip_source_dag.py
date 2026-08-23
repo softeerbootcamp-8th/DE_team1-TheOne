@@ -40,10 +40,10 @@ default_args = {
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
-        # 비우면(None) CLI 플래그 자체가 렌더링되지 않아 job 이 config/generation.json
-        # 의 global_seed 를 읽습니다. 기본값을 두면 항상 이 값이 실려 설정을 가립니다.
+        # 비우면 로컬은 CLI 플래그를 생략하고 EMR은 `config` 표식을 보내, 둘 다 job이
+        # config/generation.json의 global_seed를 읽습니다.
         "seed": Param(None, type=["integer", "null"]),
-        # 비우면 플래그 자체를 생략해 config 의 allocation.bucket_size 가 그대로 쓰입니다.
+        # seed와 같은 선택 인자 계약으로 config의 allocation.bucket_size를 씁니다.
         "bucket_size": Param(
             None,
             type=["integer", "null"],

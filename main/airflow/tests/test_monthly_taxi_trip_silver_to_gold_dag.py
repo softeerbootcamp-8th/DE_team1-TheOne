@@ -100,7 +100,14 @@ def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된
         assets.FUEL_PRICE_SILVER.name,
     }
     assert isinstance(timetable.default_partition_mapper, IdentityMapper)
-    assert timetable.default_partition_mapper.to_downstream("2026-05") == "2026-05"
+    # 복합 키(#674)를 그대로 통과시켜야 합니다. IdentityMapper 는 항등이라 코드를
+    # 손댈 필요가 없다는 게 이 설계의 핵심 근거인데, 항등이라서 이 단정만으로는
+    # 아무것도 검증되지 않습니다. 두 지역이 **서로 다른 파티션으로 남는지**까지
+    # 확인해야 "지역별 독립 트리거" 주장이 실제로 성립합니다.
+    mapper = timetable.default_partition_mapper
+    assert mapper.to_downstream("NYC:2026-05") == "NYC:2026-05"
+    assert mapper.to_downstream("TX:2026-05") == "TX:2026-05"
+    assert mapper.to_downstream("NYC:2026-05") != mapper.to_downstream("TX:2026-05")
 
 
 @pytest.mark.parametrize(
@@ -151,8 +158,42 @@ def test_검증된_월이_Asset_파티션키로_기록된다():
 
     assets.publish_month_partition(events, assets.FUEL_PRICE_SILVER, "2026-05")
 
-    assert recorder.keys == {"2026-05"}
+    # 지역을 안 넘기면 기본 지역이 붙습니다. 키는 항상 복합 형식입니다(#674) —
+    # 생산자가 bare 월을 발행하면 Gold 소비자가 파싱에서 실패하므로, 여기서
+    # 형식이 어긋나는 걸 먼저 잡습니다.
+    assert recorder.keys == {"NYC:2026-05"}
     assert recorder.extra == {}
+
+
+def test_지역을_지정하면_그_지역이_파티션키에_들어간다():
+    class Recorder:
+        def __init__(self):
+            self.keys = set()
+
+        def add_partitions(self, keys):
+            self.keys.add(keys)
+
+    recorder = Recorder()
+    events = {assets.FUEL_PRICE_SILVER: recorder}
+
+    assets.publish_month_partition(
+        events, assets.FUEL_PRICE_SILVER, "2026-05", "TX"
+    )
+
+    assert recorder.keys == {"TX:2026-05"}
+
+
+def test_생산자가_bare_월을_발행하면_소비자가_요란하게_실패한다(tmp_path):
+    """이 변경에서 가장 위험한 실패는 생산자와 소비자 중 한쪽만 바뀌어 Gold 가
+    아무 에러 없이 안 도는 것입니다. 지역 성분이 없는 옛 키를 기본 지역으로
+    조용히 받아주면 그 사실이 묻히므로, 형식이 어긋나면 실패하게 둡니다."""
+    with pytest.raises(ValueError, match="지역 성분이 없습니다"):
+        dag_module.resolve_target_year_month(
+            _logical_date(2026, 8),
+            _params(tmp_path),
+            str(tmp_path / "monthly_taxi_trip"),
+            partition_key="2026-05",
+        )
 
 
 def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path):
@@ -160,7 +201,7 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
         _logical_date(2026, 8),
         _params(tmp_path),
         str(tmp_path / "monthly_taxi_trip"),
-        partition_key="2026-05",
+        partition_key="NYC:2026-05",
     )
 
     assert resolved == "2026-05"
@@ -264,7 +305,7 @@ def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):
 
 
 def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp_path):
-    dag_run = type("DagRun", (), {"partition_key": "2026-05"})()
+    dag_run = type("DagRun", (), {"partition_key": "NYC:2026-05"})()
 
     with pytest.raises(AirflowSkipException, match="Silver 4종 준비 대기"):
         dag_module.validate_inputs_task.function(
@@ -279,7 +320,7 @@ def test_skip시_Slack_skip_알림을_직접_호출한다(tmp_path, monkeypatch)
     monkeypatch.setattr(
         dag_module, "slack_skip_alert_callback", lambda context: calls.append(context)
     )
-    dag_run = type("DagRun", (), {"partition_key": "2026-05"})()
+    dag_run = type("DagRun", (), {"partition_key": "NYC:2026-05"})()
 
     with pytest.raises(AirflowSkipException):
         dag_module.validate_inputs_task.function(
@@ -302,7 +343,7 @@ def test_정상실행에서는_Slack_skip_알림을_호출하지_않는다(tmp_p
     dag_module.validate_inputs_task.function(
         params=_params(tmp_path),
         logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
     )
 
     assert calls == []
@@ -471,7 +512,7 @@ def test_SLA초과시_staleness_Slack알림을_보낸다(tmp_path, monkeypatch):
     dag_module.validate_inputs_task.function(
         params=_params(tmp_path, gold_stale_sla_days=10),
         logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
         prev_end_date_success=prev_success,
     )
 
@@ -490,7 +531,7 @@ def test_SLA이내면_staleness_Slack알림을_보내지_않는다(tmp_path, mon
     dag_module.validate_inputs_task.function(
         params=_params(tmp_path, gold_stale_sla_days=31),
         logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
         prev_end_date_success=datetime.now(timezone.utc) - timedelta(days=1),
     )
 
@@ -586,7 +627,7 @@ def test_정상실행_결과에_최초완료_재트리거_판정이_실린다(tm
     resolved = dag_module.validate_inputs_task.function(
         params=_params(tmp_path),
         logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "2026-05"})(),
+        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
     )
 
     assert resolved["is_rerun"] is False

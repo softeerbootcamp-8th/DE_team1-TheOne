@@ -6,6 +6,7 @@
 4. 내부 manifest 행 수·checksum·필수 컬럼 검증
 5. API는 manifest를 공개하지 않고 세 Parquet만 다운로드
 6. EMR build_source_release는 병렬 자원과 executor 상한을 함께 지정
+7. 로컬과 EMR은 seed·bucket_size·bucket 실행 파라미터를 같은 의미로 전달
 """
 
 import hashlib
@@ -113,6 +114,33 @@ def _render_build_command(seed=None, bucket_size=None, storage="local", bucket="
     )
 
 
+def _render_emr_arguments(
+    monkeypatch, *, seed=None, bucket_size=None, bucket=None
+) -> list[str]:
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv(
+        "EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec"
+    )
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+    arguments = operator_module.emr_build().job_driver["sparkSubmit"][
+        "entryPointArguments"
+    ]
+    context = {
+        "params": {
+            "seed": seed,
+            "bucket_size": bucket_size,
+            "bucket": bucket,
+            "state_output_dir": "S",
+            "attribution_output_dir": "A",
+            "release_output_dir": "R",
+            "test_row_limit": 0,
+        },
+        "task_instance": _StubTaskInstance(),
+    }
+    template_env = DAG.get_template_env()
+    return [template_env.from_string(value).render(context) for value in arguments]
+
+
 def test_seed_Param을_비우면_플래그가_렌더링되지_않는다():
     """Param 에 기본값을 두면 항상 CLI 로 실려서 generation.json 이 영원히 가려집니다.
 
@@ -146,6 +174,24 @@ def test_bucket_Param을_비우면_플래그가_렌더링되지_않는다():
 
 def test_bucket_Param을_주면_CLI로_전달된다():
     assert "--bucket my-bucket" in _render_build_command(storage="s3", bucket="my-bucket")
+
+
+def test_EMR도_seed_bucket_size_bucket_Param을_전달한다(monkeypatch):
+    arguments = _render_emr_arguments(
+        monkeypatch, seed=7, bucket_size=20, bucket="override-lake"
+    )
+
+    assert arguments[arguments.index("--seed") + 1] == "7"
+    assert arguments[arguments.index("--bucket_size") + 1] == "20"
+    assert arguments[arguments.index("--bucket") + 1] == "override-lake"
+
+
+def test_EMR의_선택_Param을_비우면_config와_환경버킷을_사용한다(monkeypatch):
+    arguments = _render_emr_arguments(monkeypatch)
+
+    assert arguments[arguments.index("--seed") + 1] == "config"
+    assert arguments[arguments.index("--bucket_size") + 1] == "config"
+    assert arguments[arguments.index("--bucket") + 1] == "test-lake"
 
 
 def test_임시행제한은_프로덕션과_분리된_경로를_사용한다(tmp_path):
@@ -488,11 +534,7 @@ def test_EMR_은_storage_를_s3_로_고정한다(monkeypatch):
 
     그러면 EMR 워커가 컨테이너 로컬 디스크(빈 디렉터리)를 보게 됩니다.
     """
-    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
-    monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec")
-    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
-
-    arguments = operator_module.emr_build().job_driver["sparkSubmit"]["entryPointArguments"]
+    arguments = _render_emr_arguments(monkeypatch)
 
     assert arguments[arguments.index("--storage") + 1] == "s3"
     assert arguments[arguments.index("--bucket") + 1] == "test-lake"

@@ -18,6 +18,7 @@ from datetime import datetime, timedelta
 
 from airflow.sdk import Param, dag
 
+from main.airflow.common.assets import DEFAULT_SERVICE_AREA
 from main.airflow.scripts.eia_fuel_price_silver.tasks import (
     SILVER_DIR,
     check_clean_silver_task,
@@ -52,6 +53,18 @@ default_args = {
         # 비우면 전력 공개 지연(약 3개월)만큼 물러선 달을 채웁니다.
         "year_month": Param(None, type=["string", "null"]),
         "silver_dir": Param(SILVER_DIR, type="string"),
+        # 대상 지역. Airflow asset 파티션 키가 "{service_area}:{year_month}" 복합
+        # 문자열이라 이 값이 키의 앞부분이 됩니다(#674). 지금은 NYC 하나뿐이라
+        # 기본값으로 두고, 지역이 늘면 트리거 시 지정합니다.
+        #
+        # 새 파라미터를 추가하면 test_main_dag_params.py의 기대 집합도 함께
+        # 고쳐야 합니다 — 그 테스트가 파라미터 집합 완전일치를 요구합니다.
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
+            type="string",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
+        ),
     },
 )
 def eia_fuel_price_silver_pipeline():

@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.sdk import Param, dag
 
+from main.airflow.common.assets import DEFAULT_SERVICE_AREA
 from main.airflow.scripts.source_api_refresh.tasks import (
     check_and_should_refresh_task,
     mark_processed_task,
@@ -57,6 +58,18 @@ default_args = {
             type="string",
         ),
         "request_timeout": Param(30, type="integer", minimum=1),
+        # 대상 지역. Airflow asset 파티션 키가 "{service_area}:{year_month}" 복합
+        # 문자열이라 이 값이 키의 앞부분이 됩니다(#674). 지금은 NYC 하나뿐이라
+        # 기본값으로 두고, 지역이 늘면 트리거 시 지정합니다.
+        #
+        # 새 파라미터를 추가하면 test_main_dag_params.py의 기대 집합도 함께
+        # 고쳐야 합니다 — 그 테스트가 파라미터 집합 완전일치를 요구합니다.
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
+            type="string",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
+        ),
     },
 )
 def source_api_refresh_pipeline():
