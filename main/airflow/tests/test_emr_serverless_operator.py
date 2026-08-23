@@ -60,8 +60,16 @@ def test_성공_경로는_provider_구현에_위임한다():
     assert result == "job-1"
 
 
-def test_provider_원본은_아직_KeyError_를_낸다():
-    """상류가 고쳐지면 이 테스트가 깨집니다 — 그때 하위 클래스를 지우세요."""
+def test_provider_원본은_아직_KeyError_를_낸다(monkeypatch):
+    """상류가 고쳐지면 이 테스트가 깨집니다 — 그때 하위 클래스를 지우세요.
+
+    provider 는 `self.hook.conn.cancel_job_run(...)` 에서 **인수보다 먼저** boto3
+    클라이언트를 만듭니다. region 이 없으면 `KeyError` 대신 `NoRegionError` 가 나서
+    러너의 AWS 설정에 따라 결과가 갈립니다. 실제 Airflow 환경에는 region 이 있으므로
+    그쪽을 재현하려고 region 만 넣어 줍니다. 자격증명은 필요 없습니다 — 인수 평가에서
+    `KeyError` 가 나 API 호출까지 가지 않습니다.
+    """
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-2")
     with pytest.raises(KeyError, match="job_details"):
         _operator(ProviderOperator).execute_complete(context={}, event=FAILURE_EVENT)
 
