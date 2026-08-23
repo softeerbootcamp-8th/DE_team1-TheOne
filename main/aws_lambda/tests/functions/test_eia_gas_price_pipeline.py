@@ -26,7 +26,7 @@ import xlwt
 
 from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.loader import (
     EiaGasPriceSilverLoader,
-    silver_file,
+    staged_silver_file,
 )
 from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.transformer import (
     build_daily_prices,
@@ -118,7 +118,7 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
 
     result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05").write(rows)
 
-    assert result.location == str(silver_file(str(tmp_path), "2025-05"))
+    assert result.location == str(staged_silver_file(str(tmp_path), "2025-05"))
     assert result.row_count == 31
     table = pq.ParquetFile(result.location).read()
     assert table.schema.names == SCHEMA.names
