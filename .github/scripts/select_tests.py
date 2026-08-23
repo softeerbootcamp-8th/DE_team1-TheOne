@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import subprocess
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -111,6 +112,55 @@ RUNNERS = {
     "libs/pipeline_core": ("libs/pipeline_core", "libs/pipeline_core"),
 }
 
+# 저장소 운영 도구는 제품 런타임을 import하지 않습니다. 이 경로를 일반 `.py`
+# fallback에 맡기면 모든 제품 테스트를 돌면서도 정작 도구 자체 검사는 빠집니다.
+# matrix 이름과 실제 명령을 함께 고정해 관련 검사만 짧게 실행합니다.
+TOOL_COMMANDS = {
+    ".claude/hooks": (
+        (
+            sys.executable,
+            str(ROOT / ".claude/hooks/test_review_gate.py"),
+            "-v",
+        ),
+        (
+            sys.executable,
+            str(ROOT / ".claude/hooks/review_gate.py"),
+            "--self-check",
+        ),
+    ),
+    ".agents/skills/write-issue": tuple(
+        (
+            sys.executable,
+            str(ROOT / ".agents/skills/write-issue/check_draft.py"),
+            str(ROOT / template),
+        )
+        for template in (
+            ".github/ISSUE_TEMPLATE/task.md",
+            ".github/ISSUE_TEMPLATE/bug.md",
+            ".github/pull_request_template.md",
+        )
+    ),
+    ".claude/skills/write-issue": (
+        (
+            sys.executable,
+            str(ROOT / ".claude/skills/write-issue/check_draft.py"),
+            "--self-check",
+        ),
+    ),
+}
+
+SKILL_CHECKER_PROJECTS = {
+    ".agents/skills/write-issue/check_draft.py": ".agents/skills/write-issue",
+    ".claude/skills/write-issue/check_draft.py": ".claude/skills/write-issue",
+}
+
+GITHUB_SCRIPT_TESTS = {
+    ".github/scripts/select_tests.py": "test_select_tests.py",
+    ".github/scripts/test_select_tests.py": "test_select_tests.py",
+    ".github/scripts/check_image_filters.py": "test_check_image_filters.py",
+    ".github/scripts/test_check_image_filters.py": "test_check_image_filters.py",
+}
+
 
 def _existing_airflow_tests(product: str) -> set[str]:
     tests_dir = ROOT / product / "airflow" / "tests"
@@ -137,9 +187,23 @@ def select_tests(changed_files: list[str]) -> Selection:
 
         if path.startswith(("docs/",)) or path in {"README.md", "architecture.png"}:
             continue
-        if path in {"Makefile", ".github/workflows/ci.yml"} or path.startswith(
-            ".github/scripts/"
+        if path.startswith((".claude/hooks/", ".githooks/")):
+            selection.add(".claude/hooks", "test_review_gate.py")
+            continue
+        if path in SKILL_CHECKER_PROJECTS:
+            selection.add(SKILL_CHECKER_PROJECTS[path], Path(path).name)
+            continue
+        if path.endswith(".md") and path.startswith(
+            (".agents/skills/", ".claude/skills/")
         ):
+            continue
+        if path in GITHUB_SCRIPT_TESTS:
+            selection.add(".github/scripts", GITHUB_SCRIPT_TESTS[path])
+            continue
+        if path.startswith(".github/scripts/"):
+            selection.add_full(".github/scripts")
+            continue
+        if path in {"Makefile", ".github/workflows/ci.yml"}:
             selection.add_full(*ALL_PROJECTS)
             continue
         if path.startswith("shared/airflow/"):
@@ -232,11 +296,23 @@ def run(selection: Selection, only: str | None = None) -> None:
     environment.pop("VIRTUAL_ENV", None)
     environment["PYTHONPATH"] = str(ROOT)
     for project in projects:
+        if project in TOOL_COMMANDS:
+            for command in TOOL_COMMANDS[project]:
+                print(f"==> {project}: {' '.join(command)}", flush=True)
+                subprocess.run(
+                    list(command), cwd=ROOT, env=environment, check=True
+                )
+            continue
         runtime_dir, target_dir = RUNNERS[project]
         runtime = ROOT / runtime_dir
         target = ROOT / target_dir
         if project == ".github/scripts":
-            paths = [str(target / "test_select_tests.py")]
+            names = (
+                {path.name for path in target.glob("test_*.py")}
+                if project in selection.full
+                else selection.tests[project]
+            )
+            paths = [str(target / name) for name in sorted(names)]
         elif project in selection.full:
             paths = [str(target / "tests")]
         else:
