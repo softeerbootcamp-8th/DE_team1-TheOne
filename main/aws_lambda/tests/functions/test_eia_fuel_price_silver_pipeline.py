@@ -11,6 +11,9 @@
 4. CLEAN 안에 날짜가 중복되면 실패
 5. 단가가 허용 범위 밖이면 실패
 6. 입력 CLEAN 이 없으면 돌려야 할 DAG 를 알려주며 실패
+7. 지역 경로와 옛 경로가 모두 있으면 지역 경로를 읽는다 (#843/#851 — 탐색 순서가
+   뒤집히면 옛 경로의 낡은 값을 조용히 집음)
+8. 지역 경로가 없으면 옛 경로로 폴백한다 (아직 안 옮긴 데이터셋과의 하위호환)
 """
 
 from datetime import date
@@ -21,6 +24,7 @@ import pytest
 
 from main.aws_lambda.functions.eia_fuel_price_silver.extractor import (
     EiaFuelPriceCleanExtractor,
+    _read,
     clean_silver_file,
     clean_silver_key,
 )
@@ -155,3 +159,32 @@ def test_CLEAN_S3_키가_로컬_경로_규칙과_대응된다():
 
 def test_산출물_S3_키도_데이터의_달을_쓴다():
     assert silver_key("2025-05") == "silver/gas_ev_price/year_month=2025-05/gas_ev_price.parquet"
+
+
+# --- 지역(service_area) 이중 탐색 (#843/#851) -------------------------------
+
+
+def _write_gas(silver, year_month, price, service_area=None):
+    path = clean_silver_file(str(silver), "eia_gas_price", year_month, service_area)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pylist(_gas_rows(price=price), schema=GAS_SCHEMA), path
+    )
+
+
+def test_지역_경로와_옛_경로가_모두_있으면_지역_경로를_읽는다(tmp_path):
+    """탐색 순서가 뒤집히면 옛 경로의 낡은 값을 조용히 집습니다."""
+    _write_gas(tmp_path, "2025-05", price=1.0, service_area=None)
+    _write_gas(tmp_path, "2025-05", price=9.0, service_area="NYC")
+
+    rows = _read(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
+
+    assert {row["gas_price"] for row in rows} == {9.0}
+
+
+def test_지역_경로가_없으면_옛_경로로_폴백한다(tmp_path):
+    _write_gas(tmp_path, "2025-05", price=3.4, service_area=None)
+
+    rows = _read(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
+
+    assert {row["gas_price"] for row in rows} == {3.4}

@@ -33,14 +33,16 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
+    service_area = event.get("service_area") or os.getenv("SERVICE_AREA", "NYC")
 
     result = Pipeline(
-        build_bronze_extractor(storage, bronze_dir, bucket, year_month),
+        build_bronze_extractor(storage, bronze_dir, bucket, year_month, service_area),
         build_silver_loader(
             storage,
             silver_dir,
             bucket,
             year_month,
+            service_area,
         ),
         EiaGasPriceTransformer(year_month),
     ).run()

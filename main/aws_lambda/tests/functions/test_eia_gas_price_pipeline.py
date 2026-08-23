@@ -12,6 +12,8 @@
    채우고 일수·범위·중복 검사를 모두 통과해 버림 (#544)
 8. 그 달 마지막 주 관측이 있으면 통과. 월말 이후 관측은 기준이 아니라 과거 달
    백필도 막지 않음
+9. Bronze 읽기는 쓰기와 같은 service_area 여야 찾음 (#843)
+10. Silver 쓰기 경로에 service_area 가 반영되고 지역끼리 서로 겹치지 않음 (#843)
 """
 
 from datetime import date
@@ -202,3 +204,33 @@ def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
 def test_S3_키_목록이_비면_실패한다():
     with pytest.raises(FileNotFoundError, match="EIA Bronze S3 파티션이 없습니다"):
         layout.newest_bronze_s3_key([], layout.GAS_DATASET, layout.GAS_FILE_NAME)
+
+
+# --- 지역(service_area) 격리 (#843) -----------------------------------------
+
+from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.extractor import (  # noqa: E402
+    EiaGasPriceBronzeExtractor,
+)
+
+
+def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
+    path = layout.gas_bronze_file(str(tmp_path), COLLECTED, "TX")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_xls(WEEKLY))
+
+    result = EiaGasPriceBronzeExtractor(str(tmp_path), "2025-05", "TX").extract()
+
+    assert result["bronze_collected_date"] == COLLECTED
+    with pytest.raises(FileNotFoundError):
+        EiaGasPriceBronzeExtractor(str(tmp_path), "2025-05", "NYC").extract()
+
+
+def test_silver_쓰기_경로에_지역이_반영되고_서로_겹치지_않는다(tmp_path):
+    rows = build_daily_prices("2025-05", _xls(WEEKLY), COLLECTED)
+
+    nyc = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(rows)
+    tx = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "TX").write(rows)
+
+    assert nyc.location != tx.location
+    assert "service_area=NYC" in nyc.location
+    assert "service_area=TX" in tx.location

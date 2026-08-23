@@ -9,6 +9,8 @@ Bronze 원본 검증은 여기 없습니다 — `test_eia_raw_to_bronze_validati
 3. 지정이 없으면 전력 공개 지연(약 3개월)만큼 물러섬 — 두 CLEAN 중 전력이 늦게 나옴
 4. 산출물 검증: 행 수·스키마·`price_source`·계보·확정상태
 5. 잠정값(`Preliminary`)은 실패시키지 않고 통과 — 정상 산출물이지만 재생성 시 값이 바뀜
+6. gas는 service_area 경로, electricity는 옛 경로인 혼재 상태에서도 둘 다 찾음
+   (#843만 머지되고 #844는 아직인 지금의 실제 상태)
 
 Lambda 핸들러는 부르지 않습니다 — 파일을 직접 놓고 검증 함수만 확인합니다.
 """
@@ -115,6 +117,28 @@ def test_두_CLEAN_이_있으면_통과한다(tmp_path):
     found = silver_tasks.require_clean_silver(str(tmp_path), "2025-05")
 
     assert set(found) == {"eia_gas_price", "eia_electricity_price"}
+
+
+def test_gas는_지역_경로_electricity는_옛_경로인_혼재_상태도_통과한다(tmp_path):
+    """#843만 머지되고 #844(electricity 이관)는 아직인 지금의 실제 운영 상태를
+    재현합니다. gas는 service_area 경로에, electricity는 옛 경로에 있어도 둘 다
+    찾아야 파이프라인이 안 깨집니다."""
+    year, month = 2025, 5
+    days = 31
+    gas_rows = [
+        {"date": date(year, month, d), "gas_price": 3.0, "bronze_collected_date": COLLECTED}
+        for d in range(1, days + 1)
+    ]
+    gas_path = clean_silver_file(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
+    gas_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(gas_rows, schema=GAS_SCHEMA), gas_path)
+
+    _write_clean(tmp_path, gas=False)  # electricity 만 옛 경로에
+
+    found = silver_tasks.require_clean_silver(str(tmp_path), "2025-05", "NYC")
+
+    assert set(found) == {"eia_gas_price", "eia_electricity_price"}
+    assert "service_area=NYC" in found["eia_gas_price"]
 
 
 @pytest.mark.parametrize(

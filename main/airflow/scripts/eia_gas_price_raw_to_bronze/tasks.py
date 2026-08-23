@@ -27,7 +27,10 @@ def _layout():
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
     params = context["params"]
-    event = {"base_dir": params["bronze_dir"]}
+    event = {
+        "base_dir": params["bronze_dir"],
+        "service_area": params["service_area"],
+    }
     result = lambda_handler_for("eia_gas_price_raw_to_bronze")(
         event=event
     )
@@ -40,10 +43,15 @@ def validate_bronze_task(result: dict, **context) -> None:
     """적재 경로가 layout 규칙과 같은지, 파일이 비어 있지 않은지 확인합니다."""
     parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
     layout = _layout()
+    service_area = context["params"]["service_area"]
     collected_date = datetime.strptime(result["collected_date"], "%Y-%m-%d").date()
-    expected = layout.gas_bronze_file(context["params"]["bronze_dir"], collected_date)
+    expected = layout.gas_bronze_file(
+        context["params"]["bronze_dir"], collected_date, service_area
+    )
     path = require_file(parsed.locations[0])
-    if layout_tail(path) != layout_tail(expected):
+    if layout_tail(path, service_area=service_area) != layout_tail(
+        expected, service_area=service_area
+    ):
         raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
 
     # 하한은 수집(lambda)과 같은 값을 씁니다 — 두 곳이 갈라지면 한쪽만 통과합니다.

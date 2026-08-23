@@ -20,7 +20,7 @@ DAG_PARAMS = {
     ),
     "eia_gas_price_raw_to_silver_dag": (
         "eia_gas_price_raw_to_silver_dag",
-        {"year", "month", "bronze_dir", "silver_dir"},
+        {"year", "month", "bronze_dir", "silver_dir", "service_area"},
     ),
     "lease_vehicle_inventory_raw_to_silver_dag": (
         "lease_vehicle_inventory_raw_to_silver_dag",
