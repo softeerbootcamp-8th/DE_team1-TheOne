@@ -23,10 +23,20 @@ RUN_TYPE_TEXT = (
 REASON_TEXT = (
     f"{{{{ (exception or '(사유 없음)') | string | truncate({REASON_MAX_CHARS}, True) }}}}"
 )
+# 파티션 DAG(Gold)는 이 값으로 어느 파티션이 문제인지 바로 알 수 있습니다. 지역
+# 축이 들어가면(#674) 키가 "{service_area}:{year_month}"가 되어 알림만 보고 어느
+# 지역이 죽었는지 구분됩니다 — 지역마다 DAG를 새로 만들지 않는 설계라 이 정보가
+# 없으면 온콜이 지역을 못 가립니다.
+#
+# 비파티션 DAG에서는 컨텍스트에 키가 아예 없거나 None입니다
+# (`airflow.sdk.definitions.context`: `partition_key: NotRequired[str | None]`).
+# `default(..., true)`가 두 경우를 모두 '-'로 처리합니다.
+PARTITION_KEY_TEXT = "{{ partition_key | default('-', true) }}"
 SLACK_RETRY_ALERT_TEXT = (
     "⏳ *Airflow 태스크 재시도 예정*\n"
     "*DAG*: `{{ dag.dag_id }}`\n"
     "*Task*: `{{ ti.task_id }}`\n"
+    f"*파티션*: `{PARTITION_KEY_TEXT}`\n"
     f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
     "*시도*: `{{ ti.try_number }} / {{ ti.max_tries + 1 }}`\n"
     f"*원인*: `{REASON_TEXT}`\n"
@@ -38,6 +48,7 @@ SLACK_FAILURE_TEXT = (
     "🚨 *Airflow 파이프라인 최종 실패*\n"
     "*DAG*: `{{ dag.dag_id }}`\n"
     "*Task*: `{{ ti.task_id }}`\n"
+    f"*파티션*: `{PARTITION_KEY_TEXT}`\n"
     f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
     "*시도*: `{{ ti.try_number }} / {{ ti.max_tries + 1 }}`\n"
     f"*원인*: `{REASON_TEXT}`\n"
@@ -48,6 +59,7 @@ SLACK_FAILURE_TEXT = (
 SLACK_SUCCESS_TEXT = (
     "✅ *Gold 생성 완료*\n"
     "*대상 연월*: `{{ (ti.xcom_pull(task_ids='validate_inputs') or {}).get('year_month', '확인 필요') }}`\n"
+    f"*파티션*: `{PARTITION_KEY_TEXT}`\n"
     f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
     "*파이프라인*: `{{ dag.dag_id }}`\n"
     "*Run ID*: `{{ run_id | truncate(80, True) }}`\n"
@@ -58,6 +70,7 @@ SLACK_SKIP_TEXT = (
     "⚠️ *Gold 파이프라인 입력 대기 (skip)*\n"
     "*DAG*: `{{ dag.dag_id }}`\n"
     "*Task*: `{{ ti.task_id }}`\n"
+    f"*파티션*: `{PARTITION_KEY_TEXT}`\n"
     f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
     f"*원인*: `{REASON_TEXT}`\n"
     "*Run ID*: `{{ run_id | truncate(80, True) }}`\n"
@@ -67,6 +80,7 @@ SLACK_SKIP_TEXT = (
 SLACK_STALE_TEXT = (
     "⏰ *Gold 파이프라인 staleness 경고*\n"
     "*DAG*: `{{ dag.dag_id }}`\n"
+    f"*파티션*: `{PARTITION_KEY_TEXT}`\n"
     f"*실행 유형*: `{RUN_TYPE_TEXT}`\n"
     "*마지막 성공 이후*: `{{ days_since_success }}일` (SLA `{{ stale_days }}일`)\n"
     "*Run ID*: `{{ run_id | truncate(80, True) }}`\n"
@@ -97,6 +111,7 @@ def _failure_blocks(title: str, next_action: str) -> list[dict]:
             "fields": [
                 {"type": "mrkdwn", "text": "*DAG*\n`{{ dag.dag_id }}`"},
                 {"type": "mrkdwn", "text": "*Task*\n`{{ ti.task_id }}`"},
+                {"type": "mrkdwn", "text": f"*파티션*\n`{PARTITION_KEY_TEXT}`"},
             ],
         },
         {
@@ -136,6 +151,7 @@ SLACK_SUCCESS_BLOCKS = [
                 "type": "mrkdwn",
                 "text": "*대상 연월*\n`{{ (ti.xcom_pull(task_ids='validate_inputs') or {}).get('year_month', '확인 필요') }}`",
             },
+            {"type": "mrkdwn", "text": f"*파티션*\n`{PARTITION_KEY_TEXT}`"},
             {"type": "mrkdwn", "text": f"*실행 유형*\n`{RUN_TYPE_TEXT}`"},
             {"type": "mrkdwn", "text": "*파이프라인*\n`{{ dag.dag_id }}`"},
             {"type": "mrkdwn", "text": "*처리 결과*\n`월간 Gold 검증 완료`"},
@@ -177,6 +193,7 @@ SLACK_STALE_BLOCKS = [
                 "text": "*마지막 성공 이후*\n`{{ days_since_success }}일`",
             },
             {"type": "mrkdwn", "text": "*SLA 기준*\n`{{ stale_days }}일`"},
+            {"type": "mrkdwn", "text": f"*파티션*\n`{PARTITION_KEY_TEXT}`"},
             {"type": "mrkdwn", "text": f"*실행 유형*\n`{RUN_TYPE_TEXT}`"},
             {"type": "mrkdwn", "text": "*DAG*\n`{{ dag.dag_id }}`"},
         ],

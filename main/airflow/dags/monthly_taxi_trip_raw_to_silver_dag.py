@@ -150,7 +150,11 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
         task_id="bronze_to_silver",
         application_id=application_id,
         execution_role_arn=execution_role_arn,
-        name="monthly-taxi-trip-bronze-to-silver-{{ ds_nodash }}",
+        # ds_nodash는 날짜뿐이라 같은 날 실행이 여러 건이면 잡 이름이 겹쳐 콘솔에서
+        # 구분되지 않습니다. 지역 축이 들어가면(#674) 지역들이 같은 날 도는 게
+        # 정상이므로 더 아픕니다. Gold DAG가 #746에서 같은 이유로 run_id를 택했고
+        # (logical_date 없는 Asset 트리거에서도 항상 있음) 그 방식을 따릅니다.
+        name="monthly-taxi-trip-bronze-to-silver-{{ run_id }}",
         job_driver={
             "sparkSubmit": {
                 "entryPoint": EMR_ENTRY_POINT,
