@@ -16,6 +16,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_stale_alert_callback,
 )
 from shared.common.monthly_silver import latest_local_silver_version
+from main.airflow.common.assets import parse_partition_key
 
 logger = logging.getLogger(__name__)
 
@@ -107,8 +108,11 @@ def resolve_target_year_month(
         return f"{year}-{month.zfill(2)}"
 
     if partition_key:
-        datetime.strptime(partition_key, "%Y-%m")
-        return partition_key
+        # 키는 "{service_area}:{year_month}" 복합 문자열입니다(#674). 지역 성분이
+        # 없으면 생산자가 아직 안 바뀐 것이라 parse_partition_key 가 요란하게
+        # 실패합니다 — 조용히 기본 지역으로 넘기면 그 사실이 묻힙니다.
+        _, year_month = parse_partition_key(partition_key)
+        return year_month
 
     if logical_date.tzinfo is None:
         logical_date = logical_date.replace(tzinfo=timezone.utc)
