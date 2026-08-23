@@ -6,8 +6,8 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
+from main.spark.jobs.service_area_path import candidate_prefixes, candidate_roots
 from shared.common.s3_reader import list_keys
-from shared.common.service_area_path import candidate_prefixes, candidate_roots
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
 from pipeline_core.loader import Loader, WriteResult

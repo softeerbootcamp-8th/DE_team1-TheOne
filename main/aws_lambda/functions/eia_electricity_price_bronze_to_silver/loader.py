@@ -8,7 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-from shared.common.service_area_path import join_segments, service_area_segment
+from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
 
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 from shared.aws_lambda.common.atomic_write import atomic_write
