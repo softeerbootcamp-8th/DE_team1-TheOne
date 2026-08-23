@@ -13,6 +13,13 @@
 8. S3에서도 같은 파티션 안 여러 버전 중 최신 하나만 고른다
 9. `_SUCCESS`가 있는 source_collected_at 디렉터리만 공개 버전으로 고른다
 10. S3에서도 미완료 디렉터리를 무시하고 완료된 최신 버전을 고른다
+
+이슈 #845 (Gold가 연료비를 올바른 지역으로 읽는지):
+11. `main()`이 `--service_area`를 `latest_fuel_price_path` 호출에 그대로 넘긴다 —
+    안 넘기면 다른 지역의 유가로 이 지역 Gold를 계산한다(조용히 틀린 값이라 가장
+    위험함). 지역별 파일 선택 자체는 1~10에서 이미 검증됐으므로, 여기서는 `main()`이
+    실제로 그 값을 넘기는지 배선만 확인한다(Spark 세션·나머지 3종 읽기는 monkeypatch
+    로 대체 — 이 한 줄 배선을 보자고 전체 파이프라인을 실행하지 않는다).
 """
 
 import boto3
@@ -226,3 +233,48 @@ def test_S3_source_collected_at은_SUCCESS가_있는_최신버전만_고른다(s
     result = job.latest_partition_file(f"s3://{S3_BUCKET}/{prefix}", "2026-05")
 
     assert result == f"s3://{S3_BUCKET}/{completed}"
+
+
+# --- Gold의 연료비 지역 배선 (#845) -----------------------------------------
+
+
+class _StopAfterFuelPriceLookup(Exception):
+    """나머지 파이프라인(3종 읽기 이후)까지 실행하지 않으려는 신호용 예외."""
+
+
+class _FakeReader:
+    def parquet(self, path):
+        return None
+
+
+class _FakeSpark:
+    read = _FakeReader()
+
+
+def test_main은_service_area를_연료비_최신_경로_조회에_그대로_넘긴다(monkeypatch, tmp_path):
+    """main()이 --service_area를 latest_fuel_price_path에 안 넘기면, 그 함수 자체는
+    맞게 동작해도(1~10) 호출부가 지역 없이 불러 다른 지역의 유가로 이 지역 Gold를
+    계산하게 됩니다."""
+    seen = {}
+
+    def _spy(fuel_price_dir, service_area=None):
+        seen["fuel_price_dir"] = fuel_price_dir
+        seen["service_area"] = service_area
+        raise _StopAfterFuelPriceLookup
+
+    monkeypatch.setattr(job, "get_or_create_spark_session", lambda name: _FakeSpark())
+    monkeypatch.setattr(job, "latest_fuel_price_path", _spy)
+
+    with pytest.raises(_StopAfterFuelPriceLookup):
+        job.main([
+            "--year", "2026",
+            "--month", "5",
+            "--service_area", "TX",
+            "--threshold_profit_increase", "10",
+            "--monthly_taxi_trip_path", str(tmp_path / "taxi.parquet"),
+            "--driver_vehicle_monthly_snapshot_path", str(tmp_path / "driver.parquet"),
+            "--lease_vehicle_inventory_path", str(tmp_path / "inventory.parquet"),
+            "--fuel_price_path", str(tmp_path / "fuel"),
+        ])
+
+    assert seen["service_area"] == "TX"
