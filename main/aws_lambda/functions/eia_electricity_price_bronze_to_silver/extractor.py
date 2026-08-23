@@ -22,14 +22,15 @@ logger = logging.getLogger(__name__)
 class EiaElectricityPriceBronzeExtractor(Extractor):
     """전력요금 원본 bytes 를 로컬에서 읽습니다."""
 
-    def __init__(self, base_dir: str, year_month: str):
+    def __init__(self, base_dir: str, year_month: str, service_area: str | None = None):
         self._base_dir = base_dir
         self._year_month = year_month
+        self._service_area = service_area
         self.name = f"eia_electricity_price_bronze:{base_dir}:{year_month}"
 
     def extract(self) -> dict:
         collected_date, partition = layout.newest_bronze_partition(
-            self._base_dir, layout.ELECTRICITY_DATASET
+            self._base_dir, layout.ELECTRICITY_DATASET, self._service_area
         )
         path = partition / layout.ELECTRICITY_FILE_NAME
         if not path.is_file():
@@ -45,16 +46,17 @@ class EiaElectricityPriceBronzeExtractor(Extractor):
 class EiaElectricityPriceS3BronzeExtractor(Extractor):
     """전력요금 원본 bytes 를 S3 에서 읽습니다."""
 
-    def __init__(self, bucket: str, year_month: str):
+    def __init__(self, bucket: str, year_month: str, service_area: str | None = None):
         self._bucket = bucket
         self._year_month = year_month
+        self._service_area = service_area
         self.name = f"eia_electricity_price_bronze_s3:{bucket}:{year_month}"
 
     def extract(self) -> dict:
-        prefix = layout.bronze_s3_prefix(layout.ELECTRICITY_DATASET)
+        prefix = layout.bronze_s3_prefix(layout.ELECTRICITY_DATASET, self._service_area)
         keys = list_keys(self._bucket, prefix)
         collected_date, key = layout.newest_bronze_s3_key(
-            keys, layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME
+            keys, layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME, self._service_area
         )
         body = get_object_bytes(self._bucket, key)
         if not body:
@@ -65,10 +67,14 @@ class EiaElectricityPriceS3BronzeExtractor(Extractor):
 
 
 def build_bronze_extractor(
-    storage: str, base_dir: str, bucket: str | None, year_month: str
+    storage: str,
+    base_dir: str,
+    bucket: str | None,
+    year_month: str,
+    service_area: str | None = None,
 ) -> Extractor:
     if storage == "local":
-        return EiaElectricityPriceBronzeExtractor(base_dir, year_month)
+        return EiaElectricityPriceBronzeExtractor(base_dir, year_month, service_area)
     if storage == "s3":
-        return EiaElectricityPriceS3BronzeExtractor(bucket, year_month)
+        return EiaElectricityPriceS3BronzeExtractor(bucket, year_month, service_area)
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
