@@ -5,7 +5,7 @@
 <p>OO는 운행 데이터를 기반으로 차량 교체를 제안할 고객을 확인할 수 있는 대시보드입니다.<br/>
 이때, 추천 대상은 <b>상위 등급 차량 교체시 고객의 순수익이 월 $600 이상 증가</b>하는 고객입니다.</p>
 
-<a href="https://43-200-202-72.sslip.io/"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a>
+<a href="https://43-200-202-72.sslip.io/"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a> <a href="docs/TEAM_RULES.md"><img src="https://img.shields.io/badge/팀규칙_바로가기-000000?style=for-the-badge&logoColor=white" alt="팀 규칙 바로가기" /></a>
 </div>
 
 
@@ -40,7 +40,7 @@
 | **고객 우선순위** | 수천명 중 누구에게 전화할지 불명확 | 순수익 증가폭 순 정렬 |
 | **비즈니스 효과** | 수익 증가 기회 놓침 | 기사 만족도 향상, 객단가 증가 |
 
-[목차로 이동](#목차])
+[목차로 이동](#목차)
 
 ## 데이터 파이프라인
 
@@ -77,6 +77,7 @@
 <summary>원천 DB 파이프라인</summary>
 
 > HVFHV 데이터에 택시 ID/기사 ID가 없기에 합성을 진행하는 **가상의 회사 DB**입니다.
+
 
 #### 1. INPUT
 | 출처 | 수집 대상 | 수집 방식 | 수집 주기 | 규모 |
@@ -118,11 +119,27 @@
 
 ## 문서화
 
-> 추가 예정
+### 성능 최적화
+> Spark 성능 최적화
 
-- 의사결정 기록
-  > 팀내 의견 공유를 통해 의사결정한 내용(기술/기획 등) 정리
-  - [링크](./docs/decision_making/README.md)
+<details>
+<summary><a href="/docs/SPARK_PARTITION_ETC_OPTIMIZATION.md">스파크 파티션 개수 및 기타 설정 최적화</a></summary>
+
+- 과도한 Scheduling Overhead가 예상되어 파티션 수 변경 실험을 진행했습니다.
+  - 결과 : 200개(기존) -> 32개(변경 후) (소요 시간 : 40% 절감)
+- checkpoint 제거(eager=False 설정)
+  - 결과 : 7.3% 추가 절감
+</details>
+
+### 파이프라인 설계
+
+
+### AWS 인프라 설계
+
+### [의사결정 문서](./docs/decision_making/README.md)
+> 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
+
+
 
 ## 기술 스택
 
