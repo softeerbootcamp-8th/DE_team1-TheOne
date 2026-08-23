@@ -17,9 +17,8 @@
 8. HEAD validator — ETag·Last-Modified 제공, 조건이 맞으면 본문 없이 304
 9. HEAD 감시는 파일 스트림을 열지 않고 S3는 object metadata를 그대로 사용
 
-공개 API 이름은 `monthly_taxi_trip`이지만, 생성 DAG(synthetic_driver_trip_source)가
-쓰는 manifest는 아직 예전 이름(`hvfhv_taxi_trips`)을 키로 씁니다 — `LocalDatasetStorage`가
-그 번역을 하므로, 이 파일의 manifest 픽스처도 실제 운영과 같은 이름을 그대로 씁니다.
+dataset 이름은 공개 API 경로·local manifest 키·S3 폴더명이 모두 같습니다(#859). 그래서
+이 파일의 manifest 픽스처도 `DATASETS` 이름을 그대로 씁니다.
 """
 
 import hashlib
@@ -38,21 +37,15 @@ from sub.source_api.server import DATASETS, LocalDatasetStorage, S3DatasetStorag
 YEAR_MONTH = "2026-01"
 BODIES = {name: f"PAR1-{name}".encode() for name in sorted(DATASETS)}
 
-# 공개 API 이름 -> 생성 DAG가 실제로 manifest에 쓰는 키. LocalDatasetStorage의
-# 번역표와 대칭입니다 — 여기서만 다르고 나머지 두 데이터셋은 이름이 같습니다.
-MANIFEST_KEYS = {"monthly_taxi_trip": "hvfhv_taxi_trips"}
-
-
 @pytest.fixture
 def release_root(tmp_path):
     release = tmp_path / f"year_month={YEAR_MONTH}"
     release.mkdir()
     manifest_datasets = {}
     for name, body in BODIES.items():
-        manifest_key = MANIFEST_KEYS.get(name, name)
-        (release / f"{manifest_key}.parquet").write_bytes(body)
-        manifest_datasets[manifest_key] = {
-            "file": f"{manifest_key}.parquet",
+        (release / f"{name}.parquet").write_bytes(body)
+        manifest_datasets[name] = {
+            "file": f"{name}.parquet",
             "sha256": hashlib.sha256(body).hexdigest(),
         }
     _write_manifest(release, manifest_datasets)
@@ -163,7 +156,7 @@ def test_릴리스가_하나도_없으면_latest_는_404(tmp_path):
 def test_manifest_가_릴리스_밖을_가리켜도_내보내지_않는다(api, release_root, escape):
     """manifest 는 우리가 만들지만, 그게 뚫리면 릴리스 밖 파일이 새어 나갑니다."""
     _write_manifest(
-        release_root / f"year_month={YEAR_MONTH}", {"hvfhv_taxi_trips": {"file": escape}}
+        release_root / f"year_month={YEAR_MONTH}", {"monthly_taxi_trip": {"file": escape}}
     )
 
     status, body, _ = get(api, f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip")
