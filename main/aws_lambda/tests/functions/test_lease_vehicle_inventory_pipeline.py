@@ -80,8 +80,9 @@ def test_보유차량Parquet만_직접받아_footer행수와함께_Bronze에_저
     path = Path(result["locations"][0])
     assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
-    assert path.parent.parent.name == "lease_vehicle_inventory"
-    assert path.name == "20260820T101532123456Z.parquet"
+    assert path.name == "data.parquet"
+    assert path.parent.name == "collected_at=20260820T101532123456Z"
+    assert path.parent.parent.parent.name == "lease_vehicle_inventory"
     assert result["collected_at"] == "2026-08-20T10:15:32.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
     assert result["source_changed"] is True

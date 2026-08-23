@@ -189,6 +189,39 @@ def test_API가_미변경이고_로컬_Bronze가_있으면_Skip한다(
     assert _check(dataset) is False
 
 
+def test_API가_미변경이고_새_로컬_Bronze가_있으면_Skip한다(tmp_path, monkeypatch):
+    dataset = "monthly_taxi_trip"
+    _mock_unchanged_source(monkeypatch, dataset)
+    monkeypatch.setenv("BRONZE_STORAGE", "local")
+    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+    data = (
+        tmp_path
+        / dataset
+        / f"year_month={YEAR_MONTH}"
+        / "collected_at=20260822T010203123456Z"
+        / "data.parquet"
+    )
+    data.parent.mkdir(parents=True)
+    data.touch()
+
+    assert _check(dataset) is False
+
+
+def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, monkeypatch):
+    dataset = "monthly_taxi_trip"
+    _mock_unchanged_source(monkeypatch, dataset)
+    monkeypatch.setenv("BRONZE_STORAGE", "local")
+    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+    (
+        tmp_path
+        / dataset
+        / f"year_month={YEAR_MONTH}"
+        / "collected_at=20260822T010203123456Z"
+    ).mkdir(parents=True)
+
+    assert _check(dataset)["refresh_required"] is True
+
+
 @pytest.mark.parametrize(
     ("keys", "refresh_required"),
     [
@@ -199,6 +232,20 @@ def test_API가_미변경이고_로컬_Bronze가_있으면_Skip한다(
                 "year_month=2026-08/20260822T010203123456Z.parquet"
             ],
             False,
+        ),
+        (
+            [
+                "bronze/lease_vehicle_inventory/year_month=2026-08/"
+                "collected_at=20260822T010203123456Z/data.parquet"
+            ],
+            False,
+        ),
+        (
+            [
+                "bronze/lease_vehicle_inventory/year_month=2026-08/"
+                "collected_at=20260822T010203123456Z/"
+            ],
+            True,
         ),
     ],
 )

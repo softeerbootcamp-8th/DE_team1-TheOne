@@ -1,7 +1,6 @@
 import argparse
 import logging
 import os
-import re
 import shutil
 from pathlib import Path
 from typing import Optional
@@ -10,6 +9,10 @@ from uuid import uuid4
 
 import boto3
 
+from shared.common.monthly_bronze import (
+    TIMESTAMP_FILE_PATTERN,
+    bronze_collection_token,
+)
 from shared.common.s3_reader import list_keys
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
@@ -25,7 +28,6 @@ logger = logging.getLogger(__name__)
 CURRENT_FILE = Path(__file__).resolve()
 # spark/jobs/bronze_to_silver/monthly_taxi_trip_bronze_to_silver/job.py -> project root
 PROJECT_ROOT = CURRENT_FILE.parents[5]
-TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 
 DEFAULT_LOCAL_INPUT = "data/bronze/monthly_taxi_trip"
@@ -160,13 +162,24 @@ def latest_partition_file(input_path: str, year_month: str) -> Optional[str]:
     partition_dir = Path(input_path) / f"year_month={year_month}"
     if not partition_dir.exists():
         return None
-    parquet_files = sorted(partition_dir.glob("*.parquet"))
+    parquet_files = sorted(
+        (
+            *partition_dir.glob("*.parquet"),
+            *partition_dir.glob("collected_at=*/data.parquet"),
+        )
+    )
     if not parquet_files:
         return None
-    timestamp_files = [
-        path for path in parquet_files if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
+    versioned = [
+        (path, bronze_collection_token(path)) for path in parquet_files
     ]
-    return str((timestamp_files or parquet_files)[-1])
+    versioned = [(path, token) for path, token in versioned if token]
+    selected = (
+        max(versioned, key=lambda item: item[1])[0]
+        if versioned
+        else parquet_files[-1]
+    )
+    return str(selected)
 
 
 def latest_partition_files(input_path: str) -> list[str]:
@@ -188,10 +201,16 @@ def _latest_s3_partition_file(input_path: str, year_month: str) -> Optional[str]
     parquet_keys = sorted(key for key in list_keys(bucket, partition_prefix) if key.endswith(".parquet"))
     if not parquet_keys:
         return None
-    timestamp_keys = [
-        key for key in parquet_keys if TIMESTAMP_FILE_PATTERN.fullmatch(Path(key).name)
+    versioned = [
+        (key, bronze_collection_token(Path(key))) for key in parquet_keys
     ]
-    return f"{scheme}://{bucket}/{(timestamp_keys or parquet_keys)[-1]}"
+    versioned = [(key, token) for key, token in versioned if token]
+    selected = (
+        max(versioned, key=lambda item: item[1])[0]
+        if versioned
+        else parquet_keys[-1]
+    )
+    return f"{scheme}://{bucket}/{selected}"
 
 
 def main(args_list: Optional[list[str]] = None) -> PipelineResult:

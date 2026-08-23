@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
-from main.aws_lambda.common.monthly_dataset import TIMESTAMP_FILE_PATTERN
+from shared.common.monthly_bronze import bronze_collection_token
 from shared.common.s3_reader import get_object_bytes, list_keys
 
 from .loader import DATASET
@@ -66,20 +66,25 @@ def _bronze_s3_prefix(year_month: str) -> str:
 
 
 def _newest_key(keys: list[str], prefix: str) -> str:
-    candidates = [key for key in keys if TIMESTAMP_FILE_PATTERN.fullmatch(PurePosixPath(key).name)]
+    candidates = [
+        (key, bronze_collection_token(PurePosixPath(key))) for key in keys
+    ]
+    candidates = [(key, token) for key, token in candidates if token]
     if not candidates:
         raise FileNotFoundError(f"기사 차량 스냅샷 Bronze S3 파티션이 없습니다: {prefix}")
-    return max(candidates)
+    return max(candidates, key=lambda item: item[1])[0]
 
 
 def _newest_bronze_path(base_dir: str, year_month: str) -> Path:
     partition = Path(base_dir) / DATASET / f"year_month={year_month}"
     candidates = [
-        path for path in partition.glob("*.parquet") if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
+        *partition.glob("*.parquet"),
+        *partition.glob("collected_at=*/data.parquet"),
     ]
+    candidates = [path for path in candidates if bronze_collection_token(path)]
     if not candidates:
         raise FileNotFoundError(f"기사 차량 스냅샷 Bronze 파티션이 없습니다: {partition}")
-    return max(candidates, key=lambda path: path.name)
+    return max(candidates, key=bronze_collection_token)
 
 
 def build_bronze_extractor(

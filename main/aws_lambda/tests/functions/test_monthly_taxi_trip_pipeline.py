@@ -104,9 +104,10 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     path = Path(result["locations"][0])
     assert requested == [DATASET_URL]
     assert path.read_bytes() == CONTENT
-    assert path.parent.name == f"year_month={YEAR_MONTH}"
-    assert path.parent.parent.name == "monthly_taxi_trip"
-    assert path.name == "20260820T101530123456Z.parquet"
+    assert path.name == "data.parquet"
+    assert path.parent.name == "collected_at=20260820T101530123456Z"
+    assert path.parent.parent.name == f"year_month={YEAR_MONTH}"
+    assert path.parent.parent.parent.name == "monthly_taxi_trip"
     assert result["collected_at"] == "2026-08-20T10:15:30.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
     assert result["source_changed"] is True

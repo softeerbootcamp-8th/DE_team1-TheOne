@@ -111,6 +111,17 @@ def test_latest_partition_file은_최신_수집시각_파일을_반환한다(tmp
     assert result == str(latest)
 
 
+def test_latest_partition_file은_신구구조중_최신수집본을_반환한다(tmp_path):
+    partition = tmp_path / "year_month=2024-01"
+    partition.mkdir()
+    (partition / "20240820T101530123456Z.parquet").touch()
+    latest = partition / "collected_at=20240820T112205654321Z" / "data.parquet"
+    latest.parent.mkdir()
+    latest.touch()
+
+    assert job.latest_partition_file(str(tmp_path), "2024-01") == str(latest)
+
+
 def test_latest_partition_files는_각_월의_최신파일만_고른다(tmp_path):
     january = tmp_path / "year_month=2024-01"
     february = tmp_path / "year_month=2024-02"
@@ -184,6 +195,21 @@ def test_latest_partition_file은_S3에서_최신_파일_경로를_반환한다(
     result = job.latest_partition_file(f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01")
 
     assert result == f"s3://{S3_BUCKET}/{prefix}/part-1.parquet"
+
+
+def test_latest_partition_file은_S3_신구구조중_최신수집본을_반환한다(s3_client):
+    prefix = "bronze/monthly_taxi_trip/year_month=2024-01"
+    s3_client.put_object(
+        Bucket=S3_BUCKET, Key=f"{prefix}/20240820T101530123456Z.parquet", Body=b"x"
+    )
+    latest = f"{prefix}/collected_at=20240820T112205654321Z/data.parquet"
+    s3_client.put_object(Bucket=S3_BUCKET, Key=latest, Body=b"x")
+
+    result = job.latest_partition_file(
+        f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01"
+    )
+
+    assert result == f"s3://{S3_BUCKET}/{latest}"
 
 
 def test_range로_여러_달_파티션을_한번에_읽어_silver로_적재한다(spark, tmp_path):

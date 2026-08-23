@@ -78,12 +78,24 @@ def s3_client():
         yield client
 
 
-def _put_bronze(s3_client, rows: list[dict], timestamp: str, year_month: str = YEAR_MONTH) -> None:
+def _put_bronze(
+    s3_client,
+    rows: list[dict],
+    timestamp: str,
+    year_month: str = YEAR_MONTH,
+    *,
+    directory_layout: bool = False,
+) -> None:
     sink = pa.BufferOutputStream()
     pq.write_table(pa.Table.from_pylist(rows), sink)
     s3_client.put_object(
         Bucket=S3_BUCKET,
-        Key=f"bronze/{DATASET}/year_month={year_month}/{timestamp}.parquet",
+        Key=(
+            f"bronze/{DATASET}/year_month={year_month}/"
+            f"collected_at={timestamp}/data.parquet"
+            if directory_layout
+            else f"bronze/{DATASET}/year_month={year_month}/{timestamp}.parquet"
+        ),
         Body=sink.getvalue().to_pybytes(),
     )
 
@@ -247,7 +259,9 @@ def test_S3_bronze가_여러개면_최신_타임스탬프를_읽는다(s3_client
     _put_bronze(s3_client, older, "20260801T000000000000Z")
     newer = _rows()
     newer[0]["vehicle_model_id"] = "model-new"
-    _put_bronze(s3_client, newer, "20260815T000000000000Z")
+    _put_bronze(
+        s3_client, newer, "20260815T000000000000Z", directory_layout=True
+    )
 
     lambda_handler(_s3_event())
 
