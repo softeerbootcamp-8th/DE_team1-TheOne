@@ -28,7 +28,9 @@ from shared.airflow.common.validation import (
     read_parquet,
     require_file,
 )
-from shared.common.service_area_path import candidate_prefixes, candidate_roots
+from shared.common.service_area_path import (
+    candidate_prefixes, candidate_roots, service_area_segment,
+)
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
 
 logger = logging.getLogger(__name__)
@@ -64,10 +66,13 @@ def resolve_year_month(context: dict) -> str:
     return default_year_month(reference)
 
 
-def integrated_silver_file(base_dir: str, year_month: str) -> Path:
+def integrated_silver_file(
+    base_dir: str, year_month: str, service_area: str | None = None
+) -> Path:
+    dataset_root = Path(base_dir) / INTEGRATED_DATASET
+    area = service_area_segment(service_area)
     return (
-        Path(base_dir)
-        / INTEGRATED_DATASET
+        (dataset_root / area if area else dataset_root)
         / f"{SILVER_PARTITION_KEY}={year_month}"
         / INTEGRATED_FILE_NAME
     )
@@ -137,7 +142,7 @@ def require_clean_silver(
     return found
 
 
-def validate_silver(result: object) -> None:
+def validate_silver(result: object, service_area: str | None = None) -> None:
     """스키마·행 수·날짜 완결성·출처를 확인합니다.
 
     날짜가 하루라도 비면 Gold 의 일자 조인에서 그 날 운행이 통째로 매칭 실패하고,
@@ -150,7 +155,10 @@ def validate_silver(result: object) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    if layout_tail(path) != layout_tail(integrated_silver_file("", year_month)):
+    expected_path = integrated_silver_file("", year_month, service_area)
+    if layout_tail(path, service_area=service_area) != layout_tail(
+        expected_path, service_area=service_area
+    ):
         raise ValueError(f"통합 연료비 Silver 경로 규칙이 다릅니다: {path}")
 
     # `pq.read_table` 은 경로의 `year_month=` 를 파티션 컬럼으로 덧붙입니다.
@@ -231,10 +239,11 @@ def combine_silver_task(**context) -> dict:
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="combine_silver")
     year_month = result["year_month"]
-    validate_silver(result)
+    service_area = assets.resolve_service_area(context.get("params", {}))
+    validate_silver(result, service_area)
     assets.publish_month_partition(
         context.get("outlet_events"),
         assets.FUEL_PRICE_SILVER,
         year_month,
-        assets.resolve_service_area(context.get("params", {})),
+        service_area,
     )

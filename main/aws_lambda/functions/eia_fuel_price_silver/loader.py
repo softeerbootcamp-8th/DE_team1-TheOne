@@ -57,16 +57,18 @@ class EiaFuelPriceSilverLoader(Loader):
         self,
         base_dir: str,
         year_month: str,
+        service_area: str | None = None,
     ):
         self._base_dir = base_dir
         self._year_month = year_month
+        self._service_area = service_area
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
             raise ValueError("적재할 연료비 Silver 데이터가 없습니다.")
 
         table = pa.Table.from_pylist(data, schema=SCHEMA)
-        path = silver_file(self._base_dir, self._year_month)
+        path = silver_file(self._base_dir, self._year_month, self._service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
             path,
@@ -87,9 +89,11 @@ class EiaFuelPriceS3SilverLoader(Loader):
         self,
         year_month: str,
         bucket: str | None = None,
+        service_area: str | None = None,
     ):
         self._year_month = year_month
         self._bucket = bucket
+        self._service_area = service_area
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
@@ -100,7 +104,7 @@ class EiaFuelPriceS3SilverLoader(Loader):
         pq.write_table(table, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month),
+            key=silver_key(self._year_month, self._service_area),
             bucket=self._bucket,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=table.num_rows)
@@ -119,12 +123,14 @@ def build_silver_loader(
     base_dir: str,
     bucket: str | None,
     year_month: str,
+    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
-        return EiaFuelPriceSilverLoader(base_dir, year_month)
+        return EiaFuelPriceSilverLoader(base_dir, year_month, service_area)
     if storage == "s3":
         return EiaFuelPriceS3SilverLoader(
             year_month,
             bucket=bucket,
+            service_area=service_area,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

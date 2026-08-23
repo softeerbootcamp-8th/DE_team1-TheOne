@@ -41,6 +41,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
             silver_dir,
             bucket,
             year_month,
+            service_area,
         ),
         EiaFuelPriceCombineTransformer(year_month),
     ).run()

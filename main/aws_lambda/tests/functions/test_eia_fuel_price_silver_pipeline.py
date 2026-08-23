@@ -140,7 +140,10 @@ def test_산출물_경로는_데이터의_달을_쓴다(tmp_path):
 
     result = lambda_handler({"year_month": "2025-05", "silver_dir": str(tmp_path)})
 
-    assert "gas_ev_price/year_month=2025-05/gas_ev_price.parquet" in result["locations"][0]
+    assert (
+        "gas_ev_price/service_area=NYC/year_month=2025-05/gas_ev_price.parquet"
+        in result["locations"][0]
+    )
 
 
 # --- S3 배포 (#577) — 키 포맷 --------------------------------------------
