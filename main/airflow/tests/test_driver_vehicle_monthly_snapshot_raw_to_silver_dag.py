@@ -5,6 +5,7 @@
 3. 필수 컬럼 누락 시 원천부터 한 번 재수집
 4. Bronze 행 수·스키마·driver_id 중복 규칙으로 Silver 확인
 5. S3 Silver 경로를 로컬 Path로 접지 않고 검증
+6. service_area가 수집·정제 Lambda와 Bronze·Silver 경로에 반영됨
 """
 
 from datetime import date, datetime, timedelta
@@ -106,6 +107,7 @@ def test_수집task는_제공주소를_수집핸들러에_전달한다(monkeypat
             "base_dir": "/bronze",
             "year": "2026",
             "month": "8",
+            "service_area": "TX",
         }
     )
     assert handlers == ["driver_vehicle_monthly_snapshot_raw_to_bronze"]
@@ -114,6 +116,7 @@ def test_수집task는_제공주소를_수집핸들러에_전달한다(monkeypat
         "base_dir": "/bronze",
         "year": "2026",
         "month": "8",
+        "service_area": "TX",
     }
 
 
@@ -143,15 +146,15 @@ def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달
                 f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
             ),
         },
-        params={"silver_dir": "/silver"},
+        params={"silver_dir": "/silver", "service_area": "TX"},
     )
     assert handlers == ["driver_vehicle_monthly_snapshot_bronze_to_silver"]
     assert called == {
-        "bronze_path": f"/bronze/{FILE_NAME}",
         "year_month": "2026-08",
         "silver_output_path": (
             f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
         ),
+        "service_area": "TX",
     }
 
 
@@ -167,7 +170,7 @@ def test_필수컬럼이_누락되면_원천부터_다시_수집한다(monkeypat
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir: next(results),
+        lambda result, base_dir, service_area: next(results),
     )
     monkeypatch.setattr(
         task_module,
@@ -200,7 +203,8 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir: validated.append(result) or (Path("same.parquet"), []),
+        lambda result, base_dir, service_area: validated.append(result)
+        or (Path("same.parquet"), []),
     )
 
     result = _raw_result(source_changed=False)
@@ -211,6 +215,39 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
 
     assert validated_result["silver_version_path"].endswith(SOURCE_VERSION)
     assert validated == [result]
+
+
+def test_Bronze검증과_Silver경로는_service_area_파라미터를_따른다(tmp_path):
+    bronze = (
+        tmp_path
+        / "bronze"
+        / "driver_vehicle_monthly_snapshot"
+        / "service_area=TX"
+        / "year_month=2026-08"
+        / "collected_at=20260821T123456123456Z"
+        / "data.parquet"
+    )
+    bronze.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), bronze)
+
+    validated = DAG.get_task("validate_bronze").python_callable(
+        {
+            "locations": [str(bronze)],
+            "year_month": "2026-08",
+            "collected_at": "2026-08-21T12:34:56.123456Z",
+            "row_count": 1,
+            "file_size_bytes": bronze.stat().st_size,
+            "source_changed": True,
+        },
+        params={
+            "base_dir": str(tmp_path / "bronze"),
+            "silver_dir": str(tmp_path / "silver"),
+            "service_area": "TX",
+        },
+    )
+
+    assert "service_area=TX/year_month=2026-08" in validated["silver_version_path"]
+    assert "service_area=TX/year_month=2026-08" in validated["silver_staging_path"]
 
 
 def test_Bronze와_행수가_같고_규칙이_맞아야_Silver를_통과시킨다(tmp_path):

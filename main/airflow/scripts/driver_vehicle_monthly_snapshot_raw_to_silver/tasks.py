@@ -15,6 +15,7 @@ from shared.airflow.common.validation import (
     parse_location,
     read_parquet,
 )
+from main.airflow.common.assets import resolve_service_area
 from main.airflow.common.monthly_bronze import (
     commit_staged_silver,
     silver_version_path,
@@ -71,6 +72,7 @@ def _collect_bronze(params: dict) -> dict:
         "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
         "year": params.get("year"),
         "month": params.get("month"),
+        "service_area": resolve_service_area(params),
     }
     logger.info("기사 차량 스냅샷 Raw→Bronze 수집 시작: %s", event)
     return lambda_handler_for("driver_vehicle_monthly_snapshot_raw_to_bronze")(event=event)
@@ -80,20 +82,23 @@ def _collect_bronze(params: dict) -> dict:
 def validate_bronze_task(result: dict, **context) -> dict:
     params = context.get("params", {})
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
-    _, missing = _validate_bronze_result(result, base_dir)
+    service_area = resolve_service_area(params)
+    _, missing = _validate_bronze_result(result, base_dir, service_area)
     if missing:
         logger.warning("기사 차량 스냅샷 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
         result = _collect_bronze(params)
-        _, missing = _validate_bronze_result(result, base_dir)
+        _, missing = _validate_bronze_result(result, base_dir, service_area)
     if missing:
         raise ValueError(f"기사 차량 스냅샷 Bronze 필수 컬럼 누락: {missing}")
     version_path = silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
         result,
+        service_area,
     )
     staging_path = staged_silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
         result,
+        service_area,
     )
     return {
         **result,
@@ -105,11 +110,13 @@ def validate_bronze_task(result: dict, **context) -> dict:
 def _validate_bronze_result(
     result: dict,
     base_dir: str | Path,
+    service_area: str,
 ) -> tuple[Path | S3Location, list[str]]:
     path, _ = validate_monthly_parquet_bronze(
         result,
         dataset_dir=DATASET,
         base_dir=base_dir,
+        service_area=service_area,
     )
     missing = sorted(set(SCHEMA.names) - set(read_parquet(path).schema.names))
     return path, missing
@@ -119,9 +126,9 @@ def _validate_bronze_result(
 def bronze_to_silver_task(result: dict, **context) -> dict:
     bronze_location = parse_location(result["locations"][0])
     event = {
-        "bronze_path": result["locations"][0],
         "year_month": result["year_month"],
         "silver_output_path": result["silver_staging_path"],
+        "service_area": resolve_service_area(context.get("params", {})),
     }
     if isinstance(bronze_location, S3Location):
         event.update(storage="s3", bucket=bronze_location.bucket)
