@@ -21,6 +21,7 @@ from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     layout_tail, parse_handler_result, parse_year_month, read_parquet,
 )
+from shared.common.service_area_path import service_area_segment
 
 logger = logging.getLogger(__name__)
 
@@ -60,9 +61,13 @@ def resolve_year_month(context: dict) -> str:
     return default_year_month(reference)
 
 
-def silver_file(base_dir: str, year_month: str) -> Path:
+def silver_file(base_dir: str, year_month: str, service_area: str | None = None) -> Path:
+    dataset_root = Path(base_dir) / DATASET
+    area = service_area_segment(service_area)
     return (
-        Path(base_dir) / DATASET / f"{SILVER_PARTITION_KEY}={year_month}" / FILE_NAME
+        (dataset_root / area if area else dataset_root)
+        / f"{SILVER_PARTITION_KEY}={year_month}"
+        / FILE_NAME
     )
 
 
@@ -71,7 +76,7 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def validate_silver(result: object) -> None:
+def validate_silver(result: object, service_area: str | None = None) -> None:
     """스키마·행 수·날짜 완결성을 확인합니다.
 
     날짜가 하루라도 비면 하류의 일자 조인에서 그 날이 통째로 매칭 실패하고, 그건
@@ -84,7 +89,10 @@ def validate_silver(result: object) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    if layout_tail(path) != layout_tail(silver_file("", year_month)):
+    expected_path = silver_file("", year_month, service_area)
+    if layout_tail(path, service_area=service_area) != layout_tail(
+        expected_path, service_area=service_area
+    ):
         raise ValueError(f"충전 단가 Silver 경로 규칙이 다릅니다: {path}")
 
     # `pq.read_table` 은 경로의 `year_month=` 를 파티션 컬럼으로 덧붙입니다.
@@ -122,6 +130,7 @@ def bronze_to_silver_task(**context) -> dict:
         "bronze_dir": params["bronze_dir"],
         "silver_dir": params["silver_dir"],
         "markup": params["markup"],
+        "service_area": params["service_area"],
     }
     result = lambda_handler_for("eia_electricity_price_bronze_to_silver")(
         event=event
@@ -132,4 +141,4 @@ def bronze_to_silver_task(**context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="bronze_to_silver")
-    validate_silver(result)
+    validate_silver(result, context["params"]["service_area"])

@@ -8,6 +8,9 @@
 4. 대상 월이 이력에 없으면 보유 구간을 알려주며 실패 — 전력 통계는 약 3개월 지연
 5. 단가가 허용 범위 밖이면 실패
 6. Loader 가 CLEAN 스키마 그대로, 대상 월 파티션에 씀
+7. service_area가 다르면 실제로 다른 주(State) 값을 읽는다 (#844)
+8. 등록되지 않은 지역은 즉시 실패한다 (#844)
+9. service_area 없이 부르면 기존 NY 동작 그대로 (하위호환, #844)
 """
 
 from datetime import date
@@ -26,6 +29,7 @@ from main.aws_lambda.functions.eia_electricity_price_bronze_to_silver.transforme
     PUBLIC_CHARGING_MARKUP,
     build_daily_prices,
     parse_electricity_monthly,
+    resolve_state,
 )
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA as SCHEMA
 
@@ -127,6 +131,9 @@ def test_빈_결과는_적재를_거부한다(tmp_path):
 # 전력 CLEAN 파이프라인의 extractor 입니다.
 
 from main.aws_lambda.common import eia_fuel_price_layout as layout  # noqa: E402
+from main.aws_lambda.functions.eia_electricity_price_bronze_to_silver.extractor import (  # noqa: E402
+    EiaElectricityPriceBronzeExtractor,
+)
 
 
 def _write_bronze(base, collected: date, body: bytes) -> None:
@@ -191,3 +198,52 @@ def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
 def test_S3_키_목록이_비면_실패한다():
     with pytest.raises(FileNotFoundError, match="EIA Bronze S3 파티션이 없습니다"):
         layout.newest_bronze_s3_key([], layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME)
+
+
+# --- 지역(service_area) 별 주(State) 분기 (#844) ----------------------------
+
+
+def test_지역마다_실제로_다른_주_값을_읽는다():
+    """SERVICE_AREA_TO_STATE 매핑이 깨지면 지역이 달라도 항상 같은 주를 읽어,
+    지역 구분이 이름표만 있고 실제로는 전부 같은 값이 됩니다."""
+    nyc_rows = build_daily_prices("2025-05", _xlsx(ROWS), COLLECTED, service_area="NYC")
+    ca_rows = build_daily_prices("2025-05", _xlsx(ROWS), COLLECTED, service_area="CA")
+
+    assert nyc_rows[0]["ev_price"] == pytest.approx(20.0 / CENTS_PER_DOLLAR * PUBLIC_CHARGING_MARKUP)
+    assert ca_rows[0]["ev_price"] == pytest.approx(99.0 / CENTS_PER_DOLLAR * PUBLIC_CHARGING_MARKUP)
+
+
+def test_등록되지_않은_지역은_즉시_실패한다():
+    with pytest.raises(ValueError, match="매핑된 주"):
+        resolve_state("UNKNOWN")
+
+
+def test_service_area_없이_부르면_기존_뉴욕_동작_그대로다():
+    """매핑 추가가 기존 단일 지역(뉴욕) 파이프라인을 조용히 바꾸면 안 됩니다."""
+    with_area = build_daily_prices("2025-05", _xlsx(ROWS), COLLECTED, service_area="NYC")
+    without_area = build_daily_prices("2025-05", _xlsx(ROWS), COLLECTED)
+
+    assert with_area == without_area
+
+
+def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
+    path = layout.electricity_bronze_file(str(tmp_path), COLLECTED, "TX")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_xlsx(ROWS))
+
+    result = EiaElectricityPriceBronzeExtractor(str(tmp_path), "2025-05", "TX").extract()
+
+    assert result["bronze_collected_date"] == COLLECTED
+    with pytest.raises(FileNotFoundError):
+        EiaElectricityPriceBronzeExtractor(str(tmp_path), "2025-05", "NYC").extract()
+
+
+def test_silver_쓰기_경로에_지역이_반영되고_서로_겹치지_않는다(tmp_path):
+    rows = build_daily_prices("2025-05", _xlsx(ROWS), COLLECTED)
+
+    nyc = EiaElectricityPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(rows)
+    tx = EiaElectricityPriceSilverLoader(str(tmp_path), "2025-05", "TX").write(rows)
+
+    assert nyc.location != tx.location
+    assert "service_area=NYC" in nyc.location
+    assert "service_area=TX" in tx.location

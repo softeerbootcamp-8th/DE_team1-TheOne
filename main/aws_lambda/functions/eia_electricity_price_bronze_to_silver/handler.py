@@ -14,9 +14,10 @@ configure_lambda_logging()
 
 
 class EiaElectricityPriceTransformer(Transformer):
-    def __init__(self, year_month: str, markup: float):
+    def __init__(self, year_month: str, markup: float, service_area: str | None = None):
         self._year_month = year_month
         self._markup = markup
+        self._service_area = service_area
 
     def transform(self, data: dict) -> list[dict]:
         return build_daily_prices(
@@ -24,6 +25,7 @@ class EiaElectricityPriceTransformer(Transformer):
             data["electricity_body"],
             data["bronze_collected_date"],
             markup=self._markup,
+            service_area=self._service_area,
         )
 
 
@@ -38,16 +40,18 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
     markup = float(event.get("markup") or os.getenv("MARKUP") or PUBLIC_CHARGING_MARKUP)
+    service_area = event.get("service_area") or os.getenv("SERVICE_AREA", "NYC")
 
     result = Pipeline(
-        build_bronze_extractor(storage, bronze_dir, bucket, year_month),
+        build_bronze_extractor(storage, bronze_dir, bucket, year_month, service_area),
         build_silver_loader(
             storage,
             silver_dir,
             bucket,
             year_month,
+            service_area,
         ),
-        EiaElectricityPriceTransformer(year_month, markup),
+        EiaElectricityPriceTransformer(year_month, markup, service_area),
     ).run()
 
     return {
