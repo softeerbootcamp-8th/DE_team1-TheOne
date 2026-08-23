@@ -293,7 +293,7 @@ CONFIG_HASH = "0123456789ab"
 def _write_release(root, *, manifest_rows=1):
     release = root / "year_month=2026-09"
     release.mkdir(parents=True)
-    trip_file = release / "hvfhv_taxi_trips.parquet"
+    trip_file = release / "monthly_taxi_trip.parquet"
     snapshot_file = release / "driver_vehicle_monthly_snapshot.parquet"
     inventory_file = release / "lease_vehicle_inventory.parquet"
     pq.write_table(
@@ -345,7 +345,7 @@ def _write_release(root, *, manifest_rows=1):
         "config_hash": CONFIG_HASH,
         "created_at": "2026-09-10T00:00:00+00:00",
         "datasets": {
-            "hvfhv_taxi_trips": metadata(trip_file),
+            "monthly_taxi_trip": metadata(trip_file),
             "driver_vehicle_monthly_snapshot": metadata(snapshot_file),
             "lease_vehicle_inventory": metadata(inventory_file),
         },
@@ -407,15 +407,13 @@ def test_품질리포트가_없으면_실패한다(tmp_path):
 
 
 def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다(tmp_path):
-    """manifest의 dataset 키는 생성 DAG가 쓰는 이름 그대로지만, 공개 API는 이름이
-    다른 것(hvfhv_taxi_trips -> monthly_taxi_trip)이 있어 URL은 그걸로 만듭니다
-    (LocalDatasetStorage의 번역표 참고)."""
+    """manifest의 dataset 키와 공개 API URL의 dataset 이름은 같습니다 — 릴리스에
+    manifest 자체는 내려주지 않고, 그 안에 적힌 세 Parquet만 dataset 경로로 받습니다."""
     release, manifest = _write_release(tmp_path)
     server = create_server(LocalDatasetStorage(tmp_path), port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
-    public_names = {"hvfhv_taxi_trips": "monthly_taxi_trip"}
     try:
         for path in ("/v1/data/latest", "/v1/data/2026-09"):
             with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -423,8 +421,7 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
             assert exc_info.value.code == 404
 
         for dataset in manifest["datasets"]:
-            public_name = public_names.get(dataset, dataset)
-            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{public_name}"
+            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{dataset}"
             with urllib.request.urlopen(dataset_url) as response:
                 assert response.headers["Content-Type"] == (
                     "application/vnd.apache.parquet"
@@ -434,7 +431,7 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
                 ).read_bytes()
 
             with urllib.request.urlopen(
-                f"{base_url}/v1/data/latest/datasets/{public_name}"
+                f"{base_url}/v1/data/latest/datasets/{dataset}"
             ) as response:
                 assert response.geturl() == dataset_url
                 assert response.read() == (

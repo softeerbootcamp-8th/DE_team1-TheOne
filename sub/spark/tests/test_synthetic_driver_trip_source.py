@@ -5,6 +5,7 @@
 3. 릴리스 재실행 → 완결된 기존 결과를 중복 생성하지 않음
 4. 정제 코드 소유권 → source job의 HVFHV 정제는 shared/ 를 그대로 쓰고, sub/ 자체
    스키마(schema/source)는 shared/ 가 쓰는 main 쪽 스키마와 구조가 같아야 함
+5. S3 발행 키 → 발행이 쓴 키를 source_api 가 같은 dataset 이름으로 읽을 수 있음 (#859)
 """
 
 from datetime import date, datetime
@@ -43,6 +44,7 @@ from sub.spark.jobs.driver_assignment.source_job import (
     build_lease_vehicle_inventory,
     build_trip_source,
     write_source_release,
+    write_source_release_s3,
 )
 
 
@@ -510,10 +512,77 @@ def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_�
 
     assert first == second
     assert len(list(tmp_path.glob("year_month=2026-01"))) == 1
-    assert spark.read.parquet(str(first / "hvfhv_taxi_trips.parquet")).count() == 1
+    assert spark.read.parquet(str(first / "monthly_taxi_trip.parquet")).count() == 1
     assert spark.read.parquet(str(first / "driver_vehicle_monthly_snapshot.parquet")).count() == 1
     assert spark.read.parquet(str(first / "lease_vehicle_inventory.parquet")).count() == 1
     assert (first / "manifest.json").is_file()
+
+
+def test_S3_발행이_쓴_키를_API가_같은_dataset_이름으로_읽는다(spark, monkeypatch):
+    """발행(`write_source_release_s3`)과 서빙(`S3DatasetStorage`)이 같은 폴더를 봐야 합니다.
+
+    이름이 갈려도 발행은 성공하고 행 수도 맞아서, 발행 로그만 보면 정상으로 보입니다 —
+    API 만 404 입니다. 실제로 운행을 `hvfhv_taxi_trips/` 로 발행하고 API 는
+    `monthly_taxi_trip/` 을 읽어 prod 에서 못 받았습니다 (#859).
+
+    Spark 의 s3a 쓰기는 moto 로 흉내낼 수 없어 `_write_one_parquet_s3` 를 키 기록기로
+    바꿉니다 — 그 함수 자체가 하는 일은 아래 `_fake_hadoop_path` 쪽 테스트가 봅니다.
+    """
+    import boto3
+    from moto import mock_aws
+
+    from sub.source_api.server import DATASETS, S3DatasetStorage
+    from sub.spark.jobs.driver_assignment import source_job
+
+    bucket, region = "test-source-bucket", "ap-northeast-2"
+    trips = spark.createDataFrame([{
+        "pickup_datetime": datetime(2026, 1, 2, 9), "taxi_id": "taxi-1"
+    }])
+    snapshots = spark.createDataFrame([{
+        "driver_id": "driver-1", "taxi_id": "taxi-1",
+        "vehicle_since": date(2026, 1, 1), "exit_date": None,
+    }], "driver_id string, taxi_id string, vehicle_since date, exit_date date")
+    inventory = spark.createDataFrame(
+        [(
+            "vehicle-model-1", "KIA", "SPORTAGE", 2023, "GAS", 26.0,
+            True, False, 574.0, "https://example.com/sportage.png", 1,
+        )],
+        INVENTORY_COLUMNS,
+    )
+
+    written: list[str] = []
+    monkeypatch.setattr(
+        source_job,
+        "_write_one_parquet_s3",
+        lambda frame, *, bucket, key: written.append(key),
+    )
+
+    with mock_aws():
+        client = boto3.client("s3", region_name=region)
+        client.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},
+        )
+
+        write_source_release_s3(
+            trips,
+            snapshots,
+            inventory,
+            bucket=bucket,
+            run=RunContext.create("2026-01", _monthly_config(50)),
+            input_scope="full",
+        )
+
+        assert len(written) == len(DATASETS)
+        for key in written:
+            client.put_object(Bucket=bucket, Key=key, Body=b"PAR1")
+
+        storage = S3DatasetStorage(bucket)
+        for dataset in sorted(DATASETS):
+            opened = storage.open(dataset, "2026-01")
+            assert opened is not None, f"발행이 쓰지 않는 폴더를 읽고 있습니다: {dataset}"
+            stream, _ = opened
+            stream.close()
 
 
 def _fake_hadoop_path(uri, *, fs=None):

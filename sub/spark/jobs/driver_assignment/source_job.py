@@ -63,12 +63,12 @@ TRIP_SOURCE_COLUMNS = MONTHLY_TAXI_TRIP_SCHEMA.names
 # "manifest·산출물 구조 자체가 바뀌었는가" 를 답합니다 — 설정을 안 바꿔도 계약이
 # 바뀌면 낡은 릴리스를 재사용하면 안 되므로 별도 필드로 둡니다(#608).
 SCHEMA_VERSION = "1"
-# 데이터셋별 실측 대 합성 비중. hvfhv_taxi_trips는 실측 TLC 운행에 합성 신원만
+# 데이터셋별 실측 대 합성 비중. monthly_taxi_trip은 실측 TLC 운행에 합성 신원만
 # 얹은 것이고, driver_vehicle_monthly_snapshot은 기사·차량 자체가 합성이며,
 # lease_vehicle_inventory는 실측 렌탈 카탈로그에 보유 대수(stock)만 가정값입니다 —
 # 소비자가 "이 숫자가 실측인가" 를 API 응답만 보고 오판하지 않도록 명시합니다.
 PROVENANCE = {
-    "hvfhv_taxi_trips": "real_facts+synthetic_identity",
+    "monthly_taxi_trip": "real_facts+synthetic_identity",
     "driver_vehicle_monthly_snapshot": "synthetic",
     "lease_vehicle_inventory": "real_catalog+assumed_stock",
 }
@@ -455,7 +455,7 @@ def _existing_release(path: Path, run: RunContext, *, input_scope: str) -> bool:
             f"다시 발행하려면 {path} 를 지우고 실행하세요."
         )
     for name in (
-        "hvfhv_taxi_trips",
+        "monthly_taxi_trip",
         "driver_vehicle_monthly_snapshot",
         "lease_vehicle_inventory",
     ):
@@ -573,7 +573,7 @@ def write_source_release(
     staging = output_root / f".year_month={year_month}.staging-{uuid.uuid4().hex}"
     try:
         staging.mkdir()
-        trip_file = staging / "hvfhv_taxi_trips.parquet"
+        trip_file = staging / "monthly_taxi_trip.parquet"
         snapshot_file = staging / "driver_vehicle_monthly_snapshot.parquet"
         inventory_file = staging / "lease_vehicle_inventory.parquet"
         _write_one_parquet(trips, trip_file)
@@ -590,7 +590,7 @@ def write_source_release(
             "input_scope": input_scope,
             "provenance": PROVENANCE,
             "datasets": {
-                "hvfhv_taxi_trips": {
+                "monthly_taxi_trip": {
                     "file": trip_file.name,
                     "row_count": pq.ParquetFile(trip_file).metadata.num_rows,
                     "sha256": _sha256(trip_file),
@@ -645,7 +645,7 @@ def write_source_release_s3(
     year_month = run.target_month
     prefix = "source/published"
     datasets = {
-        "hvfhv_taxi_trips": trips,
+        "monthly_taxi_trip": trips,
         "driver_vehicle_monthly_snapshot": snapshots,
         "lease_vehicle_inventory": inventory,
     }
