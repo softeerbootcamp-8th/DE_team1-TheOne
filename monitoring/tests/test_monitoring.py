@@ -50,6 +50,15 @@ def test_stack_connects_three_ec2_instances_and_emr_metrics():
         "DashboardInstanceId",
         "EmrApplicationId",
     }.issubset(parameters)
+    # AWS::EC2::Instance::Id 로 되돌리면 CloudFormation 이 배포 자격증명으로
+    # ec2:DescribeInstances 를 호출해 배포가 다시 깨집니다.
+    for parameter in (
+        "AirflowInstanceId",
+        "SourceInstanceId",
+        "DashboardInstanceId",
+    ):
+        assert parameters[parameter]["Type"] == "String"
+        assert parameters[parameter]["AllowedPattern"] == r"^i-[0-9a-f]{8,17}$"
 
     body = stack["Resources"]["UnifiedDashboard"]["Properties"]["DashboardBody"]
     rendered = re.sub(r"\$\{[^}]+}", "placeholder", body)

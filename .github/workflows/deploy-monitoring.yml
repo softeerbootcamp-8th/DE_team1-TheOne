@@ -18,7 +18,10 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  STACK_NAME: theone-monitoring
+  # theone-monitoring 은 첫 배포 실패로 ROLLBACK_COMPLETE 로 남아 갱신이 불가하고,
+  # 배포 role 과 팀 계정 모두 cloudformation:DeleteStack 권한이 없어 지울 수 없어서
+  # 새 이름으로 CREATE 합니다. 옛 스택은 리소스 0개짜리 빈 껍데기입니다.
+  STACK_NAME: theone-monitoring-prod
   AGENT_PARAMETER: AmazonCloudWatch-TheOne-EC2
 
 jobs:

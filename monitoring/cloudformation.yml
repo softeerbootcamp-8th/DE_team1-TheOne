@@ -4,12 +4,22 @@ Description: TheOne unified EC2 and EMR Serverless resource monitoring
 Parameters:
   EmrApplicationId:
     Type: String
+  # AWS::EC2::Instance::Id 를 쓰면 CloudFormation 이 배포 자격증명으로
+  # ec2:DescribeInstances 를 호출해 존재를 검증합니다. 이 권한은 특정 인스턴스로
+  # 좁힐 수 없어(resource-level 미지원) 계정 전체 인스턴스 읽기를 열어야 하므로
+  # String + AllowedPattern 으로 형식만 검사합니다.
   AirflowInstanceId:
-    Type: AWS::EC2::Instance::Id
+    Type: String
+    AllowedPattern: '^i-[0-9a-f]{8,17}$'
+    ConstraintDescription: i- 로 시작하는 EC2 인스턴스 ID 여야 합니다
   SourceInstanceId:
-    Type: AWS::EC2::Instance::Id
+    Type: String
+    AllowedPattern: '^i-[0-9a-f]{8,17}$'
+    ConstraintDescription: i- 로 시작하는 EC2 인스턴스 ID 여야 합니다
   DashboardInstanceId:
-    Type: AWS::EC2::Instance::Id
+    Type: String
+    AllowedPattern: '^i-[0-9a-f]{8,17}$'
+    ConstraintDescription: i- 로 시작하는 EC2 인스턴스 ID 여야 합니다
   AirflowInstanceRoleName:
     Type: String
     Default: theone-airflow-role
