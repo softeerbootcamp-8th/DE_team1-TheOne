@@ -1,0 +1,109 @@
+# EC2 CloudWatch Agent와 EMR Serverless 네이티브 지표를 한 대시보드에 배포합니다.
+name: Deploy monitoring
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'monitoring/**'
+      - '.github/workflows/deploy-monitoring.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-monitoring
+  cancel-in-progress: false
+
+env:
+  STACK_NAME: theone-monitoring
+  AGENT_PARAMETER: AmazonCloudWatch-TheOne-EC2
+
+jobs:
+  deploy:
+    name: Dashboard and agents
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_MONITORING }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: CloudFormation 배포
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file monitoring/cloudformation.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides \
+              EmrApplicationId="${{ vars.EMR_APPLICATION_ID }}" \
+              AirflowInstanceId="${{ vars.AIRFLOW_INSTANCE_ID }}" \
+              SourceInstanceId="${{ vars.SERVER_INSTANCE_ID }}" \
+              DashboardInstanceId="${{ vars.DASHBOARD_INSTANCE_ID }}"
+
+      - name: Agent 설정을 Parameter Store에 반영
+        run: |
+          aws ssm put-parameter \
+            --name "$AGENT_PARAMETER" \
+            --type String \
+            --value file://monitoring/cloudwatch-agent.json \
+            --overwrite
+
+      - name: EC2 3대에 CloudWatch Agent 설치 및 설정
+        env:
+          AIRFLOW_INSTANCE: ${{ vars.AIRFLOW_INSTANCE_ID }}
+          SOURCE_INSTANCE: ${{ vars.SERVER_INSTANCE_ID }}
+          DASHBOARD_INSTANCE: ${{ vars.DASHBOARD_INSTANCE_ID }}
+        run: |
+          set -euo pipefail
+          instances=("$AIRFLOW_INSTANCE" "$SOURCE_INSTANCE" "$DASHBOARD_INSTANCE")
+
+          wait_for_command() {
+            local command_id="$1"
+            local instance status
+            sleep 5
+            for instance in "${instances[@]}"; do
+              aws ssm wait command-executed \
+                --command-id "$command_id" --instance-id "$instance" || true
+              status=$(aws ssm get-command-invocation \
+                --command-id "$command_id" --instance-id "$instance" \
+                --query Status --output text)
+              if [ "$status" != "Success" ]; then
+                aws ssm get-command-invocation \
+                  --command-id "$command_id" --instance-id "$instance" \
+                  --query StandardErrorContent --output text
+                return 1
+              fi
+            done
+          }
+
+          install_id=$(aws ssm send-command \
+            --instance-ids "${instances[@]}" \
+            --document-name AWS-ConfigureAWSPackage \
+            --parameters '{"action":["Install"],"name":["AmazonCloudWatchAgent"],"version":["latest"],"installationType":["Uninstall and reinstall"]}' \
+            --query Command.CommandId --output text)
+          wait_for_command "$install_id"
+
+          configure_id=$(aws ssm send-command \
+            --instance-ids "${instances[@]}" \
+            --document-name AmazonCloudWatch-ManageAgent \
+            --parameters "{\"action\":[\"configure\"],\"mode\":[\"ec2\"],\"optionalConfigurationSource\":[\"ssm\"],\"optionalConfigurationLocation\":[\"$AGENT_PARAMETER\"],\"optionalRestart\":[\"yes\"]}" \
+            --query Command.CommandId --output text)
+          wait_for_command "$configure_id"
+
+      - name: 배포 요약
+        run: |
+          dashboard_url="https://${{ vars.AWS_REGION }}.console.aws.amazon.com/cloudwatch/home?region=${{ vars.AWS_REGION }}#dashboards:name=theone-infrastructure-prod"
+          topic=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='AlertTopicArn'].OutputValue" \
+            --output text)
+          echo "### 인프라 모니터링 배포 완료" >> "$GITHUB_STEP_SUMMARY"
+          echo "- [CloudWatch 대시보드]($dashboard_url)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 알림 SNS Topic: \`$topic\`" >> "$GITHUB_STEP_SUMMARY"
