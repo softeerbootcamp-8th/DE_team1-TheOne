@@ -116,7 +116,9 @@ def test_storage_local_이면_로컬_경로를_그대로_넘긴다(tmp_path, s3_
 def test_이미_S3에_발행한_달은_다시_고르지_않는다(tmp_path, s3_seam):
     """로컬 manifest 만 보면 storage=s3 에서는 같은 달을 무한히 재생성합니다."""
     for year_month in ("2026-07", "2026-06"):
-        s3_seam["keys"].add(f"source/published/_manifests/year_month={year_month}.json")
+        s3_seam["keys"].add(
+            f"source/published/NYC/_manifests/year_month={year_month}.json"
+        )
     s3_seam["keys"].add("source/raw/hvfhv/year_month=2026-05/hvfhv.parquet")
 
     year_month = task_module.resolve_source_year_month(
@@ -174,7 +176,9 @@ def _release_manifest(year_month="2026-08", seed=42, **overrides):
         "config_hash": "abc123",
         "datasets": {
             name: {
-                "key": f"source/published/{name}/year_month={year_month}/data.parquet",
+                "key": (
+                    f"source/published/NYC/{name}/year_month={year_month}/data.parquet"
+                ),
                 "row_count": 10,
             }
             for name in task_module.RELEASE_DATASETS
@@ -195,13 +199,17 @@ def s3_release(monkeypatch, s3_seam):
 
     def publish(year_month="2026-08", manifest=None, quality=True):
         manifest = manifest if manifest is not None else _release_manifest(year_month)
-        manifest_key = f"source/published/_manifests/year_month={year_month}.json"
+        manifest_key = (
+            f"source/published/NYC/_manifests/year_month={year_month}.json"
+        )
         bodies[manifest_key] = json.dumps(manifest).encode("utf-8")
         s3_seam["keys"].add(manifest_key)
         for metadata in manifest.get("datasets", {}).values():
             s3_seam["keys"].add(metadata["key"])
         if quality:
-            quality_key = f"source/published/_quality_reports/year_month={year_month}.json"
+            quality_key = (
+                f"source/published/NYC/_quality_reports/year_month={year_month}.json"
+            )
             bodies[quality_key] = b'{"clip_rate": 0.0}'
             s3_seam["keys"].add(quality_key)
 
@@ -224,6 +232,20 @@ def test_S3_릴리스_seed가_요청과_다르면_실패한다(s3_release):
     s3_release(manifest=_release_manifest(seed=7))
 
     with pytest.raises(ValueError, match="seed가 요청과 다릅니다"):
+        task_module.validate_release_s3(BUCKET, "2026-08", 42)
+
+
+def test_S3_릴리스는_과거_hvfhv_폴더를_monthly_taxi_trip으로_인정하지_않는다(
+    s3_release,
+):
+    manifest = _release_manifest()
+    manifest["datasets"]["monthly_taxi_trip"]["key"] = (
+        "source/published/NYC/hvfhv_taxi_trips/"
+        "year_month=2026-08/data.parquet"
+    )
+    s3_release(manifest=manifest)
+
+    with pytest.raises(ValueError, match="monthly_taxi_trip"):
         task_module.validate_release_s3(BUCKET, "2026-08", 42)
 
 
