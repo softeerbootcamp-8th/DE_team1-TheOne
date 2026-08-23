@@ -4,8 +4,8 @@
 RDS 쪽 SELECT 컬럼은 `schema.gold`의 dataclass 필드에서 그대로 만든다 — Gold RDS에
 컬럼이 추가돼도(예: monthly_report.is_rerun, #756) 이 파일을 손댈 필요가 없다.
 
-Gold RDS는 같은 year_month에 재실행 이력이 버전으로 쌓이므로(`postgres_loader.py`),
-`year_month`별 최신 version 행만 읽는다.
+Gold RDS는 같은 지역·월에 재실행 이력이 버전으로 쌓이므로(`postgres_loader.py`),
+`service_area`, `year_month`별 최신 version 행만 읽는다.
 """
 
 import os
@@ -32,13 +32,17 @@ class DataSource(ABC):
 
 
 class LocalCsvDataSource(DataSource):
-    """`root/{dataset}/year_month=*/{dataset}.csv` 파티션을 모두 이어붙인다."""
+    """`root/{dataset}/service_area=*/year_month=*/{dataset}.csv`를 이어붙인다."""
 
     def __init__(self, root: Path):
         self._root = root
 
     def load(self, dataset: str) -> pd.DataFrame:
-        paths = sorted(self._root.glob(f"{dataset}/year_month=*/{dataset}.csv"))
+        paths = sorted(
+            self._root.glob(
+                f"{dataset}/service_area=*/year_month=*/{dataset}.csv"
+            )
+        )
         if not paths:
             return pd.DataFrame()
         return pd.concat((pd.read_csv(p) for p in paths), ignore_index=True)
@@ -48,12 +52,13 @@ def _latest_version_query(table: str, columns: list[str]) -> str:
     selected = ", ".join(f"t.{name}" for name in columns)
     return (
         f"SELECT {selected} FROM {table} t "
-        f"WHERE t.version = (SELECT MAX(version) FROM {table} WHERE year_month = t.year_month)"
+        f"WHERE t.version = (SELECT MAX(version) FROM {table} "
+        f"WHERE service_area = t.service_area AND year_month = t.year_month)"
     )
 
 
 class RdsDataSource(DataSource):
-    """Gold RDS에서 `dataset`의 year_month별 최신 version만 읽는다."""
+    """Gold RDS에서 지역·월별 최신 version만 읽는다."""
 
     def __init__(self, dsn: str):
         self._dsn = dsn

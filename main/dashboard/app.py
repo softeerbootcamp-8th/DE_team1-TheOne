@@ -2,7 +2,7 @@
 
 Gold 3종(`driver_car_suggestion`, `driver_aggregation`, `monthly_report`)을 읽는다.
 `DASHBOARD_DATA_SOURCE` 환경변수로 로컬 CSV(기본)/RDS를 전환한다 — `datasource.py` 참고.
-세 데이터셋 모두 `year_month` 단일 그레인 — `main/spark/jobs/silver_to_gold/job.py` 산출물.
+세 데이터셋 모두 `service_area`, `year_month` 그레인 — Gold job 산출물.
 
 화면 구성은 위에서 아래로 한 줄기다.
     필터 한 줄 → 히어로(회사 총 매출 증가) → 지표 타일 → 분포·차종 → 선정 게이트 → 리스트 → 기사 상세
@@ -37,6 +37,7 @@ def load(dataset: str) -> pd.DataFrame:
 def recommendation_scope(
     suggestion: pd.DataFrame,
     aggregation: pd.DataFrame,
+    service_area: str,
     period: str,
     threshold: float,
 ) -> pd.DataFrame:
@@ -52,12 +53,17 @@ def recommendation_scope(
         }
     )
     eligible = suggestion[
-        (suggestion["year_month"] == period)
+        (suggestion["service_area"] == service_area)
+        & (suggestion["year_month"] == period)
         & (suggestion["expected_net_profit_increase"] >= threshold)
         & (suggestion["expected_revenue_increase"] > 0)
     ]
     return (
-        eligible.merge(current, on=["driver_id", "year_month"], how="inner")
+        eligible.merge(
+            current,
+            on=["service_area", "driver_id", "year_month"],
+            how="inner",
+        )
         .sort_values("expected_net_profit_increase", ascending=False)
         .reset_index(drop=True)
     )
@@ -179,20 +185,24 @@ def render() -> None:
         )
         st.stop()
 
-    periods = sorted(report["year_month"].unique(), reverse=True)
-
     # 제목은 필터보다 위에 보여야 하니 자리를 먼저 잡고, 값이 정해진 뒤 채운다.
     head_slot = st.container()
 
     # ── 필터 한 줄: 아래 모든 카드·차트·표가 이 값으로 스코프된다 ──
-    f1, f2 = st.columns([1, 2], vertical_alignment="bottom")
-    period = f1.selectbox("월", periods)
+    f1, f2, f3 = st.columns([1, 1, 2], vertical_alignment="bottom")
+    service_area = f1.selectbox("지역", sorted(report["service_area"].unique()))
+    area_report = report[report["service_area"] == service_area]
+    periods = sorted(area_report["year_month"].unique(), reverse=True)
+    period = f2.selectbox("월", periods)
 
-    report_row = report[report["year_month"] == period].iloc[0]
+    report_row = area_report[area_report["year_month"] == period].iloc[0]
     gold_threshold = float(report_row["threshold_profit_increase"])
-    month_suggestion = suggestion[suggestion["year_month"] == period]
+    month_suggestion = suggestion[
+        (suggestion["service_area"] == service_area)
+        & (suggestion["year_month"] == period)
+    ]
 
-    threshold = f2.slider(
+    threshold = f3.slider(
         "기사 예상 월 순수익 증가 하한 ($)",
         min_value=0.0,
         max_value=float(month_suggestion["expected_net_profit_increase"].max()),
@@ -202,7 +212,9 @@ def render() -> None:
         help=rf"Gold 월간 리포트 기준값은 \${gold_threshold:,.0f} 입니다.",
     )
 
-    scope = recommendation_scope(suggestion, aggregation, period, threshold)
+    scope = recommendation_scope(
+        suggestion, aggregation, service_area, period, threshold
+    )
 
     with head_slot:
         _head(period, len(month_suggestion))
@@ -219,9 +231,13 @@ def render() -> None:
           len(month_suggestion))
 
     # 지난 달 대비 델타 — 같은 하한을 적용해 비교 기준을 맞춘다.
-    previous = _previous_period(list(report["year_month"].unique()), period)
+    previous = _previous_period(list(area_report["year_month"].unique()), period)
     prev_agg = (
-        _aggregates(recommendation_scope(suggestion, aggregation, previous, threshold))
+        _aggregates(
+            recommendation_scope(
+                suggestion, aggregation, service_area, previous, threshold
+            )
+        )
         if previous
         else None
     )
