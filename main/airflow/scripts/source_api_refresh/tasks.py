@@ -31,6 +31,18 @@ BRONZE_DATASET_DIRS = {
 }
 
 
+def state_key(dataset: str, service_area: str) -> str:
+    """원천 재수집 판단에 쓰는 직전 처리 상태의 Variable 키입니다.
+
+    지역이 키에 없으면 지역들이 하나의 ETag 상태를 공유합니다. 그러면 NYC 가 먼저
+    돌아 ETag 를 기록한 뒤 TX 가 같은 원천에서 304 를 받아 `changed=False` 가 되고,
+    TX 는 자기 수집을 한 번도 못 한 채 건너뜁니다 — 실패가 아니라 **성공적인
+    skip** 이라 알림도 가지 않습니다. 그다음엔 TX 가 키를 덮어써 NYC 가 굶습니다.
+    지역별로 키를 나눠 이 상호 굶김을 막습니다(#674).
+    """
+    return f"{STATE_KEY_PREFIX}{dataset}__{service_area}"
+
+
 def _bronze_partition_exists(dataset: str, year_month: str) -> bool:
     dataset_dir = BRONZE_DATASET_DIRS[dataset]
     storage = os.getenv("BRONZE_STORAGE", "local")
@@ -178,8 +190,9 @@ def inspect_source(
 )
 def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
     params = context["params"]
+    service_area = assets.resolve_service_area(params)
     previous = Variable.get(
-        f"{STATE_KEY_PREFIX}{dataset}",
+        state_key(dataset, service_area),
         default=None,
         deserialize_json=True,
     )
@@ -191,12 +204,20 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
         previous=previous,
         timeout=params["request_timeout"],
     )
+    # mark_processed_task 는 context 없이 result 만 받으므로 지역을 여기서 실어
+    # 보냅니다 — 상태를 읽은 키와 쓰는 키가 어긋나면 안 됩니다.
+    result["service_area"] = service_area
+    # 경로에는 아직 지역 축이 없습니다. 작성자(Lambda·Spark)가 지역 계층을 쓰기
+    # 시작하는 #810 에서 이 조회도 함께 지역을 타야 합니다 — 읽는 쪽만 먼저 바꾸면
+    # 없는 디렉터리를 보게 되어 bronze_exists 가 항상 False 가 되고 dedup 이
+    # 무력화됩니다.
     bronze_exists = _bronze_partition_exists(dataset, result["year_month"])
     result["refresh_required"] = result["changed"] or not bronze_exists
     logger.info(
-        "원천 HEAD 검사: dataset=%s year_month=%s changed=%s "
+        "원천 HEAD 검사: dataset=%s service_area=%s year_month=%s changed=%s "
         "bronze_exists=%s refresh_required=%s etag=%s",
         dataset,
+        service_area,
         result["year_month"],
         result["changed"],
         bronze_exists,
@@ -209,7 +230,7 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
 @task(task_id="mark_processed")
 def mark_processed_task(result: dict) -> None:
     Variable.set(
-        f"{STATE_KEY_PREFIX}{result['dataset']}",
+        state_key(result["dataset"], result["service_area"]),
         {
             "api_base_url": result["api_base_url"],
             "year_month": result["year_month"],
