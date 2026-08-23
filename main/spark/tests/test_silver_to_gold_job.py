@@ -59,6 +59,68 @@ def test_로컬_파티션_디렉터리는_있는데_파일이_없으면_FileNotF
         job.latest_fuel_price_path(str(tmp_path))
 
 
+def test_로컬_연료비는_지역별로_자기_파일만_고른다(tmp_path):
+    """`max()`/`sorted()` 는 사전순입니다. 지역으로 스코프하지 않으면
+    `service_area=TX` 가 뒤로 정렬돼 **월과 무관하게 이기고, 다른 지역 유가로 이 지역
+    Gold 를 계산합니다** — 에러 없이 틀린 값이 나오는 경로입니다(#851).
+
+    NYC 를 더 **오래된** 달로 두어, 스코프가 없으면 TX 가 이기는 상황을 만듭니다.
+    """
+    for area, year_month in (("NYC", "2026-05"), ("TX", "2026-09")):
+        partition = tmp_path / f"service_area={area}" / f"year_month={year_month}"
+        partition.mkdir(parents=True)
+        (partition / "gas_ev_price.parquet").touch()
+
+    assert job.latest_fuel_price_path(str(tmp_path), "NYC") == str(
+        tmp_path / "service_area=NYC" / "year_month=2026-05" / "gas_ev_price.parquet"
+    )
+    assert job.latest_fuel_price_path(str(tmp_path), "TX") == str(
+        tmp_path / "service_area=TX" / "year_month=2026-09" / "gas_ev_price.parquet"
+    )
+
+
+def test_S3_연료비도_지역별로_자기_파일만_고른다(s3_client):
+    prefix = "silver/gas_ev_price"
+    for area, year_month in (("NYC", "2026-05"), ("TX", "2026-09")):
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=f"{prefix}/service_area={area}/year_month={year_month}/gas_ev_price.parquet",
+            Body=b"x",
+        )
+
+    nyc = job.latest_fuel_price_path(f"s3://{S3_BUCKET}/{prefix}", "NYC")
+
+    assert "service_area=NYC" in nyc
+    assert "service_area=TX" not in nyc
+
+
+def test_연료비_지역_경로가_없으면_지역없는_경로로_폴백한다(tmp_path):
+    """아직 지역 계층으로 옮겨지지 않은 데이터셋도 읽어야 합니다 — 이 폴백이 있어야
+    #840~#845 를 데이터셋별로 하나씩 머지할 수 있습니다."""
+    partition = tmp_path / "year_month=2026-05"
+    partition.mkdir()
+    (partition / "gas_ev_price.parquet").touch()
+
+    assert job.latest_fuel_price_path(str(tmp_path), "NYC") == str(
+        partition / "gas_ev_price.parquet"
+    )
+
+
+def test_연료비는_지역_경로를_지역없는_경로보다_먼저_본다(tmp_path):
+    """순서가 뒤집히면 이미 옮긴 데이터셋이 옛 경로의 낡은 데이터를 집어갑니다."""
+    legacy = tmp_path / "year_month=2026-09"
+    legacy.mkdir()
+    (legacy / "gas_ev_price.parquet").touch()
+    scoped = tmp_path / "service_area=NYC" / "year_month=2026-05"
+    scoped.mkdir(parents=True)
+    (scoped / "gas_ev_price.parquet").touch()
+
+    # 지역 경로가 더 오래된 달이어도 지역 경로가 이겨야 합니다.
+    assert job.latest_fuel_price_path(str(tmp_path), "NYC") == str(
+        scoped / "gas_ev_price.parquet"
+    )
+
+
 def test_S3에서도_가장_최근_파티션_파일을_고른다(s3_client):
     prefix = "silver/gas_ev_price"
     for year_month in ("2026-01", "2026-04", "2026-05"):

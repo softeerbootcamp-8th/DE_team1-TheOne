@@ -16,7 +16,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_stale_alert_callback,
 )
 from main.airflow.common.monthly_bronze import latest_local_silver_version
-from shared.common.service_area_path import gold_csv_path
+from shared.common.service_area_path import candidate_roots, gold_csv_path
 from main.airflow.common.assets import parse_partition_key, resolve_service_area
 
 logger = logging.getLogger(__name__)
@@ -53,17 +53,26 @@ REQUIRED_COLUMNS = {
 }
 
 
-def available_year_months(monthly_taxi_trip_path: str | Path) -> list[str]:
-    """월별 택시 운행 기록 Silver에 실제로 있는 `year_month=` 파티션 목록입니다."""
-    return sorted(
+def available_year_months(
+    monthly_taxi_trip_path: str | Path, service_area: str | None = None
+) -> list[str]:
+    """월별 택시 운행 기록 Silver에 실제로 있는 `year_month=` 파티션 목록입니다.
+
+    지역 계층이 들어간 뒤에도 찾을 수 있어야 합니다 — 한 레벨 glob 만 보면 조용히
+    빈 목록이 되고, `resolve_target_year_month` 의 수동 실행 폴백이 "파티션이
+    없습니다" 로 죽습니다(#851). 여러 후보에서 찾은 월은 합집합으로 모읍니다.
+    """
+    months = {
         partition.name.removeprefix("year_month=")
-        for partition in Path(monthly_taxi_trip_path).glob("year_month=*")
+        for root in candidate_roots(monthly_taxi_trip_path, service_area)
+        for partition in root.glob("year_month=*")
         if partition.is_dir()
         and (
             _latest_version(partition) is not None
             or any(partition.glob("part-*.parquet"))
         )
-    )
+    }
+    return sorted(months)
 
 
 def _latest_version(partition: Path) -> Path | None:
@@ -76,16 +85,25 @@ def _resolve_versioned_input(
     *,
     legacy_file_name: str,
     upstream_dag: str,
+    service_area: str | None = None,
 ) -> str:
-    partition = Path(root) / f"year_month={year_month}"
-    latest = _latest_version(partition)
-    if latest is not None:
-        return str(latest)
-    legacy = partition / legacy_file_name
-    if legacy.is_file():
-        return str(legacy)
+    """지역 경로를 먼저 보고, 없으면 지역 없는 경로를 봅니다(#851).
+
+    지역 계층으로 아직 옮겨지지 않은 데이터셋도 읽어야 하므로 폴백이 필요합니다 —
+    이 폴백이 있어서 #840~#845 를 데이터셋별로 하나씩 머지할 수 있습니다.
+    """
+    attempted: list[Path] = []
+    for base in candidate_roots(root, service_area):
+        partition = base / f"year_month={year_month}"
+        attempted.append(partition)
+        latest = _latest_version(partition)
+        if latest is not None:
+            return str(latest)
+        legacy = partition / legacy_file_name
+        if legacy.is_file():
+            return str(legacy)
     raise FileNotFoundError(
-        f"Silver 버전이 없습니다: {partition}. {upstream_dag} 을 먼저 돌리세요."
+        f"Silver 버전이 없습니다: {attempted}. {upstream_dag} 을 먼저 돌리세요."
     )
 
 
@@ -142,23 +160,34 @@ def resolve_target_service_area(params: dict, partition_key: str | None = None) 
     return resolve_service_area(params)
 
 
-def resolve_input_paths(year_month: str, params: dict) -> dict:
-    """Spark 잡에 넘길 같은 달의 Silver 4종 경로를 확인합니다."""
+def resolve_input_paths(
+    year_month: str, params: dict, service_area: str | None = None
+) -> dict:
+    """Spark 잡에 넘길 같은 달의 Silver 4종 경로를 확인합니다.
+
+    4종 각각이 지역 경로 → 지역 없는 경로 순으로 탐색됩니다(#851). 데이터셋별로
+    writer 를 하나씩 옮기는 중에도(#840~#845) 모두 찾을 수 있어야 합니다.
+    """
     datetime.strptime(year_month, "%Y-%m")
 
-    monthly_taxi_trip_partition = (
-        Path(params["monthly_taxi_trip_path"]) / f"year_month={year_month}"
-    )
-    latest_monthly_taxi_trip = _latest_version(monthly_taxi_trip_partition)
-    if latest_monthly_taxi_trip is not None:
-        monthly_taxi_trip = str(latest_monthly_taxi_trip)
-    elif any(monthly_taxi_trip_partition.glob("part-*.parquet")):
-        # 구 레이아웃의 Spark part 파일만 읽습니다. 같은 디렉터리의 미완료
-        # collected_at 파일이 섞이지 않도록 디렉터리 자체를 넘기지 않습니다.
-        monthly_taxi_trip = str(monthly_taxi_trip_partition / "part-*.parquet")
-    else:
+    monthly_taxi_trip = None
+    attempted_monthly_taxi_trip: list[Path] = []
+    for base in candidate_roots(params["monthly_taxi_trip_path"], service_area):
+        partition = base / f"year_month={year_month}"
+        attempted_monthly_taxi_trip.append(partition)
+        latest = _latest_version(partition)
+        if latest is not None:
+            monthly_taxi_trip = str(latest)
+            break
+        if any(partition.glob("part-*.parquet")):
+            # 구 레이아웃의 Spark part 파일만 읽습니다. 같은 디렉터리의 미완료
+            # collected_at 파일이 섞이지 않도록 디렉터리 자체를 넘기지 않습니다.
+            monthly_taxi_trip = str(partition / "part-*.parquet")
+            break
+    if monthly_taxi_trip is None:
         raise FileNotFoundError(
-            f"월별 택시 운행 기록 Silver 버전이 없습니다: {monthly_taxi_trip_partition}. "
+            "월별 택시 운행 기록 Silver 버전이 없습니다: "
+            f"{attempted_monthly_taxi_trip}. "
             "monthly_taxi_trip_raw_to_silver_pipeline 을 먼저 돌리세요."
         )
 
@@ -179,16 +208,20 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
             year_month,
             legacy_file_name=file_name,
             upstream_dag=upstream_dag,
+            service_area=service_area,
         )
 
-    fuel_path = (
-        Path(params["fuel_price_path"])
-        / f"year_month={year_month}"
-        / "gas_ev_price.parquet"
-    )
-    if not fuel_path.is_file():
+    fuel_path = None
+    attempted_fuel: list[Path] = []
+    for base in candidate_roots(params["fuel_price_path"], service_area):
+        candidate = base / f"year_month={year_month}" / "gas_ev_price.parquet"
+        attempted_fuel.append(candidate)
+        if candidate.is_file():
+            fuel_path = candidate
+            break
+    if fuel_path is None:
         raise FileNotFoundError(
-            f"Silver 파일이 없습니다: {fuel_path}. "
+            f"Silver 파일이 없습니다: {attempted_fuel}. "
             "eia_fuel_price_silver_pipeline 을 먼저 돌리세요."
         )
     resolved_files["fuel_price_path"] = str(fuel_path)

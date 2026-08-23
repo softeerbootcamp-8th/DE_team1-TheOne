@@ -9,6 +9,7 @@ from pipeline_core.extractor import Extractor
 
 from main.aws_lambda.common.monthly_dataset import bronze_collection_token
 from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.service_area_path import candidate_roots, join_segments, service_area_segment
 
 from .loader import DATASET
 
@@ -61,8 +62,15 @@ class LeaseVehicleInventoryS3BronzeExtractor(Extractor):
         return table
 
 
-def _bronze_s3_prefix(year_month: str) -> str:
-    return f"bronze/{DATASET}/year_month={year_month}/"
+def _bronze_s3_prefix(year_month: str, service_area: str | None = None) -> str:
+    """지역 계층을 넣을 위치는 shared.common 이 정의합니다(#851)."""
+    return (
+        join_segments(
+            "bronze", DATASET, service_area_segment(service_area),
+            f"year_month={year_month}",
+        )
+        + "/"
+    )
 
 
 def _newest_key(keys: list[str], prefix: str) -> str:
@@ -75,16 +83,22 @@ def _newest_key(keys: list[str], prefix: str) -> str:
     return max(candidates, key=lambda item: item[1])[0]
 
 
-def _newest_bronze_path(base_dir: str, year_month: str) -> Path:
-    partition = Path(base_dir) / DATASET / f"year_month={year_month}"
-    candidates = [
-        *partition.glob("*.parquet"),
-        *partition.glob("collected_at=*/data.parquet"),
-    ]
-    candidates = [path for path in candidates if bronze_collection_token(path)]
-    if not candidates:
-        raise FileNotFoundError(f"보유 차량 Bronze 파티션이 없습니다: {partition}")
-    return max(candidates, key=bronze_collection_token)
+def _newest_bronze_path(
+    base_dir: str, year_month: str, service_area: str | None = None
+) -> Path:
+    """지역 경로를 먼저 보고, 없으면 지역 없는 경로를 봅니다(#851)."""
+    attempted = []
+    for root in candidate_roots(Path(base_dir) / DATASET, service_area):
+        partition = root / f"year_month={year_month}"
+        attempted.append(partition)
+        candidates = [
+            *partition.glob("*.parquet"),
+            *partition.glob("collected_at=*/data.parquet"),
+        ]
+        candidates = [path for path in candidates if bronze_collection_token(path)]
+        if candidates:
+            return max(candidates, key=bronze_collection_token)
+    raise FileNotFoundError(f"보유 차량 Bronze 파티션이 없습니다: {attempted}")
 
 
 def build_bronze_extractor(

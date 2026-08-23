@@ -7,6 +7,7 @@ from typing import Optional
 from urllib.parse import urlsplit
 
 from shared.common.s3_reader import list_keys
+from shared.common.service_area_path import candidate_prefixes, candidate_roots
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
 from pipeline_core.loader import Loader, WriteResult
@@ -117,62 +118,87 @@ def year_month_range(start_year_month: str, end_year_month: str) -> list[str]:
     return months
 
 
-def latest_partition_file(input_path: str, year_month: str) -> Optional[str]:
-    """`year_month=` 파티션 안의 최신 Parquet 파일 경로. 파티션/파일이 없으면 None."""
+def latest_partition_file(
+    input_path: str, year_month: str, service_area: str | None = None
+) -> Optional[str]:
+    """`year_month=` 파티션 안의 최신 Parquet 파일 경로. 파티션/파일이 없으면 None.
+
+    지역 경로를 먼저 보고, 없으면 지역 없는 경로를 봅니다(#851).
+    """
     if is_s3_path(input_path):
-        return _latest_s3_partition_file(input_path, year_month)
-    partition_dir = Path(input_path) / f"year_month={year_month}"
-    if not partition_dir.exists():
-        return None
-    parquet_files = sorted(
-        (
-            *partition_dir.glob("*.parquet"),
-            *partition_dir.glob("collected_at=*/data.parquet"),
+        return _latest_s3_partition_file(input_path, year_month, service_area)
+    for root in candidate_roots(input_path, service_area):
+        partition_dir = root / f"year_month={year_month}"
+        if not partition_dir.exists():
+            continue
+        parquet_files = sorted(
+            (
+                *partition_dir.glob("*.parquet"),
+                *partition_dir.glob("collected_at=*/data.parquet"),
+            )
         )
-    )
-    if not parquet_files:
-        return None
-    versioned = [
-        (path, bronze_collection_token(path)) for path in parquet_files
-    ]
-    versioned = [(path, token) for path, token in versioned if token]
-    selected = (
-        max(versioned, key=lambda item: item[1])[0]
-        if versioned
-        else parquet_files[-1]
-    )
-    return str(selected)
+        if not parquet_files:
+            continue
+        versioned = [
+            (path, bronze_collection_token(path)) for path in parquet_files
+        ]
+        versioned = [(path, token) for path, token in versioned if token]
+        selected = (
+            max(versioned, key=lambda item: item[1])[0]
+            if versioned
+            else parquet_files[-1]
+        )
+        return str(selected)
+    return None
 
 
-def latest_partition_files(input_path: str) -> list[str]:
-    """Bronze 루트에서 월별 최신 수집본 하나씩만 고릅니다."""
+def latest_partition_files(
+    input_path: str, service_area: str | None = None
+) -> list[str]:
+    """Bronze 루트에서 월별 최신 수집본 하나씩만 고릅니다.
+
+    한 레벨 glob 이라 지역 계층이 들어가면 **조용히 빈 목록**이 됩니다. 후보 루트를
+    모두 훑어 합집합으로 모읍니다(#851).
+    """
+    year_months = {
+        partition.name.removeprefix("year_month=")
+        for root in candidate_roots(input_path, service_area)
+        for partition in root.glob("year_month=????-??")
+    }
     selected = []
-    for partition in sorted(Path(input_path).glob("year_month=????-??")):
-        year_month = partition.name.removeprefix("year_month=")
-        latest = latest_partition_file(input_path, year_month)
+    for year_month in sorted(year_months):
+        latest = latest_partition_file(input_path, year_month, service_area)
         if latest is not None:
             selected.append(latest)
     return selected
 
 
-def _latest_s3_partition_file(input_path: str, year_month: str) -> Optional[str]:
+def _latest_s3_partition_file(
+    input_path: str, year_month: str, service_area: str | None = None
+) -> Optional[str]:
     scheme = input_path.split("://", 1)[0]
     parsed = urlsplit(input_path)
     bucket = parsed.netloc
-    partition_prefix = f"{parsed.path.lstrip('/').rstrip('/')}/year_month={year_month}/"
-    parquet_keys = sorted(key for key in list_keys(bucket, partition_prefix) if key.endswith(".parquet"))
-    if not parquet_keys:
-        return None
-    versioned = [
-        (key, bronze_collection_token(Path(key))) for key in parquet_keys
-    ]
-    versioned = [(key, token) for key, token in versioned if token]
-    selected = (
-        max(versioned, key=lambda item: item[1])[0]
-        if versioned
-        else parquet_keys[-1]
-    )
-    return f"{scheme}://{bucket}/{selected}"
+    base_key = parsed.path.lstrip("/").rstrip("/")
+    for area_prefix in candidate_prefixes(base_key, service_area=service_area):
+        partition_prefix = f"{area_prefix}/year_month={year_month}/"
+        parquet_keys = sorted(
+            key for key in list_keys(bucket, partition_prefix)
+            if key.endswith(".parquet")
+        )
+        if not parquet_keys:
+            continue
+        versioned = [
+            (key, bronze_collection_token(Path(key))) for key in parquet_keys
+        ]
+        versioned = [(key, token) for key, token in versioned if token]
+        selected = (
+            max(versioned, key=lambda item: item[1])[0]
+            if versioned
+            else parquet_keys[-1]
+        )
+        return f"{scheme}://{bucket}/{selected}"
+    return None
 
 
 def main(args_list: Optional[list[str]] = None) -> PipelineResult:

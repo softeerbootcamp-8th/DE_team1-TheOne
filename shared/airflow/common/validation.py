@@ -89,12 +89,27 @@ def location_size(location: Path | S3Location) -> int:
     return location.stat().st_size
 
 
-def layout_tail(location: Path | S3Location | str, segments: int = 3) -> str:
+def layout_tail(
+    location: Path | S3Location | str,
+    segments: int = 3,
+    service_area: str | None = None,
+) -> str:
     """파티션과 파일명만 잘라냅니다.
 
     layout 규칙 비교에 씁니다. 로컬은 base_dir, S3 는 bucket/prefix 로 앞부분이
     달라서 절대경로끼리 비교할 수 없지만, 규칙 위반은 뒤쪽 파티션 경로에서 드러납니다.
+
+    `service_area` 를 주면 세그먼트 수를 **하나 늘립니다**. 지역 계층(#674)이 들어가면
+    `<dataset>/year_month=<ym>/<file>` 이던 tail 이
+    `service_area=<sa>/year_month=<ym>/<file>` 로 밀려 **데이터셋명이 빠집니다** —
+    비교하는 두 경로가 같은 빌더로 만들어지니 통과는 하지만, 검사가 조용히 약해집니다.
+    지역을 넘겨 데이터셋명을 계속 포함시킵니다.
+
+    ⚠️ 기대 경로를 만드는 빌더(`silver_file` 등)와 **같은 `service_area` 를** 넘겨야
+    합니다. 한쪽만 넘기면 tail 길이가 어긋나 항상 실패합니다.
     """
+    if service_area is not None:
+        segments += 1
     parts = str(location).replace("\\", "/").rstrip("/").split("/")
     return "/".join(parts[-segments:])
 
