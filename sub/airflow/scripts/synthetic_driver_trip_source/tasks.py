@@ -20,6 +20,12 @@ from schema.source import (
     LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as INVENTORY_REQUIRED_COLUMNS,
 )
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.common.source_published_layout import (
+    PUBLISHED_DATASETS,
+    dataset_key,
+    manifest_key,
+    quality_report_key,
+)
 from sub.generators.synthetic_company_snapshot.generate import (
     resolve_vehicle_master_path,
 )
@@ -38,7 +44,6 @@ DEFAULT_PATHS = {
 # `storage=s3` 일 때 원천을 올려두는 곳. EMR Serverless 워커는 이 Airflow 컨테이너의
 # 로컬 디스크를 볼 수 없으므로, 다운로드만 하고 끝내면 executor 가 입력을 못 찾습니다.
 S3_RAW_PREFIX = "source/raw"
-S3_PUBLISHED_PREFIX = "source/published"
 ZONE_LOOKUP_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
 HVFHV_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_{year_month}.parquet"
 MAX_MONTH_LOOKBACK = 6
@@ -199,9 +204,7 @@ def _upload_raw(local: Path, bucket: str, key: str) -> str:
 
 
 def _released_on_s3(bucket: str, year_month: str) -> bool:
-    return _s3_object_exists(
-        bucket, f"{S3_PUBLISHED_PREFIX}/_manifests/year_month={year_month}.json"
-    )
+    return _s3_object_exists(bucket, manifest_key(year_month))
 
 
 def _zone_lookup(source_input_dir: str | Path) -> Path:
@@ -386,11 +389,14 @@ def validate_release_s3(bucket: str, year_month: str, seed: int | None) -> None:
     """
     from shared.common.s3_reader import get_object_bytes
 
-    prefix = S3_PUBLISHED_PREFIX
-    manifest_key = f"{prefix}/_manifests/year_month={year_month}.json"
-    if not _s3_object_exists(bucket, manifest_key):
-        raise ValueError(f"원천 릴리스 manifest가 없습니다: s3://{bucket}/{manifest_key}")
-    manifest = json.loads(get_object_bytes(bucket, manifest_key).decode("utf-8"))
+    release_manifest_key = manifest_key(year_month)
+    if not _s3_object_exists(bucket, release_manifest_key):
+        raise ValueError(
+            f"원천 릴리스 manifest가 없습니다: s3://{bucket}/{release_manifest_key}"
+        )
+    manifest = json.loads(
+        get_object_bytes(bucket, release_manifest_key).decode("utf-8")
+    )
     if manifest.get("year_month") != year_month:
         raise ValueError(f"원천 릴리스 계보가 요청과 다릅니다: {manifest}")
     run_id, config_hash = manifest.get("run_id"), manifest.get("config_hash")
@@ -404,15 +410,21 @@ def validate_release_s3(bucket: str, year_month: str, seed: int | None) -> None:
     if seed is not None and manifest.get("seed") != seed:
         raise ValueError(f"원천 릴리스 seed가 요청과 다릅니다: {manifest.get('seed')} != {seed}")
 
-    for dataset in RELEASE_DATASETS:
+    for dataset in PUBLISHED_DATASETS:
         metadata = manifest.get("datasets", {}).get(dataset, {})
         key = str(metadata.get("key", ""))
-        if not key or not _s3_object_exists(bucket, key):
+        expected_key = dataset_key(dataset, year_month)
+        if key != expected_key:
+            raise ValueError(
+                f"{dataset} published key가 저장 계약과 다릅니다: "
+                f"{key!r} != {expected_key!r}"
+            )
+        if not _s3_object_exists(bucket, key):
             raise ValueError(f"원천 릴리스 Parquet이 없습니다: s3://{bucket}/{key}")
         if int(metadata.get("row_count", 0)) <= 0:
             raise ValueError(f"{dataset} 행 수가 0입니다: {metadata}")
 
-    quality_key = f"{prefix}/_quality_reports/year_month={year_month}.json"
+    quality_key = quality_report_key(year_month)
     if not _s3_object_exists(bucket, quality_key):
         raise ValueError(f"원천 릴리스 품질 리포트가 없습니다: s3://{bucket}/{quality_key}")
     logger.info(

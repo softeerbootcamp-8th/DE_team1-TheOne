@@ -8,11 +8,18 @@ import pytest
 DAG_PARAMS = {
     "driver_vehicle_monthly_snapshot_raw_to_silver_dag": (
         "driver_vehicle_monthly_snapshot_raw_to_silver_dag",
-        {"year", "month", "api_base_url", "base_dir", "silver_dir"},
+        {
+            "year",
+            "month",
+            "api_base_url",
+            "base_dir",
+            "silver_dir",
+            "service_area",
+        },
     ),
     "eia_electricity_price_raw_to_silver_dag": (
         "eia_electricity_price_raw_to_silver_dag",
-        {"year", "month", "markup", "bronze_dir", "silver_dir"},
+        {"year", "month", "markup", "bronze_dir", "silver_dir", "service_area"},
     ),
     "eia_fuel_price_silver_dag": (
         "eia_fuel_price_silver_dag",
@@ -20,15 +27,22 @@ DAG_PARAMS = {
     ),
     "eia_gas_price_raw_to_silver_dag": (
         "eia_gas_price_raw_to_silver_dag",
-        {"year", "month", "bronze_dir", "silver_dir"},
+        {"year", "month", "bronze_dir", "silver_dir", "service_area"},
     ),
     "lease_vehicle_inventory_raw_to_silver_dag": (
         "lease_vehicle_inventory_raw_to_silver_dag",
-        {"year", "month", "api_base_url", "base_dir", "silver_dir"},
+        {"year", "month", "api_base_url", "base_dir", "silver_dir", "service_area"},
     ),
     "monthly_taxi_trip_raw_to_silver_dag": (
         "monthly_taxi_trip_dag",
-        {"year", "month", "base_dir", "api_base_url", "error_threshold"},
+        {
+            "year",
+            "month",
+            "service_area",
+            "base_dir",
+            "api_base_url",
+            "error_threshold",
+        },
     ),
     "monthly_taxi_trip_silver_to_gold_dag": (
         "monthly_taxi_trip_silver_to_gold_dag",

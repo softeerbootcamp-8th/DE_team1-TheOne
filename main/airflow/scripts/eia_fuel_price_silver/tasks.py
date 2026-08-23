@@ -18,6 +18,7 @@ from pathlib import Path
 from airflow.sdk import task
 
 from main.airflow.common import assets
+from main.airflow.common.assets import candidate_prefixes, candidate_roots
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
@@ -79,10 +80,16 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def require_clean_silver(base_dir: str, year_month: str) -> dict[str, str]:
+def require_clean_silver(
+    base_dir: str, year_month: str, service_area: str | None = None
+) -> dict[str, str]:
     """두 CLEAN Silver 의 대상 월 파티션이 모두 있는지 변환 **전에** 확인합니다.
 
     하나만 있으면 변환이 더 안쪽에서 죽어 어느 정제가 문제인지 로그를 파야 합니다.
+
+    지역 경로를 먼저 보고, 없으면 지역 없는 경로를 봅니다 — #843/#844가 쓰기 쪽을
+    지역별로 옮기는 동안, 아직 안 옮긴 지역 없는 CLEAN도 계속 통과해야 합니다
+    (#845 전 최소 대응. `extractor._read`/`_read_s3` 와 같은 탐색 순서).
     """
     extractor = importlib.import_module(
         "main.aws_lambda.functions.eia_fuel_price_silver.extractor"
@@ -100,18 +107,31 @@ def require_clean_silver(base_dir: str, year_month: str) -> dict[str, str]:
         (extractor.GAS_DATASET, "eia_gas_price_raw_to_silver_pipeline"),
         (extractor.ELECTRICITY_DATASET, "eia_electricity_price_raw_to_silver_pipeline"),
     ):
-        path = (
-            extractor.clean_silver_file(base_dir, dataset, year_month)
-            if storage == "local"
-            else S3Location(bucket, extractor.clean_silver_key(dataset, year_month))
-        )
-        try:
-            require_file(path)
-        except FileNotFoundError as exc:
+        if storage == "local":
+            candidates = [
+                root / f"year_month={year_month}" / f"{dataset}.parquet"
+                for root in candidate_roots(Path(base_dir) / dataset, service_area)
+            ]
+        else:
+            candidates = [
+                S3Location(bucket, f"{prefix}/year_month={year_month}/{dataset}.parquet")
+                for prefix in candidate_prefixes(
+                    "silver", dataset, service_area=service_area
+                )
+            ]
+
+        located = None
+        for candidate in candidates:
+            try:
+                located = require_file(candidate)
+                break
+            except FileNotFoundError:
+                continue
+        if located is None:
             raise FileNotFoundError(
-                f"{dataset} CLEAN Silver 가 없습니다: {path} — {dag_id} 을 먼저 돌리세요."
-            ) from exc
-        found[dataset] = str(path)
+                f"{dataset} CLEAN Silver 가 없습니다: {candidates} — {dag_id} 을 먼저 돌리세요."
+            )
+        found[dataset] = str(located)
 
     logger.info("EIA CLEAN Silver 확인 (%s 대상): %s", year_month, found)
     return found
@@ -187,7 +207,9 @@ def validate_silver(result: object) -> None:
 def check_clean_silver_task(**context) -> str:
     year_month = resolve_year_month(context)
     logger.info("EIA 연료비 대상 월: %s", year_month)
-    require_clean_silver(context["params"]["silver_dir"], year_month)
+    require_clean_silver(
+        context["params"]["silver_dir"], year_month, context["params"]["service_area"]
+    )
     return year_month
 
 
@@ -196,7 +218,11 @@ def combine_silver_task(**context) -> dict:
     params = context["params"]
     year_month = context["task_instance"].xcom_pull(task_ids="check_clean_silver")
 
-    event = {"year_month": year_month, "silver_dir": params["silver_dir"]}
+    event = {
+        "year_month": year_month,
+        "silver_dir": params["silver_dir"],
+        "service_area": params["service_area"],
+    }
     result = lambda_handler_for("eia_fuel_price_silver")(event=event)
     return {"year_month": year_month, **result}
 

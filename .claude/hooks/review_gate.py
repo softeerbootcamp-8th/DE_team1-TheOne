@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""커밋·PR 전에 `review-engineering` 검토를 한 번 거치게 만드는 훅입니다.
+"""코드 변경이 있는 커밋·PR 전에 `review-engineering` 검토를 거치게 만드는 훅입니다.
 
 Claude Code 의 PreToolUse 훅으로 등록해 두면 Bash 도구 호출을 가로채고, 그 명령이
 `git commit` 또는 `gh pr create` 일 때만 개입합니다. 검토 기록이 없으면 exit 2 로
@@ -8,8 +8,9 @@ Claude Code 의 PreToolUse 훅으로 등록해 두면 Bash 도구 호출을 가�
     등록:  .claude/settings.json 의 hooks.PreToolUse
     통과:  python3 .claude/hooks/review_gate.py --pass commit|pr
 
-검토 기록은 **변경 내용의 해시**로 남습니다. 검토 후 코드를 더 고치면 해시가 달라져
-다시 검토를 요구합니다 — 검토한 것과 커밋하는 것이 같은 물건이어야 의미가 있습니다.
+문서·스킬·설정·이미지만 바뀌면 자동 통과합니다. 검토 기록은 **코드 변경 내용의 해시**로
+남습니다. 검토 후 코드를 더 고치면 해시가 달라져 다시 검토를 요구합니다 — 검토한 것과
+커밋하는 것이 같은 물건이어야 의미가 있습니다.
 
 기록은 `.git/review-cache/` 에 두고 git 에는 올리지 않습니다. 이 게이트는
 암호학적 강제가 아니라 **검토 단계를 흐름에 끼워 넣는 장치**입니다. 사람이 판단해서
@@ -25,6 +26,20 @@ from pathlib import Path
 from typing import NamedTuple
 
 CACHE_DIR_NAME = "review-cache"
+CODE_SUFFIXES = {
+    ".py",
+    ".pyi",
+    ".sql",
+    ".sh",
+    ".bash",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".java",
+    ".scala",
+}
+CODE_FILENAMES = {"Dockerfile"}
 
 
 class Stage(NamedTuple):
@@ -78,12 +93,24 @@ def run_result(cmd: list[str]) -> tuple[int, str]:
     return done.returncode, done.stdout
 
 
+def is_code_path(path: str) -> bool:
+    """review-engineering을 강제할 실행 코드 경로인지 판정합니다."""
+    name = Path(path).name
+    return name in CODE_FILENAMES or Path(name).suffix.lower() in CODE_SUFFIXES
+
+
 def diff_state(stage: str, *, refresh: bool = True) -> DiffState:
-    """diff를 읽고 빈 변경과 읽기 실패를 구분합니다."""
+    """코드 diff를 읽고 비코드 변경과 읽기 실패를 구분합니다."""
     spec = STAGES[stage]
     if refresh and spec.refresh:
         run(spec.refresh)  # Claude 경로와 `--pass`는 기존처럼 최신 원격을 시도합니다.
-    code, diff = run_result(spec.diff)
+    code, names = run_result([*spec.diff, "--name-only", "-z"])
+    if code != 0:
+        return DiffState(available=False, digest=None)
+    code_paths = [path for path in names.split("\0") if path and is_code_path(path)]
+    if not code_paths:
+        return DiffState(available=True, digest=None)
+    code, diff = run_result([*spec.diff, "--", *code_paths])
     if code != 0:
         return DiffState(available=False, digest=None)
     if not diff.strip():
@@ -92,7 +119,7 @@ def diff_state(stage: str, *, refresh: bool = True) -> DiffState:
 
 
 def diff_hash(stage: str, *, refresh: bool = True) -> str | None:
-    """검토 대상의 지문. 대상이 비어 있으면 None (검토할 게 없음)."""
+    """코드 변경의 지문. 코드 변경이 없으면 None (검토할 게 없음)."""
     return diff_state(stage, refresh=refresh).digest
 
 
@@ -267,6 +294,12 @@ def self_check() -> int:
 
     assert marker("commit", "abc").name == "commit-abc"
     assert marker("commit", "abc").is_absolute(), "기록 위치는 저장소 루트 기준이어야 함"
+    assert is_code_path("main/airflow/dags/example.py")
+    assert is_code_path("queries/monthly.sql")
+    assert is_code_path("shared/airflow/Dockerfile")
+    assert not is_code_path("docs/design.md")
+    assert not is_code_path(".agents/skills/write-pr/SKILL.md")
+    assert not is_code_path("config/generation.json")
     print("self-check ok")
     return 0
 

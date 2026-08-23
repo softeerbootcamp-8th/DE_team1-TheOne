@@ -17,7 +17,6 @@ from shared.aws_lambda.common.atomic_write import atomic_write
 from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 from shared.common.s3_reader import get_object_bytes, list_keys
-from shared.common.service_area_path import join_segments, service_area_segment
 BRONZE_DATA_FILE_NAME = "data.parquet"
 COLLECTED_AT_DIR_PATTERN = re.compile(r"^collected_at=(\d{8}T\d{12}Z)$")
 TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
@@ -26,6 +25,46 @@ YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 DATASET_URL_PATTERN = re.compile(
     r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$"
 )
+SERVICE_AREA_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def service_area_segment(service_area: str | None) -> str:
+    if service_area is None:
+        return ""
+    if not SERVICE_AREA_PATTERN.fullmatch(service_area or ""):
+        raise ValueError(
+            f"service_area 는 대문자 코드여야 합니다(예: NYC): {service_area!r}"
+        )
+    return f"service_area={service_area}"
+
+
+def join_segments(*segments: str | None) -> str:
+    return "/".join(segment for segment in segments if segment)
+
+
+def _candidate_segments(service_area: str | None) -> tuple[str | None, ...]:
+    if service_area is None:
+        return (None,)
+    return (service_area_segment(service_area), None)
+
+
+def candidate_roots(
+    root: str | Path, service_area: str | None = None
+) -> tuple[Path, ...]:
+    base = Path(root)
+    return tuple(
+        base / segment if segment else base
+        for segment in _candidate_segments(service_area)
+    )
+
+
+def candidate_prefixes(
+    *head: str, service_area: str | None = None
+) -> tuple[str, ...]:
+    return tuple(
+        join_segments(*head, segment) if segment else join_segments(*head)
+        for segment in _candidate_segments(service_area)
+    )
 
 
 def collected_at_token(value: str) -> str:
@@ -165,7 +204,7 @@ class MonthlyParquetBronzeLoader(Loader):
         self._dataset = dataset
         self._dataset_dir = dataset_dir
         # None 이면 지역 계층 없이 지금과 같은 경로입니다 — 데이터셋별로 하나씩
-        # 켜기 위한 기본값(#840~#842). 규칙은 shared.common.service_area_path.
+        # 켜기 위한 기본값(#840~#842). 규칙은 이 런타임 모듈이 소유합니다.
         self._service_area = service_area
         self.payload: dict = {}
         self.path: Path | None = None

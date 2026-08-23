@@ -19,18 +19,23 @@ class EiaElectricityPriceBronzeLoader(Loader):
         self,
         base_dir: str,
         collected_date: date,
+        service_area: str | None = None,
     ):
         self._base_dir = base_dir
         self._collected_date = collected_date
+        self._service_area = service_area
 
     def write(self, data: dict) -> WriteResult:
         body = data["body"]
-        path = layout.electricity_bronze_file(self._base_dir, self._collected_date)
+        path = layout.electricity_bronze_file(
+            self._base_dir, self._collected_date, self._service_area
+        )
         duplicate = layout.is_duplicate_of_newest(
             self._base_dir,
             layout.ELECTRICITY_DATASET,
             layout.ELECTRICITY_FILE_NAME,
             body,
+            self._service_area,
         )
         # 전력은 3개월에 한 번만 실제로 갱신되므로 월 1회 수집분 대부분이 바이트까지
         # 같습니다. 같은 것을 새 파티션으로 쌓지 않습니다.
@@ -53,13 +58,15 @@ class EiaElectricityPriceS3BronzeLoader(Loader):
         self,
         collected_date: date,
         bucket: str | None = None,
+        service_area: str | None = None,
     ):
         self._collected_date = collected_date
         self._bucket = bucket
+        self._service_area = service_area
 
     def write(self, data: dict) -> WriteResult:
         body = data["body"]
-        key = layout.electricity_bronze_key(self._collected_date)
+        key = layout.electricity_bronze_key(self._collected_date, self._service_area)
 
         result = S3Loader(
             key=key,
@@ -76,15 +83,18 @@ def build_bronze_loader(
     base_dir: str,
     collected_date: date,
     bucket: str | None = None,
+    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
         return EiaElectricityPriceBronzeLoader(
             base_dir,
             collected_date,
+            service_area,
         )
     if storage == "s3":
         return EiaElectricityPriceS3BronzeLoader(
             collected_date,
             bucket=bucket,
+            service_area=service_area,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

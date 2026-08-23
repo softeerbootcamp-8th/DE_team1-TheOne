@@ -325,10 +325,10 @@ def _frames(mark: str):
     }
 
 
-def test_세_산출물이_한꺼번에_교체된다(tmp_path):
+def test_세_산출물이_지역경로에서_한꺼번에_교체된다(tmp_path):
     from main.spark.jobs.silver_to_gold.job import _write_all_csv
 
-    written = _write_all_csv(_frames("first"), str(tmp_path), "2026-01")
+    written = _write_all_csv(_frames("first"), str(tmp_path), "2026-01", "NYC")
 
     assert set(written) == {
         "driver_aggregation",
@@ -336,7 +336,20 @@ def test_세_산출물이_한꺼번에_교체된다(tmp_path):
         "monthly_report",
     }
     for path in written.values():
+        assert "service_area=NYC" in str(path)
         assert path.read_text().count("first") == 1
+
+
+def test_두_지역을_연달아_써도_서로의_CSV를_덮어쓰지_않는다(tmp_path):
+    from main.spark.jobs.silver_to_gold.job import _write_all_csv
+
+    nyc = _write_all_csv(_frames("nyc"), str(tmp_path), "2026-01", "NYC")
+    tx = _write_all_csv(_frames("tx"), str(tmp_path), "2026-01", "TX")
+
+    for dataset in nyc:
+        assert nyc[dataset] != tx[dataset]
+        assert nyc[dataset].read_text().count("nyc") == 1
+        assert tx[dataset].read_text().count("tx") == 1
 
 
 def test_쓰는_도중_실패하면_기존_산출물이_그대로_남는다(tmp_path, monkeypatch):
@@ -345,7 +358,7 @@ def test_쓰는_도중_실패하면_기존_산출물이_그대로_남는다(tmp_
 
     from main.spark.jobs.silver_to_gold import job
 
-    job._write_all_csv(_frames("first"), str(tmp_path), "2026-01")
+    job._write_all_csv(_frames("first"), str(tmp_path), "2026-01", "NYC")
 
     original = pd.DataFrame.to_csv
     calls = {"n": 0}
@@ -359,7 +372,7 @@ def test_쓰는_도중_실패하면_기존_산출물이_그대로_남는다(tmp_
     monkeypatch.setattr(pd.DataFrame, "to_csv", fail_on_second)
 
     with pytest.raises(MemoryError):
-        job._write_all_csv(_frames("second"), str(tmp_path), "2026-01")
+        job._write_all_csv(_frames("second"), str(tmp_path), "2026-01", "NYC")
 
     # 셋 다 직전 실행 값이어야 합니다 — 하나라도 second 면 섞인 것입니다.
     for dataset in (
@@ -367,7 +380,7 @@ def test_쓰는_도중_실패하면_기존_산출물이_그대로_남는다(tmp_
         "driver_vehicle_profit_simulation",
         "monthly_report",
     ):
-        path = job._csv_path(str(tmp_path), dataset, "2026-01")
+        path = job._csv_path(str(tmp_path), dataset, "2026-01", "NYC")
         assert "second" not in path.read_text(), f"{dataset} 이 새 값으로 바뀌었습니다"
 
 
@@ -381,7 +394,7 @@ def test_실패해도_임시_파일을_남기지_않는다(tmp_path, monkeypatch
     )
 
     with pytest.raises(OSError):
-        job._write_all_csv(_frames("x"), str(tmp_path), "2026-01")
+        job._write_all_csv(_frames("x"), str(tmp_path), "2026-01", "NYC")
 
     assert not list(tmp_path.rglob("*.tmp"))
 

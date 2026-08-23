@@ -3,7 +3,7 @@
 1. 로컬 CSV 파티션을 모두 이어붙인다
 2. 로컬 파티션이 하나도 없으면 빈 데이터프레임
 3. RDS 쿼리 컬럼은 schema.gold 필드에서 자동 생성된다 (하드코딩 컬럼 금지)
-4. RDS는 year_month별 최신 version 행만 읽는다 — 과거 재실행 버전은 제외
+4. RDS는 service_area·year_month별 최신 version 행만 읽는다
 5. RDS는 같은 (year_month, version) 안의 여러 행(기사별)을 전부 읽는다
 6. 알 수 없는 dataset 이름은 RdsDataSource에서 즉시 ValueError
 7. DASHBOARD_DATA_SOURCE 기본값은 local
@@ -27,16 +27,24 @@ from schema.gold import DriverMonthlyProfit, MonthlyReport
 
 
 def test_로컬_소스는_모든_파티션을_이어붙인다(tmp_path):
-    for year_month in ("2026-01", "2026-02"):
-        partition = tmp_path / "monthly_report" / f"year_month={year_month}"
+    for service_area, year_month in (("NYC", "2026-01"), ("TX", "2026-02")):
+        partition = (
+            tmp_path
+            / "monthly_report"
+            / f"service_area={service_area}"
+            / f"year_month={year_month}"
+        )
         partition.mkdir(parents=True)
-        pd.DataFrame([{"year_month": year_month}]).to_csv(
+        pd.DataFrame(
+            [{"service_area": service_area, "year_month": year_month}]
+        ).to_csv(
             partition / "monthly_report.csv", index=False
         )
 
     frame = LocalCsvDataSource(tmp_path).load("monthly_report")
 
     assert sorted(frame["year_month"]) == ["2026-01", "2026-02"]
+    assert sorted(frame["service_area"]) == ["NYC", "TX"]
 
 
 def test_로컬_소스는_파티션이_없으면_빈_데이터프레임(tmp_path):
@@ -51,7 +59,8 @@ def test_최신버전_쿼리는_스키마_필드_순서로_컬럼을_고른다()
     assert "t.year_month" in query
     assert "t.is_rerun" in query
     assert "MAX(version)" in query
-    assert "WHERE year_month = t.year_month" in query
+    assert "service_area = t.service_area" in query
+    assert "year_month = t.year_month" in query
 
 
 def _sqlite_conn_with(table: str, columns: list[str], rows: list[dict]) -> sqlite3.Connection:
@@ -100,7 +109,7 @@ def test_RDS_소스는_컬럼을_스키마에서_자동생성한다(monkeypatch)
     assert frame.loc[0, "total_revenue_increase"] == 999.0
 
 
-def test_RDS_소스는_year_month별_최신_버전만_읽는다(monkeypatch):
+def test_RDS_소스는_지역과_year_month별_최신_버전만_읽는다(monkeypatch):
     columns = [field.name for field in fields(MonthlyReport)]
     conn = _sqlite_conn_with(
         "monthly_report",
@@ -108,6 +117,9 @@ def test_RDS_소스는_year_month별_최신_버전만_읽는다(monkeypatch):
         [
             _monthly_report_row("2026-05", 1, total_revenue_increase=100.0),
             _monthly_report_row("2026-05", 2, total_revenue_increase=200.0),
+            _monthly_report_row(
+                "2026-05", 1, service_area="TX", total_revenue_increase=400.0
+            ),
             _monthly_report_row("2026-06", 1, total_revenue_increase=300.0),
         ],
     )
@@ -115,9 +127,14 @@ def test_RDS_소스는_year_month별_최신_버전만_읽는다(monkeypatch):
 
     frame = RdsDataSource("dsn").load("monthly_report")
 
-    assert sorted(frame["year_month"]) == ["2026-05", "2026-06"]
-    by_month = frame.set_index("year_month")
-    assert by_month.loc["2026-05", "total_revenue_increase"] == 200.0
+    assert len(frame) == 3
+    by_area_month = frame.set_index(["service_area", "year_month"])
+    assert (
+        by_area_month.loc[("NYC", "2026-05"), "total_revenue_increase"] == 200.0
+    )
+    assert (
+        by_area_month.loc[("TX", "2026-05"), "total_revenue_increase"] == 400.0
+    )
 
 
 def _driver_aggregation_row(driver_id: str, version: int, **overrides) -> dict:

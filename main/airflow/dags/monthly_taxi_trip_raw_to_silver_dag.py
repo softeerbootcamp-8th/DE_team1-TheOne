@@ -12,6 +12,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
+from main.airflow.common.assets import DEFAULT_SERVICE_AREA
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
@@ -67,6 +68,12 @@ default_args = {
             type=["string", "null"],
             pattern=r"^(0?[1-9]|1[0-2])$",
             description="수동 수집 월 (예: '03' 또는 '3'). 비워두면 실행일 기준 직전 달 자동 계산",
+        ),
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
+            type="string",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
         ),
         "base_dir": Param(
             DEFAULT_BRONZE_DIR,

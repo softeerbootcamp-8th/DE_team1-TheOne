@@ -8,7 +8,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-from shared.common.service_area_path import join_segments, service_area_segment
+from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
 
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 from shared.aws_lambda.common.atomic_write import atomic_write
@@ -52,16 +52,18 @@ class EiaElectricityPriceSilverLoader(Loader):
         self,
         base_dir: str,
         year_month: str,
+        service_area: str | None = None,
     ):
         self._base_dir = base_dir
         self._year_month = year_month
+        self._service_area = service_area
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
             raise ValueError("적재할 충전 단가 Silver 데이터가 없습니다.")
 
         table = pa.Table.from_pylist(data, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
-        path = silver_file(self._base_dir, self._year_month)
+        path = silver_file(self._base_dir, self._year_month, self._service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
             path,
@@ -82,9 +84,11 @@ class EiaElectricityPriceS3SilverLoader(Loader):
         self,
         year_month: str,
         bucket: str | None = None,
+        service_area: str | None = None,
     ):
         self._year_month = year_month
         self._bucket = bucket
+        self._service_area = service_area
 
     def write(self, data: list[dict]) -> WriteResult:
         if not data:
@@ -95,7 +99,7 @@ class EiaElectricityPriceS3SilverLoader(Loader):
         pq.write_table(table, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month),
+            key=silver_key(self._year_month, self._service_area),
             bucket=self._bucket,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=table.num_rows)
@@ -114,15 +118,18 @@ def build_silver_loader(
     base_dir: str,
     bucket: str | None,
     year_month: str,
+    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
         return EiaElectricityPriceSilverLoader(
             base_dir,
             year_month,
+            service_area,
         )
     if storage == "s3":
         return EiaElectricityPriceS3SilverLoader(
             year_month,
             bucket=bucket,
+            service_area=service_area,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

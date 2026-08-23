@@ -5,6 +5,7 @@
 3. 필수 컬럼 누락 시 원천부터 한 번 재수집
 4. Bronze 행 수·스키마·재고 품질로 Silver 확인
 5. S3 Silver 경로를 로컬 Path로 접지 않고 검증
+6. service_area를 Bronze 수집·정제와 Silver 경로에 전달
 """
 
 from datetime import timedelta
@@ -86,6 +87,10 @@ def test_기본_API_주소는_내부_제공서버를_사용한다():
     assert DAG.params["api_base_url"] == "http://10.0.10.81:8091"
 
 
+def test_보유차량_DAG는_NYC를_기본_서비스지역으로_사용한다():
+    assert DAG.params["service_area"] == "NYC"
+
+
 def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
     """한쪽 원천이 늦어도 다른 쪽 월 적재가 멈추지 않도록 DAG 를 나눴습니다.
     나눈 이상 두 DAG 가 같은 Silver 디렉터리를 동시에 쓰면 안 됩니다."""
@@ -114,6 +119,7 @@ def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한
             "base_dir": "/bronze",
             "year": "2026",
             "month": "8",
+            "service_area": "TX",
         }
     )
     assert handlers == ["lease_vehicle_inventory_raw_to_bronze"]
@@ -122,10 +128,11 @@ def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한
         "base_dir": "/bronze",
         "year": "2026",
         "month": "8",
+        "service_area": "TX",
     }
 
 
-def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달한다(monkeypatch):
+def test_정제task는_서비스지역과_적재위치를_정제핸들러에_전달한다(monkeypatch):
     called = {}
     handlers = []
 
@@ -147,12 +154,12 @@ def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달
                 f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
             ),
         },
-        params={"silver_dir": "/silver"},
+        params={"silver_dir": "/silver", "service_area": "TX"},
     )
     assert handlers == ["lease_vehicle_inventory_bronze_to_silver"]
     assert called == {
-        "bronze_path": f"/bronze/{FILE_NAME}",
         "year_month": "2026-08",
+        "service_area": "TX",
         "silver_output_path": (
             f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
         ),
@@ -171,7 +178,7 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir: next(results),
+        lambda result, base_dir, service_area=None: next(results),
     )
     monkeypatch.setattr(
         task_module,
@@ -204,7 +211,8 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir: validated.append(result) or (Path("same.parquet"), []),
+        lambda result, base_dir, service_area=None: validated.append(result)
+        or (Path("same.parquet"), []),
     )
 
     result = _raw_result(source_changed=False)
@@ -215,6 +223,30 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
 
     assert validated_result["silver_version_path"].endswith(SOURCE_VERSION)
     assert validated == [result]
+
+
+def test_TX_Bronze검증은_지역별_Silver경로를_만든다(tmp_path, monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        task_module,
+        "_validate_bronze_result",
+        lambda result, base_dir, service_area=None: seen.append(service_area)
+        or (Path("same.parquet"), []),
+    )
+
+    result = DAG.get_task("validate_bronze").python_callable(
+        _raw_result(),
+        params={
+            "base_dir": "/bronze",
+            "silver_dir": str(tmp_path / "silver"),
+            "service_area": "TX",
+        },
+    )
+
+    expected_root = tmp_path / "silver" / "service_area=TX" / "year_month=2026-08"
+    assert Path(result["silver_version_path"]).parent == expected_root
+    assert Path(result["silver_staging_path"]).parent.parent == expected_root
+    assert seen == ["TX"]
 
 
 def test_Bronze와_행수가_같고_품질이_맞아야_Silver를_통과시킨다(tmp_path):

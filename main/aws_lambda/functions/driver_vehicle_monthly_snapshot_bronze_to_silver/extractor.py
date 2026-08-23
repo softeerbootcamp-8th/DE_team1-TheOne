@@ -7,9 +7,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
-from main.aws_lambda.common.monthly_dataset import bronze_collection_token
+from main.aws_lambda.common.monthly_dataset import (
+    bronze_collection_token,
+    candidate_roots,
+    join_segments,
+    service_area_segment,
+)
 from shared.common.s3_reader import get_object_bytes, list_keys
-from shared.common.service_area_path import candidate_roots, join_segments, service_area_segment
 
 from .loader import DATASET
 
@@ -41,13 +45,16 @@ class DriverVehicleMonthlySnapshotBronzeExtractor(Extractor):
 class DriverVehicleMonthlySnapshotS3BronzeExtractor(Extractor):
     """월 파티션의 최신 수집분 원본을 S3 에서 읽습니다."""
 
-    def __init__(self, bucket: str, year_month: str):
+    def __init__(
+        self, bucket: str, year_month: str, service_area: str | None = None
+    ):
         self._bucket = bucket
         self._year_month = year_month
+        self._service_area = service_area
         self.name = f"driver_vehicle_monthly_snapshot_bronze_s3:{bucket}:{year_month}"
 
     def extract(self) -> pa.Table:
-        prefix = _bronze_s3_prefix(self._year_month)
+        prefix = _bronze_s3_prefix(self._year_month, self._service_area)
         key = _newest_key(list_keys(self._bucket, prefix), prefix)
         body = get_object_bytes(self._bucket, key)
         if not body:
@@ -102,10 +109,18 @@ def _newest_bronze_path(
 
 
 def build_bronze_extractor(
-    storage: str, base_dir: str, bucket: str | None, year_month: str
+    storage: str,
+    base_dir: str,
+    bucket: str | None,
+    year_month: str,
+    service_area: str | None = None,
 ) -> Extractor:
     if storage == "local":
-        return DriverVehicleMonthlySnapshotBronzeExtractor(_newest_bronze_path(base_dir, year_month))
+        return DriverVehicleMonthlySnapshotBronzeExtractor(
+            _newest_bronze_path(base_dir, year_month, service_area)
+        )
     if storage == "s3":
-        return DriverVehicleMonthlySnapshotS3BronzeExtractor(bucket, year_month)
+        return DriverVehicleMonthlySnapshotS3BronzeExtractor(
+            bucket, year_month, service_area
+        )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

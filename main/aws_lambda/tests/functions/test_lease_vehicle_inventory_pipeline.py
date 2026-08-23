@@ -2,6 +2,7 @@
 
 1. 보유 차량 Parquet URL만 호출해 원본 그대로 저장
 2. 원천 행 수 없이 받은 Parquet footer에서 행 수 계산
+3. service_area를 데이터셋과 월 사이의 Bronze 경로에 저장
 """
 
 from datetime import datetime, timezone
@@ -74,6 +75,7 @@ def test_보유차량Parquet만_직접받아_footer행수와함께_Bronze에_저
             "base_dir": str(tmp_path),
             "year": "2026",
             "month": "8",
+            "service_area": "TX",
         }
     )
 
@@ -82,7 +84,8 @@ def test_보유차량Parquet만_직접받아_footer행수와함께_Bronze에_저
     assert path.read_bytes() == CONTENT
     assert path.name == "data.parquet"
     assert path.parent.name == "collected_at=20260820T101532123456Z"
-    assert path.parent.parent.parent.name == "lease_vehicle_inventory"
+    assert path.parents[2].name == "service_area=TX"
+    assert path.parents[3].name == "lease_vehicle_inventory"
     assert result["collected_at"] == "2026-08-20T10:15:32.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
     assert result["source_changed"] is True

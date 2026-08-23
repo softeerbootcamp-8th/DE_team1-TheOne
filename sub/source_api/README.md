@@ -49,7 +49,7 @@ Content-Disposition: attachment; filename="<dataset>.parquet"
 | 값 | 동작 |
 |---|---|
 | `local` (기본값) | `SOURCE_API_LOCAL_ROOT` 아래 `year_month=YYYY-MM/manifest.json` 레이아웃을 읽음. 생성 DAG(`synthetic_driver_trip_source`)가 만드는 그대로의 형식 |
-| `prod` | S3의 `<SOURCE_API_S3_PREFIX>/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 직접 읽음. manifest 없음 |
+| `prod` | S3의 `source/published/NYC/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 직접 읽음. manifest 없음 |
 
 dataset 이름은 한 벌뿐입니다 — 공개 API 경로, local manifest의 키, S3 폴더명이 모두 같습니다.
 예전에는 발행 쪽만 `hvfhv_taxi_trips`를 써서 local은 번역표로 가리고 prod는 발행한 폴더와
