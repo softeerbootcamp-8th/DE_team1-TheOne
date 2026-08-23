@@ -24,7 +24,7 @@ Silver 는 만들지 않습니다 — 두 원본을 합쳐 `gas_ev_price` Silver
 from datetime import date
 from pathlib import Path
 
-from shared.common.service_area_path import join_segments, service_area_segment
+from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
 
 GAS_DATASET = "eia_gas_price"
 ELECTRICITY_DATASET = "eia_electricity_price"

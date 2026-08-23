@@ -12,7 +12,7 @@ import io
 import logging
 from pathlib import Path
 
-from shared.common.service_area_path import (
+from main.aws_lambda.common.monthly_dataset import (
     candidate_prefixes, candidate_roots, join_segments, service_area_segment,
 )
 

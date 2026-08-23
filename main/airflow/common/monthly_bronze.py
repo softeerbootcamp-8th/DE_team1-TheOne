@@ -18,8 +18,8 @@ from shared.airflow.common.validation import (
     parse_year_month,
     require_file,
 )
+from main.airflow.common.assets import join_segments, service_area_segment
 from shared.common.s3_reader import list_keys
-from shared.common.service_area_path import join_segments, service_area_segment
 
 
 BRONZE_DATA_FILE_NAME = "data.parquet"
@@ -91,7 +91,7 @@ def silver_version_path(
     API 3종(monthly_taxi_trip / driver_vehicle_monthly_snapshot /
     lease_vehicle_inventory)이 이 함수를 공유하므로, 데이터셋별로 하나씩 지역을
     켜려면 이 기본값이 필요합니다(#840~#842). 삽입 위치 규칙은
-    `shared.common.service_area_path` 가 단독으로 정의합니다.
+    `main.airflow.common.assets` 가 정의합니다.
     """
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")

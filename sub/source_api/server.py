@@ -24,14 +24,11 @@ from botocore.exceptions import ClientError
 
 from shared.common.env import load_local_env
 from shared.common.s3_reader import get_object_stream, list_keys
+from shared.common.source_published_layout import PUBLISHED_DATASETS, S3_PUBLISHED_PREFIX
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 
-DATASETS = {
-    "monthly_taxi_trip",
-    "driver_vehicle_monthly_snapshot",
-    "lease_vehicle_inventory",
-}
+DATASETS = PUBLISHED_DATASETS
 DATASET_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$")
 LATEST_DATASET_PATTERN = re.compile(r"^/v1/data/latest/datasets/([a-z_]+)$")
 
@@ -117,7 +114,7 @@ class LocalDatasetStorage(DatasetStorage):
 class S3DatasetStorage(DatasetStorage):
     """S3의 `<prefix>/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 읽습니다."""
 
-    def __init__(self, bucket: str, prefix: str = "source/published"):
+    def __init__(self, bucket: str, prefix: str = S3_PUBLISHED_PREFIX):
         self._bucket = bucket
         self._prefix = prefix.strip("/")
 
@@ -292,7 +289,7 @@ def storage_from_env() -> DatasetStorage:
         return LocalDatasetStorage(root)
     if env == "prod":
         bucket = os.environ["SOURCE_API_S3_BUCKET"]
-        prefix = os.getenv("SOURCE_API_S3_PREFIX", "source/published")
+        prefix = os.getenv("SOURCE_API_S3_PREFIX") or S3_PUBLISHED_PREFIX
         return S3DatasetStorage(bucket, prefix)
     raise ValueError(f"알 수 없는 SOURCE_API_ENV: {env!r} (local 또는 prod)")
 

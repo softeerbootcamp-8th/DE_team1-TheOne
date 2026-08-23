@@ -15,13 +15,13 @@ from pathlib import Path
 
 from airflow.sdk import task
 
+from main.airflow.common.assets import service_area_segment
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     layout_tail, parse_handler_result, parse_year_month, read_parquet,
 )
-from shared.common.service_area_path import service_area_segment
 
 logger = logging.getLogger(__name__)
 

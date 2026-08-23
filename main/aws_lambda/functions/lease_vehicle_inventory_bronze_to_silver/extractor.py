@@ -7,12 +7,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
-from main.aws_lambda.common.monthly_dataset import bronze_collection_token
-from shared.common.s3_reader import get_object_bytes, list_keys
-from shared.common.service_area_path import (
+from main.aws_lambda.common.monthly_dataset import (
+    bronze_collection_token,
     candidate_prefixes,
     candidate_roots,
 )
+from shared.common.s3_reader import get_object_bytes, list_keys
 
 from .loader import DATASET
 
