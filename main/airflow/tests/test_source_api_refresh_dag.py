@@ -327,6 +327,25 @@ def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한�
         assert trigger.reset_dag_run is True
 
 
+def test_trigger_run_id에_지역이_들어간다():
+    """`version` 은 (year_month, etag, last_modified) 해시라, 두 지역이 같은 원천에서
+    같은 응답을 받으면 run_id 가 겹칩니다. `reset_dag_run=True` 와 겹치면 **한 지역이
+    다른 지역의 DagRun 을 리셋**합니다(#674). 값은 params 가 아니라 xcom 에서 꺼내
+    실제로 상태 조회에 쓴 지역과 어긋나지 않게 합니다."""
+    for dataset, _ in SOURCES:
+        gate_task_id = f"check_and_should_refresh_{dataset}"
+        trigger = source_api_refresh_dag.get_task(f"trigger_{dataset}")
+
+        assert (
+            f"ti.xcom_pull(task_ids='{gate_task_id}')['service_area']"
+            in trigger.trigger_run_id
+        )
+        # 지역이 월·version 보다 앞에 와야 같은 달의 두 지역이 다른 run_id 가 됩니다.
+        assert trigger.trigger_run_id.index("['service_area']") < (
+            trigger.trigger_run_id.index("['year_month']")
+        )
+
+
 def test_하위DAG_trigger는_확정된_연월과_API주소를_conf로_전달한다():
     for dataset, _ in SOURCES:
         gate_task_id = f"check_and_should_refresh_{dataset}"
@@ -417,6 +436,7 @@ def test_처리완료_validator는_원천별로_기록한다(monkeypatch):
     task_module.mark_processed_task.function(
         {
             "dataset": "monthly_taxi_trip",
+            "service_area": "NYC",
             "api_base_url": API_BASE_URL,
             "year_month": YEAR_MONTH,
             "etag": ETAG,
@@ -425,7 +445,7 @@ def test_처리완료_validator는_원천별로_기록한다(monkeypatch):
     )
 
     assert written == {
-        "key": f"{task_module.STATE_KEY_PREFIX}monthly_taxi_trip",
+        "key": task_module.state_key("monthly_taxi_trip", "NYC"),
         "value": {
             "api_base_url": API_BASE_URL,
             "year_month": YEAR_MONTH,
@@ -434,3 +454,15 @@ def test_처리완료_validator는_원천별로_기록한다(monkeypatch):
         },
         "serialize_json": True,
     }
+
+
+def test_지역이_다르면_다른_상태키에_기록한다():
+    """지역이 상태 키에 없으면 NYC 가 ETag 를 기록한 뒤 TX 가 304 를 받아 자기
+    수집을 한 번도 못 하고 건너뜁니다 — 실패가 아니라 성공적인 skip 이라 알림도
+    가지 않고, 그다음엔 TX 가 키를 덮어써 NYC 가 굶습니다(#674)."""
+    nyc = task_module.state_key("monthly_taxi_trip", "NYC")
+    tx = task_module.state_key("monthly_taxi_trip", "TX")
+
+    assert nyc != tx
+    assert nyc.startswith(task_module.STATE_KEY_PREFIX)
+    assert tx.startswith(task_module.STATE_KEY_PREFIX)
