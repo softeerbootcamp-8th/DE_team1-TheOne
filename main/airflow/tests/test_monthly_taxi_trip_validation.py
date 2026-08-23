@@ -737,6 +737,36 @@ def test_Silver_디렉터리가_없으면_빈_목록이다(tmp_path):
     assert task_module.existing_silver_partitions(str(tmp_path / "none")) == []
 
 
+def test_지역_계층_아래_파티션도_센다(tmp_path):
+    """지역 계층(#674)이 들어가도 가드가 빈 목록을 반환하면 안 됩니다.
+
+    빈 목록이면 `before - after` 가 항상 공집합이 되어 **#165 가드가 조용히
+    통과**합니다 — 파티션이 실제로 사라져도 아무도 모릅니다. 이 함수는 호출부가
+    `version_path.parent.parent` 로 넘겨주는 **지역 스코프 루트**를 받으므로,
+    그 루트 아래를 정상적으로 세는지 확인합니다.
+    """
+    scoped_root = tmp_path / "silver" / "service_area=NYC"
+    write_committed_silver(scoped_root, year_month="2026-06", rows=5)
+
+    assert task_module.existing_silver_partitions(str(scoped_root)) == [
+        "year_month=2026-06"
+    ]
+
+
+def test_지역_스코프_루트는_다른_지역_파티션을_섞지_않는다(tmp_path):
+    """before/after 가 서로 다른 지역을 보면 가드가 거짓 실패합니다."""
+    silver = tmp_path / "silver"
+    write_committed_silver(silver / "service_area=NYC", year_month="2026-06", rows=5)
+    write_committed_silver(silver / "service_area=TX", year_month="2026-07", rows=5)
+
+    assert task_module.existing_silver_partitions(
+        str(silver / "service_area=NYC")
+    ) == ["year_month=2026-06"]
+    assert task_module.existing_silver_partitions(
+        str(silver / "service_area=TX")
+    ) == ["year_month=2026-07"]
+
+
 
 def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않는다(
     tmp_path, monkeypatch, caplog

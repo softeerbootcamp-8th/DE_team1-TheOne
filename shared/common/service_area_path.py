@@ -109,3 +109,38 @@ def gold_csv_path(
         / f"year_month={year_month}"
         / f"{dataset}.csv"
     )
+
+
+def candidate_roots(root: str | Path, service_area: str | None = None) -> tuple[Path, ...]:
+    """읽는 쪽이 시도할 **로컬** 데이터셋 루트를 우선순위 순서로 돌려줍니다.
+
+    ```
+    candidate_roots("/silver/ds", "NYC")  # (/silver/ds/service_area=NYC, /silver/ds)
+    candidate_roots("/silver/ds", None)   # (/silver/ds,)
+    ```
+
+    지역 경로를 **먼저** 봅니다. 순서가 뒤집히면 이미 옮긴 데이터셋이 옛 경로의 낡은
+    데이터를 조용히 집어갑니다. 직접 조립하지 말고 이 함수를 쓰세요.
+    """
+    base = Path(root)
+    return tuple(
+        base / segment if segment else base
+        for segment in candidate_segments(service_area)
+    )
+
+
+def candidate_prefixes(*head: str, service_area: str | None = None) -> tuple[str, ...]:
+    """읽는 쪽이 시도할 **S3 키 접두사**를 우선순위 순서로 돌려줍니다.
+
+    `head` 는 데이터셋 루트까지의 세그먼트입니다. 반환값에는 뒤에 `/` 가 없으므로
+    호출부가 `f"{prefix}/year_month={ym}/"` 처럼 이어 붙입니다.
+
+    ```
+    candidate_prefixes("bronze", "ds", service_area="NYC")
+    # ("bronze/ds/service_area=NYC", "bronze/ds")
+    ```
+    """
+    return tuple(
+        join_segments(*head, segment) if segment else join_segments(*head)
+        for segment in candidate_segments(service_area)
+    )

@@ -666,3 +666,71 @@ def test_validate_inputs는_대상지역을_함께_반환한다(tmp_path):
     )
 
     assert result["service_area"] == "TX"
+
+
+def _write_scoped_inputs(root: Path, year_month: str, service_area: str) -> None:
+    """지역 계층 아래에 Silver 4종을 씁니다."""
+    monthly_taxi_trip = (
+        root / "monthly_taxi_trip" / f"service_area={service_area}"
+        / f"year_month={year_month}"
+    )
+    monthly_taxi_trip.mkdir(parents=True)
+    (monthly_taxi_trip / "part-00000.parquet").touch()
+
+    for dataset, file_name in {
+        "driver_vehicle_monthly_snapshot": "driver_vehicle_monthly_snapshot.parquet",
+        "lease_vehicle_inventory": "lease_vehicle_inventory.parquet",
+        "gas_ev_price": "gas_ev_price.parquet",
+    }.items():
+        partition = (
+            root / dataset / f"service_area={service_area}"
+            / f"year_month={year_month}"
+        )
+        partition.mkdir(parents=True)
+        (partition / file_name).touch()
+
+
+def test_Gold_입력은_지역_계층_아래도_찾는다(tmp_path):
+    """#840~#845 가 데이터셋별로 writer 를 옮기는 중에도 Gold 가 찾아야 합니다(#851)."""
+    _write_scoped_inputs(tmp_path, "2026-05", "NYC")
+
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
+
+    for key in (
+        "monthly_taxi_trip_path",
+        "driver_vehicle_monthly_snapshot_path",
+        "lease_vehicle_inventory_path",
+        "fuel_price_path",
+    ):
+        assert "service_area=NYC" in resolved[key], key
+
+
+def test_Gold_입력은_지역_경로가_없으면_지역없는_경로로_폴백한다(tmp_path):
+    """아직 옮겨지지 않은 데이터셋도 읽어야 합니다 — 이 폴백이 있어서 데이터셋별
+    머지가 가능합니다."""
+    _write_inputs(tmp_path, "2026-05")
+
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
+
+    assert "service_area=" not in resolved["monthly_taxi_trip_path"]
+    assert "year_month=2026-05" in resolved["monthly_taxi_trip_path"]
+
+
+def test_Gold_입력은_지역_경로를_먼저_본다(tmp_path):
+    """순서가 뒤집히면 이미 옮긴 데이터셋이 옛 경로의 낡은 데이터를 집어갑니다."""
+    _write_inputs(tmp_path, "2026-05")
+    _write_scoped_inputs(tmp_path, "2026-05", "NYC")
+
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
+
+    assert "service_area=NYC" in resolved["monthly_taxi_trip_path"]
+
+
+def test_available_year_months는_지역_계층_아래도_센다(tmp_path):
+    """한 레벨 glob 만 보면 조용히 빈 목록이 되고, 수동 실행 폴백이 '파티션이
+    없습니다' 로 죽습니다."""
+    _write_scoped_inputs(tmp_path, "2026-05", "NYC")
+
+    assert dag_module.available_year_months(
+        tmp_path / "monthly_taxi_trip", "NYC"
+    ) == ["2026-05"]

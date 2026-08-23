@@ -27,7 +27,11 @@ import pandas as pd
 from pyspark.sql import DataFrame
 
 from main.spark.jobs.silver_to_gold.postgres_loader import write_gold_to_postgres
-from shared.common.service_area_path import gold_csv_path
+from shared.common.service_area_path import (
+    candidate_prefixes,
+    candidate_roots,
+    gold_csv_path,
+)
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
@@ -87,7 +91,9 @@ def default_input_base_paths(env: str, bucket: str | None) -> dict[str, str]:
     raise ValueError(f"알 수 없는 --env: {env!r} (local 또는 prod)")
 
 
-def latest_partition_file(base_path: str, year_month: str) -> str:
+def latest_partition_file(
+    base_path: str, year_month: str, service_area: str | None = None
+) -> str:
     """`year_month=` 파티션 안의 최신 버전 파일 하나.
 
     monthly_taxi_trip·driver_vehicle_monthly_snapshot·lease_vehicle_inventory는
@@ -102,37 +108,45 @@ def latest_partition_file(base_path: str, year_month: str) -> str:
         scheme = resolved.split("://", 1)[0]
         parsed = urlsplit(resolved)
         bucket = parsed.netloc
-        prefix = f"{parsed.path.lstrip('/').rstrip('/')}/year_month={year_month}/"
-        keys = list_keys(bucket, prefix)
-        if not keys:
-            raise FileNotFoundError(f"Silver 파티션이 없습니다: {scheme}://{bucket}/{prefix}")
-        versioned = latest_s3_silver_version(keys, prefix)
+        base_key = parsed.path.lstrip("/").rstrip("/")
+        attempted = []
+        # 지역 경로를 먼저 보고, 아직 안 옮겨진 데이터셋은 지역 없는 경로에서 찾습니다
+        # (#851). 이 폴백이 있어야 #840~#845 를 하나씩 머지할 수 있습니다.
+        for area_prefix in candidate_prefixes(base_key, service_area=service_area):
+            prefix = f"{area_prefix}/year_month={year_month}/"
+            attempted.append(f"{scheme}://{bucket}/{prefix}")
+            keys = list_keys(bucket, prefix)
+            if not keys:
+                continue
+            versioned = latest_s3_silver_version(keys, prefix)
+            if versioned is not None:
+                return f"{scheme}://{bucket}/{versioned}"
+            if any(
+                "/" not in key.removeprefix(prefix)
+                and Path(key).name.startswith("part-")
+                and key.endswith(".parquet")
+                for key in keys
+            ):
+                return f"{scheme}://{bucket}/{prefix}part-*.parquet"
+        raise FileNotFoundError(f"Silver 파티션이 없습니다: {attempted}")
+
+    attempted_dirs = []
+    for root in candidate_roots(resolved, service_area):
+        partition_dir = root / f"year_month={year_month}"
+        attempted_dirs.append(partition_dir)
+        if not partition_dir.is_dir():
+            continue
+        versioned = latest_local_silver_version(partition_dir)
         if versioned is not None:
-            return f"{scheme}://{bucket}/{versioned}"
-        legacy_parts = sorted(
-            key
-            for key in keys
-            if "/" not in key.removeprefix(prefix)
-            and Path(key).name.startswith("part-")
-            and key.endswith(".parquet")
-        )
-        if not legacy_parts:
-            raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: {scheme}://{bucket}/{prefix}")
-        return f"{scheme}://{bucket}/{prefix}part-*.parquet"
-
-    partition_dir = Path(resolved) / f"year_month={year_month}"
-    if not partition_dir.is_dir():
-        raise FileNotFoundError(f"Silver 파티션이 없습니다: {partition_dir}")
-    versioned = latest_local_silver_version(partition_dir)
-    if versioned is not None:
-        return str(versioned)
-    legacy_parts = sorted(partition_dir.glob("part-*.parquet"))
-    if not legacy_parts:
-        raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: {partition_dir}")
-    return str(partition_dir / "part-*.parquet")
+            return str(versioned)
+        if sorted(partition_dir.glob("part-*.parquet")):
+            return str(partition_dir / "part-*.parquet")
+    raise FileNotFoundError(f"Silver 파티션이 없습니다: {attempted_dirs}")
 
 
-def latest_fuel_price_path(fuel_price_dir: str) -> str:
+def latest_fuel_price_path(
+    fuel_price_dir: str, service_area: str | None = None
+) -> str:
     """`fuel_price_dir` 아래 가장 최근 `year_month=` 파티션의 파일 경로.
 
     연료비 Silver는 파티션마다 그 시점까지의 과거 일별 가격을 전부 담고 있어
@@ -144,19 +158,34 @@ def latest_fuel_price_path(fuel_price_dir: str) -> str:
         scheme = fuel_price_dir.split("://", 1)[0]
         parsed = urlsplit(fuel_price_dir)
         bucket = parsed.netloc
-        prefix = parsed.path.lstrip("/").rstrip("/") + "/"
-        keys = [key for key in list_keys(bucket, prefix) if key.endswith(".parquet")]
-        if not keys:
-            raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {fuel_price_dir}")
-        return f"{scheme}://{bucket}/{max(keys)}"
+        base_key = parsed.path.lstrip("/").rstrip("/")
+        attempted = []
+        # max(keys) 는 사전순입니다. 지역으로 스코프하지 않으면 `service_area=TX` 가
+        # 뒤로 정렬돼 **월과 무관하게 이기고, 다른 지역의 유가로 이 지역 Gold 를
+        # 계산합니다** — 에러 없이 틀린 값이 나오는 경로라 스코프가 필수입니다.
+        for area_prefix in candidate_prefixes(base_key, service_area=service_area):
+            prefix = f"{area_prefix}/"
+            attempted.append(f"{scheme}://{bucket}/{prefix}")
+            keys = [
+                key for key in list_keys(bucket, prefix) if key.endswith(".parquet")
+            ]
+            if keys:
+                return f"{scheme}://{bucket}/{max(keys)}"
+        raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {attempted}")
 
-    partitions = sorted(p for p in Path(fuel_price_dir).glob("year_month=*") if p.is_dir())
-    if not partitions:
-        raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {fuel_price_dir}")
-    parquet_files = sorted(partitions[-1].glob("*.parquet"))
-    if not parquet_files:
-        raise FileNotFoundError(f"연료비 Silver 파티션이 비어 있습니다: {partitions[-1]}")
-    return str(parquet_files[-1])
+    attempted_dirs = []
+    for root in candidate_roots(fuel_price_dir, service_area):
+        attempted_dirs.append(root)
+        partitions = sorted(p for p in root.glob("year_month=*") if p.is_dir())
+        if not partitions:
+            continue
+        parquet_files = sorted(partitions[-1].glob("*.parquet"))
+        if not parquet_files:
+            raise FileNotFoundError(
+                f"연료비 Silver 파티션이 비어 있습니다: {partitions[-1]}"
+            )
+        return str(parquet_files[-1])
+    raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {attempted_dirs}")
 
 
 def _csv_path(
