@@ -261,6 +261,7 @@ def validate_monthly_parquet_bronze(
     *,
     dataset_dir: str,
     base_dir: str | Path | None = None,
+    service_area: str | None = None,
 ) -> tuple[Path | S3Location, str]:
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
@@ -270,9 +271,12 @@ def validate_monthly_parquet_bronze(
     except FileNotFoundError:
         raise ValueError(f"Bronze 원본 파일이 없습니다: {path}")
     partition = bronze_partition(path)
+    area = service_area_segment(service_area)
     if (
         partition.name != f"year_month={year_month}"
-        or partition.parent.name != dataset_dir
+        or (area and partition.parent.name != area)
+        or (area and partition.parent.parent.name != dataset_dir)
+        or (not area and partition.parent.name != dataset_dir)
     ):
         raise ValueError(f"Bronze 원본 경로가 월 파티션 계약과 다릅니다: {path}")
     collected_at = result.get("collected_at")
@@ -285,7 +289,11 @@ def validate_monthly_parquet_bronze(
             f"Bronze 경로의 수집 시각이 collected_at과 다릅니다: {path}"
         )
     if base_dir is not None and isinstance(path, Path):
-        expected_partition = Path(base_dir) / dataset_dir / f"year_month={year_month}"
+        dataset_root = Path(base_dir) / dataset_dir
+        expected_partition = (
+            (dataset_root / area if area else dataset_root)
+            / f"year_month={year_month}"
+        )
         if partition.resolve() != expected_partition.resolve():
             raise ValueError(
                 f"Bronze 경로가 base_dir layout과 다릅니다: {partition}"

@@ -8,7 +8,14 @@ import pytest
 DAG_PARAMS = {
     "driver_vehicle_monthly_snapshot_raw_to_silver_dag": (
         "driver_vehicle_monthly_snapshot_raw_to_silver_dag",
-        {"year", "month", "api_base_url", "base_dir", "silver_dir"},
+        {
+            "year",
+            "month",
+            "api_base_url",
+            "base_dir",
+            "silver_dir",
+            "service_area",
+        },
     ),
     "eia_electricity_price_raw_to_silver_dag": (
         "eia_electricity_price_raw_to_silver_dag",
