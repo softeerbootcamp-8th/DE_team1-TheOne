@@ -16,7 +16,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_stale_alert_callback,
 )
 from main.airflow.common.monthly_bronze import latest_local_silver_version
-from main.airflow.common.assets import parse_partition_key
+from main.airflow.common.assets import parse_partition_key, resolve_service_area
 
 logger = logging.getLogger(__name__)
 
@@ -124,6 +124,21 @@ def resolve_target_year_month(
             "monthly_taxi_trip_raw_to_silver_pipeline 을 먼저 돌리세요."
         )
     return candidates[-1]
+
+
+def resolve_target_service_area(params: dict, partition_key: str | None = None) -> str:
+    """대상 지역. 파티션 키가 있으면 그것이, 없으면 파라미터가 정합니다.
+
+    **`resolve_target_year_month` 와 우선순위가 반대입니다.** 연월은 수동
+    파라미터가 파티션 키를 덮어쓰는데, 지역은 그러면 안 됩니다 — `service_area`
+    파라미터는 기본값(`NYC`)이 있어서 Asset 트리거 실행에서도 항상 값이 차 있고,
+    파라미터를 우선하면 `"TX:2026-08"` 파티션의 Gold 를 **NYC 로 적재**하게 됩니다.
+    연월 파라미터는 기본값이 None 이라 이 문제가 없습니다.
+    """
+    if partition_key:
+        service_area, _ = parse_partition_key(partition_key)
+        return service_area
+    return resolve_service_area(params)
 
 
 def resolve_input_paths(year_month: str, params: dict) -> dict:
@@ -330,9 +345,11 @@ def validate_inputs_task(**context) -> dict:
         params["monthly_taxi_trip_path"],
         partition_key,
     )
-    logger.info("Gold 대상 연월: %s", year_month)
+    service_area = resolve_target_service_area(params, partition_key)
+    logger.info("Gold 대상: service_area=%s year_month=%s", service_area, year_month)
     if job_env == "prod":
         return {
+            "service_area": service_area,
             "year_month": year_month,
             "year": year_month.split("-")[0],
             "month": str(int(year_month.split("-")[1])),
@@ -341,6 +358,7 @@ def validate_inputs_task(**context) -> dict:
     try:
         return {
             **resolve_input_paths(year_month, params),
+            "service_area": service_area,
             "is_rerun": resolve_is_rerun(job_env, year_month, params),
         }
     except FileNotFoundError as exc:

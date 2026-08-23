@@ -10,6 +10,7 @@ from airflow.sdk import Param, dag
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
 from main.airflow.common import assets
+from main.airflow.common.assets import DEFAULT_SERVICE_AREA
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
@@ -56,6 +57,8 @@ def _local_build_gold() -> BashOperator:
     common_tail = (
         "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
         + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
+        + "--service_area "
+        + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['service_area'] }} "
         + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
         + f"--is_rerun {{{{ 'true' if {is_rerun} else 'false' }}}}"
     )
@@ -110,6 +113,7 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     "--gold_dsn", gold_dsn,
                     "--year", f"{{{{ {xcom}['year'] }}}}",
                     "--month", f"{{{{ {xcom}['month'] }}}}",
+                    "--service_area", f"{{{{ {xcom}['service_area'] }}}}",
                     "--threshold_profit_increase", "{{ params.threshold_profit_increase }}",
                     "--is_rerun", f"{{{{ 'true' if {xcom}['is_rerun'] else 'false' }}}}",
                 ],
@@ -174,6 +178,18 @@ def _build_gold_operator():
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
         # 비우면 Variable(gold_stale_sla_days) 또는 기본값을 씁니다 — 절대 날짜가
         # 아니라 상대 기준을 쓰는 이유는 tasks.resolve_stale_sla_days 참고.
+        # 수동 실행의 대상 지역. Asset 트리거 실행에서는 파티션 키가 이 값을
+        # **덮어씁니다**(resolve_target_service_area 참고) — 이 파라미터는 기본값이
+        # 있어서 우선하면 "TX:2026-08" 파티션을 NYC 로 적재하게 됩니다.
+        #
+        # 새 파라미터를 추가하면 test_main_dag_params.py의 기대 집합도 함께
+        # 고쳐야 합니다 — 그 테스트가 파라미터 집합 완전일치를 요구합니다.
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
+            type="string",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="수동 실행 대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
+        ),
         "gold_stale_sla_days": Param(
             None,
             type=["integer", "null"],

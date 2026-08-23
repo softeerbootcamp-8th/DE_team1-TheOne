@@ -631,3 +631,38 @@ def test_정상실행_결과에_최초완료_재트리거_판정이_실린다(tm
     )
 
     assert resolved["is_rerun"] is False
+
+
+def test_대상지역은_파티션키가_파라미터를_덮어쓴다():
+    """`resolve_target_year_month` 와 **우선순위가 반대**입니다. 연월은 수동
+    파라미터가 파티션 키를 덮어쓰지만, 지역은 그러면 안 됩니다 — service_area
+    파라미터는 기본값(NYC)이 있어서 Asset 트리거 실행에서도 항상 값이 차 있고,
+    파라미터를 우선하면 "TX:2026-08" 파티션의 Gold 를 **NYC 로 적재**합니다.
+    """
+    resolved = dag_module.resolve_target_service_area(
+        {"service_area": "NYC"}, partition_key="TX:2026-05"
+    )
+
+    assert resolved == "TX"
+
+
+def test_파티션키가_없으면_파라미터_지역을_쓴다():
+    assert dag_module.resolve_target_service_area({"service_area": "TX"}) == "TX"
+
+
+def test_파티션키도_파라미터도_없으면_기본_지역을_쓴다():
+    assert dag_module.resolve_target_service_area({}) == "NYC"
+
+
+def test_validate_inputs는_대상지역을_함께_반환한다(tmp_path):
+    """Spark 잡이 --service_area 로 받아 Gold 자연 키에 넣습니다(#805, #809).
+    빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다."""
+    _write_inputs(tmp_path, "2026-05")
+
+    result = dag_module.validate_inputs_task.function(
+        params=_params(tmp_path),
+        logical_date=_logical_date(2026, 5),
+        dag_run=type("DagRun", (), {"partition_key": "TX:2026-05"})(),
+    )
+
+    assert result["service_area"] == "TX"

@@ -225,6 +225,9 @@ def main(args_list: list[str] | None = None) -> None:
         ),
     )
     parser.add_argument("--year", type=int, required=True)
+    # 지역은 Airflow asset 파티션 키("{service_area}:{year_month}")에서 옵니다(#674).
+    # driver_id 가 지역 간 유니크하지 않으므로(#805) Gold 자연 키의 일부입니다.
+    parser.add_argument("--service_area", required=True)
     parser.add_argument("--month", type=int, required=True)
     parser.add_argument(
         "--threshold_profit_increase",
@@ -288,7 +291,7 @@ def main(args_list: list[str] | None = None) -> None:
             year_month,
         )
         driver_metrics = build_driver_monthly_aggregation(
-            enriched, year_month
+            enriched, year_month, args.service_area
         ).persist()
         driver_profit = build_driver_monthly_profit(driver_metrics)
         recommendation = build_monthly_vehicle_recommendation(
@@ -303,6 +306,7 @@ def main(args_list: list[str] | None = None) -> None:
         report = build_monthly_report(
             recommendation,
             year_month,
+            args.service_area,
             args.threshold_profit_increase,
             args.is_rerun,
         )
@@ -320,7 +324,9 @@ def main(args_list: list[str] | None = None) -> None:
                 raise ValueError(
                     "--env prod는 --gold_dsn(또는 GOLD_DATABASE_URL 환경변수)이 필요합니다"
                 )
-            written = write_gold_to_postgres(frames, args.gold_dsn, year_month)
+            written = write_gold_to_postgres(
+                frames, args.gold_dsn, args.service_area, year_month
+            )
             for dataset, rows in written.items():
                 logger.info("gold 적재 완료: dataset=%s rows=%d", dataset, rows)
         else:
