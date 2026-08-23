@@ -68,6 +68,9 @@ def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_�
         "base_dir": "/bronze",
         "year": "2026",
         "month": "8",
+        # Bronze 경로에 service_area=<sa>/ 계층으로 들어갑니다(#840). 파라미터가
+        # 없으면 기본 지역입니다.
+        "service_area": "NYC",
     }
 
 
@@ -122,3 +125,21 @@ def test_운영_EMR_필수변수가_없으면_누락된_이름으로_실패한�
 
     with pytest.raises(ValueError, match="EMR_APPLICATION_ID"):
         dag_module._emr_bronze_to_silver()
+
+
+def test_Spark_에는_완성된_경로를_넘겨_지역_배선이_불필요하다():
+    """#840 — Spark 잡에 지역을 따로 넘기지 않는 근거입니다.
+
+    DAG 는 Bronze 실제 파일 경로(`locations[0]`)와 Silver staging 경로를 **xcom 에서
+    완성된 문자열로** 넘깁니다. 두 값 모두 Airflow 가 `service_area=` 를 포함해
+    만들었으므로 Spark 는 지역을 알 필요가 없습니다 — `--service_area` 를 추가하면
+    같은 정보를 두 경로로 흘려 어긋날 여지만 생깁니다.
+
+    이 계약이 깨지면(예: DAG 가 데이터셋 루트만 넘기고 Spark 가 파티션을 스스로 찾게
+    바뀌면) Spark 에도 지역을 넘겨야 합니다.
+    """
+    command = DAG.get_task("bronze_to_silver").bash_command
+
+    assert "['locations'][0]" in command
+    assert "['silver_staging_path']" in command
+    assert "--service_area" not in command

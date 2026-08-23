@@ -12,6 +12,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
+from main.airflow.common.assets import DEFAULT_SERVICE_AREA
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
@@ -84,6 +85,17 @@ default_args = {
         #
         # 새 파라미터를 추가하면 test_main_dag_params.py의 기대 집합도 함께
         # 고쳐야 합니다 — 그 테스트가 파라미터 집합 완전일치를 요구합니다.
+        # 대상 지역. Bronze·Silver 경로에 `service_area=<sa>/` 계층으로 들어갑니다(#674).
+        # 지금은 NYC 하나뿐이라 기본값으로 두고, 지역이 늘면 트리거 시 지정합니다.
+        #
+        # 새 파라미터를 추가하면 test_main_dag_params.py의 기대 집합도 함께 고쳐야
+        # 합니다 — 그 테스트가 파라미터 집합 완전일치를 요구합니다.
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
+            type="string",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
+        ),
         "error_threshold": Param(
             float(
                 Variable.get(

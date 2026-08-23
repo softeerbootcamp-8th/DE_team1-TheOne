@@ -354,14 +354,43 @@ def test_Spark_필수_컬럼이_누락되면_원천부터_다시_수집한다(
     assert len(calls) == 1
     # 재수집 결과를 그대로 넘깁니다. `silver_partitions_before` 는 #165 감시용으로
     # validate_bronze 가 덧붙이는 값이라 비교에서 뺍니다 (#532).
+    # 이 셋은 validate_bronze 가 스스로 만들어 붙이는 값이라 "재수집 결과를 그대로
+    # 넘긴다"는 비교에서 뺍니다(#532). 두 Silver 경로는 지역 계층까지 포함하므로
+    # result_for 헬퍼의 하드코딩된 값과 다릅니다 — 그 내용은 아래 전용 테스트가 봅니다.
     generated = {
         "silver_version_path",
+        "silver_staging_path",
         "silver_partitions_before",
     }
     assert {k: v for k, v in refreshed.items() if k not in generated} == {
         k: v for k, v in refreshed_results[0].items() if k not in generated
     }
     assert "silver_partitions_before" in refreshed
+
+
+def test_Silver_경로에_지역_계층이_들어간다(tmp_path, monkeypatch):
+    """#840 — Bronze·Silver 경로에 `service_area=<sa>/` 가 `year_month=` 바로 위에
+    들어가야 합니다. 위치가 틀리면 Gold 가 못 찾거나(폴백으로 옛 경로를 집어) 조용히
+    낡은 데이터를 씁니다."""
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    path = write_bronze(tmp_path)
+
+    result = validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+    assert f"service_area=NYC/year_month={YEAR_MONTH}" in result["silver_version_path"]
+    assert (
+        f"service_area=NYC/year_month={YEAR_MONTH}" in result["silver_staging_path"]
+    )
+
+
+def test_Silver_경로의_지역은_파라미터를_따른다(tmp_path, monkeypatch):
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    path = write_bronze(tmp_path)
+    params = {**bronze_params(tmp_path), "service_area": "TX"}
+
+    result = validate_bronze(result_for(path), params=params)
+
+    assert "service_area=TX/" in result["silver_version_path"]
 
 
 def test_행_수가_0이면_막는다(tmp_path):

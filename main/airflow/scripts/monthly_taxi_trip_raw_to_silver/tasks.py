@@ -9,6 +9,7 @@ from pathlib import Path
 import pyarrow as pa
 from airflow.sdk import task
 
+from main.airflow.common.assets import resolve_service_area
 from main.airflow.common.monthly_bronze import (
     SILVER_PART_PATTERN,
     STAGED_FILE_PATTERN,
@@ -207,6 +208,7 @@ def _collect_bronze(params: dict) -> dict:
         "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
         "year": params.get("year"),
         "month": params.get("month"),
+        "service_area": resolve_service_area(params),
     }
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
     result = lambda_handler_for("monthly_taxi_trip_raw_to_bronze")(event=event)
@@ -367,8 +369,12 @@ def validate_bronze_task(result: dict, **context) -> dict:
             invalid_ratio=invalid_ratio,
             extra_columns=extra_columns,
         )
-    version_path = silver_version_path(DEFAULT_SILVER_DIR, result)
-    staging_path = staged_silver_version_path(DEFAULT_SILVER_DIR, result)
+    service_area = resolve_service_area(params)
+    version_path = silver_version_path(DEFAULT_SILVER_DIR, result, service_area)
+    staging_path = staged_silver_version_path(DEFAULT_SILVER_DIR, result, service_area)
+    # 지역 계층이 들어가면 이 루트가 자동으로 지역 스코프가 됩니다 —
+    # validate_silver 의 after 스캔도 같은 방식으로 유도하므로 before/after 범위가
+    # 어긋나지 않습니다(existing_silver_partitions docstring 참고).
     silver_root = version_path.parent.parent
     # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
     return {
