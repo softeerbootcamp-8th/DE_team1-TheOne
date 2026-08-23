@@ -5,7 +5,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from urllib.parse import urljoin, urlsplit
 
 import requests
@@ -13,8 +13,8 @@ from airflow.sdk import Variable, task
 from airflow.task.trigger_rule import TriggerRule
 
 from main.airflow.common import assets
-from main.airflow.common.monthly_bronze import TIMESTAMP_FILE_PATTERN
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.common.monthly_bronze import bronze_collection_token
 from shared.common.s3_reader import list_keys
 
 
@@ -39,15 +39,18 @@ def _bronze_partition_exists(dataset: str, year_month: str) -> bool:
             os.getenv("BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze"))
         )
         partition = root / dataset_dir / f"year_month={year_month}"
+        candidates = (
+            *partition.glob("*.parquet"),
+            *partition.glob("collected_at=*/data.parquet"),
+        )
         return any(
-            path.is_file() and TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
-            for path in partition.glob("*.parquet")
+            path.is_file() and bronze_collection_token(path) for path in candidates
         )
     if storage == "s3":
         bucket = os.environ["DATA_LAKE_S3_BUCKET"]
         prefix = f"bronze/{dataset_dir}/year_month={year_month}/"
         return any(
-            TIMESTAMP_FILE_PATTERN.fullmatch(key.rsplit("/", 1)[-1])
+            bronze_collection_token(PurePosixPath(key))
             for key in list_keys(bucket, prefix)
         )
     raise ValueError(f"알 수 없는 BRONZE_STORAGE: {storage!r} (local 또는 s3)")

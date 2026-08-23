@@ -1,7 +1,6 @@
 """월별 원천 API에서 받은 단일 Bronze 수집본을 검증합니다."""
 
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 import boto3
@@ -15,9 +14,15 @@ from shared.airflow.common.validation import (
     parse_year_month,
     require_file,
 )
+from shared.common.monthly_bronze import (
+    TIMESTAMP_FILE_PATTERN as _TIMESTAMP_FILE_PATTERN,
+    bronze_collection_token,
+    bronze_partition,
+    collected_at_token,
+)
 
 
-TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
+TIMESTAMP_FILE_PATTERN = _TIMESTAMP_FILE_PATTERN
 # staged_silver_version_path()가 만드는 이름과 짝을 맞춥니다 — 검증 전 파일을
 # "이미 존재하는 버전"으로 세지 않으려면 이 패턴으로 걸러내야 합니다(#742).
 STAGED_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.staged\.parquet$")
@@ -27,9 +32,15 @@ def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location
     """Bronze 수집 시각 파일명을 그대로 쓰는 Silver 버전 경로입니다."""
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
-    file_name = parsed.locations[0].name
-    if not TIMESTAMP_FILE_PATTERN.fullmatch(file_name):
-        raise ValueError(f"Bronze 파일명이 수집 시각 형식이 아닙니다: {file_name}")
+    collected_at = result.get("collected_at")
+    token = (
+        collected_at_token(collected_at)
+        if collected_at is not None
+        else bronze_collection_token(parsed.locations[0])
+    )
+    if token is None:
+        raise ValueError(f"Bronze 경로에 수집 시각이 없습니다: {parsed.locations[0]}")
+    file_name = f"{token}.parquet"
     base = parse_location(str(base_dir))
     if isinstance(base, S3Location):
         return S3Location(
@@ -89,29 +100,26 @@ def validate_monthly_parquet_bronze(
         require_file(path)
     except FileNotFoundError:
         raise ValueError(f"Bronze 원본 파일이 없습니다: {path}")
+    partition = bronze_partition(path)
     if (
-        path.parent.name != f"year_month={year_month}"
-        or path.parent.parent.name != dataset_dir
+        partition.name != f"year_month={year_month}"
+        or partition.parent.name != dataset_dir
     ):
         raise ValueError(f"Bronze 원본 경로가 월 파티션 계약과 다릅니다: {path}")
     collected_at = result.get("collected_at")
-    if not isinstance(collected_at, str):
-        raise ValueError("Bronze 수집 결과에 collected_at이 없습니다")
     try:
-        timestamp = datetime.strptime(
-            collected_at, "%Y-%m-%dT%H:%M:%S.%fZ"
-        ).replace(tzinfo=timezone.utc)
+        expected_token = collected_at_token(collected_at)
     except ValueError as exc:
         raise ValueError("Bronze collected_at이 UTC 수집 시각 형식이 아닙니다") from exc
-    if path.name != f"{timestamp:%Y%m%dT%H%M%S%fZ}.parquet":
+    if bronze_collection_token(path) != expected_token:
         raise ValueError(
-            f"Bronze 파일명이 collected_at과 다릅니다: {path.name}"
+            f"Bronze 경로의 수집 시각이 collected_at과 다릅니다: {path}"
         )
     if base_dir is not None and isinstance(path, Path):
         expected_partition = Path(base_dir) / dataset_dir / f"year_month={year_month}"
-        if path.parent.resolve() != expected_partition.resolve():
+        if partition.resolve() != expected_partition.resolve():
             raise ValueError(
-                f"Bronze 경로가 base_dir layout과 다릅니다: {path.parent}"
+                f"Bronze 경로가 base_dir layout과 다릅니다: {partition}"
             )
     if location_size(path) != result.get("file_size_bytes"):
         raise ValueError(f"Bronze 원본 파일 크기가 수집 결과와 다릅니다: {path}")

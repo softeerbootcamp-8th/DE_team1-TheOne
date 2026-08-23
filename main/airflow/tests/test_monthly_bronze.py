@@ -21,6 +21,7 @@ def _result(year_month: str = "2026-07") -> dict:
         "locations": ["/bronze/monthly_taxi_trip/year_month=2026-07/20260811T085354000000Z.parquet"],
         "row_count": 1,
         "year_month": year_month,
+        "collected_at": "2026-08-11T08:53:54.000000Z",
     }
 
 
@@ -45,6 +46,18 @@ def test_S3_staging_경로도_확장자를_유지한채_최종키와_구분된�
     assert isinstance(staged, S3Location)
     parent = final.key.rsplit("/", 1)[0]
     assert staged == S3Location(final.bucket, f"{parent}/20260811T085354000000Z.staged.parquet")
+
+
+def test_새_Bronze_디렉터리도_collected_at으로_Silver파일명을_계산한다(tmp_path):
+    result = _result()
+    result["locations"] = [
+        "/bronze/monthly_taxi_trip/year_month=2026-07/"
+        "collected_at=20260811T085354000000Z/data.parquet"
+    ]
+
+    final = monthly_bronze.silver_version_path(tmp_path, result)
+
+    assert final.name == "20260811T085354000000Z.parquet"
 
 
 def test_로컬_커밋은_staging_파일을_최종경로로_옮긴다(tmp_path):
