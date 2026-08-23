@@ -8,7 +8,7 @@
 6. 성공한 원천만 상태를 기록하고 실패한 분기는 다음 실행에 남김
 7. 변경 또는 복구된 하위 DAG를 모두 기다린 뒤 READY Asset을 정확히 한 번 발행
 8. 모두 미변경이거나 하나라도 실패하면 READY Asset을 발행하지 않음
-9. 확정된 연월과 API 주소를 하위 DAG trigger conf로 전달
+9. 확정된 연월·API 주소·지역을 하위 DAG trigger conf로 전달
 10. refresh DAG가 내부 Source API 기본 주소를 사용
 """
 
@@ -73,12 +73,13 @@ def _mock_unchanged_source(monkeypatch, dataset: str) -> None:
     )
 
 
-def _check(dataset: str):
+def _check(dataset: str, service_area: str = "NYC"):
     return task_module.check_and_should_refresh_task.function(
         dataset,
         params={
             "api_base_url": API_BASE_URL,
             "request_timeout": 30,
+            "service_area": service_area,
         },
     )
 
@@ -184,7 +185,12 @@ def test_API가_미변경이고_로컬_Bronze가_있으면_Skip한다(
     _mock_unchanged_source(monkeypatch, dataset)
     monkeypatch.setenv("BRONZE_STORAGE", "local")
     monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
-    partition = tmp_path / dataset_dir / f"year_month={YEAR_MONTH}"
+    partition = (
+        tmp_path
+        / dataset_dir
+        / "service_area=NYC"
+        / f"year_month={YEAR_MONTH}"
+    )
     partition.mkdir(parents=True)
     (partition / "20260822T010203123456Z.parquet").touch()
 
@@ -199,6 +205,7 @@ def test_API가_미변경이고_새_로컬_Bronze가_있으면_Skip한다(tmp_pa
     data = (
         tmp_path
         / dataset
+        / "service_area=NYC"
         / f"year_month={YEAR_MONTH}"
         / "collected_at=20260822T010203123456Z"
         / "data.parquet"
@@ -217,6 +224,7 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
     (
         tmp_path
         / dataset
+        / "service_area=NYC"
         / f"year_month={YEAR_MONTH}"
         / "collected_at=20260822T010203123456Z"
     ).mkdir(parents=True)
@@ -231,20 +239,23 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
         (
             [
                 "bronze/lease_vehicle_inventory/"
-                "year_month=2026-08/20260822T010203123456Z.parquet"
+                "service_area=NYC/year_month=2026-08/"
+                "20260822T010203123456Z.parquet"
             ],
             False,
         ),
         (
             [
-                "bronze/lease_vehicle_inventory/year_month=2026-08/"
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                "year_month=2026-08/"
                 "collected_at=20260822T010203123456Z/data.parquet"
             ],
             False,
         ),
         (
             [
-                "bronze/lease_vehicle_inventory/year_month=2026-08/"
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                "year_month=2026-08/"
                 "collected_at=20260822T010203123456Z/"
             ],
             True,
@@ -260,7 +271,13 @@ def test_S3_Bronze_존재여부로_미변경_원천의_재실행을_판정한다
     _mock_unchanged_source(monkeypatch, dataset)
     monkeypatch.setenv("BRONZE_STORAGE", "s3")
     monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "lake")
-    monkeypatch.setattr(task_module, "list_keys", lambda bucket, prefix: keys)
+    prefixes = []
+
+    def list_keys(bucket, prefix):
+        prefixes.append((bucket, prefix))
+        return keys
+
+    monkeypatch.setattr(task_module, "list_keys", list_keys)
 
     result = _check(dataset)
 
@@ -268,6 +285,67 @@ def test_S3_Bronze_존재여부로_미변경_원천의_재실행을_판정한다
         assert result["refresh_required"] is True
     else:
         assert result is False
+    assert prefixes == [
+        (
+            "lake",
+            "bronze/lease_vehicle_inventory/service_area=NYC/"
+            "year_month=2026-08/",
+        )
+    ]
+
+
+def test_다른지역_Bronze는_대상지역의_중복수집을_막지않는다(
+    tmp_path, monkeypatch
+):
+    dataset = "monthly_taxi_trip"
+    _mock_unchanged_source(monkeypatch, dataset)
+    monkeypatch.setenv("BRONZE_STORAGE", "local")
+    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+    tx_data = (
+        tmp_path
+        / dataset
+        / "service_area=TX"
+        / f"year_month={YEAR_MONTH}"
+        / "collected_at=20260822T010203123456Z"
+        / "data.parquet"
+    )
+    tx_data.parent.mkdir(parents=True)
+    tx_data.touch()
+
+    result = _check(dataset, service_area="NYC")
+
+    assert result["refresh_required"] is True
+
+
+def test_같은지역과_원본의_두번째_감시는_skip한다(tmp_path, monkeypatch):
+    dataset = "monthly_taxi_trip"
+    inspections = iter(
+        [
+            {**_inspection_result(dataset), "changed": True},
+            _inspection_result(dataset),
+        ]
+    )
+    monkeypatch.setattr(task_module.Variable, "get", lambda *args, **kwargs: {})
+    monkeypatch.setattr(
+        task_module, "inspect_source", lambda *args, **kwargs: next(inspections)
+    )
+    monkeypatch.setenv("BRONZE_STORAGE", "local")
+    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+
+    assert _check(dataset)["refresh_required"] is True
+
+    data = (
+        tmp_path
+        / dataset
+        / "service_area=NYC"
+        / f"year_month={YEAR_MONTH}"
+        / "collected_at=20260822T010203123456Z"
+        / "data.parquet"
+    )
+    data.parent.mkdir(parents=True)
+    data.touch()
+
+    assert _check(dataset) is False
 
 
 def test_수동_연월은_정규화한_URL과_trigger값으로_반환한다(monkeypatch):
@@ -346,7 +424,7 @@ def test_trigger_run_id에_지역이_들어간다():
         )
 
 
-def test_하위DAG_trigger는_확정된_연월과_API주소를_conf로_전달한다():
+def test_하위DAG_trigger는_확정된_연월과_API주소와_지역을_conf로_전달한다():
     for dataset, _ in SOURCES:
         gate_task_id = f"check_and_should_refresh_{dataset}"
         trigger = source_api_refresh_dag.get_task(f"trigger_{dataset}")
@@ -360,6 +438,9 @@ def test_하위DAG_trigger는_확정된_연월과_API주소를_conf로_전달한
             ),
             "api_base_url": (
                 f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] }}}}"
+            ),
+            "service_area": (
+                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['service_area'] }}}}"
             ),
         }
 

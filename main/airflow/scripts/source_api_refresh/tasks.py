@@ -43,14 +43,21 @@ def state_key(dataset: str, service_area: str) -> str:
     return f"{STATE_KEY_PREFIX}{dataset}__{service_area}"
 
 
-def _bronze_partition_exists(dataset: str, year_month: str) -> bool:
+def _bronze_partition_exists(
+    dataset: str, year_month: str, service_area: str
+) -> bool:
     dataset_dir = BRONZE_DATASET_DIRS[dataset]
     storage = os.getenv("BRONZE_STORAGE", "local")
     if storage == "local":
         root = Path(
             os.getenv("BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze"))
         )
-        partition = root / dataset_dir / f"year_month={year_month}"
+        partition = (
+            root
+            / dataset_dir
+            / f"service_area={service_area}"
+            / f"year_month={year_month}"
+        )
         candidates = (
             *partition.glob("*.parquet"),
             *partition.glob("collected_at=*/data.parquet"),
@@ -60,7 +67,10 @@ def _bronze_partition_exists(dataset: str, year_month: str) -> bool:
         )
     if storage == "s3":
         bucket = os.environ["DATA_LAKE_S3_BUCKET"]
-        prefix = f"bronze/{dataset_dir}/year_month={year_month}/"
+        prefix = (
+            f"bronze/{dataset_dir}/service_area={service_area}/"
+            f"year_month={year_month}/"
+        )
         return any(
             bronze_collection_token(PurePosixPath(key))
             for key in list_keys(bucket, prefix)
@@ -207,11 +217,9 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
     # mark_processed_task 는 context 없이 result 만 받으므로 지역을 여기서 실어
     # 보냅니다 — 상태를 읽은 키와 쓰는 키가 어긋나면 안 됩니다.
     result["service_area"] = service_area
-    # 경로에는 아직 지역 축이 없습니다. 작성자(Lambda·Spark)가 지역 계층을 쓰기
-    # 시작하는 #810 에서 이 조회도 함께 지역을 타야 합니다 — 읽는 쪽만 먼저 바꾸면
-    # 없는 디렉터리를 보게 되어 bronze_exists 가 항상 False 가 되고 dedup 이
-    # 무력화됩니다.
-    bronze_exists = _bronze_partition_exists(dataset, result["year_month"])
+    bronze_exists = _bronze_partition_exists(
+        dataset, result["year_month"], service_area
+    )
     result["refresh_required"] = result["changed"] or not bronze_exists
     logger.info(
         "원천 HEAD 검사: dataset=%s service_area=%s year_month=%s changed=%s "
