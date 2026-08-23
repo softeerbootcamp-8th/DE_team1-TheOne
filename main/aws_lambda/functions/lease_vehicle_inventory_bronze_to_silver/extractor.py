@@ -9,7 +9,10 @@ from pipeline_core.extractor import Extractor
 
 from main.aws_lambda.common.monthly_dataset import bronze_collection_token
 from shared.common.s3_reader import get_object_bytes, list_keys
-from shared.common.service_area_path import candidate_roots, join_segments, service_area_segment
+from shared.common.service_area_path import (
+    candidate_prefixes,
+    candidate_roots,
+)
 
 from .loader import DATASET
 
@@ -41,14 +44,28 @@ class LeaseVehicleInventoryBronzeExtractor(Extractor):
 class LeaseVehicleInventoryS3BronzeExtractor(Extractor):
     """월 파티션의 최신 수집분 원본을 S3 에서 읽습니다."""
 
-    def __init__(self, bucket: str, year_month: str):
+    def __init__(
+        self, bucket: str, year_month: str, service_area: str | None = None
+    ):
         self._bucket = bucket
         self._year_month = year_month
-        self.name = f"lease_vehicle_inventory_bronze_s3:{bucket}:{year_month}"
+        self._service_area = service_area
+        self.name = (
+            f"lease_vehicle_inventory_bronze_s3:{bucket}:{service_area}:{year_month}"
+        )
 
     def extract(self) -> pa.Table:
-        prefix = _bronze_s3_prefix(self._year_month)
-        key = _newest_key(list_keys(self._bucket, prefix), prefix)
+        prefixes = _bronze_s3_prefixes(self._year_month, self._service_area)
+        for prefix in prefixes:
+            try:
+                key = _newest_key(list_keys(self._bucket, prefix), prefix)
+                break
+            except FileNotFoundError:
+                continue
+        else:
+            raise FileNotFoundError(
+                f"보유 차량 Bronze S3 파티션이 없습니다: {prefixes}"
+            )
         body = get_object_bytes(self._bucket, key)
         if not body:
             raise ValueError(f"보유 차량 Bronze 객체가 비어 있습니다: s3://{self._bucket}/{key}")
@@ -62,14 +79,17 @@ class LeaseVehicleInventoryS3BronzeExtractor(Extractor):
         return table
 
 
-def _bronze_s3_prefix(year_month: str, service_area: str | None = None) -> str:
+def _bronze_s3_prefixes(
+    year_month: str, service_area: str | None = None
+) -> tuple[str, ...]:
     """지역 계층을 넣을 위치는 shared.common 이 정의합니다(#851)."""
-    return (
-        join_segments(
-            "bronze", DATASET, service_area_segment(service_area),
-            f"year_month={year_month}",
+    return tuple(
+        f"{root}/year_month={year_month}/"
+        for root in candidate_prefixes(
+            "bronze",
+            DATASET,
+            service_area=service_area,
         )
-        + "/"
     )
 
 
@@ -102,10 +122,20 @@ def _newest_bronze_path(
 
 
 def build_bronze_extractor(
-    storage: str, base_dir: str, bucket: str | None, year_month: str
+    storage: str,
+    base_dir: str,
+    bucket: str | None,
+    year_month: str,
+    service_area: str | None = None,
 ) -> Extractor:
     if storage == "local":
-        return LeaseVehicleInventoryBronzeExtractor(_newest_bronze_path(base_dir, year_month))
+        return LeaseVehicleInventoryBronzeExtractor(
+            _newest_bronze_path(base_dir, year_month, service_area)
+        )
     if storage == "s3":
-        return LeaseVehicleInventoryS3BronzeExtractor(bucket, year_month)
+        return LeaseVehicleInventoryS3BronzeExtractor(
+            bucket,
+            year_month,
+            service_area,
+        )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

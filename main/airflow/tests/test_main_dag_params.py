@@ -24,7 +24,7 @@ DAG_PARAMS = {
     ),
     "lease_vehicle_inventory_raw_to_silver_dag": (
         "lease_vehicle_inventory_raw_to_silver_dag",
-        {"year", "month", "api_base_url", "base_dir", "silver_dir"},
+        {"year", "month", "api_base_url", "base_dir", "silver_dir", "service_area"},
     ),
     "monthly_taxi_trip_raw_to_silver_dag": (
         "monthly_taxi_trip_dag",
