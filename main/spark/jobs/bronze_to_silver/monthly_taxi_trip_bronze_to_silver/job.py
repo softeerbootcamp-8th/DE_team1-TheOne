@@ -100,7 +100,7 @@ class SingleParquetFileLoader(Loader):
         target = Path(self._path)
         temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
         try:
-            payload.coalesce(1).write.mode("overwrite").parquet(str(temporary))
+            payload.repartition(1).write.mode("overwrite").parquet(str(temporary))
             parts = list(temporary.glob("part-*.parquet"))
             if len(parts) != 1:
                 raise ValueError(f"Spark Parquet part 파일은 하나여야 합니다: {temporary}")
@@ -120,7 +120,7 @@ class SingleParquetFileLoader(Loader):
         temporary_uri = f"s3://{bucket}/{temporary_prefix}"
         client = boto3.client("s3")
         try:
-            data.coalesce(1).write.mode("overwrite").parquet(temporary_uri)
+            data.repartition(1).write.mode("overwrite").parquet(temporary_uri)
             keys = list_keys(bucket, temporary_prefix)
             parts = [
                 key
