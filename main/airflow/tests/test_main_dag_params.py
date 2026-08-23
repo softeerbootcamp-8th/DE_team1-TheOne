@@ -27,7 +27,7 @@ DAG_PARAMS = {
     ),
     "eia_gas_price_raw_to_silver_dag": (
         "eia_gas_price_raw_to_silver_dag",
-        {"year", "month", "bronze_dir", "silver_dir"},
+        {"year", "month", "bronze_dir", "silver_dir", "service_area"},
     ),
     "lease_vehicle_inventory_raw_to_silver_dag": (
         "lease_vehicle_inventory_raw_to_silver_dag",
@@ -35,7 +35,14 @@ DAG_PARAMS = {
     ),
     "monthly_taxi_trip_raw_to_silver_dag": (
         "monthly_taxi_trip_dag",
-        {"year", "month", "base_dir", "api_base_url", "error_threshold"},
+        {
+            "year",
+            "month",
+            "service_area",
+            "base_dir",
+            "api_base_url",
+            "error_threshold",
+        },
     ),
     "monthly_taxi_trip_silver_to_gold_dag": (
         "monthly_taxi_trip_silver_to_gold_dag",

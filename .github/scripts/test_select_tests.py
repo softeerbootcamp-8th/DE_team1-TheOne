@@ -11,6 +11,10 @@
 9. 수동 매핑표의 값이 실재하는 테스트 파일인지 확인
 10. 모든 파이프라인이 전용 테스트를 최소 1개 고르는지 확인
 11. 삭제된 테스트 파일은 실행 대상에서 제외
+12. Hook 변경은 Hook 전용 테스트만 선택
+13. Skill 문서는 제품 테스트를 선택하지 않음
+14. Skill 검사기 변경은 해당 자체 검사만 선택
+15. GitHub CI 스크립트는 파일별 전용 테스트만 선택
 """
 
 import importlib.util
@@ -54,6 +58,61 @@ def test_알_수_없는_Python_변경은_전체_테스트로_fallback한다():
     assert result.full == select_tests.ALL_PROJECTS
 
 
+def test_Review_Hook_변경은_Hook_전용_테스트만_선택한다():
+    result = select_tests.select_tests([".claude/hooks/review_gate.py"])
+
+    assert result.full == set()
+    assert result.tests == {".claude/hooks": {"test_review_gate.py"}}
+    assert select_tests.selected_projects(result) == [".claude/hooks"]
+
+
+def test_Skill_문서는_제품_테스트를_선택하지_않는다():
+    result = select_tests.select_tests(
+        [
+            ".agents/skills/write-pr/SKILL.md",
+            ".claude/skills/review-engineering/references/senior-de-playbook.md",
+        ]
+    )
+
+    assert select_tests.render(result) == "NONE"
+
+
+def test_Skill_검사기_변경은_각_자체_검사만_선택한다():
+    result = select_tests.select_tests(
+        [
+            ".agents/skills/write-issue/check_draft.py",
+            ".claude/skills/write-issue/check_draft.py",
+        ]
+    )
+
+    assert result.full == set()
+    assert result.tests == {
+        ".agents/skills/write-issue": {"check_draft.py"},
+        ".claude/skills/write-issue": {"check_draft.py"},
+    }
+
+
+def test_GitHub_CI_스크립트는_파일별_전용_테스트만_선택한다():
+    cases = {
+        ".github/scripts/select_tests.py": "test_select_tests.py",
+        ".github/scripts/test_select_tests.py": "test_select_tests.py",
+        ".github/scripts/check_image_filters.py": "test_check_image_filters.py",
+        ".github/scripts/test_check_image_filters.py": "test_check_image_filters.py",
+    }
+
+    for changed, expected in cases.items():
+        result = select_tests.select_tests([changed])
+        assert result.full == set()
+        assert result.tests == {".github/scripts": {expected}}
+
+
+def test_분류되지_않은_GitHub_CI_스크립트는_스크립트_테스트만_전체선택한다():
+    result = select_tests.select_tests([".github/scripts/new_guard.py"])
+
+    assert result.full == {".github/scripts"}
+    assert result.tests == {}
+
+
 def test_테스트_파일_변경은_그_테스트만_선택한다():
     result = select_tests.select_tests(
         ["main/airflow/tests/test_driver_vehicle_monthly_snapshot_raw_to_silver_dag.py"]
@@ -89,6 +148,27 @@ def test_분리된_제품_테스트는_저장소_루트를_import_경로로_사�
     assert kwargs["cwd"] == select_tests.ROOT / "main/airflow"
     assert kwargs["env"]["PYTHONPATH"] == str(select_tests.ROOT)
     assert "VIRTUAL_ENV" not in kwargs["env"]
+
+
+def test_GitHub_CI_스크립트_러너는_선택된_전용_테스트만_실행한다(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        select_tests.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+    selection = select_tests.select_tests(
+        [".github/scripts/check_image_filters.py"]
+    )
+
+    select_tests.run(selection, only=".github/scripts")
+
+    command, kwargs = calls[0]
+    assert command[-1] == str(
+        select_tests.ROOT / ".github/scripts/test_check_image_filters.py"
+    )
+    assert str(select_tests.ROOT / ".github/scripts/test_select_tests.py") not in command
+    assert kwargs["cwd"] == select_tests.ROOT / "main/airflow"
 
 
 def test_shared_AWS_Lambda_변경은_세_Lambda_영역_전체_테스트를_선택한다():
@@ -142,6 +222,55 @@ def test_only_가_대상이_아니면_아무것도_돌지_않는다(monkeypatch)
     select_tests.run(selection, only="main/dashboard")
 
     assert ran == []
+
+
+def test_Hook_러너는_제품_uv환경없이_전용_unittest만_실행한다(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        select_tests.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+    selection = select_tests.select_tests([".claude/hooks/review_gate.py"])
+
+    select_tests.run(selection, only=".claude/hooks")
+
+    assert [command for command, _ in calls] == [
+        [
+            sys.executable,
+            str(select_tests.ROOT / ".claude/hooks/test_review_gate.py"),
+            "-v",
+        ],
+        [
+            sys.executable,
+            str(select_tests.ROOT / ".claude/hooks/review_gate.py"),
+            "--self-check",
+        ],
+    ]
+    assert all(kwargs["cwd"] == select_tests.ROOT for _, kwargs in calls)
+
+
+def test_Skill_검사기_러너는_제품_uv환경없이_자체검사만_실행한다(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        select_tests.subprocess,
+        "run",
+        lambda command, **kwargs: calls.append((command, kwargs)),
+    )
+    selection = select_tests.select_tests(
+        [".claude/skills/write-issue/check_draft.py"]
+    )
+
+    select_tests.run(selection, only=".claude/skills/write-issue")
+
+    assert [command for command, _ in calls] == [
+        [
+            sys.executable,
+            str(select_tests.ROOT / ".claude/skills/write-issue/check_draft.py"),
+            "--self-check",
+        ]
+    ]
+    assert calls[0][1]["cwd"] == select_tests.ROOT
 
 
 def _pipelines(product: str) -> set[str]:

@@ -43,7 +43,7 @@ ZONE_LOOKUP_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.c
 HVFHV_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data/fhvhv_tripdata_{year_month}.parquet"
 MAX_MONTH_LOOKBACK = 6
 RELEASE_DATASETS = {
-    "hvfhv_taxi_trips": {"pickup_datetime", "taxi_id"},
+    "monthly_taxi_trip": {"pickup_datetime", "taxi_id"},
     "driver_vehicle_monthly_snapshot": SNAPSHOT_REQUIRED_COLUMNS,
     "lease_vehicle_inventory": INVENTORY_REQUIRED_COLUMNS,
 }

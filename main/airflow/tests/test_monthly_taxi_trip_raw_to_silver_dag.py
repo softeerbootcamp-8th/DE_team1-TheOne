@@ -46,6 +46,10 @@ def test_기본_API_주소는_내부_제공서버를_사용한다():
     assert DAG.params["api_base_url"] == "http://10.0.10.81:8091"
 
 
+def test_기본_서비스지역은_NYC다():
+    assert DAG.params["service_area"] == "NYC"
+
+
 def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_전달한다(monkeypatch):
     called = {}
 
@@ -61,6 +65,7 @@ def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_�
             "base_dir": "/bronze",
             "year": "2026",
             "month": "8",
+            "service_area": "TX",
         }
     )
 
@@ -69,6 +74,7 @@ def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_�
         "base_dir": "/bronze",
         "year": "2026",
         "month": "8",
+        "service_area": "TX",
     }
 
 

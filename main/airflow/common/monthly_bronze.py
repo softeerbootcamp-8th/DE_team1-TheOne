@@ -272,11 +272,11 @@ def validate_monthly_parquet_bronze(
         raise ValueError(f"Bronze 원본 파일이 없습니다: {path}")
     partition = bronze_partition(path)
     area = service_area_segment(service_area)
+    dataset_root = partition.parent.parent if area else partition.parent
     if (
         partition.name != f"year_month={year_month}"
+        or dataset_root.name != dataset_dir
         or (area and partition.parent.name != area)
-        or (area and partition.parent.parent.name != dataset_dir)
-        or (not area and partition.parent.name != dataset_dir)
     ):
         raise ValueError(f"Bronze 원본 경로가 월 파티션 계약과 다릅니다: {path}")
     collected_at = result.get("collected_at")
@@ -289,11 +289,10 @@ def validate_monthly_parquet_bronze(
             f"Bronze 경로의 수집 시각이 collected_at과 다릅니다: {path}"
         )
     if base_dir is not None and isinstance(path, Path):
-        dataset_root = Path(base_dir) / dataset_dir
-        expected_partition = (
-            (dataset_root / area if area else dataset_root)
-            / f"year_month={year_month}"
-        )
+        expected_root = Path(base_dir) / dataset_dir
+        if area:
+            expected_root /= area
+        expected_partition = expected_root / f"year_month={year_month}"
         if partition.resolve() != expected_partition.resolve():
             raise ValueError(
                 f"Bronze 경로가 base_dir layout과 다릅니다: {partition}"

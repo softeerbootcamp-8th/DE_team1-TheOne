@@ -68,10 +68,6 @@ class DatasetStorage:
 class LocalDatasetStorage(DatasetStorage):
     """`<root>/year_month=YYYY-MM/manifest.json` 릴리스 레이아웃을 그대로 읽습니다."""
 
-    # 생성 DAG(synthetic_driver_trip_source)가 만드는 manifest는 아직 예전 이름
-    # (hvfhv_taxi_trips)을 씁니다. 공개 API 이름(monthly_taxi_trip)과 다른 것만 번역합니다.
-    _MANIFEST_KEYS = {"monthly_taxi_trip": "hvfhv_taxi_trips"}
-
     def __init__(self, root: str | Path):
         self._root = Path(root).resolve()
 
@@ -84,8 +80,7 @@ class LocalDatasetStorage(DatasetStorage):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise DatasetStorageError(f"invalid manifest: {manifest_path}") from exc
-        manifest_key = self._MANIFEST_KEYS.get(dataset, dataset)
-        metadata = manifest.get("datasets", {}).get(manifest_key, {})
+        metadata = manifest.get("datasets", {}).get(dataset, {})
         path = release / str(metadata.get("file", ""))
         # release 디렉터리 밖을 가리키면(경로 탈출) 내보내지 않습니다.
         if not path.is_file() or path.parent.parent != self._root:
