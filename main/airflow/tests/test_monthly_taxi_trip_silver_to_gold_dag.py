@@ -76,6 +76,20 @@ def _write_version(root: Path, dataset: str, year_month: str, file_name: str) ->
     return path
 
 
+def _write_completed_version(
+    root: Path, dataset: str, year_month: str, token: str
+) -> Path:
+    version = (
+        root / dataset / f"year_month={year_month}"
+        / f"source_collected_at={token}"
+    )
+    version.mkdir(parents=True, exist_ok=True)
+    file_name = "part-00000.parquet" if dataset == "monthly_taxi_trip" else "data.parquet"
+    (version / file_name).touch()
+    (version / "_SUCCESS").touch()
+    return version
+
+
 def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된다():
     timetable = GOLD_DAG.timetable
 
@@ -212,6 +226,33 @@ def test_API_Silver는_가장최신_collected_at_파일만_선택한다(tmp_path
     assert Path(resolved["monthly_taxi_trip_path"]).name == latest
     assert Path(resolved["driver_vehicle_monthly_snapshot_path"]).name == latest
     assert Path(resolved["lease_vehicle_inventory_path"]).name == latest
+
+
+def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp_path):
+    _write_inputs(tmp_path, "2026-05")
+    completed_token = "20260821T123456123456Z"
+    incomplete_token = "20260822T123456123456Z"
+    for dataset in (
+        "monthly_taxi_trip",
+        "driver_vehicle_monthly_snapshot",
+        "lease_vehicle_inventory",
+    ):
+        _write_completed_version(tmp_path, dataset, "2026-05", completed_token)
+        incomplete = (
+            tmp_path / dataset / "year_month=2026-05"
+            / f"source_collected_at={incomplete_token}"
+        )
+        incomplete.mkdir()
+        (incomplete / "part-00000.parquet").touch()
+
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+
+    for key in (
+        "monthly_taxi_trip_path",
+        "driver_vehicle_monthly_snapshot_path",
+        "lease_vehicle_inventory_path",
+    ):
+        assert Path(resolved[key]).name == f"source_collected_at={completed_token}"
 
 
 def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):

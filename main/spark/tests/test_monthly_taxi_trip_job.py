@@ -10,8 +10,8 @@
 8. start/end 중 하나만 주면 ValueError
 9. `is_s3_path`/`resolve_path`/`latest_partition_file`은 s3://·s3a:// 경로도 처리 (이슈 #646)
 10. `--env local|prod`로 기본 입출력 경로를 고름, `prod`인데 버킷이 없으면 ValueError
-11. 단일 Silver 버전은 coalesce(1) 후 collected_at 파일로 원자적 교체
-12. S3 단일 Silver 버전은 최종 객체만 남기고 임시 객체를 정리
+11. Silver 버전은 source_collected_at staging 디렉터리에 part 파일로 적재
+12. Spark writer는 coalesce 없이 로컬·S3에 같은 디렉터리 계약으로 기록
 """
 
 from datetime import datetime
@@ -309,26 +309,40 @@ def test_start와_end가_같으면_한_달만_처리한다(spark, tmp_path):
     assert {row["year_month"] for row in result.collect()} == {"2024-05"}
 
 
-def test_단일버전은_coalesce한_collected_at_Parquet하나로_적재한다(spark, tmp_path):
-    file_name = "20260821T123456123456Z.parquet"
-    bronze = tmp_path / "bronze" / "year_month=2024-03" / file_name
+def test_수집버전은_source_collected_at_디렉터리에_part파일로_적재한다(spark, tmp_path):
+    bronze = tmp_path / "bronze/year_month=2024-03/data.parquet"
     bronze.parent.mkdir(parents=True)
     pq.write_table(pa.Table.from_pylist([_row()]), bronze)
-    final = tmp_path / "silver" / "year_month=2024-03" / file_name
+    staged = (
+        tmp_path / "silver/year_month=2024-03/.staging/"
+        "source_collected_at=20260821T123456123456Z"
+    )
 
     job.main([
         "--input_path", str(bronze),
         "--output_path", str(tmp_path / "silver"),
-        "--output_file", str(final),
+        "--output_version", str(staged),
         "--error_threshold", "1.0",
     ])
 
-    assert spark.read.parquet(str(final)).count() == 1
-    assert not list(final.parent.glob(f".{final.name}.*.tmp"))
+    assert spark.read.parquet(str(staged)).count() == 1
+    assert list(staged.glob("part-*.parquet"))
 
 
-def test_단일버전_loader는_coalesce_1후_최종파일로_교체한다(tmp_path):
-    final = tmp_path / "20260821T123456123456Z.parquet"
+def test_output_version은_검증전_source_collected_at_경로만_허용한다(tmp_path):
+    with pytest.raises(ValueError, match=".staging/source_collected_at"):
+        job.main(
+            [
+                "--input_path",
+                str(tmp_path / "bronze.parquet"),
+                "--output_version",
+                str(tmp_path / "source_collected_at=20260821T123456123456Z"),
+            ]
+        )
+
+
+def test_버전_loader는_coalesce없이_staging디렉터리에_쓴다(tmp_path):
+    staged = tmp_path / ".staging/source_collected_at=x"
     calls = []
 
     class FakeWriter:
@@ -338,9 +352,6 @@ def test_단일버전_loader는_coalesce_1후_최종파일로_교체한다(tmp_p
 
         def parquet(self, path):
             calls.append(("parquet", path))
-            target = Path(path)
-            target.mkdir(parents=True)
-            (target / "part-00000.parquet").touch()
 
     class FakeDataFrame:
         write = FakeWriter()
@@ -348,23 +359,18 @@ def test_단일버전_loader는_coalesce_1후_최종파일로_교체한다(tmp_p
         def count(self):
             return 7
 
-        def coalesce(self, partitions):
-            calls.append(("coalesce", partitions))
-            return self
+    result = job.SilverVersionDirectoryLoader(str(staged)).write(FakeDataFrame())
 
-    result = job.SingleParquetFileLoader(str(final)).write(FakeDataFrame())
-
-    assert calls[:2] == [("coalesce", 1), ("mode", "overwrite")]
-    assert calls[2][0] == "parquet"
-    assert calls[2][1] != str(final)
-    assert final.is_file()
-    assert result.location == str(final)
+    assert calls == [("mode", "overwrite"), ("parquet", str(staged))]
+    assert result.location == str(staged)
     assert result.row_count == 7
 
 
-def test_단일버전_쓰기실패는_기존최종파일을_보존한다(tmp_path):
-    final = tmp_path / "20260821T123456123456Z.parquet"
-    final.write_bytes(b"previous")
+def test_버전_staging쓰기실패는_기존공개버전을_건드리지않는다(tmp_path):
+    final = tmp_path / "source_collected_at=x"
+    final.mkdir()
+    (final / "_SUCCESS").touch()
+    staged = tmp_path / ".staging/source_collected_at=x"
 
     class FailingWriter:
         def mode(self, value):
@@ -379,21 +385,14 @@ def test_단일버전_쓰기실패는_기존최종파일을_보존한다(tmp_pat
         def count(self):
             return 7
 
-        def coalesce(self, partitions):
-            return self
-
     with pytest.raises(OSError, match="Spark 쓰기 실패"):
-        job.SingleParquetFileLoader(str(final)).write(FakeDataFrame())
+        job.SilverVersionDirectoryLoader(str(staged)).write(FakeDataFrame())
 
-    assert final.read_bytes() == b"previous"
-    assert not list(tmp_path.glob(f".{final.name}.*.tmp"))
+    assert (final / "_SUCCESS").is_file()
 
 
-def test_S3_단일버전은_최종객체만_남기고_임시객체를_정리한다(s3_client):
-    final_key = (
-        "silver/monthly_taxi_trip/year_month=2026-08/"
-        "20260821T123456123456Z.parquet"
-    )
+def test_S3_버전은_staging디렉터리에_Spark_part를_그대로_남긴다(s3_client):
+    staged_key = "silver/monthly_taxi_trip/year_month=2026-08/.staging/source_collected_at=x"
 
     class FakeWriter:
         def mode(self, value):
@@ -401,7 +400,7 @@ def test_S3_단일버전은_최종객체만_남기고_임시객체를_정리한�
             return self
 
         def parquet(self, uri):
-            prefix = uri.split(f"s3://{S3_BUCKET}/", 1)[1]
+            prefix = uri.split(f"s3://{S3_BUCKET}/", 1)[1].rstrip("/") + "/"
             s3_client.put_object(
                 Bucket=S3_BUCKET,
                 Key=f"{prefix}part-00000.parquet",
@@ -419,20 +418,13 @@ def test_S3_단일버전은_최종객체만_남기고_임시객체를_정리한�
         def count(self):
             return 7
 
-        def coalesce(self, partitions):
-            assert partitions == 1
-            return self
-
-    result = job.SingleParquetFileLoader(
-        f"s3://{S3_BUCKET}/{final_key}"
+    result = job.SilverVersionDirectoryLoader(
+        f"s3://{S3_BUCKET}/{staged_key}"
     ).write(FakeDataFrame())
     keys = job.list_keys(S3_BUCKET, "silver/monthly_taxi_trip/")
 
-    assert keys == [final_key]
-    assert s3_client.get_object(Bucket=S3_BUCKET, Key=final_key)[
-        "Body"
-    ].read() == b"silver"
-    assert result.location == f"s3://{S3_BUCKET}/{final_key}"
+    assert keys == [f"{staged_key}/_SUCCESS", f"{staged_key}/part-00000.parquet"]
+    assert result.location == f"s3://{S3_BUCKET}/{staged_key}"
     assert result.row_count == 7
 
 

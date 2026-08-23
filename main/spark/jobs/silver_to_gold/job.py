@@ -19,7 +19,6 @@ output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
 import argparse
 import logging
 import os
-import re
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -37,6 +36,10 @@ from main.spark.jobs.silver_to_gold.transformer import (
     validate_gold_business_invariants,
 )
 from shared.common.s3_reader import list_keys
+from shared.common.monthly_silver import (
+    latest_local_silver_version,
+    latest_s3_silver_version,
+)
 from shared.spark.common.session import get_or_create_spark_session
 
 
@@ -55,9 +58,6 @@ DEFAULT_LOCAL_SILVER_BASE = {
     "lease_vehicle_inventory": "data/silver/lease_vehicle_inventory",
     "fuel_price": "data/silver/gas_ev_price",
 }
-
-TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
-
 
 def _is_s3_path(path: str) -> bool:
     return path.startswith("s3://") or path.startswith("s3a://")
@@ -102,20 +102,33 @@ def latest_partition_file(base_path: str, year_month: str) -> str:
         parsed = urlsplit(resolved)
         bucket = parsed.netloc
         prefix = f"{parsed.path.lstrip('/').rstrip('/')}/year_month={year_month}/"
-        keys = sorted(key for key in list_keys(bucket, prefix) if key.endswith(".parquet"))
+        keys = list_keys(bucket, prefix)
         if not keys:
             raise FileNotFoundError(f"Silver 파티션이 없습니다: {scheme}://{bucket}/{prefix}")
-        versioned = [key for key in keys if TIMESTAMP_FILE_PATTERN.fullmatch(Path(key).name)]
-        return f"{scheme}://{bucket}/{(versioned or keys)[-1]}"
+        versioned = latest_s3_silver_version(keys, prefix)
+        if versioned is not None:
+            return f"{scheme}://{bucket}/{versioned}"
+        legacy_parts = sorted(
+            key
+            for key in keys
+            if "/" not in key.removeprefix(prefix)
+            and Path(key).name.startswith("part-")
+            and key.endswith(".parquet")
+        )
+        if not legacy_parts:
+            raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: {scheme}://{bucket}/{prefix}")
+        return f"{scheme}://{bucket}/{prefix}part-*.parquet"
 
     partition_dir = Path(resolved) / f"year_month={year_month}"
     if not partition_dir.is_dir():
         raise FileNotFoundError(f"Silver 파티션이 없습니다: {partition_dir}")
-    files = sorted(partition_dir.glob("*.parquet"))
-    if not files:
+    versioned = latest_local_silver_version(partition_dir)
+    if versioned is not None:
+        return str(versioned)
+    legacy_parts = sorted(partition_dir.glob("part-*.parquet"))
+    if not legacy_parts:
         raise FileNotFoundError(f"Silver 파티션이 비어 있습니다: {partition_dir}")
-    versioned = [path for path in files if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)]
-    return str((versioned or files)[-1])
+    return str(partition_dir / "part-*.parquet")
 
 
 def latest_fuel_price_path(fuel_price_dir: str) -> str:

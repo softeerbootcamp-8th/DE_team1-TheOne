@@ -10,12 +10,12 @@ import psycopg2
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.sdk import Variable, task
 
-from main.airflow.common.monthly_bronze import TIMESTAMP_FILE_PATTERN
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import (
     slack_skip_alert_callback,
     slack_stale_alert_callback,
 )
+from shared.common.monthly_silver import latest_local_silver_version
 
 logger = logging.getLogger(__name__)
 
@@ -65,15 +65,10 @@ def available_year_months(monthly_taxi_trip_path: str | Path) -> list[str]:
 
 
 def _latest_version(partition: Path) -> Path | None:
-    versions = [
-        path
-        for path in partition.glob("*.parquet")
-        if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
-    ]
-    return sorted(versions)[-1] if versions else None
+    return latest_local_silver_version(partition)
 
 
-def _resolve_versioned_file(
+def _resolve_versioned_input(
     root: str | Path,
     year_month: str,
     *,
@@ -159,7 +154,7 @@ def resolve_input_paths(year_month: str, params: dict) -> dict:
     }
     resolved_files = {}
     for key, (file_name, upstream_dag) in versioned_files.items():
-        resolved_files[key] = _resolve_versioned_file(
+        resolved_files[key] = _resolve_versioned_input(
             params[key],
             year_month,
             legacy_file_name=file_name,

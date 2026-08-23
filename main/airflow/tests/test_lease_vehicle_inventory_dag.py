@@ -24,6 +24,7 @@ from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
 
 DAG = dag_module.lease_vehicle_inventory_raw_to_silver_dag
 FILE_NAME = "20260821T123456123456Z.parquet"
+SOURCE_VERSION = "source_collected_at=20260821T123456123456Z"
 
 
 def _raw_result(source_changed: bool = True) -> dict:
@@ -141,7 +142,10 @@ def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달
         {
             "locations": [f"/bronze/{FILE_NAME}"],
             "year_month": "2026-08",
-            "silver_version_path": f"/silver/year_month=2026-08/{FILE_NAME}",
+            "silver_version_path": f"/silver/year_month=2026-08/{SOURCE_VERSION}",
+            "silver_staging_path": (
+                f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
+            ),
         },
         params={"silver_dir": "/silver"},
     )
@@ -149,8 +153,9 @@ def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달
     assert called == {
         "bronze_path": f"/bronze/{FILE_NAME}",
         "year_month": "2026-08",
-        "silver_file_name": FILE_NAME,
-        "silver_dir": "/silver",
+        "silver_output_path": (
+            f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
+        ),
     }
 
 
@@ -185,7 +190,8 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
     )
 
     assert {key: validated[key] for key in recollected} == recollected
-    assert validated["silver_version_path"].endswith(FILE_NAME)
+    assert validated["silver_version_path"].endswith(SOURCE_VERSION)
+    assert validated["silver_staging_path"].endswith(f".staging/{SOURCE_VERSION}")
     assert calls == [{
         "base_dir": "/bronze",
         "silver_dir": "/silver",
@@ -207,7 +213,7 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
         params={"base_dir": "/bronze", "silver_dir": str(tmp_path)},
     )
 
-    assert validated_result["silver_version_path"].endswith(FILE_NAME)
+    assert validated_result["silver_version_path"].endswith(SOURCE_VERSION)
     assert validated == [result]
 
 
@@ -218,6 +224,31 @@ def test_Bronze와_행수가_같고_품질이_맞아야_Silver를_통과시킨�
 
     with pytest.raises(ValueError, match="행 수가 Bronze와 다릅니다"):
         task_module.validate_silver_result(result, 2)
+
+
+def test_Silver검증후_staging을_최종버전으로_공개한다(tmp_path, monkeypatch):
+    staging = tmp_path / "year_month=2026-08" / ".staging" / SOURCE_VERSION
+    part = staging / "data.parquet"
+    final = staging.parent.parent / SOURCE_VERSION
+    part.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), part)
+    committed = []
+    monkeypatch.setattr(
+        task_module,
+        "commit_staged_silver",
+        lambda source, target, **options: committed.append((source, target, options)),
+    )
+
+    DAG.get_task("validate_silver").python_callable(
+        {"locations": [str(part)], "row_count": 1, "year_month": "2026-08"},
+        {
+            "row_count": 1,
+            "silver_staging_path": str(staging),
+            "silver_version_path": str(final),
+        },
+    )
+
+    assert committed == [(staging, final, {"layout": "single_data"})]
 
 
 def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
