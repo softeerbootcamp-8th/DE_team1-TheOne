@@ -13,6 +13,10 @@ PUBLISHED_DATASETS = frozenset(
     }
 )
 S3_PUBLISHED_PREFIX = f"source/published/{PUBLISHED_SERVICE_AREA}"
+# EMR executor가 릴리스 생성 중 읽는 작은 중간 뷰입니다. 전월 상태의 정본은
+# 아래 경로가 아니라 published 데이터셋/manifest이며, 이 경로는 재시도 때
+# 덮어쓸 수 있는 런타임 캐시로만 사용합니다.
+S3_PUBLISHED_RUNTIME_PREFIX = f"{S3_PUBLISHED_PREFIX}/_runtime/synthetic_driver_trip"
 
 
 def dataset_key(dataset: str, year_month: str) -> str:
