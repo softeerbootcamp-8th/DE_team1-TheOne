@@ -207,5 +207,8 @@ def validate_silver_task(**context) -> None:
     year_month = result["year_month"]
     validate_silver(result)
     assets.publish_month_partition(
-        context.get("outlet_events"), assets.FUEL_PRICE_SILVER, year_month
+        context.get("outlet_events"),
+        assets.FUEL_PRICE_SILVER,
+        year_month,
+        assets.resolve_service_area(context.get("params", {})),
     )

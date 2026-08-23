@@ -16,7 +16,7 @@ DAG_PARAMS = {
     ),
     "eia_fuel_price_silver_dag": (
         "eia_fuel_price_silver_dag",
-        {"year_month", "silver_dir"},
+        {"year_month", "silver_dir", "service_area"},
     ),
     "eia_gas_price_raw_to_silver_dag": (
         "eia_gas_price_raw_to_silver_dag",
@@ -46,7 +46,7 @@ DAG_PARAMS = {
     ),
     "source_api_refresh_dag": (
         "source_api_refresh_dag",
-        {"year", "month", "api_base_url", "request_timeout"},
+        {"year", "month", "api_base_url", "request_timeout", "service_area"},
     ),
 }
 

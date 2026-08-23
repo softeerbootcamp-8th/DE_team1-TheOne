@@ -23,6 +23,8 @@ from main.airflow.scripts.source_api_refresh import tasks as task_module
 
 API_BASE_URL = "https://company.example"
 YEAR_MONTH = "2026-08"
+# READY 파티션 키는 "{service_area}:{year_month}" 복합 문자열입니다(#674).
+READY_PARTITION_KEY = f"NYC:{YEAR_MONTH}"
 ETAG = '"47b92fc60237333c9667c4bcbe1c9573-97"'
 LAST_MODIFIED = "Fri, 21 Aug 2026 00:00:00 GMT"
 
@@ -371,7 +373,7 @@ def test_같은월에_여러원천이_변경돼도_READY_파티션은_한번만_
         outlet_events={assets.API_SILVER_REFRESH_READY: recorder},
     )
 
-    assert recorder.keys == {YEAR_MONTH}
+    assert recorder.keys == {READY_PARTITION_KEY}
 
 
 def test_미변경_Bronze_복구도_READY_파티션을_발행한다():
@@ -399,7 +401,7 @@ def test_미변경_Bronze_복구도_READY_파티션을_발행한다():
         outlet_events={assets.API_SILVER_REFRESH_READY: recorder},
     )
 
-    assert recorder.keys == {YEAR_MONTH}
+    assert recorder.keys == {READY_PARTITION_KEY}
 
 
 def test_처리완료_validator는_원천별로_기록한다(monkeypatch):
