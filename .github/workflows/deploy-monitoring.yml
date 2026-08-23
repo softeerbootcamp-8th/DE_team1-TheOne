@@ -1,4 +1,18 @@
-# EC2 CloudWatch Agent와 EMR Serverless 네이티브 지표를 한 대시보드에 배포합니다.
+# EMR Serverless 대시보드와 작업 실패 알림을 배포합니다.
+#
+# CloudFormation 을 쓰지 않는 이유 (#886, #890)
+# ---------------------------------------------
+# 리소스가 대시보드 1개 + SNS Topic 1개 + EventBridge rule 1개뿐인데, CFN 을 쓰면
+# 스택 상태 관리가 따라옵니다. 실제로 세 번 연속 배포를 막았습니다.
+#   * 파라미터 타입 검증이 배포 자격증명으로 ec2:DescribeInstances 를 호출 → 거부
+#   * 실패한 CREATE 가 ROLLBACK_COMPLETE 로 남고 DeleteStack 권한이 없어 좌초
+#   * AWS::CloudWatch::Dashboard 핸들러가 기존 대시보드에 AlreadyExists 로 거부
+# 아래 CLI 3개는 모두 멱등이고(put-dashboard·create-topic·put-rule 다 upsert)
+# 배포 role 이 이미 가진 권한만 씁니다.
+#
+# EC2 호스트 자원(CPU·메모리·디스크)은 이 대시보드에 없습니다. CloudWatch Agent 가
+# 지표를 보내려면 인스턴스 role 에 cloudwatch:PutMetricData 가 필요하고 그 IAM 변경이
+# 불가하므로, 호스트 자원은 Prometheus + Grafana 가 담당합니다.
 name: Deploy monitoring
 
 on:
@@ -18,15 +32,13 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  # theone-monitoring 은 첫 배포 실패로 ROLLBACK_COMPLETE 로 남아 갱신이 불가하고,
-  # 배포 role 과 팀 계정 모두 cloudformation:DeleteStack 권한이 없어 지울 수 없어서
-  # 새 이름으로 CREATE 합니다. 옛 스택은 리소스 0개짜리 빈 껍데기입니다.
-  STACK_NAME: theone-monitoring-prod
-  AGENT_PARAMETER: AmazonCloudWatch-TheOne-EC2
+  DASHBOARD_NAME: theone-infrastructure-prod
+  TOPIC_NAME: theone-pipeline-alerts
+  RULE_NAME: theone-emr-job-failed-or-cancelled
 
 jobs:
   deploy:
-    name: Dashboard and agents
+    name: EMR dashboard and alerts
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -37,91 +49,96 @@ jobs:
           role-to-assume: ${{ vars.AWS_ROLE_ARN_MONITORING }}
           aws-region: ${{ vars.AWS_REGION }}
 
-      - name: CloudFormation 배포
-        id: deploy-stack
-        continue-on-error: true
-        run: |
-          aws cloudformation deploy \
-            --stack-name "$STACK_NAME" \
-            --template-file monitoring/cloudformation.yml \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset \
-            --parameter-overrides \
-              EmrApplicationId="${{ vars.EMR_APPLICATION_ID }}" \
-              AirflowInstanceId="${{ vars.AIRFLOW_INSTANCE_ID }}" \
-              SourceInstanceId="${{ vars.SERVER_INSTANCE_ID }}" \
-              DashboardInstanceId="${{ vars.DASHBOARD_INSTANCE_ID }}"
-
-      # 파라미터 검증 실패처럼 리소스 단위 *_FAILED 이벤트를 남기지 않고 스택이
-      # 곧바로 ROLLBACK_IN_PROGRESS 로 가는 실패도 있습니다. FAILED 로 필터하면
-      # 그때 빈 표만 나오므로 이유가 붙은 이벤트를 모두 출력합니다.
-      - name: CloudFormation 실패 이벤트 출력
-        if: steps.deploy-stack.outcome == 'failure'
-        run: |
-          aws cloudformation describe-stack-events \
-            --stack-name "$STACK_NAME" \
-            --max-items 50 \
-            --query "StackEvents[?ResourceStatusReason!=null].[Timestamp,LogicalResourceId,ResourceStatus,ResourceStatusReason]" \
-            --output table || true
-          exit 1
-
-      - name: Agent 설정을 Parameter Store에 반영
-        run: |
-          aws ssm put-parameter \
-            --name "$AGENT_PARAMETER" \
-            --type String \
-            --value file://monitoring/cloudwatch-agent.json \
-            --overwrite
-
-      - name: EC2 3대에 CloudWatch Agent 설치 및 설정
+      - name: EMR 대시보드 반영
         env:
-          AIRFLOW_INSTANCE: ${{ vars.AIRFLOW_INSTANCE_ID }}
-          SOURCE_INSTANCE: ${{ vars.SERVER_INSTANCE_ID }}
-          DASHBOARD_INSTANCE: ${{ vars.DASHBOARD_INSTANCE_ID }}
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
         run: |
           set -euo pipefail
-          instances=("$AIRFLOW_INSTANCE" "$SOURCE_INSTANCE" "$DASHBOARD_INSTANCE")
+          # 치환하지 않은 ${...} 가 남으면 CloudWatch 가 조용히 빈 위젯을 그립니다.
+          envsubst '$AWS_REGION $EMR_APPLICATION_ID' \
+            < monitoring/dashboard.json > /tmp/dashboard.json
+          if grep -q '\${' /tmp/dashboard.json; then
+            echo "치환되지 않은 플레이스홀더가 남았습니다" >&2
+            grep -n '\${' /tmp/dashboard.json >&2
+            exit 1
+          fi
+          # put-dashboard 는 위젯이 깨져도 성공으로 끝나고 메시지만 돌려줍니다.
+          messages=$(aws cloudwatch put-dashboard \
+            --dashboard-name "$DASHBOARD_NAME" \
+            --dashboard-body file:///tmp/dashboard.json \
+            --query DashboardValidationMessages --output json)
+          if [ "$(printf '%s' "$messages" | tr -d '[:space:]')" != "[]" ]; then
+            echo "대시보드 검증 경고 — 위젯이 깨졌을 수 있습니다:" >&2
+            printf '%s\n' "$messages" >&2
+            exit 1
+          fi
 
-          wait_for_command() {
-            local command_id="$1"
-            local instance status
-            sleep 5
-            for instance in "${instances[@]}"; do
-              aws ssm wait command-executed \
-                --command-id "$command_id" --instance-id "$instance" || true
-              status=$(aws ssm get-command-invocation \
-                --command-id "$command_id" --instance-id "$instance" \
-                --query Status --output text)
-              if [ "$status" != "Success" ]; then
-                aws ssm get-command-invocation \
-                  --command-id "$command_id" --instance-id "$instance" \
-                  --query StandardErrorContent --output text
-                return 1
-              fi
-            done
-          }
+      - name: 알림 Topic 과 EMR 실패 rule 반영
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
+        run: |
+          set -euo pipefail
+          # create-topic 은 같은 이름이면 기존 ARN 을 그대로 돌려줍니다(멱등).
+          TOPIC_ARN=$(aws sns create-topic --name "$TOPIC_NAME" \
+            --query TopicArn --output text)
+          echo "TOPIC_ARN=$TOPIC_ARN" >> "$GITHUB_ENV"
 
-          install_id=$(aws ssm send-command \
-            --instance-ids "${instances[@]}" \
-            --document-name AWS-ConfigureAWSPackage \
-            --parameters '{"action":["Install"],"name":["AmazonCloudWatchAgent"],"version":["latest"],"installationType":["Uninstall and reinstall"]}' \
-            --query Command.CommandId --output text)
-          wait_for_command "$install_id"
+          # arn:aws:sns:<region>:<account>:<name> — 계정은 5번째 필드입니다.
+          AWS_ACCOUNT_ID=$(printf '%s' "$TOPIC_ARN" | cut -d: -f5)
+          case "$AWS_ACCOUNT_ID" in
+            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
+            *) echo "계정 ID 추출 실패: '$AWS_ACCOUNT_ID' (ARN: $TOPIC_ARN)" >&2; exit 1 ;;
+          esac
+          export TOPIC_ARN AWS_ACCOUNT_ID
+          envsubst '$TOPIC_ARN $AWS_ACCOUNT_ID' \
+            < monitoring/alert-topic-policy.json > /tmp/topic-policy.json
+          aws sns set-topic-attributes \
+            --topic-arn "$TOPIC_ARN" \
+            --attribute-name Policy \
+            --attribute-value "$(cat /tmp/topic-policy.json)"
 
-          configure_id=$(aws ssm send-command \
-            --instance-ids "${instances[@]}" \
-            --document-name AmazonCloudWatch-ManageAgent \
-            --parameters "{\"action\":[\"configure\"],\"mode\":[\"ec2\"],\"optionalConfigurationSource\":[\"ssm\"],\"optionalConfigurationLocation\":[\"$AGENT_PARAMETER\"],\"optionalRestart\":[\"yes\"]}" \
-            --query Command.CommandId --output text)
-          wait_for_command "$configure_id"
+          envsubst '$EMR_APPLICATION_ID' \
+            < monitoring/emr-failure-event-pattern.json > /tmp/event-pattern.json
+          aws events put-rule \
+            --name "$RULE_NAME" \
+            --state ENABLED \
+            --event-pattern "$(cat /tmp/event-pattern.json)" \
+            --query RuleArn --output text
+
+          # put-targets 도 같은 Id 면 덮어씁니다. 다만 개별 target 실패는 예외가 아니라
+          # FailedEntryCount 로만 돌아오므로, 검사하지 않으면 알림이 조용히 안 옵니다.
+          failed=$(aws events put-targets \
+            --rule "$RULE_NAME" \
+            --targets "Id=$TOPIC_NAME,Arn=$TOPIC_ARN" \
+            --query FailedEntryCount --output text)
+          if [ "$failed" != "0" ]; then
+            echo "rule 에 Topic 을 붙이지 못했습니다 (FailedEntryCount=$failed)" >&2
+            aws events put-targets \
+              --rule "$RULE_NAME" \
+              --targets "Id=$TOPIC_NAME,Arn=$TOPIC_ARN" \
+              --query FailedEntries --output json >&2
+            exit 1
+          fi
 
       - name: 배포 요약
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
         run: |
-          dashboard_url="https://${{ vars.AWS_REGION }}.console.aws.amazon.com/cloudwatch/home?region=${{ vars.AWS_REGION }}#dashboards:name=theone-infrastructure-prod"
-          topic=$(aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --query "Stacks[0].Outputs[?OutputKey=='AlertTopicArn'].OutputValue" \
-            --output text)
-          echo "### 인프라 모니터링 배포 완료" >> "$GITHUB_STEP_SUMMARY"
-          echo "- [CloudWatch 대시보드]($dashboard_url)" >> "$GITHUB_STEP_SUMMARY"
-          echo "- 알림 SNS Topic: \`$topic\`" >> "$GITHUB_STEP_SUMMARY"
+          set -euo pipefail
+          url="https://${AWS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${AWS_REGION}#dashboards:name=${DASHBOARD_NAME}"
+          subs=$(aws sns get-topic-attributes --topic-arn "$TOPIC_ARN" \
+            --query 'Attributes.SubscriptionsConfirmed' --output text)
+          {
+            echo "### EMR 모니터링 배포 완료"
+            echo "- [CloudWatch 대시보드]($url)"
+            echo "- 알림 Topic: \`$TOPIC_ARN\` (확인된 구독 $subs 개)"
+            if [ "$subs" = "0" ]; then
+              echo "- 구독이 0개입니다. 알림을 받으려면 이메일 구독을 1회 추가하세요:"
+              echo '  ```'
+              echo "  aws sns subscribe --topic-arn $TOPIC_ARN \\"
+              echo "    --protocol email --notification-endpoint <메일주소>"
+              echo '  ```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
