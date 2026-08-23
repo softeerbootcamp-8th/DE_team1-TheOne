@@ -71,6 +71,9 @@ def _monthly_report_row(year_month: str, version: int, **overrides) -> dict:
     row = {
         "version": version,
         "year_month": year_month,
+        # Gold 자연 키의 일부입니다(#809) — driver_id 가 지역 간 유니크하지 않아서
+        # 지역이 키에 있어야 두 지역의 같은 기사 ID 가 한 행으로 안 취급됩니다.
+        "service_area": "NYC",
         "threshold_profit_increase": 500.0,
         "is_rerun": False,
         "recommended_driver_count": 1,
@@ -122,6 +125,7 @@ def _driver_aggregation_row(driver_id: str, version: int, **overrides) -> dict:
         "version": version,
         "driver_id": driver_id,
         "year_month": "2026-05",
+        "service_area": "NYC",
         "comfort_eligible": False,
         "extra_comfort_eligible": False,
         "taxi_id": "T1",
