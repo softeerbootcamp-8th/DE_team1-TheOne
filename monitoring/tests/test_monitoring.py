@@ -96,3 +96,9 @@ def test_workflow_installs_then_configures_all_instances():
     assert workflow.index("AWS-ConfigureAWSPackage") < workflow.index(
         "AmazonCloudWatch-ManageAgent"
     )
+    assert "continue-on-error: true" in workflow
+    assert "steps.deploy-stack.outcome == 'failure'" in workflow
+    assert "cloudformation describe-stack-events" in workflow
+    # FAILED 로 필터하면 파라미터 검증 실패 때 빈 표만 나옵니다.
+    assert "ResourceStatusReason!=null" in workflow
+    assert "contains(ResourceStatus" not in workflow
