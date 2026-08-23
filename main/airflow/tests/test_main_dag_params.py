@@ -12,7 +12,7 @@ DAG_PARAMS = {
     ),
     "eia_electricity_price_raw_to_silver_dag": (
         "eia_electricity_price_raw_to_silver_dag",
-        {"year", "month", "markup", "bronze_dir", "silver_dir"},
+        {"year", "month", "markup", "bronze_dir", "silver_dir", "service_area"},
     ),
     "eia_fuel_price_silver_dag": (
         "eia_fuel_price_silver_dag",
