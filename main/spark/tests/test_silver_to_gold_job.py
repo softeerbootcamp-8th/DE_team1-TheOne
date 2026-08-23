@@ -258,7 +258,9 @@ def test_main은_service_area를_모든_기본입력_조회에_그대로_넘긴�
         fuel_calls.append((fuel_price_dir, service_area))
         raise _StopAfterFuelPriceLookup
 
-    monkeypatch.setattr(job, "get_or_create_spark_session", lambda name: _FakeSpark())
+    monkeypatch.setattr(
+        job, "get_or_create_spark_session", lambda name, **kwargs: _FakeSpark()
+    )
     monkeypatch.setattr(job, "latest_partition_file", _monthly_spy)
     monkeypatch.setattr(job, "latest_fuel_price_path", _spy)
 
