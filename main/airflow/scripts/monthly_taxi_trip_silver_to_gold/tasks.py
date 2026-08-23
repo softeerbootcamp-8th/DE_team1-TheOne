@@ -15,9 +15,13 @@ from shared.airflow.common.slack_failure_callback import (
     slack_skip_alert_callback,
     slack_stale_alert_callback,
 )
+from main.airflow.common.assets import (
+    candidate_roots,
+    gold_csv_path,
+    parse_partition_key,
+    resolve_service_area,
+)
 from main.airflow.common.monthly_bronze import latest_local_silver_version
-from shared.common.service_area_path import candidate_roots, gold_csv_path
-from main.airflow.common.assets import parse_partition_key, resolve_service_area
 
 logger = logging.getLogger(__name__)
 
