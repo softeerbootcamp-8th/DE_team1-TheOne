@@ -86,6 +86,7 @@ ALL_PROJECTS = {
     "main/aws_lambda",
     "sub/aws_lambda",
     "shared/aws_lambda",
+    "shared/common",
     "main/spark",
     "sub/spark",
     "main/dashboard",
@@ -99,6 +100,11 @@ RUNNERS = {
     "main/aws_lambda": ("main/aws_lambda", "main/aws_lambda"),
     "sub/aws_lambda": ("main/aws_lambda", "sub/aws_lambda"),
     "shared/aws_lambda": ("main/aws_lambda", "shared/aws_lambda"),
+    # shared/common 은 세 런타임이 모두 import 하는 공용 모듈인데 CI 프로젝트 목록에
+    # 없어서 그 테스트가 한 번도 실행되지 않았습니다(Makefile 로만 돌았음). #839 에서
+    # 지역 경로 규칙을 여기 두면서 같이 배선합니다 — 안 그러면 그 안전망이 CI 에서
+    # 장식이 됩니다. 런타임은 shared/aws_lambda 와 같은 main/aws_lambda 를 씁니다.
+    "shared/common": ("main/aws_lambda", "shared/common"),
     "main/spark": ("main/spark", "main/spark"),
     "sub/spark": ("main/spark", "sub/spark"),
     "main/dashboard": ("main/dashboard", "main/dashboard"),

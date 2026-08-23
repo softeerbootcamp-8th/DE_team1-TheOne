@@ -19,6 +19,7 @@ from shared.airflow.common.validation import (
     require_file,
 )
 from shared.common.s3_reader import list_keys
+from shared.common.service_area_path import join_segments, service_area_segment
 
 
 BRONZE_DATA_FILE_NAME = "data.parquet"
@@ -79,8 +80,19 @@ def latest_local_silver_version(partition: Path) -> Path | None:
     return max(candidates, default=(None, None), key=lambda item: item[0])[1]
 
 
-def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location:
-    """Bronze 수집 시각을 자연 키로 쓰는 Silver 버전 디렉터리입니다."""
+def silver_version_path(
+    base_dir: str | Path,
+    result: dict,
+    service_area: str | None = None,
+) -> Path | S3Location:
+    """Bronze 수집 시각을 자연 키로 쓰는 Silver 버전 디렉터리입니다.
+
+    `service_area=None` 이면 지역 계층 없이 **지금과 완전히 같은 경로**를 만듭니다.
+    API 3종(monthly_taxi_trip / driver_vehicle_monthly_snapshot /
+    lease_vehicle_inventory)이 이 함수를 공유하므로, 데이터셋별로 하나씩 지역을
+    켜려면 이 기본값이 필요합니다(#840~#842). 삽입 위치 규칙은
+    `shared.common.service_area_path` 가 단독으로 정의합니다.
+    """
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
     collected_at = result.get("collected_at")
@@ -92,24 +104,34 @@ def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location
     if token is None:
         raise ValueError(f"Bronze 경로에 수집 시각이 없습니다: {parsed.locations[0]}")
     version_dir = f"source_collected_at={token}"
+    area = service_area_segment(service_area)
     base = parse_location(str(base_dir))
     if isinstance(base, S3Location):
         return S3Location(
             base.bucket,
-            f"{base.key.rstrip('/')}/year_month={year_month}/{version_dir}",
+            join_segments(
+                base.key.rstrip("/"), area, f"year_month={year_month}", version_dir
+            ),
         )
     if isinstance(parsed.locations[0], S3Location):
         dataset_dir = base.name
         return S3Location(
             parsed.locations[0].bucket,
-            f"silver/{dataset_dir}/year_month={year_month}/{version_dir}",
+            join_segments(
+                "silver", dataset_dir, area, f"year_month={year_month}", version_dir
+            ),
         )
-    return base / f"year_month={year_month}" / version_dir
+    local = base / area if area else base
+    return local / f"year_month={year_month}" / version_dir
 
 
-def staged_silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location:
+def staged_silver_version_path(
+    base_dir: str | Path,
+    result: dict,
+    service_area: str | None = None,
+) -> Path | S3Location:
     """`silver_version_path`와 격리된 검증 전 디렉터리입니다."""
-    final = silver_version_path(base_dir, result)
+    final = silver_version_path(base_dir, result, service_area)
     if isinstance(final, S3Location):
         parent = final.key.rsplit("/", 1)[0]
         return S3Location(final.bucket, f"{parent}/.staging/{final.name}")

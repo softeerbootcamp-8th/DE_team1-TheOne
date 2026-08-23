@@ -17,6 +17,7 @@ from shared.aws_lambda.common.atomic_write import atomic_write
 from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.service_area_path import join_segments, service_area_segment
 BRONZE_DATA_FILE_NAME = "data.parquet"
 COLLECTED_AT_DIR_PATTERN = re.compile(r"^collected_at=(\d{8}T\d{12}Z)$")
 TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
@@ -158,10 +159,14 @@ class MonthlyParquetBronzeLoader(Loader):
         base_dir: str,
         dataset: str,
         dataset_dir: str,
+        service_area: str | None = None,
     ):
         self._base_dir = Path(base_dir)
         self._dataset = dataset
         self._dataset_dir = dataset_dir
+        # None 이면 지역 계층 없이 지금과 같은 경로입니다 — 데이터셋별로 하나씩
+        # 켜기 위한 기본값(#840~#842). 규칙은 shared.common.service_area_path.
+        self._service_area = service_area
         self.payload: dict = {}
         self.path: Path | None = None
         self.source_changed = True
@@ -210,9 +215,10 @@ class MonthlyParquetBronzeLoader(Loader):
         return existing_hash == hashlib.sha256(content).digest()
 
     def _data_path(self, payload: dict) -> Path:
+        dataset_root = self._base_dir / self._dataset_dir
+        area = service_area_segment(self._service_area)
         return (
-            self._base_dir
-            / self._dataset_dir
+            (dataset_root / area if area else dataset_root)
             / f"year_month={payload['year_month']}"
             / _collected_at_dir_name(payload)
             / BRONZE_DATA_FILE_NAME
@@ -227,11 +233,13 @@ class S3MonthlyParquetBronzeLoader(Loader):
         dataset: str,
         dataset_dir: str,
         bucket: str | None = None,
+        service_area: str | None = None,
     ):
         load_local_env()
         self._dataset = dataset
         self._dataset_dir = dataset_dir
         self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
+        self._service_area = service_area
         self.payload: dict = {}
         self.source_changed = True
 
@@ -266,7 +274,15 @@ class S3MonthlyParquetBronzeLoader(Loader):
         )
 
     def _partition_prefix(self, payload: dict) -> str:
-        return f"bronze/{self._dataset_dir}/year_month={payload['year_month']}/"
+        return (
+            join_segments(
+                "bronze",
+                self._dataset_dir,
+                service_area_segment(self._service_area),
+                f"year_month={payload['year_month']}",
+            )
+            + "/"
+        )
 
     def _latest_key(self, prefix: str) -> str | None:
         candidates = (
@@ -286,17 +302,20 @@ def build_bronze_loader(
     dataset: str,
     dataset_dir: str,
     bucket: str | None = None,
+    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
         return MonthlyParquetBronzeLoader(
             base_dir,
             dataset,
             dataset_dir,
+            service_area=service_area,
         )
     if storage == "s3":
         return S3MonthlyParquetBronzeLoader(
             dataset,
             dataset_dir,
             bucket=bucket,
+            service_area=service_area,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

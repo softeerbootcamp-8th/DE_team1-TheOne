@@ -24,6 +24,8 @@ Silver 는 만들지 않습니다 — 두 원본을 합쳐 `gas_ev_price` Silver
 from datetime import date
 from pathlib import Path
 
+from shared.common.service_area_path import join_segments, service_area_segment
+
 GAS_DATASET = "eia_gas_price"
 ELECTRICITY_DATASET = "eia_electricity_price"
 BRONZE_PARTITION_KEY = "collected_date"
@@ -37,44 +39,98 @@ GAS_MIN_BYTES = 10_000
 ELECTRICITY_MIN_BYTES = 100_000
 
 
-def _bronze_file(base_dir: str, dataset: str, file_name: str, collected_date: date) -> Path:
+def _bronze_file(
+    base_dir: str,
+    dataset: str,
+    file_name: str,
+    collected_date: date,
+    service_area: str | None = None,
+) -> Path:
+    # EIA 는 Bronze 축이 collected_date= 입니다(year_month= 가 아님). 그래서 지역
+    # 세그먼트는 collected_date= 바로 위에 들어갑니다 — API 3종과 축이 다르니
+    # "year_month 위"를 기계적으로 적용하면 틀립니다(#843, #844).
+    dataset_root = Path(base_dir) / dataset
+    area = service_area_segment(service_area)
     return (
-        Path(base_dir)
-        / dataset
+        (dataset_root / area if area else dataset_root)
         / f"{BRONZE_PARTITION_KEY}={collected_date.isoformat()}"
         / file_name
     )
 
 
-def gas_bronze_file(base_dir: str, collected_date: date) -> Path:
-    return _bronze_file(base_dir, GAS_DATASET, GAS_FILE_NAME, collected_date)
+def gas_bronze_file(
+    base_dir: str, collected_date: date, service_area: str | None = None
+) -> Path:
+    return _bronze_file(
+        base_dir, GAS_DATASET, GAS_FILE_NAME, collected_date, service_area
+    )
 
 
-def electricity_bronze_file(base_dir: str, collected_date: date) -> Path:
-    return _bronze_file(base_dir, ELECTRICITY_DATASET, ELECTRICITY_FILE_NAME, collected_date)
+def electricity_bronze_file(
+    base_dir: str, collected_date: date, service_area: str | None = None
+) -> Path:
+    return _bronze_file(
+        base_dir,
+        ELECTRICITY_DATASET,
+        ELECTRICITY_FILE_NAME,
+        collected_date,
+        service_area,
+    )
 
 
-def _bronze_key(dataset: str, file_name: str, collected_date: date) -> str:
-    return f"bronze/{dataset}/{BRONZE_PARTITION_KEY}={collected_date.isoformat()}/{file_name}"
+def _bronze_key(
+    dataset: str,
+    file_name: str,
+    collected_date: date,
+    service_area: str | None = None,
+) -> str:
+    return join_segments(
+        "bronze",
+        dataset,
+        service_area_segment(service_area),
+        f"{BRONZE_PARTITION_KEY}={collected_date.isoformat()}",
+        file_name,
+    )
 
 
-def gas_bronze_key(collected_date: date) -> str:
-    return _bronze_key(GAS_DATASET, GAS_FILE_NAME, collected_date)
+def gas_bronze_key(collected_date: date, service_area: str | None = None) -> str:
+    return _bronze_key(GAS_DATASET, GAS_FILE_NAME, collected_date, service_area)
 
 
-def electricity_bronze_key(collected_date: date) -> str:
-    return _bronze_key(ELECTRICITY_DATASET, ELECTRICITY_FILE_NAME, collected_date)
+def electricity_bronze_key(
+    collected_date: date, service_area: str | None = None
+) -> str:
+    return _bronze_key(
+        ELECTRICITY_DATASET, ELECTRICITY_FILE_NAME, collected_date, service_area
+    )
 
 
-def bronze_s3_prefix(dataset: str) -> str:
-    """`shared.common.s3_reader.list_keys` 에 넘길 접두사."""
-    return f"bronze/{dataset}/{BRONZE_PARTITION_KEY}="
+def bronze_s3_prefix(dataset: str, service_area: str | None = None) -> str:
+    """`shared.common.s3_reader.list_keys` 에 넘길 접두사.
 
-
-def newest_bronze_s3_key(keys: list[str], dataset: str, file_name: str) -> tuple[date, str]:
-    """`list_keys(bucket, bronze_s3_prefix(dataset))` 결과에서 가장 최근 `collected_date` 키를 고른다.
+    **세그먼트 중간에서 끊기는 접두사**입니다(`.../collected_date=`). 지역 세그먼트는
+    그보다 위이므로 사이에 `/` 가 필요합니다 — join_segments 로 조립한 뒤 `=` 까지
+    붙입니다.
     """
-    prefix = bronze_s3_prefix(dataset)
+    return (
+        join_segments("bronze", dataset, service_area_segment(service_area))
+        + f"/{BRONZE_PARTITION_KEY}="
+    )
+
+
+def newest_bronze_s3_key(
+    keys: list[str],
+    dataset: str,
+    file_name: str,
+    service_area: str | None = None,
+) -> tuple[date, str]:
+    """`list_keys(bucket, bronze_s3_prefix(dataset))` 결과에서 가장 최근 `collected_date` 키를 고른다.
+
+    `service_area` 는 `keys` 를 만들 때 쓴 접두사와 **같아야** 합니다 — 어긋나면
+    `key[len(prefix):]` 오프셋이 밀려 날짜 파싱이 전부 실패하고, `except ValueError:
+    continue` 에 걸려 **조용히 빈 목록**이 됩니다.
+    """
+    prefix = bronze_s3_prefix(dataset, service_area)
     partitions: list[tuple[date, str]] = []
     for key in keys:
         if not key.endswith(f"/{file_name}"):
@@ -89,9 +145,13 @@ def newest_bronze_s3_key(keys: list[str], dataset: str, file_name: str) -> tuple
     return sorted(partitions)[-1]
 
 
-def bronze_partitions(base_dir: str, dataset: str) -> list[tuple[date, Path]]:
+def bronze_partitions(
+    base_dir: str, dataset: str, service_area: str | None = None
+) -> list[tuple[date, Path]]:
     """수집일 오름차순 `collected_date=` 파티션 목록."""
-    dataset_dir = Path(base_dir) / dataset
+    dataset_root = Path(base_dir) / dataset
+    area = service_area_segment(service_area)
+    dataset_dir = dataset_root / area if area else dataset_root
     if not dataset_dir.is_dir():
         raise FileNotFoundError(f"EIA Bronze 데이터셋이 없습니다: {dataset_dir}")
 
@@ -111,7 +171,9 @@ def bronze_partitions(base_dir: str, dataset: str) -> list[tuple[date, Path]]:
     return sorted(partitions)
 
 
-def newest_bronze_partition(base_dir: str, dataset: str) -> tuple[date, Path]:
+def newest_bronze_partition(
+    base_dir: str, dataset: str, service_area: str | None = None
+) -> tuple[date, Path]:
     """가장 최근에 받은 `collected_date=` 파티션.
 
     "대상 월 이하 최신" 이 아니라 **무조건 최신**인 이유
@@ -128,18 +190,27 @@ def newest_bronze_partition(base_dir: str, dataset: str) -> tuple[date, Path]:
 
     특정 수집분으로 고정해야 하면 호출하는 쪽에서 경로를 직접 지정하면 됩니다.
     """
-    return bronze_partitions(base_dir, dataset)[-1]
+    return bronze_partitions(base_dir, dataset, service_area)[-1]
 
 
-def is_duplicate_of_newest(base_dir: str, dataset: str, file_name: str, body: bytes) -> Path | None:
+def is_duplicate_of_newest(
+    base_dir: str,
+    dataset: str,
+    file_name: str,
+    body: bytes,
+    service_area: str | None = None,
+) -> Path | None:
     """받은 내용이 최신 수집분과 같으면 그 경로를, 다르면 None 을 반환합니다.
 
     전력은 3개월에 한 번만 실제로 갱신되므로 월 1회 수집분 12개 중 8~9개가 바이트까지
     같습니다. 같은 것을 새 파티션으로 쌓지 않으면 파티션 개수 자체가 "언제 실제로
     바뀌었는지" 를 말해주는 기록이 됩니다.
     """
+    # 지역을 안 넘기면 지역 계층 아래 파티션을 못 찾아 FileNotFoundError → None →
+    # **dedup 이 조용히 꺼집니다**(매번 새 파티션을 쓰지만 에러가 없음). 호출부가
+    # 쓰기와 같은 지역을 넘기는지 반드시 확인하세요(#843, #844).
     try:
-        _, partition = newest_bronze_partition(base_dir, dataset)
+        _, partition = newest_bronze_partition(base_dir, dataset, service_area)
     except FileNotFoundError:
         return None
     path = partition / file_name

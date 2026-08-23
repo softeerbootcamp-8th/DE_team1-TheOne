@@ -12,6 +12,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
+from shared.common.service_area_path import join_segments, service_area_segment
+
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA
 
 from shared.aws_lambda.common.atomic_write import atomic_write
@@ -26,12 +28,26 @@ PARTITION_KEY = "year_month"
 FILE_NAME = "gas_ev_price.parquet"
 
 
-def silver_file(base_dir: str, year_month: str) -> Path:
-    return Path(base_dir) / DATASET / f"{PARTITION_KEY}={year_month}" / FILE_NAME
+def silver_file(
+    base_dir: str, year_month: str, service_area: str | None = None
+) -> Path:
+    dataset_root = Path(base_dir) / DATASET
+    area = service_area_segment(service_area)
+    return (
+        (dataset_root / area if area else dataset_root)
+        / f"{PARTITION_KEY}={year_month}"
+        / FILE_NAME
+    )
 
 
-def silver_key(year_month: str) -> str:
-    return f"silver/{DATASET}/{PARTITION_KEY}={year_month}/{FILE_NAME}"
+def silver_key(year_month: str, service_area: str | None = None) -> str:
+    return join_segments(
+        "silver",
+        DATASET,
+        service_area_segment(service_area),
+        f"{PARTITION_KEY}={year_month}",
+        FILE_NAME,
+    )
 
 
 class EiaFuelPriceSilverLoader(Loader):

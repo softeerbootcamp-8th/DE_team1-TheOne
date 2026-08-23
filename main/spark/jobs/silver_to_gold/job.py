@@ -27,6 +27,7 @@ import pandas as pd
 from pyspark.sql import DataFrame
 
 from main.spark.jobs.silver_to_gold.postgres_loader import write_gold_to_postgres
+from shared.common.service_area_path import gold_csv_path
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
@@ -158,8 +159,12 @@ def latest_fuel_price_path(fuel_price_dir: str) -> str:
     return str(parquet_files[-1])
 
 
-def _csv_path(output_dir: str, dataset: str, year_month: str) -> Path:
-    return Path(output_dir) / dataset / f"year_month={year_month}" / f"{dataset}.csv"
+def _csv_path(
+    output_dir: str, dataset: str, year_month: str, service_area: str | None = None
+) -> Path:
+    """경로 규칙은 shared.common 이 소유합니다 — Airflow 의 validate_gold_outputs 와
+    같은 함수를 써야 검증이 엉뚱한 곳을 보지 않습니다(#839)."""
+    return gold_csv_path(output_dir, dataset, year_month, service_area)
 
 
 def _write_all_csv(

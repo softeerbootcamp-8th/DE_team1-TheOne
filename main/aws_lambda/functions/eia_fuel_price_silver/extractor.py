@@ -12,6 +12,8 @@ import io
 import logging
 from pathlib import Path
 
+from shared.common.service_area_path import join_segments, service_area_segment
+
 import pyarrow.parquet as pq
 from botocore.exceptions import ClientError
 from pipeline_core.extractor import Extractor
@@ -30,12 +32,28 @@ _DAG_ID = {
 }
 
 
-def clean_silver_file(base_dir: str, dataset: str, year_month: str) -> Path:
-    return Path(base_dir) / dataset / f"{PARTITION_KEY}={year_month}" / f"{dataset}.parquet"
+def clean_silver_file(
+    base_dir: str, dataset: str, year_month: str, service_area: str | None = None
+) -> Path:
+    dataset_root = Path(base_dir) / dataset
+    area = service_area_segment(service_area)
+    return (
+        (dataset_root / area if area else dataset_root)
+        / f"{PARTITION_KEY}={year_month}"
+        / f"{dataset}.parquet"
+    )
 
 
-def clean_silver_key(dataset: str, year_month: str) -> str:
-    return f"silver/{dataset}/{PARTITION_KEY}={year_month}/{dataset}.parquet"
+def clean_silver_key(
+    dataset: str, year_month: str, service_area: str | None = None
+) -> str:
+    return join_segments(
+        "silver",
+        dataset,
+        service_area_segment(service_area),
+        f"{PARTITION_KEY}={year_month}",
+        f"{dataset}.parquet",
+    )
 
 
 def _rows_from_bytes(dataset: str, body: bytes) -> list[dict]:
