@@ -7,7 +7,7 @@
 5. Asset 실행은 같은 월 Silver가 덜 준비되면 skip, 수동 실행은 실패
 6. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
 7. Gold 검증 성공 태스크에만 Slack 완료 알림 연결
-8. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
+8. Gold 3종은 지역 경로만 검증하며 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 9. API Silver는 최신 collected_at 파일만 선택
 10. Asset skip 시 Slack skip 알림을 직접 호출
 11. SLA 기준일 초과 시 Slack staleness 경고, 기준 이내면 조용히 통과
@@ -391,7 +391,7 @@ def test_Gold검증_성공태스크만_Slack완료알림을_보낸다():
         )
 
 
-def _write_gold(root: Path, year_month: str) -> None:
+def _write_gold(root: Path, year_month: str, service_area: str) -> None:
     frames = {
         "driver_aggregation": pd.DataFrame(
             [{"driver_id": "D1", "year_month": year_month, "monthly_net_profit": 100.0, "monthly_lease_fee": 400.0}]
@@ -404,15 +404,25 @@ def _write_gold(root: Path, year_month: str) -> None:
         ),
     }
     for dataset, frame in frames.items():
-        path = root / dataset / f"year_month={year_month}" / f"{dataset}.csv"
+        path = (
+            root / dataset / f"service_area={service_area}"
+            / f"year_month={year_month}" / f"{dataset}.csv"
+        )
         path.parent.mkdir(parents=True)
         frame.to_csv(path, index=False)
 
 
 def test_정상_Gold_3종은_검증을_통과한다(tmp_path):
-    _write_gold(tmp_path, "2026-05")
+    _write_gold(tmp_path, "2026-05", "NYC")
 
-    dag_module.validate_gold_outputs(str(tmp_path), "2026-05")
+    dag_module.validate_gold_outputs(str(tmp_path), "2026-05", "NYC")
+
+
+def test_Gold검증은_다른지역_산출물을_대신_보지_않는다(tmp_path):
+    _write_gold(tmp_path, "2026-05", "NYC")
+
+    with pytest.raises(FileNotFoundError, match="service_area=TX"):
+        dag_module.validate_gold_outputs(str(tmp_path), "2026-05", "TX")
 
 
 @pytest.mark.parametrize(
@@ -425,8 +435,8 @@ def test_정상_Gold_3종은_검증을_통과한다(tmp_path):
     ],
 )
 def test_Gold_산출물이_계약을_어기면_실패한다(tmp_path, violation, expected):
-    _write_gold(tmp_path, "2026-05")
-    target = tmp_path / "monthly_report/year_month=2026-05/monthly_report.csv"
+    _write_gold(tmp_path, "2026-05", "NYC")
+    target = tmp_path / "monthly_report/service_area=NYC/year_month=2026-05/monthly_report.csv"
 
     if violation == "missing":
         target.unlink()
@@ -440,7 +450,30 @@ def test_Gold_산출물이_계약을_어기면_실패한다(tmp_path, violation,
         frame.to_csv(target, index=False)
 
     with pytest.raises((FileNotFoundError, ValueError), match=expected):
-        dag_module.validate_gold_outputs(str(tmp_path), "2026-05")
+        dag_module.validate_gold_outputs(str(tmp_path), "2026-05", "NYC")
+
+
+def test_validate_gold_task는_해석된_지역을_검증에_넘긴다(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        dag_module,
+        "validate_gold_outputs",
+        lambda output_dir, year_month, service_area: calls.append(
+            (output_dir, year_month, service_area)
+        ),
+    )
+    monkeypatch.setenv("SPARK_JOB_ENV", "local")
+    task_instance = type(
+        "TaskInstance",
+        (),
+        {"xcom_pull": lambda self, task_ids: {"year_month": "2026-05", "service_area": "TX"}},
+    )()
+
+    dag_module.validate_gold_task.function(
+        params={"output_dir": "/gold"}, task_instance=task_instance
+    )
+
+    assert calls == [("/gold", "2026-05", "TX")]
 
 
 # --- staleness SLA ------------------------------------------------------------
