@@ -16,6 +16,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_stale_alert_callback,
 )
 from main.airflow.common.monthly_bronze import latest_local_silver_version
+from shared.common.service_area_path import gold_csv_path
 from main.airflow.common.assets import parse_partition_key, resolve_service_area
 
 logger = logging.getLogger(__name__)
@@ -299,10 +300,16 @@ def _notify_slack(callback, context: dict) -> None:
         logger.warning("Slack 알림 전송에 실패했습니다", exc_info=True)
 
 
-def validate_gold_outputs(output_dir: str, year_month: str) -> None:
-    """산출물 3종의 존재·행 수·필수 컬럼을 확인합니다."""
+def validate_gold_outputs(
+    output_dir: str, year_month: str, service_area: str | None = None
+) -> None:
+    """산출물 3종의 존재·행 수·필수 컬럼을 확인합니다.
+
+    경로는 Spark 쓰기 쪽(`_csv_path`)과 **같은 공용 함수**로 만듭니다 — 각각 조립하던
+    때는 한쪽만 고치면 검증이 엉뚱한 곳을 보고도 통과할 수 있었습니다(#839).
+    """
     for dataset in DATASETS:
-        path = Path(output_dir) / dataset / f"year_month={year_month}" / f"{dataset}.csv"
+        path = gold_csv_path(output_dir, dataset, year_month, service_area)
         if not path.is_file():
             raise FileNotFoundError(f"Gold 산출물이 없습니다: {path}")
         frame = pd.read_csv(path)
