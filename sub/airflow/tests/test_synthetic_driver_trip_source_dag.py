@@ -506,7 +506,7 @@ def test_운영은_EMR_Serverless_로_제출하고_완료까지_기다린다(mon
     )
 
 
-def test_EMR_build_source_release는_병렬_자원과_상한을_지정한다(monkeypatch):
+def test_EMR_build_source_release는_최적화된_2core_worker와_상한을_지정한다(monkeypatch):
     monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
     monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec")
     monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
@@ -520,8 +520,8 @@ def test_EMR_build_source_release는_병렬_자원과_상한을_지정한다(mon
         "spark.driver.memory=6g",
         "spark.driver.memoryOverhead=2g",
         "spark.executor.cores=2",
-        "spark.executor.memory=8g",
-        "spark.executor.memoryOverhead=8g",
+        "spark.executor.memory=6g",
+        "spark.executor.memoryOverhead=2g",
         "spark.dynamicAllocation.minExecutors=1",
         "spark.dynamicAllocation.initialExecutors=3",
         "spark.dynamicAllocation.maxExecutors=5",

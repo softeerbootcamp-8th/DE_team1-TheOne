@@ -889,8 +889,9 @@ def main(args_list: list[str] | None = None) -> Path | str:
         score_weights=config.allocation.score_weights,
     )
     candidates = candidates.persist(StorageLevel.DISK_ONLY)
-    assignments, allocation_rejects = allocate_trips(candidates, build_travel_times(trips))
-    assignment_count = assignments.count()
+    assignments, allocation_rejects, assignment_count = allocate_trips(
+        candidates, build_travel_times(trips)
+    )
     candidates.unpersist(blocking=True)
     if args.storage == "s3":
         write_attribution_s3(assignments, bucket=bucket, year_month=args.year_month)
