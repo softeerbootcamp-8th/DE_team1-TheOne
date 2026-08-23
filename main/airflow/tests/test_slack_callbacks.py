@@ -10,6 +10,9 @@
 6. 실패 사유를 싣되 길면 자름. 없으면 `None` 이 아니라 `(사유 없음)`
 7. Block Kit은 상태·실행 유형·원인·조치를 먼저, 기술 식별자를 나중에 표시
 8. Gold 성공은 대상 연월과 Asset 실행 유형을 표시
+9. 모든 알림(텍스트·Block)이 파티션 키를 표시 — 지역 축(#674)이 들어가면 이걸로
+   어느 지역이 죽었는지 가린다
+10. 파티션이 없는 DAG(키 부재·None)에서도 StrictUndefined 렌더링이 죽지 않고 `-` 로 찍힘
 """
 
 import importlib
@@ -345,3 +348,75 @@ def test_예외가_없으면_None_이_아니라_사유_없음으로_찍는다(te
 
     assert "(사유 없음)" in rendered
     assert "None" not in rendered
+
+
+ALL_ALERT_TEXTS = [
+    SLACK_RETRY_ALERT_TEXT,
+    SLACK_FAILURE_TEXT,
+    SLACK_SUCCESS_TEXT,
+    SLACK_SKIP_TEXT,
+    SLACK_STALE_TEXT,
+]
+ALL_ALERT_BLOCKS = [
+    SLACK_RETRY_ALERT_BLOCKS,
+    SLACK_FAILURE_BLOCKS,
+    SLACK_SUCCESS_BLOCKS,
+    SLACK_SKIP_BLOCKS,
+    SLACK_STALE_BLOCKS,
+]
+
+
+@pytest.mark.parametrize("text", ALL_ALERT_TEXTS)
+def test_모든_알림이_파티션을_표시한다(text):
+    """지역 축(#674)이 들어가면 파티션 키가 "{service_area}:{year_month}" 가 되어
+    알림만 보고 어느 지역이 죽었는지 가릴 수 있습니다. 지역마다 DAG 를 새로 만들지
+    않는 설계라, 이 항목이 빠지면 N 개 지역이 한 DAG 로 들어올 때 온콜이 지역을
+    구분할 방법이 없습니다."""
+    assert "*파티션*" in text
+
+    rendered = _render(text, partition_key="NYC:2026-08")
+
+    assert "NYC:2026-08" in rendered
+
+
+@pytest.mark.parametrize("blocks", ALL_ALERT_BLOCKS)
+def test_모든_Block에도_파티션이_실린다(blocks):
+    rendered = _render_blocks(blocks, partition_key="NYC:2026-08")
+
+    assert "*파티션*" in rendered
+    assert "NYC:2026-08" in rendered
+
+
+@pytest.mark.parametrize("text", ALL_ALERT_TEXTS)
+@pytest.mark.parametrize(
+    ("context", "expected"),
+    [
+        ({}, "-"),
+        ({"partition_key": None}, "-"),
+        ({"partition_key": "NYC:2026-08"}, "NYC:2026-08"),
+    ],
+    ids=["키_부재", "None_값", "정상_값"],
+)
+def test_파티션이_없는_DAG에서도_알림이_렌더된다(text, context, expected):
+    """`partition_key` 는 `NotRequired[str | None]` 이라 비파티션 DAG 에서는 컨텍스트에
+    키가 아예 없거나 None 입니다. 그리고 Airflow 의 기본 렌더링은
+    `StrictUndefined`(`airflow/sdk/definitions/dag.py`) 라, 방어 없이 쓰면 알림 자체가
+    UndefinedError 로 죽습니다 — 실패를 알리려는 알림이 실패로 죽는 것이 가장 나쁩니다.
+    `default(..., true)` 가 세 경우를 모두 처리하는지 실제 StrictUndefined 로 확인합니다.
+    """
+    from jinja2 import StrictUndefined, Template
+
+    base = {
+        "dag": type("DAG", (), {"dag_id": "monthly_taxi_trip_silver_to_gold_pipeline"}),
+        "ti": _ti(),
+        "run_id": "asset_triggered__2026-08-23T05:17:03",
+        "exception": None,
+        "days_since_success": 40,
+        "stale_days": 31,
+    }
+    rendered = Template(text, undefined=StrictUndefined).render(**base, **context)
+
+    partition_line = next(
+        line for line in rendered.splitlines() if line.startswith("*파티션*")
+    )
+    assert partition_line == f"*파티션*: `{expected}`"
