@@ -5,7 +5,7 @@
 3. 재고에서 밀린 기사는 다음 순위 차량을 배정받음
 4. 프리미엄 배수는 5개 거리 구간별 실측값을 각 운행에 적용
 5. Standard 운행 구간에 프리미엄 표본이 없으면 명시적으로 실패
-6. 추천 후보는 실제 기사 수 × 실제 차량 모델 수를 보존하고 최종 추천은 기사당 1대
+6. 추천 후보는 실제 기사 수 × 실제 차량 모델 수를 보존
 7. Gold 비즈니스 검증은 재고 초과·기사 누락·음수 수익 추천을 차단
 8. 월간 리포트는 최종 추천 중 기사 순수익·회사 객단가 기준을 만족한 기사만 집계
 9. 연료비에 대상 월 외 다른 월 데이터가 섞여 있어도 대상 월만 걸러 정상 처리
@@ -106,7 +106,7 @@ def test_재고에서_밀린_기사는_차선_차량을_받는다(spark):
     assert sum(row._candidate_vehicle_model_id == "rare" for row in rows) == 1
 
 
-def test_추천후보는_실제기사수와_차량모델수의_곱이고_최종추천은_기사당_한대다(spark):
+def test_추천후보는_실제기사수와_차량모델수의_곱이다(spark):
     driver_metrics = spark.createDataFrame(
         [
             ("D1", "2026-01", "NYC", False, False, "A", 1000.0, 10.0, 100.0, 200.0, 710.0, 100.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
@@ -134,7 +134,7 @@ def test_추천후보는_실제기사수와_차량모델수의_곱이고_최종�
         ],
     )
 
-    candidates, allocated = build_monthly_vehicle_recommendation(
+    candidates, _ = build_monthly_vehicle_recommendation(
         driver_metrics, inventory
     )
     rows = candidates.collect()
@@ -145,10 +145,20 @@ def test_추천후보는_실제기사수와_차량모델수의_곱이고_최종�
         for driver_id in ("D1", "D2")
         for model_id in ("A", "B", "C")
     }
-    selected = allocated.collect()
-    assert {row.driver_id for row in selected} == {"D1", "D2"}
-    assert len(selected) == 2
-    assert all(row.vehicle_model_id != "C" for row in selected)
+
+
+def test_시뮬레이션검증은_기사차량조합누락을_차단한다(spark):
+    driver_profit = spark.createDataFrame([("D1",), ("D2",)], ["driver_id"])
+    candidates = spark.createDataFrame(
+        [("D1", "A"), ("D1", "B"), ("D2", "A")],
+        ["driver_id", "candidate_vehicle_model_id"],
+    )
+    inventory = spark.createDataFrame([("A",), ("B",)], ["vehicle_model_id"])
+
+    with pytest.raises(ValueError, match="추천 후보 수 불일치"):
+        gold_transformer.validate_vehicle_profit_simulation(
+            driver_profit, candidates, inventory
+        )
 
 
 def test_운행거리를_다섯개_구간으로_분류한다(spark):
@@ -211,7 +221,7 @@ def test_Standard_운행_거리대에_프리미엄_표본이_없으면_실패한
 
 def _gold_frames(spark, *, stock=2, recommendation_ids=("D1", "D2"), profit_increase=10.0):
     driver_profit = spark.createDataFrame([("D1",), ("D2",)], ["driver_id"])
-    allocated = spark.createDataFrame(
+    recommendation = spark.createDataFrame(
         [
             (driver_id, "MODEL", profit_increase, "차량 변경")
             for driver_id in recommendation_ids
@@ -223,15 +233,12 @@ def _gold_frames(spark, *, stock=2, recommendation_ids=("D1", "D2"), profit_incr
             "recommendation_reason",
         ],
     )
-    candidates = allocated.withColumnRenamed(
-        "vehicle_model_id", "candidate_vehicle_model_id"
-    )
     snapshot = spark.createDataFrame(
         [("D1", "CURRENT-D1"), ("D2", "CURRENT-D2")],
         ["driver_id", "vehicle_model_id"],
     )
     inventory = spark.createDataFrame([("MODEL", stock)], ["vehicle_model_id", "stock"])
-    return driver_profit, candidates, allocated, snapshot, inventory
+    return driver_profit, recommendation, snapshot, inventory
 
 
 def test_Gold_비즈니스검증은_모델별_재고초과를_차단한다(spark):
@@ -242,7 +249,7 @@ def test_Gold_비즈니스검증은_모델별_재고초과를_차단한다(spark
 
 
 def test_Gold_비즈니스검증은_현재차량_유지도_재고에_포함한다(spark):
-    driver_profit, candidates, allocated, snapshot, inventory = _gold_frames(
+    driver_profit, recommendation, snapshot, inventory = _gold_frames(
         spark, stock=1
     )
     snapshot = snapshot.withColumn(
@@ -254,7 +261,7 @@ def test_Gold_비즈니스검증은_현재차량_유지도_재고에_포함한�
 
     with pytest.raises(ValueError, match="재고 초과"):
         gold_transformer.validate_gold_business_invariants(
-            driver_profit, candidates, allocated, snapshot, inventory
+            driver_profit, recommendation, snapshot, inventory
         )
 
 

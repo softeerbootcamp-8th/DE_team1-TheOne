@@ -430,53 +430,112 @@ def build_driver_monthly_profit(driver_metrics: DataFrame) -> DataFrame:
 
 
 def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
-    """현재 차량을 보존하고 남은 모델 재고 안에서 기사별 최선 후보를 고릅니다."""
-    occupied_stock = (
-        candidates.filter(F.col("_is_current"))
-        .groupBy("_candidate_vehicle_model_id")
-        .agg(F.count(F.lit(1)).alias("_occupied_stock"))
-    )
-    stock_priority = Window.partitionBy("_candidate_vehicle_model_id").orderBy(
-        F.col("expected_net_profit_increase").desc(),
-        F.col("expected_revenue_increase").desc(),
-        F.col("driver_id").asc(),
-    )
-    available_changes = (
-        candidates.filter(~F.col("_is_current"))
-        .join(occupied_stock, "_candidate_vehicle_model_id", "left")
-        .fillna({"_occupied_stock": 0})
-        .withColumn("_stock_rank", F.row_number().over(stock_priority))
-        .filter(
-            F.col("_stock_rank")
-            <= F.col("_candidate_stock") - F.col("_occupied_stock")
-        )
-        .drop("_occupied_stock", "_stock_rank")
-    )
-    feasible = candidates.filter(F.col("_is_current")).unionByName(available_changes)
+    """기사 선호 순서대로 제안하되 모델 재고 안에서 수익 증가가 큰 기사부터 배정합니다."""
     preference = Window.partitionBy("driver_id").orderBy(
         F.col("expected_monthly_net_profit").desc(),
         F.col("_is_current").desc(),
         F.col("_candidate_model_year").desc(),
         F.col("_candidate_vehicle_model_id").asc(),
     )
-    return (
-        feasible.withColumn("_driver_rank", F.row_number().over(preference))
-        .filter(F.col("_driver_rank") == 1)
-        .drop("_driver_rank")
+    ranked = candidates.withColumn(
+        "_driver_rank", F.row_number().over(preference)
+    ).persist()
+    occupied_stock = (
+        ranked.filter(F.col("_is_current"))
+        .groupBy("_candidate_vehicle_model_id")
+        .agg(F.count(F.lit(1)).alias("_occupied_stock"))
     )
+    max_rank = ranked.agg(F.max("_driver_rank")).first()[0]
+    assigned = None
+
+    for driver_rank in range(1, max_rank + 1):
+        proposals = ranked.filter(F.col("_driver_rank") == driver_rank)
+        if assigned is not None:
+            proposals = proposals.join(
+                assigned.select("driver_id"), "driver_id", "left_anti"
+            )
+
+        keep_current = proposals.filter(F.col("_is_current"))
+        changes = (
+            proposals.filter(~F.col("_is_current"))
+            .join(occupied_stock, "_candidate_vehicle_model_id", "left")
+            .fillna({"_occupied_stock": 0})
+        )
+        if assigned is None:
+            changes = changes.withColumn("_used_stock", F.lit(0))
+        else:
+            used_stock = (
+                assigned.filter(~F.col("_is_current"))
+                .groupBy("_candidate_vehicle_model_id")
+                .agg(F.count(F.lit(1)).alias("_used_stock"))
+            )
+            changes = changes.join(
+                used_stock, "_candidate_vehicle_model_id", "left"
+            ).fillna({"_used_stock": 0})
+
+        stock_priority = Window.partitionBy("_candidate_vehicle_model_id").orderBy(
+            F.col("expected_net_profit_increase").desc(),
+            F.col("expected_revenue_increase").desc(),
+            F.col("driver_id").asc(),
+        )
+        changes = (
+            changes.withColumn("_stock_rank", F.row_number().over(stock_priority))
+            .filter(
+                F.col("_stock_rank")
+                <= F.col("_candidate_stock")
+                - F.col("_occupied_stock")
+                - F.col("_used_stock")
+            )
+            .drop("_occupied_stock", "_used_stock", "_stock_rank")
+        )
+        winners = keep_current.unionByName(changes)
+        assigned = winners if assigned is None else assigned.unionByName(winners)
+        assigned = assigned.coalesce(8).localCheckpoint(eager=False)
+
+    ranked.unpersist()
+    return assigned
+
+
+def validate_vehicle_profit_simulation(
+    driver_profit: DataFrame,
+    recommendation_candidates: DataFrame,
+    inventory: DataFrame,
+) -> None:
+    """시뮬레이션이 기사 N × 차량 모델 M 조합을 모두 보존하는지만 검증합니다."""
+    driver_count = driver_profit.select("driver_id").distinct().count()
+    inventory_models = inventory.select("vehicle_model_id").distinct().count()
+    candidate_stats = recommendation_candidates.agg(
+        F.count(F.lit(1)).alias("rows"),
+        F.countDistinct("driver_id").alias("drivers"),
+        F.countDistinct("driver_id", "candidate_vehicle_model_id").alias(
+            "candidate_keys"
+        ),
+    ).first()
+    expected_candidates = driver_count * inventory_models
+    if (
+        candidate_stats["rows"] != expected_candidates
+        or candidate_stats["rows"] != candidate_stats["candidate_keys"]
+        or candidate_stats["drivers"] != driver_count
+    ):
+        raise ValueError(
+            "Gold 추천 후보 수 불일치: "
+            f"drivers={driver_count} "
+            f"vehicle_models={inventory_models} "
+            f"expected={expected_candidates} actual={candidate_stats['rows']}"
+        )
 
 
 def validate_gold_business_invariants(
     driver_profit: DataFrame,
-    recommendation_candidates: DataFrame,
-    allocated_recommendation: DataFrame,
+    recommendation: DataFrame,
     driver_snapshot: DataFrame,
     inventory: DataFrame,
 ) -> None:
-    """Gold 저장 전에 후보 보존·최종 추천·재고 한도·수익 방향을 검증합니다."""
+    """Gold 저장 전에 기사 보존·재고 한도·수익 방향을 Spark로 검증합니다."""
     counts = {}
     for name, frame in (
         ("driver_aggregation", driver_profit),
+        ("driver_car_suggestion", recommendation),
         ("driver_snapshot", driver_snapshot),
     ):
         stats = frame.agg(
@@ -487,40 +546,11 @@ def validate_gold_business_invariants(
         if stats["rows"] != stats["drivers"]:
             raise ValueError(f"{name}의 driver_id가 null이거나 중복입니다")
 
-    inventory_models = inventory.select("vehicle_model_id").distinct().count()
-    candidate_stats = recommendation_candidates.agg(
-        F.count(F.lit(1)).alias("rows"),
-        F.countDistinct("driver_id").alias("drivers"),
-        F.countDistinct("driver_id", "candidate_vehicle_model_id").alias(
-            "candidate_keys"
-        ),
-    ).first()
-    expected_candidates = counts["driver_aggregation"] * inventory_models
-    if (
-        candidate_stats["rows"] != expected_candidates
-        or candidate_stats["rows"] != candidate_stats["candidate_keys"]
-        or candidate_stats["drivers"] != counts["driver_aggregation"]
-    ):
-        raise ValueError(
-            "Gold 추천 후보 수 불일치: "
-            f"drivers={counts['driver_aggregation']} "
-            f"vehicle_models={inventory_models} "
-            f"expected={expected_candidates} actual={candidate_stats['rows']}"
-        )
-
-    allocated_stats = allocated_recommendation.agg(
-        F.count(F.lit(1)).alias("rows"),
-        F.countDistinct("driver_id").alias("drivers"),
-    ).first()
-    counts["driver_car_suggestion"] = allocated_stats["rows"]
-    if allocated_stats["rows"] != allocated_stats["drivers"]:
-        raise ValueError("최종 추천은 기사당 정확히 한 행이어야 합니다")
-
     if len(set(counts.values())) != 1:
         raise ValueError(f"Gold 기사 수 불일치: {counts}")
 
     assigned = (
-        allocated_recommendation.groupBy("vehicle_model_id")
+        recommendation.groupBy("vehicle_model_id")
         .agg(F.count(F.lit(1)).alias("assigned"))
     )
     stock = inventory.select("vehicle_model_id", "stock")
@@ -535,9 +565,7 @@ def validate_gold_business_invariants(
 
     negative_samples = [
         row.asDict(recursive=True)
-        for row in allocated_recommendation.filter(
-            F.col("expected_net_profit_increase") < 0
-        )
+        for row in recommendation.filter(F.col("expected_net_profit_increase") < 0)
         .select("driver_id", "vehicle_model_id", "expected_net_profit_increase")
         .limit(5)
         .collect()
@@ -705,7 +733,13 @@ def build_monthly_vehicle_recommendation(
 
     return (
         simulation_output(candidates),
-        recommendation_output(_allocate_candidates_by_stock(candidates)),
+        recommendation_output(
+            _allocate_candidates_by_stock(
+                candidates.filter(
+                    (F.col("_candidate_stock") > 0) | F.col("_is_current")
+                )
+            )
+        ),
     )
 
 
