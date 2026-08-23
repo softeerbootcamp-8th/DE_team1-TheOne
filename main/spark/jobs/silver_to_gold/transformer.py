@@ -7,7 +7,12 @@ from datetime import datetime
 from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
 
-from schema.gold import DriverMonthlyProfit, MonthlyReport, MonthlyVehicleRecommendation
+from schema.gold import (
+    DriverMonthlyProfit,
+    DriverVehicleProfitSimulation,
+    MonthlyReport,
+    MonthlyVehicleRecommendation,
+)
 from schema.silver import (
     CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA,
     CLEAN_FUEL_PRICE_SCHEMA,
@@ -491,6 +496,35 @@ def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
     return assigned
 
 
+def validate_vehicle_profit_simulation(
+    driver_profit: DataFrame,
+    recommendation_candidates: DataFrame,
+    inventory: DataFrame,
+) -> None:
+    """시뮬레이션이 기사 N × 차량 모델 M 조합을 모두 보존하는지만 검증합니다."""
+    driver_count = driver_profit.select("driver_id").distinct().count()
+    inventory_models = inventory.select("vehicle_model_id").distinct().count()
+    candidate_stats = recommendation_candidates.agg(
+        F.count(F.lit(1)).alias("rows"),
+        F.countDistinct("driver_id").alias("drivers"),
+        F.countDistinct("driver_id", "candidate_vehicle_model_id").alias(
+            "candidate_keys"
+        ),
+    ).first()
+    expected_candidates = driver_count * inventory_models
+    if (
+        candidate_stats["rows"] != expected_candidates
+        or candidate_stats["rows"] != candidate_stats["candidate_keys"]
+        or candidate_stats["drivers"] != driver_count
+    ):
+        raise ValueError(
+            "Gold 추천 후보 수 불일치: "
+            f"drivers={driver_count} "
+            f"vehicle_models={inventory_models} "
+            f"expected={expected_candidates} actual={candidate_stats['rows']}"
+        )
+
+
 def validate_gold_business_invariants(
     driver_profit: DataFrame,
     recommendation: DataFrame,
@@ -545,8 +579,8 @@ def validate_gold_business_invariants(
 def build_monthly_vehicle_recommendation(
     driver_metrics: DataFrame,
     inventory: DataFrame,
-) -> DataFrame:
-    """재고 한도 안에서 수익 개선이 큰 기사부터 최선·차선 차량을 배정합니다."""
+) -> tuple[DataFrame, DataFrame]:
+    """기사×차량 후보 전체와 재고를 반영한 기사별 최종 추천을 함께 만듭니다."""
     available = inventory.select(
         F.col("vehicle_model_id").alias("_candidate_vehicle_model_id"),
         F.col("manufacturer").alias("_candidate_manufacturer"),
@@ -562,13 +596,9 @@ def build_monthly_vehicle_recommendation(
     if available.isEmpty():
         raise ValueError("추천할 수 있는 재고 차량이 없습니다")
 
-    candidates = (
-        driver_metrics.crossJoin(F.broadcast(available))
-        .withColumn(
-            "_is_current",
-            F.col("vehicle_model_id") == F.col("_candidate_vehicle_model_id"),
-        )
-        .filter((F.col("_candidate_stock") > 0) | F.col("_is_current"))
+    candidates = driver_metrics.crossJoin(F.broadcast(available)).withColumn(
+        "_is_current",
+        F.col("vehicle_model_id") == F.col("_candidate_vehicle_model_id"),
     )
     expected_fuel_cost = F.when(
         F.col("_candidate_fuel_type") == "EV",
@@ -654,24 +684,63 @@ def build_monthly_vehicle_recommendation(
         .otherwise(F.lit("예상 순수익 개선")),
     )
 
-    best = _allocate_candidates_by_stock(candidates)
-    return best.select(
-        "driver_id",
-        "year_month",
-        F.col("_candidate_comfort_eligible").alias("comfort_eligible"),
-        F.col("_candidate_extra_comfort_eligible").alias("extra_comfort_eligible"),
-        F.col("_candidate_vehicle_model_id").alias("vehicle_model_id"),
-        F.col("_candidate_manufacturer").alias("manufacturer"),
-        F.col("_candidate_model_name").alias("model_name"),
-        F.col("_candidate_model_year").alias("model_year"),
-        "recommendation_reason",
-        F.col("_candidate_fuel_efficiency").alias("fuel_efficiency"),
-        "recommended_monthly_lease_fee",
-        "expected_monthly_fuel_cost",
-        "expected_monthly_net_profit",
-        "expected_net_profit_increase",
-        "expected_revenue_increase",
-    ).select(*_columns(MonthlyVehicleRecommendation))
+    def simulation_output(rows: DataFrame) -> DataFrame:
+        return rows.select(
+            "driver_id",
+            "year_month",
+            "service_area",
+            F.col("_candidate_comfort_eligible").alias("comfort_eligible"),
+            F.col("_candidate_extra_comfort_eligible").alias(
+                "extra_comfort_eligible"
+            ),
+            F.col("_candidate_vehicle_model_id").alias(
+                "candidate_vehicle_model_id"
+            ),
+            F.col("_candidate_stock").alias("candidate_stock"),
+            F.col("_candidate_manufacturer").alias("manufacturer"),
+            F.col("_candidate_model_name").alias("model_name"),
+            F.col("_candidate_model_year").alias("model_year"),
+            "recommendation_reason",
+            F.col("_candidate_fuel_efficiency").alias("fuel_efficiency"),
+            "recommended_monthly_lease_fee",
+            "expected_monthly_fuel_cost",
+            "expected_monthly_net_profit",
+            "expected_net_profit_increase",
+            "expected_revenue_increase",
+        ).select(*_columns(DriverVehicleProfitSimulation))
+
+    def recommendation_output(rows: DataFrame) -> DataFrame:
+        return rows.select(
+            "driver_id",
+            "year_month",
+            "service_area",
+            F.col("_candidate_comfort_eligible").alias("comfort_eligible"),
+            F.col("_candidate_extra_comfort_eligible").alias(
+                "extra_comfort_eligible"
+            ),
+            F.col("_candidate_vehicle_model_id").alias("vehicle_model_id"),
+            F.col("_candidate_manufacturer").alias("manufacturer"),
+            F.col("_candidate_model_name").alias("model_name"),
+            F.col("_candidate_model_year").alias("model_year"),
+            "recommendation_reason",
+            F.col("_candidate_fuel_efficiency").alias("fuel_efficiency"),
+            "recommended_monthly_lease_fee",
+            "expected_monthly_fuel_cost",
+            "expected_monthly_net_profit",
+            "expected_net_profit_increase",
+            "expected_revenue_increase",
+        ).select(*_columns(MonthlyVehicleRecommendation))
+
+    return (
+        simulation_output(candidates),
+        recommendation_output(
+            _allocate_candidates_by_stock(
+                candidates.filter(
+                    (F.col("_candidate_stock") > 0) | F.col("_is_current")
+                )
+            )
+        ),
+    )
 
 
 def build_monthly_report(

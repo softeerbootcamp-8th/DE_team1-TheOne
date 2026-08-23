@@ -2,7 +2,7 @@
 
 input: monthly_taxi_trip, driver_vehicle_monthly_snapshot, lease_vehicle_inventory,
        fuel_price (Silver)
-output: driver_aggregation, driver_car_suggestion, monthly_report (Gold)
+output: driver_aggregation, driver_vehicle_profit_simulation, monthly_report (Gold)
 
 사용 예 (로컬):
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
@@ -39,6 +39,7 @@ from main.spark.jobs.silver_to_gold.transformer import (
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
     validate_gold_business_invariants,
+    validate_vehicle_profit_simulation,
 )
 from shared.common.s3_reader import list_keys
 from main.spark.jobs.silver_to_gold.monthly_silver import (
@@ -303,7 +304,9 @@ def main(args_list: list[str] | None = None) -> None:
         given = given_paths[dataset]
         if given is not None:
             return resolve_path(given)
-        return latest_partition_file(base_paths[dataset], year_month)
+        return latest_partition_file(
+            base_paths[dataset], year_month, args.service_area
+        )
 
     monthly_taxi_trip_path = _monthly_path("monthly_taxi_trip")
     driver_vehicle_monthly_snapshot_path = _monthly_path("driver_vehicle_monthly_snapshot")
@@ -320,7 +323,8 @@ def main(args_list: list[str] | None = None) -> None:
 
     enriched: DataFrame | None = None
     driver_metrics: DataFrame | None = None
-    recommendation: DataFrame | None = None
+    simulation: DataFrame | None = None
+    allocated_recommendation: DataFrame | None = None
     try:
         enriched = enrich_trips_with_fuel_cost(
             monthly_taxi_trip,
@@ -333,17 +337,24 @@ def main(args_list: list[str] | None = None) -> None:
             enriched, year_month, args.service_area
         ).persist()
         driver_profit = build_driver_monthly_profit(driver_metrics)
-        recommendation = build_monthly_vehicle_recommendation(
-            driver_metrics, inventory
-        ).persist()
+        simulation, allocated_recommendation = (
+            build_monthly_vehicle_recommendation(driver_metrics, inventory)
+        )
+        simulation = simulation.persist()
+        allocated_recommendation = allocated_recommendation.persist()
+        validate_vehicle_profit_simulation(
+            driver_profit,
+            simulation,
+            inventory,
+        )
         validate_gold_business_invariants(
             driver_profit,
-            recommendation,
+            allocated_recommendation,
             driver_snapshot,
             inventory,
         )
         report = build_monthly_report(
-            recommendation,
+            allocated_recommendation,
             year_month,
             args.service_area,
             args.threshold_profit_increase,
@@ -352,7 +363,7 @@ def main(args_list: list[str] | None = None) -> None:
 
         outputs: dict[str, DataFrame] = {
             "driver_aggregation": driver_profit,
-            "driver_car_suggestion": recommendation,
+            "driver_vehicle_profit_simulation": simulation,
             "monthly_report": report,
         }
         # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
@@ -378,8 +389,10 @@ def main(args_list: list[str] | None = None) -> None:
             enriched.unpersist()
         if driver_metrics is not None:
             driver_metrics.unpersist()
-        if recommendation is not None:
-            recommendation.unpersist()
+        if simulation is not None:
+            simulation.unpersist()
+        if allocated_recommendation is not None:
+            allocated_recommendation.unpersist()
 
 
 if __name__ == "__main__":
