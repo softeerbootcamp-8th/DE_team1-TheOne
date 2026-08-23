@@ -18,7 +18,7 @@
       "manhattan": 0.1275,
       "tier": 0.15
     },
-    "bucket_size": 5
+    "bucket_size": 10
   },
   "synthesize": {
     "rationality": 0.6,
