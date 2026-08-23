@@ -208,6 +208,8 @@ def _collect_bronze(params: dict) -> dict:
         "year": params.get("year"),
         "month": params.get("month"),
     }
+    if params.get("service_area") is not None:
+        event["service_area"] = params["service_area"]
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
     result = lambda_handler_for("monthly_taxi_trip_raw_to_bronze")(event=event)
     logger.info("raw_to_bronze 작업 완료: result=%s", result)
@@ -367,8 +369,17 @@ def validate_bronze_task(result: dict, **context) -> dict:
             invalid_ratio=invalid_ratio,
             extra_columns=extra_columns,
         )
-    version_path = silver_version_path(DEFAULT_SILVER_DIR, result)
-    staging_path = staged_silver_version_path(DEFAULT_SILVER_DIR, result)
+    service_area = params.get("service_area")
+    version_path = silver_version_path(
+        DEFAULT_SILVER_DIR,
+        result,
+        service_area=service_area,
+    )
+    staging_path = staged_silver_version_path(
+        DEFAULT_SILVER_DIR,
+        result,
+        service_area=service_area,
+    )
     silver_root = version_path.parent.parent
     # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
     return {
@@ -391,6 +402,7 @@ def _bronze_quality_result(
         result,
         dataset_dir="monthly_taxi_trip",
         base_dir=base_dir,
+        service_area=params.get("service_area"),
     )
     try:
         source = parquet_file(path)
