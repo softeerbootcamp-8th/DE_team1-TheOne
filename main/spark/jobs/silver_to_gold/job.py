@@ -36,7 +36,7 @@ from main.spark.jobs.silver_to_gold.transformer import (
     validate_gold_business_invariants,
 )
 from shared.common.s3_reader import list_keys
-from shared.common.monthly_silver import (
+from main.spark.jobs.silver_to_gold.monthly_silver import (
     latest_local_silver_version,
     latest_s3_silver_version,
 )

@@ -2,6 +2,7 @@
 
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
 from uuid import uuid4
@@ -17,22 +18,67 @@ from shared.airflow.common.validation import (
     parse_year_month,
     require_file,
 )
-from shared.common.monthly_bronze import (
-    TIMESTAMP_FILE_PATTERN as _TIMESTAMP_FILE_PATTERN,
-    bronze_collection_token,
-    bronze_partition,
-    collected_at_token,
-)
-from shared.common.monthly_silver import (
-    SILVER_PART_PATTERN,
-    SILVER_SUCCESS_FILE,
-)
 from shared.common.s3_reader import list_keys
 
 
-TIMESTAMP_FILE_PATTERN = _TIMESTAMP_FILE_PATTERN
+BRONZE_DATA_FILE_NAME = "data.parquet"
+COLLECTED_AT_DIR_PATTERN = re.compile(r"^collected_at=(\d{8}T\d{12}Z)$")
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
+SOURCE_COLLECTED_AT_PATTERN = re.compile(r"^source_collected_at=(\d{8}T\d{12}Z)$")
+SILVER_PART_PATTERN = re.compile(r"^part-.+\.parquet$")
+SILVER_SUCCESS_FILE = "_SUCCESS"
 # 구 단일 파일 staging을 읽기 호환에서 공개 버전으로 세지 않기 위한 패턴입니다.
 STAGED_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.staged\.parquet$")
+
+
+def collected_at_token(value: str) -> str:
+    try:
+        timestamp = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("collected_at이 UTC 수집 시각 형식이 아닙니다") from exc
+    return f"{timestamp:%Y%m%dT%H%M%S%fZ}"
+
+
+def bronze_collection_token(path) -> str | None:
+    if TIMESTAMP_FILE_PATTERN.fullmatch(path.name):
+        return Path(path.name).stem
+    if path.name != BRONZE_DATA_FILE_NAME:
+        return None
+    match = COLLECTED_AT_DIR_PATTERN.fullmatch(path.parent.name)
+    return match.group(1) if match else None
+
+
+def bronze_partition(path):
+    return path.parent.parent if path.name == BRONZE_DATA_FILE_NAME else path.parent
+
+
+def _is_silver_data_file(file_name: str) -> bool:
+    return file_name == "data.parquet" or bool(SILVER_PART_PATTERN.fullmatch(file_name))
+
+
+def latest_local_silver_version(partition: Path) -> Path | None:
+    candidates: list[tuple[str, Path]] = [
+        (path.stem, path)
+        for path in partition.glob("*.parquet")
+        if path.is_file() and TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
+    ]
+    for version_dir in partition.glob("source_collected_at=*"):
+        match = SOURCE_COLLECTED_AT_PATTERN.fullmatch(version_dir.name)
+        if (
+            match
+            and version_dir.is_dir()
+            and (version_dir / SILVER_SUCCESS_FILE).is_file()
+            and any(
+                data_file.is_file() and _is_silver_data_file(data_file.name)
+                for data_file in version_dir.glob("*.parquet")
+            )
+        ):
+            candidates.append((match.group(1), version_dir))
+    return max(candidates, default=(None, None), key=lambda item: item[0])[1]
+
+
 def silver_version_path(base_dir: str | Path, result: dict) -> Path | S3Location:
     """Bronze 수집 시각을 자연 키로 쓰는 Silver 버전 디렉터리입니다."""
     parsed = parse_handler_result(result, expected_locations=1)

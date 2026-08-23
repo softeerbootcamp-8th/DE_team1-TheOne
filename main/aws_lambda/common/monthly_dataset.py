@@ -17,22 +17,43 @@ from shared.aws_lambda.common.atomic_write import atomic_write
 from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 from shared.common.s3_reader import get_object_bytes, list_keys
-from shared.common.monthly_bronze import (
-    BRONZE_DATA_FILE_NAME,
-    TIMESTAMP_FILE_PATTERN as _TIMESTAMP_FILE_PATTERN,
-    bronze_collection_token,
-    collected_at_from_token,
-    collected_at_token,
-)
-
-
-# 기존 Silver handler/loader의 import 경로는 단계적 배포 동안 유지합니다.
-TIMESTAMP_FILE_PATTERN = _TIMESTAMP_FILE_PATTERN
+BRONZE_DATA_FILE_NAME = "data.parquet"
+COLLECTED_AT_DIR_PATTERN = re.compile(r"^collected_at=(\d{8}T\d{12}Z)$")
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 DATASET_URL_PATTERN = re.compile(
     r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$"
 )
+
+
+def collected_at_token(value: str) -> str:
+    try:
+        timestamp = datetime.strptime(value, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("collected_at이 UTC 수집 시각 형식이 아닙니다") from exc
+    return f"{timestamp:%Y%m%dT%H%M%S%fZ}"
+
+
+def collected_at_from_token(token: str) -> str:
+    try:
+        timestamp = datetime.strptime(token, "%Y%m%dT%H%M%S%fZ").replace(
+            tzinfo=timezone.utc
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Bronze 경로의 수집 시각이 올바르지 않습니다") from exc
+    return timestamp.isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def bronze_collection_token(path) -> str | None:
+    if TIMESTAMP_FILE_PATTERN.fullmatch(path.name):
+        return Path(path.name).stem
+    if path.name != BRONZE_DATA_FILE_NAME:
+        return None
+    match = COLLECTED_AT_DIR_PATTERN.fullmatch(path.parent.name)
+    return match.group(1) if match else None
 
 
 def requested_year_month(event: dict) -> str | None:

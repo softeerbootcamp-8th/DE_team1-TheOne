@@ -7,7 +7,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
-from shared.common.monthly_bronze import bronze_collection_token
+from main.aws_lambda.common.monthly_dataset import bronze_collection_token
 from shared.common.s3_reader import get_object_bytes, list_keys
 
 from .loader import DATASET

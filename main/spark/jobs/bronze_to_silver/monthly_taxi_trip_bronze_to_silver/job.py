@@ -1,14 +1,11 @@
 import argparse
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
-from shared.common.monthly_bronze import (
-    bronze_collection_token,
-)
-from shared.common.monthly_silver import SOURCE_COLLECTED_AT_PATTERN
 from shared.common.s3_reader import list_keys
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
@@ -24,10 +21,23 @@ logger = logging.getLogger(__name__)
 CURRENT_FILE = Path(__file__).resolve()
 # spark/jobs/bronze_to_silver/monthly_taxi_trip_bronze_to_silver/job.py -> project root
 PROJECT_ROOT = CURRENT_FILE.parents[5]
+BRONZE_DATA_FILE_NAME = "data.parquet"
+COLLECTED_AT_DIR_PATTERN = re.compile(r"^collected_at=(\d{8}T\d{12}Z)$")
+TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
+SOURCE_COLLECTED_AT_PATTERN = re.compile(r"^source_collected_at=(\d{8}T\d{12}Z)$")
 
 
 DEFAULT_LOCAL_INPUT = "data/bronze/monthly_taxi_trip"
 DEFAULT_LOCAL_OUTPUT = "data/silver/monthly_taxi_trip"
+
+
+def bronze_collection_token(path: Path) -> str | None:
+    if TIMESTAMP_FILE_PATTERN.fullmatch(path.name):
+        return path.stem
+    if path.name != BRONZE_DATA_FILE_NAME:
+        return None
+    match = COLLECTED_AT_DIR_PATTERN.fullmatch(path.parent.name)
+    return match.group(1) if match else None
 
 
 def _silver_file_payload(data):
