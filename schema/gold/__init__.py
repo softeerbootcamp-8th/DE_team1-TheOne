@@ -99,7 +99,7 @@ class DriverVehicleProfitSimulation:
     """평가한 후보 차량 모델 ID"""
 
     candidate_stock: int
-    """후보 차량 모델의 해당 월 재고. 최종 추천 뷰의 재고 제약에 사용"""
+    """후보 차량 모델의 해당 월 재고 스냅샷"""
 
     manufacturer: str
     """추천 차량 제조사"""
@@ -132,11 +132,7 @@ class DriverVehicleProfitSimulation:
     """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverMonthlyProfit.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
 
 
-"""
-[기사별 최종 차량 추천 뷰]
-input: DriverVehicleProfitSimulation, DriverMonthlyProfit
-output: vw_driver_car_suggestion
-"""
+"""월간 리포트 계산에 사용하는 기사별 차량 추천 Spark 중간 결과."""
 @dataclass(frozen=True)
 class MonthlyVehicleRecommendation:
     version: int
