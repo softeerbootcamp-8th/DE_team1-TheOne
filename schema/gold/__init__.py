@@ -67,12 +67,12 @@ class DriverMonthlyProfit:
 
 
 """
-[기사별 차량 교체시 예상 수익]
+[기사·후보 차량 모델별 교체 시 예상 수익 시뮬레이션]
 input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA / schema/gold.py - DriverMonthlyProfit
-output: schema/gold.py - MonthlyVehicleRecommendation
+output: schema/gold.py - DriverVehicleProfitSimulation
 """
 @dataclass(frozen=True)
-class MonthlyVehicleRecommendation:
+class DriverVehicleProfitSimulation:
     version: int
     """ 골드 데이터 버전 """
     
@@ -95,8 +95,11 @@ class MonthlyVehicleRecommendation:
     extra_comfort_eligible: bool
     """Extra Comfort 등급 대상 여부"""
 
-    vehicle_model_id: str
-    """추천 차량 모델 ID"""
+    candidate_vehicle_model_id: str
+    """평가한 후보 차량 모델 ID"""
+
+    candidate_stock: int
+    """후보 차량 모델의 해당 월 재고. 최종 추천 뷰의 재고 제약에 사용"""
 
     manufacturer: str
     """추천 차량 제조사"""
@@ -130,6 +133,32 @@ class MonthlyVehicleRecommendation:
 
 
 """
+[기사별 최종 차량 추천 뷰]
+input: DriverVehicleProfitSimulation, DriverMonthlyProfit
+output: vw_driver_car_suggestion
+"""
+@dataclass(frozen=True)
+class MonthlyVehicleRecommendation:
+    version: int
+    driver_id: str
+    year_month: str
+    service_area: str
+    comfort_eligible: bool
+    extra_comfort_eligible: bool
+    vehicle_model_id: str
+    manufacturer: str
+    model_name: str
+    model_year: int
+    recommendation_reason: str
+    fuel_efficiency: float
+    recommended_monthly_lease_fee: float
+    expected_monthly_fuel_cost: float
+    expected_monthly_net_profit: float
+    expected_net_profit_increase: float
+    expected_revenue_increase: float
+
+
+"""
 [월간 리포트]
 input: schema/gold.py - MonthlyVehicleRecommendation
 output: schema/gold.py - MonthlyReport
@@ -156,7 +185,8 @@ class MonthlyReport:
     """이 실행이 최초 완료가 아니라, 이미 완료된 대상월이 다시 계산된 재트리거인지"""
 
     recommended_driver_count: int
-    """추천 대상 기사 수 (expected_net_profit_increase >= threshold_profit_increase, expected_revenue_increase >= 0)"""
+    """재고를 반영한 기사별 최종 추천 중 expected_net_profit_increase >=
+    threshold_profit_increase, expected_revenue_increase >= 0 인 기사 수"""
 
     avg_net_profit_increase_per_driver: float
     """추천된 기사들의 평균 순수익 증가액 (USD)"""

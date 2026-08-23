@@ -35,15 +35,20 @@ DEFAULT_PATHS = {
     "fuel_price_path": str(SILVER / "gas_ev_price"),
     "output_dir": str(ROOT / "data" / "gold"),
 }
-DATASETS = ("driver_aggregation", "driver_car_suggestion", "monthly_report")
+DATASETS = (
+    "driver_aggregation",
+    "driver_vehicle_profit_simulation",
+    "monthly_report",
+)
 # 산출물마다 "이건 반드시 있어야 한다" 는 컬럼. 전체 스키마는 schema/gold/*.py 가
 # 소유하고, 여기서는 조인 키와 판단에 쓰이는 값만 봅니다.
 REQUIRED_COLUMNS = {
     "driver_aggregation": {
         "driver_id", "year_month", "monthly_net_profit", "monthly_lease_fee",
     },
-    "driver_car_suggestion": {
-        "driver_id", "year_month", "vehicle_model_id", "manufacturer", "model_name",
+    "driver_vehicle_profit_simulation": {
+        "driver_id", "year_month", "candidate_vehicle_model_id", "candidate_stock",
+        "manufacturer", "model_name",
         "expected_net_profit_increase", "recommendation_reason",
     },
     "monthly_report": {

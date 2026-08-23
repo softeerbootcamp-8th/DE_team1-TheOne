@@ -396,8 +396,8 @@ def _write_gold(root: Path, year_month: str) -> None:
         "driver_aggregation": pd.DataFrame(
             [{"driver_id": "D1", "year_month": year_month, "monthly_net_profit": 100.0, "monthly_lease_fee": 400.0}]
         ),
-        "driver_car_suggestion": pd.DataFrame(
-            [{"driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
+        "driver_vehicle_profit_simulation": pd.DataFrame(
+            [{"driver_id": "D1", "year_month": year_month, "candidate_vehicle_model_id": "MODEL1", "candidate_stock": 10, "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
         ),
         "monthly_report": pd.DataFrame(
             [{"year_month": year_month, "threshold_profit_increase": 100.0, "is_rerun": False, "recommended_driver_count": 1, "avg_net_profit_increase_per_driver": 120.0}]

@@ -4,9 +4,14 @@
 2. 저장된 행수가 기대치보다 적거나 많으면 커밋 전에 실패한다
 3. 저장된 행수가 0이면 기대치도 0이어도 실패한다
 4. 검증·버전·PK가 모두 지역으로 좁혀진다 — 하나라도 빠지면 안 고친 것보다 나쁘다
+5. 시뮬레이션 PK는 같은 기사의 차량 모델별 후보를 구분한다
+6. 최종 추천 뷰는 기사 순위와 모델별 재고 제약을 적용한다
 """
 
+from pathlib import Path
+
 import pytest
+import pandas as pd
 
 from main.spark.jobs.silver_to_gold import postgres_loader
 
@@ -98,6 +103,76 @@ def test_세_테이블_모두_PK에_지역이_들어간다():
         assert "service_area" in primary_key, table
         # DDL 에도 실제로 반영되는지 — dataclass 에 필드가 없으면 여기서 걸립니다.
         assert "PRIMARY KEY (service_area," in postgres_loader._create_table_sql(table)
+
+
+def test_시뮬레이션_PK는_기사별_차량후보를_구분한다():
+    assert postgres_loader._PRIMARY_KEYS["driver_vehicle_profit_simulation"] == (
+        "service_area",
+        "year_month",
+        "version",
+        "driver_id",
+        "candidate_vehicle_model_id",
+    )
+
+
+def test_최종추천뷰는_재고와_기사선호순위를_적용한다():
+    sql = postgres_loader._create_suggestion_view_sql()
+
+    assert "CREATE OR REPLACE VIEW vw_driver_car_suggestion" in sql
+    assert "candidate_stock - occupied_stock" in sql
+    assert sql.count("ROW_NUMBER() OVER") == 2
+    assert "WHERE driver_rank = 1" in sql
+    assert "candidate_vehicle_model_id AS vehicle_model_id" in sql
+
+
+def test_기존추천테이블명은_호환뷰로_유지한다():
+    sql = postgres_loader._create_compatibility_view_sql()
+
+    assert "CREATE OR REPLACE VIEW driver_car_suggestion" in sql
+    assert "SELECT * FROM vw_driver_car_suggestion" in sql
+
+
+def test_마이그레이션과_적재기의_최종추천뷰_SQL이_같다():
+    migration_path = (
+        Path(__file__).parents[1]
+        / "jobs/silver_to_gold/migrations/2026-08-23_expand_vehicle_recommendations.sql"
+    )
+    migration = migration_path.read_text()
+    view_body = migration.split("CREATE VIEW vw_driver_car_suggestion AS", 1)[1]
+    view_body = view_body.split(";\n\nCREATE VIEW driver_car_suggestion AS", 1)[0]
+    migration_view_sql = (
+        "CREATE OR REPLACE VIEW vw_driver_car_suggestion AS" + view_body
+    )
+
+    assert migration_view_sql.strip() == postgres_loader._create_suggestion_view_sql()
+
+
+def _grain_frames(simulation_rows):
+    return {
+        "driver_aggregation": pd.DataFrame({"driver_id": ["D1", "D2"]}),
+        "driver_vehicle_profit_simulation": pd.DataFrame(
+            simulation_rows,
+            columns=["driver_id", "candidate_vehicle_model_id"],
+        ),
+        "monthly_report": pd.DataFrame({"recommended_driver_count": [1]}),
+    }
+
+
+def test_시뮬레이션은_기사수와_후보차량수의_곱을_적재한다():
+    frames = _grain_frames(
+        [(driver, model) for driver in ("D1", "D2") for model in ("A", "B", "C")]
+    )
+
+    postgres_loader._validate_frame_grains(frames)
+
+
+def test_시뮬레이션의_기사차량조합이_빠지면_적재전에_실패한다():
+    frames = _grain_frames(
+        [("D1", "A"), ("D1", "B"), ("D2", "A")]
+    )
+
+    with pytest.raises(ValueError, match="시뮬레이션 그레인 불일치"):
+        postgres_loader._validate_frame_grains(frames)
 
 
 def test_Gold_3종_스키마에_service_area_컬럼이_있다():
