@@ -50,6 +50,15 @@ def test_stack_connects_three_ec2_instances_and_emr_metrics():
         "DashboardInstanceId",
         "EmrApplicationId",
     }.issubset(parameters)
+    # AWS::EC2::Instance::Id 로 되돌리면 CloudFormation 이 배포 자격증명으로
+    # ec2:DescribeInstances 를 호출해 배포가 다시 깨집니다.
+    for parameter in (
+        "AirflowInstanceId",
+        "SourceInstanceId",
+        "DashboardInstanceId",
+    ):
+        assert parameters[parameter]["Type"] == "String"
+        assert parameters[parameter]["AllowedPattern"] == r"^i-[0-9a-f]{8,17}$"
 
     body = stack["Resources"]["UnifiedDashboard"]["Properties"]["DashboardBody"]
     rendered = re.sub(r"\$\{[^}]+}", "placeholder", body)
@@ -87,3 +96,9 @@ def test_workflow_installs_then_configures_all_instances():
     assert workflow.index("AWS-ConfigureAWSPackage") < workflow.index(
         "AmazonCloudWatch-ManageAgent"
     )
+    assert "continue-on-error: true" in workflow
+    assert "steps.deploy-stack.outcome == 'failure'" in workflow
+    assert "cloudformation describe-stack-events" in workflow
+    # FAILED 로 필터하면 파라미터 검증 실패 때 빈 표만 나옵니다.
+    assert "ResourceStatusReason!=null" in workflow
+    assert "contains(ResourceStatus" not in workflow
