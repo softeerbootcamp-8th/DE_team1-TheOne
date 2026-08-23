@@ -30,6 +30,8 @@ YEAR_MONTH = "2026-08"
 S3_BUCKET = "test-de-theone"
 S3_REGION = "ap-northeast-2"
 FILE_NAME = "20260821T123456123456Z.parquet"
+SOURCE_TOKEN = Path(FILE_NAME).stem
+VERSION_DIR = f"source_collected_at={SOURCE_TOKEN}"
 
 
 def _rows():
@@ -62,8 +64,13 @@ def _event(tmp_path: Path, bronze: Path) -> dict:
     return {
         "bronze_dir": str(tmp_path / "bronze"),
         "year_month": YEAR_MONTH,
-        "silver_file_name": FILE_NAME,
-        "silver_dir": str(tmp_path / "silver"),
+        "silver_output_path": str(
+            tmp_path
+            / "silver"
+            / f"year_month={YEAR_MONTH}"
+            / ".staging"
+            / VERSION_DIR
+        ),
     }
 
 
@@ -105,15 +112,21 @@ def _s3_event(year_month: str = YEAR_MONTH) -> dict:
         "storage": "s3",
         "bucket": S3_BUCKET,
         "year_month": year_month,
-        "silver_file_name": FILE_NAME,
+        "silver_output_path": (
+            f"s3://{S3_BUCKET}/silver/{DATASET}/year_month={year_month}/"
+            f".staging/{VERSION_DIR}"
+        ),
     }
 
 
 def _silver_key(year_month: str = YEAR_MONTH) -> str:
-    return f"silver/{DATASET}/year_month={year_month}/{FILE_NAME}"
+    return (
+        f"silver/{DATASET}/year_month={year_month}/.staging/"
+        f"{VERSION_DIR}/data.parquet"
+    )
 
 
-def test_정제한_보유차량을_월파티션_한파일로_적재한다(tmp_path):
+def test_정제한_보유차량을_검증전_버전디렉터리_part로_적재한다(tmp_path):
     rows = _rows()
     rows[0]["manufacturer"] = " kia "
     rows[0]["model_name"] = " sportage "
@@ -122,7 +135,8 @@ def test_정제한_보유차량을_월파티션_한파일로_적재한다(tmp_pa
 
     path = Path(result["locations"][0])
     assert path == (
-        tmp_path / "silver" / f"year_month={YEAR_MONTH}" / FILE_NAME
+        tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+        / VERSION_DIR / "data.parquet"
     )
     assert result["row_count"] == 1
     assert pq.read_schema(path) == SCHEMA
@@ -144,7 +158,13 @@ def test_같은수집시각을_다시_정제해도_파일이_늘지않는다(tmp
 def test_새수집시각은_별도_파일로_적재한다(tmp_path):
     bronze = _bronze(tmp_path, _rows())
     first_event = _event(tmp_path, bronze)
-    second_event = {**first_event, "silver_file_name": "20260822T123456123456Z.parquet"}
+    second_event = {
+        **first_event,
+        "silver_output_path": str(
+            tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+            / "source_collected_at=20260822T123456123456Z"
+        ),
+    }
 
     first = lambda_handler(first_event)
     second = lambda_handler(second_event)
@@ -204,7 +224,10 @@ def test_교체중_실패해도_기존월파일과_임시파일이_남지않는�
 
 def test_Silver스키마가_아닌_테이블은_적재하지_않는다(tmp_path):
     loader = LeaseVehicleInventorySilverLoader(
-        str(tmp_path / "silver"), YEAR_MONTH, FILE_NAME
+        str(
+            tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+            / VERSION_DIR
+        )
     )
 
     with pytest.raises(ValueError, match="Silver 스키마와 다릅니다"):
@@ -218,7 +241,7 @@ def test_Silver스키마가_아닌_테이블은_적재하지_않는다(tmp_path)
     [
         ({}, "year_month"),
         ({"year_month": "2026-8"}, "year_month"),
-        ({"year_month": YEAR_MONTH}, "silver_file_name"),
+        ({"year_month": YEAR_MONTH}, "silver_output_path"),
     ],
 )
 def test_필수식별자가_없거나_형식이_잘못되면_읽기전에_실패한다(event, message):
@@ -230,8 +253,10 @@ def test_bronze_파티션이_없으면_실패한다(tmp_path):
     event = {
         "bronze_dir": str(tmp_path / "bronze"),
         "year_month": YEAR_MONTH,
-        "silver_file_name": FILE_NAME,
-        "silver_dir": str(tmp_path / "silver"),
+        "silver_output_path": str(
+            tmp_path / "silver" / f"year_month={YEAR_MONTH}" / ".staging"
+            / VERSION_DIR
+        ),
     }
     with pytest.raises(FileNotFoundError, match="파티션이 없습니다"):
         lambda_handler(event)

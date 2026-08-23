@@ -2,7 +2,9 @@
 
 import io
 import logging
-from pathlib import Path
+import re
+from pathlib import Path, PurePosixPath
+from urllib.parse import urlsplit
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -11,46 +13,34 @@ from pipeline_core.loader import Loader, WriteResult
 from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
 from shared.aws_lambda.common.atomic_write import atomic_write
 from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
-from main.aws_lambda.common.monthly_dataset import TIMESTAMP_FILE_PATTERN
-
-
 logger = logging.getLogger(__name__)
 DATASET = "driver_vehicle_monthly_snapshot"
+DATA_FILE_NAME = "data.parquet"
+OUTPUT_VERSION_PATTERN = re.compile(
+    r"^source_collected_at=\d{8}T\d{12}Z$"
+)
 
 
-def silver_key(year_month: str, file_name: str) -> str:
-    if not TIMESTAMP_FILE_PATTERN.fullmatch(file_name):
-        raise ValueError("silver_file_name이 수집 시각 Parquet 형식이 아닙니다")
-    return f"silver/{DATASET}/year_month={year_month}/{file_name}"
+def _validate_output_version(path: Path | PurePosixPath) -> None:
+    if path.parent.name != ".staging" or not OUTPUT_VERSION_PATTERN.fullmatch(path.name):
+        raise ValueError("silver_output_path가 Silver staging 버전 경로가 아닙니다")
 
 
 class DriverVehicleMonthlySnapshotSilverLoader(Loader):
-    """월 파티션의 수집 버전 파일을 원자적으로 교체합니다.
-
-    새 수집 시각은 새 파일로 보존하고 같은 수집본 재시도는 동일 파일만 교체합니다.
-    """
+    """검증 전 Silver 버전 디렉터리에 단일 data 파일을 원자적으로 씁니다."""
 
     def __init__(
         self,
-        base_dir: str,
-        year_month: str,
-        file_name: str,
+        output_dir: str,
     ):
-        if not TIMESTAMP_FILE_PATTERN.fullmatch(file_name):
-            raise ValueError("silver_file_name이 수집 시각 Parquet 형식이 아닙니다")
-        self._base_dir = Path(base_dir)
-        self._year_month = year_month
-        self._file_name = file_name
+        self._output_dir = Path(output_dir)
+        _validate_output_version(self._output_dir)
         self.path: Path | None = None
 
     def write(self, data: pa.Table) -> WriteResult:
         if data.schema != SCHEMA:
             raise ValueError("적재할 기사 차량 스냅샷 데이터가 Silver 스키마와 다릅니다")
-        path = (
-            self._base_dir
-            / f"year_month={self._year_month}"
-            / self._file_name
-        )
+        path = self._output_dir / DATA_FILE_NAME
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
             path,
@@ -62,23 +52,22 @@ class DriverVehicleMonthlySnapshotSilverLoader(Loader):
 
 
 class DriverVehicleMonthlySnapshotS3SilverLoader(Loader):
-    """수집 버전 파일 하나를 S3 에 통째로 교체합니다.
-
-    S3 PutObject 는 객체 단위로 원자적이라 로컬처럼 임시 파일을 거쳐 rename 할
-    필요가 없습니다.
-    """
+    """검증 전 S3 Silver 버전 prefix에 단일 data 파일을 씁니다."""
 
     def __init__(
         self,
-        year_month: str,
-        file_name: str,
+        output_dir: str,
         bucket: str | None = None,
     ):
-        if not TIMESTAMP_FILE_PATTERN.fullmatch(file_name):
-            raise ValueError("silver_file_name이 수집 시각 Parquet 형식이 아닙니다")
-        self._year_month = year_month
-        self._file_name = file_name
-        self._bucket = bucket
+        parsed = urlsplit(output_dir)
+        if parsed.scheme != "s3" or not parsed.netloc:
+            raise ValueError("silver_output_path가 S3 URI가 아닙니다")
+        output_path = PurePosixPath(parsed.path.lstrip("/"))
+        _validate_output_version(output_path)
+        if bucket and bucket != parsed.netloc:
+            raise ValueError("silver_output_path bucket이 입력 bucket과 다릅니다")
+        self._bucket = parsed.netloc
+        self._key = str(output_path / DATA_FILE_NAME)
 
     def write(self, data: pa.Table) -> WriteResult:
         if data.schema != SCHEMA:
@@ -87,7 +76,7 @@ class DriverVehicleMonthlySnapshotS3SilverLoader(Loader):
         pq.write_table(data, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month, self._file_name),
+            key=self._key,
             bucket=self._bucket,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=data.num_rows)
@@ -100,17 +89,11 @@ class DriverVehicleMonthlySnapshotS3SilverLoader(Loader):
 
 def build_silver_loader(
     storage: str,
-    base_dir: str,
+    output_dir: str,
     bucket: str | None,
-    year_month: str,
-    file_name: str,
 ) -> Loader:
     if storage == "local":
-        return DriverVehicleMonthlySnapshotSilverLoader(
-            base_dir, year_month, file_name
-        )
+        return DriverVehicleMonthlySnapshotSilverLoader(output_dir)
     if storage == "s3":
-        return DriverVehicleMonthlySnapshotS3SilverLoader(
-            year_month, file_name, bucket=bucket
-        )
+        return DriverVehicleMonthlySnapshotS3SilverLoader(output_dir, bucket=bucket)
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

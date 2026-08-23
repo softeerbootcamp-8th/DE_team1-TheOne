@@ -76,7 +76,7 @@ def test_Spark명령은_수집결과의_정확한_HVFHV파일을_사용한다():
     assert "task_ids='validate_bronze'" in command
     assert "['locations'][0]" in command
     assert "['silver_staging_path']" in command
-    assert "--output_file" in command
+    assert "--output_version" in command
     assert "--zone_lookup_path" not in command
     assert "--error_threshold {{ params.error_threshold }}" in command
 
