@@ -363,7 +363,7 @@ def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:
 
 
 def build_driver_monthly_aggregation(
-    enriched: DataFrame, year_month: str
+    enriched: DataFrame, year_month: str, service_area: str
 ) -> DataFrame:
     """기사별 실제 운행·비용을 집계하고 추천 계산용 연료비 기준값을 보존합니다."""
     days_in_month = monthrange(*map(int, year_month.split("-")))[1]
@@ -400,6 +400,9 @@ def build_driver_monthly_aggregation(
 
     return (
         grouped.withColumn("year_month", F.lit(year_month))
+        # service_area 는 year_month 와 같은 축의 데이터 속성입니다 — version 과
+        # 달리 적재 시점에 정해지는 값이 아니라 잡 실행 대상을 나타냅니다.
+        .withColumn("service_area", F.lit(service_area))
         .withColumn("_lease_weeks_in_month", F.lit(days_in_month / 7.0))
         .withColumn("monthly_fuel_cost", current_fuel_cost)
         .withColumn(
@@ -674,6 +677,7 @@ def build_monthly_vehicle_recommendation(
 def build_monthly_report(
     recommendation: DataFrame,
     year_month: str,
+    service_area: str,
     threshold_profit_increase: float,
     is_rerun: bool,
 ) -> DataFrame:
@@ -697,6 +701,7 @@ def build_monthly_report(
         )
         .select(
             F.lit(year_month).alias("year_month"),
+            F.lit(service_area).alias("service_area"),
             F.lit(float(threshold_profit_increase)).alias(
                 "threshold_profit_increase"
             ),

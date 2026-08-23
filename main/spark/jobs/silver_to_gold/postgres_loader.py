@@ -29,10 +29,16 @@ _TABLE_MODELS = {
 }
 
 # PRIMARY KEY는 저장소 쪽 결정이라 dataclass에는 없는 정보라 별도로 둡니다.
+# service_area 가 PK 에 없으면 두 지역의 같은 (year_month, version) 행이 충돌합니다.
+# driver_id 도 지역 간 유니크하지 않으므로(#805) 지역이 자연 키의 일부입니다.
+# 아래 세 함수(_PRIMARY_KEYS / _next_version / _validate_written_rows)는 **함께**
+# 지역을 타야 합니다 — 일부만 고치면 안 고친 것보다 나쁩니다(#809):
+#   PK 만 고치면 버전이 지역 간 공유 카운터로 남고,
+#   검증만 고치면 다른 지역 행을 세어 매번 롤백합니다.
 _PRIMARY_KEYS = {
-    _MONTHLY_REPORT: ("year_month", "version"),
-    _DRIVER_AGGREGATION: ("year_month", "version", "driver_id"),
-    _DRIVER_CAR_SUGGESTION: ("year_month", "version", "driver_id"),
+    _MONTHLY_REPORT: ("service_area", "year_month", "version"),
+    _DRIVER_AGGREGATION: ("service_area", "year_month", "version", "driver_id"),
+    _DRIVER_CAR_SUGGESTION: ("service_area", "year_month", "version", "driver_id"),
 }
 
 _SQL_TYPES = {
@@ -56,16 +62,20 @@ def _create_table_sql(table: str) -> str:
     )
 
 
-def _next_version(cursor, year_month: str) -> int:
-    """`monthly_report`에서 이 year_month의 기존 버전을 top(1)로 확인해 +1. 없으면 1.
+def _next_version(cursor, service_area: str, year_month: str) -> int:
+    """`monthly_report`에서 이 (지역, year_month)의 기존 버전을 top(1)로 확인해 +1.
 
     3개 테이블은 항상 같은 버전으로 함께 적재되므로(이 모듈이 그렇게 보장합니다),
     monthly_report 한 행만 봐도 이 달의 현재 버전을 알 수 있습니다.
+
+    지역으로 안 좁히면 버전이 지역 간 공유 카운터가 됩니다 — NYC 가 v1 을 쓴 뒤
+    TX 의 **첫** 적재가 v2 로 기록되어 지역별 버전 이력이 무의미해집니다.
     """
     cursor.execute(
-        f"SELECT version FROM {_MONTHLY_REPORT} WHERE year_month = %s "
+        f"SELECT version FROM {_MONTHLY_REPORT} "
+        "WHERE service_area = %s AND year_month = %s "
         "ORDER BY version DESC LIMIT 1",
-        (year_month,),
+        (service_area, year_month),
     )
     row = cursor.fetchone()
     return row[0] + 1 if row else 1
@@ -74,6 +84,7 @@ def _next_version(cursor, year_month: str) -> int:
 def _validate_written_rows(
     cursor,
     written: dict[str, int],
+    service_area: str,
     year_month: str,
     version: int,
 ) -> None:
@@ -84,9 +95,12 @@ def _validate_written_rows(
     다시 세어 대조하고, 여기서 실패하면 트랜잭션 전체가 롤백됩니다.
     """
     for table in TABLES:
+        # 지역으로 안 좁히면 다른 지역 행까지 세어 expected 와 어긋나고, 두 지역이
+        # 같은 (year_month, version) 을 갖는 순간부터 매번 롤백합니다.
         cursor.execute(
-            f"SELECT COUNT(*) FROM {table} WHERE year_month = %s AND version = %s",
-            (year_month, version),
+            f"SELECT COUNT(*) FROM {table} "
+            "WHERE service_area = %s AND year_month = %s AND version = %s",
+            (service_area, year_month, version),
         )
         actual = cursor.fetchone()[0]
         expected = written[table]
@@ -106,7 +120,7 @@ def _validate_written_rows(
 
 
 def write_gold_to_postgres(
-    frames: dict[str, pd.DataFrame], dsn: str, year_month: str
+    frames: dict[str, pd.DataFrame], dsn: str, service_area: str, year_month: str
 ) -> dict[str, int]:
     """Gold 3종을 한 트랜잭션으로 적재합니다. 반환값은 `{테이블명: 적재 행 수}`.
 
@@ -124,9 +138,12 @@ def write_gold_to_postgres(
                 for table in TABLES:
                     cursor.execute(_create_table_sql(table))
 
-                version = _next_version(cursor, year_month)
+                version = _next_version(cursor, service_area, year_month)
                 logger.info(
-                    "Gold 적재 버전 결정: year_month=%s version=%d", year_month, version
+                    "Gold 적재 버전 결정: service_area=%s year_month=%s version=%d",
+                    service_area,
+                    year_month,
+                    version,
                 )
 
                 written: dict[str, int] = {}
@@ -142,7 +159,9 @@ def write_gold_to_postgres(
                     )
                     written[table] = len(rows)
                     logger.info("Gold 적재: table=%s rows=%d", table, len(rows))
-                _validate_written_rows(cursor, written, year_month, version)
+                _validate_written_rows(
+                    cursor, written, service_area, year_month, version
+                )
         return written
     finally:
         conn.close()

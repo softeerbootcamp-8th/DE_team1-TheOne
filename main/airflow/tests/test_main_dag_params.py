@@ -42,6 +42,7 @@ DAG_PARAMS = {
             "fuel_price_path",
             "output_dir",
             "gold_stale_sla_days",
+            "service_area",
         },
     ),
     "source_api_refresh_dag": (

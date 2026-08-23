@@ -16,6 +16,13 @@ class DriverMonthlyProfit:
     year_month: str
     """집계 대상 월 (YYYY-MM) """
 
+    service_area: str
+    """서비스 지역 코드 (예: NYC). AWS 리전이 아니라 운행 데이터의 지역 축입니다.
+
+    driver_id 가 지역 간 유니크하지 않으므로(#805) 이 컬럼이 자연 키의 일부입니다 —
+    빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
+    """
+
     comfort_eligible: bool
     """Comfort 등급 대상 여부"""
 
@@ -75,6 +82,13 @@ class MonthlyVehicleRecommendation:
     year_month: str
     """집계 대상 월 (YYYY-MM)"""
 
+    service_area: str
+    """서비스 지역 코드 (예: NYC). AWS 리전이 아니라 운행 데이터의 지역 축입니다.
+
+    driver_id 가 지역 간 유니크하지 않으므로(#805) 이 컬럼이 자연 키의 일부입니다 —
+    빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
+    """
+
     comfort_eligible: bool
     """Comfort 등급 대상 여부"""
 
@@ -127,6 +141,13 @@ class MonthlyReport:
     
     year_month: str
     """집계 대상 월 (YYYY-MM). PK"""
+
+    service_area: str
+    """서비스 지역 코드 (예: NYC). AWS 리전이 아니라 운행 데이터의 지역 축입니다.
+
+    driver_id 가 지역 간 유니크하지 않으므로(#805) 이 컬럼이 자연 키의 일부입니다 —
+    빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
+    """
 
     threshold_profit_increase: float
     """차량 교체 추천 기준선 (USD)"""
