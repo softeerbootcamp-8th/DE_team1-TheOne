@@ -13,8 +13,8 @@ from airflow.sdk import Variable, task
 from airflow.task.trigger_rule import TriggerRule
 
 from main.airflow.common import assets
+from main.airflow.common.monthly_bronze import bronze_collection_token
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from shared.common.monthly_bronze import bronze_collection_token
 from shared.common.s3_reader import list_keys
 
 

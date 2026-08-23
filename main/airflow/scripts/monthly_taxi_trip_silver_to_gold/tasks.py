@@ -15,7 +15,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_skip_alert_callback,
     slack_stale_alert_callback,
 )
-from shared.common.monthly_silver import latest_local_silver_version
+from main.airflow.common.monthly_bronze import latest_local_silver_version
 from main.airflow.common.assets import parse_partition_key
 
 logger = logging.getLogger(__name__)
