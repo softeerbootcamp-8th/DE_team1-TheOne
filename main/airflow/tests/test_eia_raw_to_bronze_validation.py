@@ -29,12 +29,11 @@ BIG_ENOUGH = b"x" * (_layout().ELECTRICITY_MIN_BYTES + 1)
 
 
 DATASETS = [
-    # gas 는 #843 에서 service_area 를 params 계약에 추가했으므로 값이 필요합니다.
-    # electricity 는 아직 안 옮겨져(#844) validate_bronze_task 가 이 키를 읽지 않으므로
-    # None 이어도 무시됩니다.
+    # gas(#843)/electricity(#844) 모두 service_area 를 params 계약에 추가했으므로
+    # 값이 필요합니다.
     pytest.param(gas_tasks, "gas_bronze_file", "GAS_MIN_BYTES", "NYC", id="gas"),
     pytest.param(
-        electricity_tasks, "electricity_bronze_file", "ELECTRICITY_MIN_BYTES", None,
+        electricity_tasks, "electricity_bronze_file", "ELECTRICITY_MIN_BYTES", "NYC",
         id="electricity",
     ),
 ]
