@@ -152,6 +152,69 @@ def base_traits(
     }
 
 
+def replay_noise_state(
+    current: pd.DataFrame,
+    *,
+    through_month: str,
+    config: GenerationConfig,
+) -> pd.DataFrame:
+    """published 스냅샷만으로 전월 D7 노이즈 상태를 결정적으로 복원합니다.
+
+    노이즈 연쇄에 필요한 기사별 ``volatility``는 가입 월과 기사 ID의 순수 함수이며,
+    실측 trip pool을 읽기 전에 뽑힙니다. 따라서 published에 별도 내부 체크포인트를
+    중복 보관하지 않아도 가입 월부터 ``through_month``까지 같은 연쇄를 재생할 수
+    있습니다.
+    """
+    if current.empty:
+        return pd.DataFrame(columns=["driver_id", "noise"])
+
+    phi = config.synthesize.noise_phi
+    amplitude = config.synthesize.seasonal_amplitude
+    volatility_scale = config.synthesize.traits_volatility
+    end = pd.Period(through_month, freq="M")
+    seasonal_by_month: dict[str, float] = {}
+
+    def seasonal(month: str) -> float:
+        if month not in seasonal_by_month:
+            rng = np.random.default_rng(
+                derive_seed(config.global_seed, Stage.SEASONAL_FACTOR, month)
+            )
+            seasonal_by_month[month] = float(rng.normal(0.0, amplitude))
+        return seasonal_by_month[month]
+
+    rows: list[dict] = []
+    active = current[current["exited_on"].isna()]
+    for record in active.to_dict("records"):
+        driver_id = str(record["driver_id"])
+        traits_pool_month = str(record["traits_pool_month"])
+        traits_rng = np.random.default_rng(
+            derive_entity_seed(
+                derive_seed(config.global_seed, Stage.DRIVER_TRAITS),
+                driver_id,
+                traits_pool_month,
+            )
+        )
+        traits_rng.gamma(BASE_WEEKLY_HOURS_SHAPE, BASE_WEEKLY_HOURS_SCALE)
+        volatility = float(traits_rng.uniform(0.30, 0.40))
+
+        noise = 0.0
+        start = pd.Period(traits_pool_month, freq="M")
+        if start > end:
+            raise ValueError(
+                f"{driver_id}: 가입 월({traits_pool_month})이 전월({through_month})보다 늦습니다"
+            )
+        for period in pd.period_range(start, end, freq="M"):
+            month = str(period)
+            stage_seed = derive_seed(
+                config.global_seed, Stage.MONTHLY_REALIZATION, month
+            )
+            rng = np.random.default_rng(derive_entity_seed(stage_seed, driver_id))
+            shock = float(rng.normal(0.0, volatility * volatility_scale))
+            noise = phi * noise + shock + seasonal(month)
+        rows.append({"driver_id": driver_id, "noise": noise})
+    return pd.DataFrame(rows)
+
+
 def realize_month(
     traits: pd.DataFrame,
     previous_noise: pd.DataFrame | None,

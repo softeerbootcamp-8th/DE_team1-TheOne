@@ -1,6 +1,8 @@
 """Event/current/noise 체크포인트 I/O와 계보 (blue_print.md 4.3).
 
-`data/source/synthetic_driver_trip_state/` 아래 두 갈래로 씁니다.
+로컬 ``driver_state/`` 아래 두 갈래로 씁니다. S3 호환 store가 필요한 독립 호출은
+published NYC의 ``_runtime`` 아래를 사용하며, 월간 운영 경로의 전월 정본은 published
+릴리스입니다.
 
     driver_vehicle_event/snapshot_month=YYYY-MM/events.parquet
         그 달에 발생한 이벤트만 (append-only 원장의 월별 파티션)
@@ -40,6 +42,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from sub.run_context import RunContext
+from shared.common.source_published_layout import S3_PUBLISHED_RUNTIME_PREFIX
 
 EVENT_DIR_NAME = "driver_vehicle_event"
 STATE_DIR_NAME = "state"
@@ -151,7 +154,7 @@ class S3CheckpointStore(CheckpointStore):
     데이터 파일은 남아도 manifest 가 없어 하류가 그 파티션을 없는 것으로 봅니다.
     """
 
-    def __init__(self, bucket: str, prefix: str = "source/synthetic_driver_trip_state"):
+    def __init__(self, bucket: str, prefix: str = f"{S3_PUBLISHED_RUNTIME_PREFIX}/checkpoint"):
         self._bucket = bucket
         self._prefix = prefix.strip("/")
 
@@ -388,5 +391,5 @@ def _partition_label(
     base_dir: str | Path, month: str, *, storage: str, bucket: str | None
 ) -> str:
     if storage == "s3":
-        return f"s3://{bucket}/source/synthetic_driver_trip_state/{STATE_DIR_NAME}/snapshot_month={month}"
+        return f"s3://{bucket}/{S3_PUBLISHED_RUNTIME_PREFIX}/checkpoint/{STATE_DIR_NAME}/snapshot_month={month}"
     return str(state_partition_dir(base_dir, month))
