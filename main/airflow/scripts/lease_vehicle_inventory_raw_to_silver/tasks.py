@@ -16,7 +16,9 @@ from shared.airflow.common.validation import (
     read_parquet,
 )
 from main.airflow.common.monthly_bronze import (
+    commit_staged_silver,
     silver_version_path,
+    staged_silver_version_path,
     validate_monthly_parquet_bronze,
 )
 from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
@@ -89,7 +91,15 @@ def validate_bronze_task(result: dict, **context) -> dict:
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
         result,
     )
-    return {**result, "silver_version_path": str(version_path)}
+    staging_path = staged_silver_version_path(
+        params.get("silver_dir") or DEFAULT_SILVER_DIR,
+        result,
+    )
+    return {
+        **result,
+        "silver_version_path": str(version_path),
+        "silver_staging_path": str(staging_path),
+    }
 
 
 def _validate_bronze_result(
@@ -111,9 +121,7 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
     event = {
         "bronze_path": result["locations"][0],
         "year_month": result["year_month"],
-        "silver_file_name": parse_location(result["silver_version_path"]).name,
-        "silver_dir": context["params"].get("silver_dir")
-        or DEFAULT_SILVER_DIR,
+        "silver_output_path": result["silver_staging_path"],
     }
     if isinstance(bronze_location, S3Location):
         event.update(storage="s3", bucket=bronze_location.bucket)
@@ -123,7 +131,14 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
 
 @task(task_id="validate_silver")
 def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> None:
-    version_path = raw_result["silver_version_path"]
-    if silver_result["locations"] != [version_path]:
-        raise ValueError("보유 차량 Silver 버전 경로가 Bronze와 다릅니다")
+    staging_path = parse_location(raw_result["silver_staging_path"])
+    version_path = parse_location(raw_result["silver_version_path"])
+    expected_part = (
+        f"{staging_path}/data.parquet"
+        if isinstance(staging_path, S3Location)
+        else str(staging_path / "data.parquet")
+    )
+    if silver_result["locations"] != [expected_part]:
+        raise ValueError("보유 차량 Silver staging 경로가 Bronze와 다릅니다")
     validate_silver_result(silver_result, raw_result["row_count"])
+    commit_staged_silver(staging_path, version_path, layout="single_data")

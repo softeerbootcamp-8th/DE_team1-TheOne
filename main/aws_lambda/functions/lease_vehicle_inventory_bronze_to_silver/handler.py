@@ -6,12 +6,9 @@ import os
 from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
-from main.aws_lambda.common.monthly_dataset import (
-    TIMESTAMP_FILE_PATTERN,
-    YEAR_MONTH_PATTERN,
-)
+from main.aws_lambda.common.monthly_dataset import YEAR_MONTH_PATTERN
 from .extractor import build_bronze_extractor
-from .loader import DATASET, build_silver_loader
+from .loader import build_silver_loader
 from .transformer import LeaseVehicleInventorySilverTransformer
 
 
@@ -26,21 +23,16 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
-    silver_file_name = str(event.get("silver_file_name") or "")
-    if not TIMESTAMP_FILE_PATTERN.fullmatch(silver_file_name):
-        raise ValueError("silver_file_name이 수집 시각 Parquet 형식이 아닙니다")
-    silver_dir = event.get("silver_dir") or os.getenv(
-        "LEASE_VEHICLE_INVENTORY_SILVER_DIR", f"data/silver/{DATASET}"
-    )
+    silver_output_path = str(event.get("silver_output_path") or "")
+    if not silver_output_path:
+        raise ValueError("silver_output_path가 필요합니다")
 
     result = Pipeline(
         build_bronze_extractor(storage, bronze_dir, bucket, year_month),
         build_silver_loader(
             storage,
-            silver_dir,
+            silver_output_path,
             bucket,
-            year_month,
-            silver_file_name,
         ),
         transformer=LeaseVehicleInventorySilverTransformer(),
     ).run()
@@ -48,7 +40,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         "row_count": result.write_result.row_count,
         "locations": [result.write_result.location],
         "year_month": year_month,
-        "silver_file_name": silver_file_name,
+        "silver_output_path": silver_output_path,
     }
 
 

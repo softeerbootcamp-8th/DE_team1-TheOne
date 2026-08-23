@@ -106,9 +106,9 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
     version = (
         Path(task_module.DEFAULT_SILVER_DIR)
         / f"year_month={year_month}"
-        / Path(path).name
+        / "source_collected_at=20260811T085354000000Z"
     )
-    staged_name = f"{version.stem}.staged{version.suffix}"
+    staged = version.parent / ".staging" / version.name
     return {
         "row_count": parquet.metadata.num_rows,
         "locations": [path],
@@ -117,7 +117,7 @@ def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
         "file_size_bytes": Path(path).stat().st_size,
         "source_changed": True,
         "silver_version_path": str(version),
-        "silver_staging_path": str(version.with_name(staged_name)),
+        "silver_staging_path": str(staged),
     }
 
 
@@ -198,7 +198,7 @@ def test_S3_Bronze의_Silver버전은_같은버킷의_monthly_taxi_trip경로다
 
     assert str(actual) == (
         f"s3://de-theone/silver/monthly_taxi_trip/"
-        f"year_month={YEAR_MONTH}/{file_name}"
+        f"year_month={YEAR_MONTH}/source_collected_at={Path(file_name).stem}"
     )
 
 
@@ -208,9 +208,9 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
     result = result_for(path)
     result["source_changed"] = False
 
-    assert validate_bronze(result, params=bronze_params(tmp_path))["silver_version_path"].endswith(
-        Path(path).name
-    )
+    assert validate_bronze(result, params=bronze_params(tmp_path))[
+        "silver_version_path"
+    ].endswith(f"source_collected_at={Path(path).stem}")
 
 
 def test_Bronze_변경여부_신호가_없어도_감시DAG호출이면_처리한다(tmp_path):
@@ -218,9 +218,9 @@ def test_Bronze_변경여부_신호가_없어도_감시DAG호출이면_처리한
     result = result_for(path)
     result.pop("source_changed")
 
-    assert validate_bronze(result, params=bronze_params(tmp_path))["silver_version_path"].endswith(
-        Path(path).name
-    )
+    assert validate_bronze(result, params=bronze_params(tmp_path))[
+        "silver_version_path"
+    ].endswith(f"source_collected_at={Path(path).stem}")
 
 
 def test_필수컬럼보다_컬럼이_많으면_경고후_통과한다(tmp_path, monkeypatch):
@@ -480,16 +480,15 @@ def write_silver(
     schema=None,
     records: list[dict] | None = None,
 ) -> Path:
-    """`validate_silver`가 커밋 전에 읽는 staging 파일을 씁니다(#742).
-
-    Spark는 검증 전에 이 이름으로만 쓰고, `validate_silver`가 통과시켜야
-    `20260811T085354000000Z.parquet`(최종 이름)로 옮겨집니다.
-    """
+    """`validate_silver`가 커밋 전에 읽는 staging part를 씁니다(#742)."""
     schema = SILVER_SCHEMA if schema is None else schema
     records = silver_rows(rows, schema) if records is None else records
     partition = Path(silver_dir) / f"year_month={year_month}"
-    partition.mkdir(parents=True, exist_ok=True)
-    target = partition / "20260811T085354000000Z.staged.parquet"
+    target = (
+        partition
+        / ".staging/source_collected_at=20260811T085354000000Z/part-00000.parquet"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), target)
     return partition
 
@@ -500,13 +499,16 @@ def write_committed_silver(
     rows: int = 3,
     schema=None,
 ) -> Path:
-    """이미 검증을 통과해 최종 이름으로 커밋된 다른 달의 Silver를 흉내냅니다."""
+    """검증을 통과해 `_SUCCESS`까지 공개된 Silver를 흉내냅니다."""
     schema = SILVER_SCHEMA if schema is None else schema
     records = silver_rows(rows, schema)
     partition = Path(silver_dir) / f"year_month={year_month}"
     partition.mkdir(parents=True, exist_ok=True)
-    target = partition / "20260811T085354000000Z.parquet"
+    version = partition / "source_collected_at=20260811T085354000000Z"
+    version.mkdir(parents=True, exist_ok=True)
+    target = version / "part-00000.parquet"
     pq.write_table(pa.Table.from_pylist(records, schema=schema), target)
+    (version / "_SUCCESS").touch()
     return partition
 
 
@@ -518,7 +520,8 @@ def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
     result = result_for(bronze_path)
     validate_silver(result)
 
-    assert Path(result["silver_version_path"]).is_file()
+    assert Path(result["silver_version_path"]).is_dir()
+    assert (Path(result["silver_version_path"]) / "_SUCCESS").is_file()
     assert not Path(result["silver_staging_path"]).exists()
 
 
@@ -533,14 +536,14 @@ def test_검증에_실패하면_최종_경로에_파일이_생기지_않는다(t
         validate_silver(result)
 
     assert not Path(result["silver_version_path"]).exists()
-    assert Path(result["silver_staging_path"]).is_file()
+    assert Path(result["silver_staging_path"]).is_dir()
 
 
 def test_silver_파티션에_파일이_없으면_막는다(tmp_path, monkeypatch):
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
 
-    with pytest.raises(ValueError, match="Silver 버전 파일이 없습니다"):
+    with pytest.raises(ValueError, match="Silver staging part 파일이 없습니다"):
         validate_silver(result_for(bronze_path))
 
 

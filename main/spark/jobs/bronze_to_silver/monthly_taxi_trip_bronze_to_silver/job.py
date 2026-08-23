@@ -1,18 +1,14 @@
 import argparse
 import logging
 import os
-import shutil
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
-from uuid import uuid4
-
-import boto3
 
 from shared.common.monthly_bronze import (
-    TIMESTAMP_FILE_PATTERN,
     bronze_collection_token,
 )
+from shared.common.monthly_silver import SOURCE_COLLECTED_AT_PATTERN
 from shared.common.s3_reader import list_keys
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
@@ -80,12 +76,8 @@ def resolve_path(path_str: str) -> str:
     return str(path)
 
 
-class SingleParquetFileLoader(Loader):
-    """Spark part 하나를 `path`로 받은 파일에 원자적으로 교체합니다.
-
-    `path`가 최종 collected_at 이름인지 검증 전 staging 이름(#742)인지는
-    호출부(Airflow)가 정합니다 — 이 Loader는 신경 쓰지 않습니다.
-    """
+class SilverVersionDirectoryLoader(Loader):
+    """검증 전 버전 디렉터리에 Spark part 파일을 그대로 씁니다."""
 
     def __init__(self, path: str):
         self._path = path
@@ -93,48 +85,8 @@ class SingleParquetFileLoader(Loader):
     def write(self, data) -> WriteResult:
         payload = _silver_file_payload(data)
         row_count = data.count()
-        if is_s3_path(self._path):
-            self._write_s3(payload)
-            return WriteResult(location=self._path, row_count=row_count)
-
-        target = Path(self._path)
-        temporary = target.with_name(f".{target.name}.{uuid4().hex}.tmp")
-        try:
-            payload.repartition(1).write.mode("overwrite").parquet(str(temporary))
-            parts = list(temporary.glob("part-*.parquet"))
-            if len(parts) != 1:
-                raise ValueError(f"Spark Parquet part 파일은 하나여야 합니다: {temporary}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            parts[0].replace(target)
-        finally:
-            shutil.rmtree(temporary, ignore_errors=True)
+        payload.write.mode("overwrite").parquet(self._path)
         return WriteResult(location=self._path, row_count=row_count)
-
-    def _write_s3(self, data) -> None:
-        parsed = urlsplit(self._path)
-        bucket, final_key = parsed.netloc, parsed.path.lstrip("/")
-        if not bucket or not final_key:
-            raise ValueError(f"S3 Silver 경로가 올바르지 않습니다: {self._path}")
-
-        temporary_prefix = f"{final_key}.tmp-{uuid4().hex}/"
-        temporary_uri = f"s3://{bucket}/{temporary_prefix}"
-        client = boto3.client("s3")
-        try:
-            data.repartition(1).write.mode("overwrite").parquet(temporary_uri)
-            keys = list_keys(bucket, temporary_prefix)
-            parts = [
-                key
-                for key in keys
-                if Path(key).name.startswith("part-") and key.endswith(".parquet")
-            ]
-            if len(parts) != 1:
-                raise ValueError(
-                    f"Spark Parquet part 파일은 하나여야 합니다: {temporary_uri}"
-                )
-            client.copy({"Bucket": bucket, "Key": parts[0]}, bucket, final_key)
-        finally:
-            for key in list_keys(bucket, temporary_prefix):
-                client.delete_object(Bucket=bucket, Key=key)
 
 
 def year_month_range(start_year_month: str, end_year_month: str) -> list[str]:
@@ -226,9 +178,9 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     parser.add_argument("--input_path", default=None, help="Path to bronze raw data. 비우면 --env 기본 경로")
     parser.add_argument("--output_path", default=None, help="Path to save silver clean data. 비우면 --env 기본 경로")
     parser.add_argument(
-        "--output_file",
+        "--output_version",
         default=None,
-        help="수집 시각 파일명으로 쓸 단일 Silver Parquet 경로",
+        help="검증 전 source_collected_at Silver 디렉터리 경로",
     )
     parser.add_argument(
         "--error_threshold", type=float, default=0.05,
@@ -249,23 +201,23 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
         output_path = output_path or default_output
     input_path = resolve_path(input_path)
     output_path = resolve_path(output_path)
-    output_file = resolve_path(args.output_file) if args.output_file else None
-
-    if output_file:
-        output_name = Path(urlsplit(output_file).path).name
-        # Airflow가 검증 전에는 "<수집시각>.staged.parquet" 이름을 넘깁니다(#742) —
-        # 검증을 통과해야 validate_silver가 수집 시각 이름으로 승격합니다.
-        stem, _, suffix = output_name.partition(".staged.")
-        canonical_name = f"{stem}.{suffix}" if suffix else output_name
-        if not TIMESTAMP_FILE_PATTERN.fullmatch(canonical_name):
+    output_version = (
+        resolve_path(args.output_version) if args.output_version else None
+    )
+    if output_version:
+        version_path = Path(urlsplit(output_version).path)
+        if (
+            version_path.parent.name != ".staging"
+            or not SOURCE_COLLECTED_AT_PATTERN.fullmatch(version_path.name)
+        ):
             raise ValueError(
-                "--output_file은 수집 시각 Parquet 파일명(또는 그 staging 이름)이어야 합니다"
+                "--output_version은 .staging/source_collected_at=<UTC> 디렉터리여야 합니다"
             )
 
     if bool(args.start_year_month) != bool(args.end_year_month):
         raise ValueError("--start_year_month와 --end_year_month는 함께 줘야 합니다")
-    if output_file and args.start_year_month:
-        raise ValueError("--output_file은 여러 월 range 적재와 함께 쓸 수 없습니다")
+    if output_version and args.start_year_month:
+        raise ValueError("--output_version은 여러 월 range 적재와 함께 쓸 수 없습니다")
 
     if args.start_year_month and args.end_year_month:
         target_input_path = []
@@ -298,8 +250,8 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
 
     extractor = SparkParquetExtractor(spark, target_input_path)
     loader = (
-        SingleParquetFileLoader(output_file)
-        if output_file
+        SilverVersionDirectoryLoader(output_version)
+        if output_version
         else SparkParquetLoader(output_path, partition_by=["year_month"])
     )
     transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
