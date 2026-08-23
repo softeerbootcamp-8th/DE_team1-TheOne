@@ -94,6 +94,7 @@ def emr_build() -> EmrServerlessStartJobOperator:
     application_id = _required_prod_env("EMR_APPLICATION_ID")
     execution_role_arn = _required_prod_env("EMR_EXECUTION_ROLE_ARN")
     bucket = _required_prod_env("DATA_LAKE_S3_BUCKET")
+    data_bucket = f"{{{{ params.bucket if params.bucket else {bucket!r} }}}}"
     return EmrServerlessStartJobOperator(
         task_id="build_source_release",
         application_id=application_id,
@@ -110,10 +111,14 @@ def emr_build() -> EmrServerlessStartJobOperator:
                     "--attribution_output_dir", "{{ params.attribution_output_dir }}",
                     "--release_output_dir", "{{ params.release_output_dir }}",
                     "--year_month", f"{{{{ {_XCOM}['year_month'] }}}}",
+                    "--seed",
+                    "{{ params.seed if params.seed is not none else 'config' }}",
+                    "--bucket_size",
+                    "{{ params.bucket_size if params.bucket_size is not none else 'config' }}",
                     "--test_row_limit", "{{ params.test_row_limit }}",
                     "--env", "prod",
                     "--storage", "s3",
-                    "--bucket", bucket,
+                    "--bucket", data_bucket,
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }

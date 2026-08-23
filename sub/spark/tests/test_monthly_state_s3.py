@@ -7,8 +7,12 @@ Serverless executor 가 못 봐서 `spark.read` 가 죽습니다 — 체크포�
 
 `s3fs` 를 쓰지 않는 이유 — spark 런타임은 numpy/pandas/pyarrow 를 EMR 7.13 이
 제공하는 값으로 고정하고, `s3fs` 는 `aiobotocore` 를 끌고 와 `boto3` 핀과 충돌합니다.
+
+Airflow의 선택 Param은 로컬에서 생략되고 EMR에서는 `config`로 전달되지만, 둘 다
+`generation.json`을 써야 합니다. 숫자를 주면 config_hash까지 바뀌어야 합니다(#826).
 """
 
+from dataclasses import replace
 from datetime import date
 
 import boto3
@@ -19,6 +23,7 @@ from moto import mock_aws
 from conftest import TEST_CONFIG_DATA
 from sub.config import build_config
 from sub.generators.synthetic_driver_trip_source import monthly
+from sub.run_context import RunContext
 from sub.spark.jobs.driver_master.preference import PREFERENCE_COLUMNS
 
 BUCKET = "test-lake"
@@ -259,6 +264,72 @@ def test_env_prod은_storage_s3를_요구한다():
                 "--storage", "local",
             ]
         )
+
+
+@pytest.mark.parametrize(
+    ("extra_args", "expected_seed", "expected_bucket_size", "hash_changes"),
+    [
+        (
+            [],
+            TEST_CONFIG_DATA["global_seed"],
+            TEST_CONFIG_DATA["allocation"]["bucket_size"],
+            False,
+        ),
+        (
+            ["--seed", "config", "--bucket_size", "config"],
+            TEST_CONFIG_DATA["global_seed"],
+            TEST_CONFIG_DATA["allocation"]["bucket_size"],
+            False,
+        ),
+        (
+            ["--seed", "config", "--bucket_size", "20"],
+            TEST_CONFIG_DATA["global_seed"],
+            20,
+            True,
+        ),
+        (["--seed", "7", "--bucket_size", "20"], 7, 20, True),
+    ],
+)
+def test_source_job_선택인자는_config_기본값과_실행계보에_반영된다(
+    monkeypatch, extra_args, expected_seed, expected_bucket_size, hash_changes
+):
+    from sub.spark.jobs.driver_assignment import source_job
+
+    base_config = _config()
+    captured = {}
+
+    def capture_config(**kwargs):
+        captured["config"] = kwargs["config"]
+        raise RuntimeError("설정 확인 완료")
+
+    monkeypatch.setattr(source_job, "load_config", lambda: base_config)
+    monkeypatch.setattr(source_job, "prepare_monthly_state", capture_config)
+
+    with pytest.raises(RuntimeError, match="설정 확인 완료"):
+        source_job.main(
+            [
+                "--hvfhv_input_path", "/tmp/a.parquet",
+                "--zone_lookup_path", "/tmp/z.csv",
+                "--vehicle_master_path", "/tmp/vm.parquet",
+                "--state_output_dir", "/tmp/state",
+                "--release_output_dir", "/tmp/release",
+                "--attribution_output_dir", "/tmp/attribution",
+                "--year_month", "2026-08",
+                *extra_args,
+            ]
+        )
+
+    expected = replace(
+        base_config,
+        global_seed=expected_seed,
+        allocation=replace(
+            base_config.allocation, bucket_size=expected_bucket_size
+        ),
+    )
+    assert captured["config"] == expected
+    actual_hash = RunContext.create("2026-08", captured["config"]).config_hash
+    base_hash = RunContext.create("2026-08", base_config).config_hash
+    assert (actual_hash != base_hash) is hash_changes
 
 
 # --- vehicle_master 입력 경로 (#782) ------------------------------------------
