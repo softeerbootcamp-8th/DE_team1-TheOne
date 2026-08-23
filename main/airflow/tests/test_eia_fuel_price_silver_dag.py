@@ -297,3 +297,82 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
     )
 
     assert isinstance(seen[0], silver_tasks.S3Location)
+
+
+# --- stage-then-commit (#757) -------------------------------------------------
+
+
+def _write_at(path, rows: int) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    records = [
+        {"date": date(2024, 3, day), "gas_price": 3.0, "ev_price": 0.4,
+         "price_source": EIA, "bronze_collected_date": COLLECTED,
+         "ev_price_status": FINAL}
+        for day in range(1, rows + 1)
+    ]
+    pq.write_table(pa.Table.from_pylist(records, schema=SCHEMA), path)
+
+
+def _fake_task_instance(result: dict):
+    return type("TaskInstance", (), {"xcom_pull": lambda self, task_ids: result})()
+
+
+class _FakeOutlet:
+    def __init__(self):
+        self.partitions = []
+
+    def add_partitions(self, key):
+        self.partitions.append(key)
+
+
+class _FakeOutletEvents(dict):
+    def __missing__(self, key):
+        value = _FakeOutlet()
+        self[key] = value
+        return value
+
+
+def test_검증_실패시_기존_최종_산출물도_asset_발행도_안_일어난다(tmp_path):
+    """이슈 핵심 — commit·발행이 검증보다 먼저 일어나면 검증 안 된 데이터가 최종
+    경로를 덮어쓰고, Gold가 승격 전 산출물을 보게 됩니다(#757)."""
+    final = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03", "NYC")
+    _write_at(final, 31)
+
+    staged = silver_tasks.staged_integrated_silver_file(str(tmp_path), "2024-03", "NYC")
+    _write_at(staged, 30)
+    task_instance = _fake_task_instance(
+        {"year_month": "2024-03", "row_count": 30, "locations": [str(staged)]}
+    )
+    outlet_events = _FakeOutletEvents()
+
+    with pytest.raises(ValueError):
+        silver_tasks.validate_silver_task.function(
+            task_instance=task_instance,
+            params={"silver_dir": str(tmp_path)},
+            outlet_events=outlet_events,
+        )
+
+    assert pq.ParquetFile(final).read().num_rows == 31
+    assert staged.is_file()
+    assert outlet_events == {}
+
+
+def test_검증_통과시_최종_경로로_승격되고_asset이_발행된다(tmp_path):
+    staged = silver_tasks.staged_integrated_silver_file(str(tmp_path), "2024-03", "NYC")
+    _write_at(staged, 31)
+    task_instance = _fake_task_instance(
+        {"year_month": "2024-03", "row_count": 31, "locations": [str(staged)]}
+    )
+    outlet_events = _FakeOutletEvents()
+
+    silver_tasks.validate_silver_task.function(
+        task_instance=task_instance,
+        params={"silver_dir": str(tmp_path)},
+        outlet_events=outlet_events,
+    )
+
+    final = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03", "NYC")
+    assert final.is_file()
+    assert not staged.exists()
+    assert pq.ParquetFile(final).read().num_rows == 31
+    assert outlet_events[silver_tasks.assets.FUEL_PRICE_SILVER].partitions

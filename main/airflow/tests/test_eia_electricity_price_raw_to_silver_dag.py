@@ -149,3 +149,52 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     )
 
     assert isinstance(seen[0], S3Location)
+
+
+# --- stage-then-commit (#757) -------------------------------------------------
+
+
+def _fake_task_instance(result: dict):
+    return type(
+        "TaskInstance", (), {"xcom_pull": lambda self, task_ids: result}
+    )()
+
+
+def test_검증_실패시_기존_최종_Silver가_그대로_남는다(tmp_path):
+    """이슈 핵심 — commit이 검증보다 먼저(또는 검증 실패에도) 일어나면 검증 안 된
+    데이터가 최종 경로를 덮어씁니다(#757)."""
+    final = task_module.silver_file(str(tmp_path), "2024-03")
+    _write(final, _march())
+
+    staged = task_module.staged_silver_file(str(tmp_path), "2024-03")
+    _write(staged, _march(30))
+    task_instance = _fake_task_instance(
+        {"year_month": "2024-03", "row_count": 30, "locations": [str(staged)]}
+    )
+
+    with pytest.raises(ValueError, match="31일이어야"):
+        task_module.validate_silver_task.function(
+            task_instance=task_instance,
+            params={"service_area": None, "silver_dir": str(tmp_path)},
+        )
+
+    assert pq.ParquetFile(final).read().num_rows == 31
+    assert staged.is_file()
+
+
+def test_검증_통과시_최종_경로로_승격된다(tmp_path):
+    staged = task_module.staged_silver_file(str(tmp_path), "2024-03")
+    _write(staged, _march())
+    task_instance = _fake_task_instance(
+        {"year_month": "2024-03", "row_count": 31, "locations": [str(staged)]}
+    )
+
+    task_module.validate_silver_task.function(
+        task_instance=task_instance,
+        params={"service_area": None, "silver_dir": str(tmp_path)},
+    )
+
+    final = task_module.silver_file(str(tmp_path), "2024-03")
+    assert final.is_file()
+    assert not staged.exists()
+    assert pq.ParquetFile(final).read().num_rows == 31
