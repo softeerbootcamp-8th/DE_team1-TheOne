@@ -28,7 +28,7 @@ DAG_PARAMS = {
     ),
     "monthly_taxi_trip_raw_to_silver_dag": (
         "monthly_taxi_trip_dag",
-        {"year", "month", "base_dir", "api_base_url"},
+        {"year", "month", "base_dir", "api_base_url", "error_threshold"},
     ),
     "monthly_taxi_trip_silver_to_gold_dag": (
         "monthly_taxi_trip_silver_to_gold_dag",

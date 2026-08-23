@@ -213,7 +213,10 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     )
     parser.add_argument(
         "--error_threshold", type=float, default=0.05,
-        help="불합격 행 허용 비율 (기본 0.05). DAG 는 MONTHLY_TAXI_TRIP_ERROR_THRESHOLD 로 넘깁니다.",
+        help=(
+            "불합격 행 허용 비율 (기본 0.05). DAG 는 error_threshold Param 으로 넘기고, "
+            "그 기본값은 Variable(hvfhv_error_threshold) 에서 옵니다 (#743)."
+        ),
     )
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
     parser.add_argument("--start_year_month", default=None, help="시작 연월 (예: 2024-01). 한 달만 처리하려면 end와 동일하게")
