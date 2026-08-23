@@ -71,11 +71,15 @@
 
 기준정보는 시점마다 값이 달라지므로 관측일로 쌓고, 하류가 *"대상 월 이하의 최신 파티션"* 을 골라 읽습니다.
 
-원천 API의 월별 Bronze 3종은 데이터 기준 월 아래에 실제 수집 시각 파일을 append합니다. 같은 월을 다시 받아도 원본 이력이 유지됩니다.
+원천 API의 월별 Bronze 3종은 데이터 기준 월 아래에 실제 수집 시각 디렉터리를 append합니다. 같은 월을 다시 받아도 원본 이력이 유지됩니다.
 
 ```text
-data/bronze/<dataset>/year_month=YYYY-MM/YYYYMMDDTHHMMSSffffffZ.parquet
+data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/data.parquet
 ```
+
+writer는 이 디렉터리 구조만 새로 만들고, 전환 중 reader는 기존
+`year_month=YYYY-MM/YYYYMMDDTHHMMSSffffffZ.parquet`도 함께 읽습니다. 동일 원본이면
+신·구 경로 중 최신 수집본을 재사용해 중복 버전을 만들지 않습니다.
 
 원천 API 3종의 Silver도 Bronze와 같은 수집 시각 파일명으로 버전을 보존합니다.
 

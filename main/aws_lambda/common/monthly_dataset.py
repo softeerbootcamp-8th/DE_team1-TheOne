@@ -17,13 +17,22 @@ from shared.aws_lambda.common.atomic_write import atomic_write
 from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.monthly_bronze import (
+    BRONZE_DATA_FILE_NAME,
+    TIMESTAMP_FILE_PATTERN as _TIMESTAMP_FILE_PATTERN,
+    bronze_collection_token,
+    collected_at_from_token,
+    collected_at_token,
+)
 
+
+# 기존 Silver handler/loader의 import 경로는 단계적 배포 동안 유지합니다.
+TIMESTAMP_FILE_PATTERN = _TIMESTAMP_FILE_PATTERN
 
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 DATASET_URL_PATTERN = re.compile(
     r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$"
 )
-TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 
 
 def requested_year_month(event: dict) -> str | None:
@@ -55,27 +64,8 @@ def _read_parquet(dataset: str, content) -> pq.ParquetFile:
         raise ValueError(f"{dataset} 원본이 읽을 수 있는 Parquet이 아닙니다") from exc
 
 
-def _parse_collected_at(payload: dict) -> datetime:
-    collected_at = payload.get("collected_at")
-    if not isinstance(collected_at, str):
-        raise ValueError("collected_at이 누락되었습니다")
-    try:
-        return datetime.strptime(collected_at, "%Y-%m-%dT%H:%M:%S.%fZ").replace(
-            tzinfo=timezone.utc
-        )
-    except ValueError as exc:
-        raise ValueError("collected_at이 UTC 수집 시각 형식이 아닙니다") from exc
-
-
-def _collected_at_from_name(name: str) -> str:
-    timestamp = datetime.strptime(
-        PurePosixPath(name).stem, "%Y%m%dT%H%M%S%fZ"
-    ).replace(tzinfo=timezone.utc)
-    return timestamp.isoformat(timespec="microseconds").replace("+00:00", "Z")
-
-
-def _timestamp_file_name(payload: dict) -> str:
-    return f"{_parse_collected_at(payload):%Y%m%dT%H%M%S%fZ}.parquet"
+def _collected_at_dir_name(payload: dict) -> str:
+    return f"collected_at={collected_at_token(payload.get('collected_at'))}"
 
 
 def _same_bytes(left: bytes, right: bytes) -> bool:
@@ -140,7 +130,7 @@ class MonthlyParquetAPIExtractor(Extractor):
 
 
 class MonthlyParquetBronzeLoader(Loader):
-    """로컬 월 파티션에 변경된 원본만 수집 시각 파일로 보존합니다."""
+    """로컬 월 파티션에 변경된 원본만 수집 시각 디렉터리로 보존합니다."""
 
     def __init__(
         self,
@@ -164,13 +154,15 @@ class MonthlyParquetBronzeLoader(Loader):
         self.source_changed = True
         self.payload = payload
         self.path = self._data_path(payload)
-        latest = self._latest_data_path(self.path.parent)
+        latest = self._latest_data_path(self.path.parent.parent)
         if latest is not None and self._same_content(latest, content):
             self.source_changed = False
             self.path = latest
             self.payload = {
                 **payload,
-                "collected_at": _collected_at_from_name(latest.name),
+                "collected_at": collected_at_from_token(
+                    bronze_collection_token(latest)
+                ),
             }
             return WriteResult(str(latest), parquet.metadata.num_rows)
 
@@ -180,13 +172,13 @@ class MonthlyParquetBronzeLoader(Loader):
 
     @staticmethod
     def _latest_data_path(partition_dir: Path) -> Path | None:
+        candidates = (
+            *partition_dir.glob("*.parquet"),
+            *partition_dir.glob("collected_at=*/data.parquet"),
+        )
         return max(
-            (
-                path
-                for path in partition_dir.glob("*.parquet")
-                if TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
-            ),
-            key=lambda path: path.name,
+            (path for path in candidates if bronze_collection_token(path)),
+            key=bronze_collection_token,
             default=None,
         )
 
@@ -201,7 +193,8 @@ class MonthlyParquetBronzeLoader(Loader):
             self._base_dir
             / self._dataset_dir
             / f"year_month={payload['year_month']}"
-            / _timestamp_file_name(payload)
+            / _collected_at_dir_name(payload)
+            / BRONZE_DATA_FILE_NAME
         )
 
 
@@ -238,13 +231,15 @@ class S3MonthlyParquetBronzeLoader(Loader):
             self.source_changed = False
             self.payload = {
                 **payload,
-                "collected_at": _collected_at_from_name(latest),
+                "collected_at": collected_at_from_token(
+                    bronze_collection_token(PurePosixPath(latest))
+                ),
             }
             return WriteResult(
                 f"s3://{self._bucket}/{latest}", parquet.metadata.num_rows
             )
 
-        key = f"{prefix}{_timestamp_file_name(payload)}"
+        key = f"{prefix}{_collected_at_dir_name(payload)}/{BRONZE_DATA_FILE_NAME}"
         return S3Loader(key=key, bucket=self._bucket).write(
             S3Object(body=content, row_count=parquet.metadata.num_rows)
         )
@@ -253,14 +248,15 @@ class S3MonthlyParquetBronzeLoader(Loader):
         return f"bronze/{self._dataset_dir}/year_month={payload['year_month']}/"
 
     def _latest_key(self, prefix: str) -> str | None:
-        return max(
-            (
-                key
-                for key in list_keys(self._bucket, prefix)
-                if TIMESTAMP_FILE_PATTERN.fullmatch(PurePosixPath(key).name)
-            ),
-            default=None,
+        candidates = (
+            (key, bronze_collection_token(PurePosixPath(key)))
+            for key in list_keys(self._bucket, prefix)
         )
+        return max(
+            ((key, token) for key, token in candidates if token),
+            key=lambda item: item[1],
+            default=(None, None),
+        )[0]
 
 
 def build_bronze_loader(

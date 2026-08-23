@@ -85,6 +85,22 @@ def write_bronze(
     return str(path)
 
 
+def write_directory_bronze(base_dir, year_month: str = YEAR_MONTH, rows: int = 3) -> str:
+    path = (
+        Path(base_dir)
+        / "monthly_taxi_trip"
+        / f"year_month={year_month}"
+        / "collected_at=20260811T085354000000Z"
+        / "data.parquet"
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(
+        pa.Table.from_pylist(bronze_rows(rows, task_module.SCHEMA), schema=task_module.SCHEMA),
+        path,
+    )
+    return str(path)
+
+
 def result_for(path: str, year_month: str = YEAR_MONTH) -> dict:
     parquet = pq.ParquetFile(path)
     version = (
@@ -128,6 +144,12 @@ def test_Validation_Task에_Slack_실패_콜백이_연결된다():
 
 def test_정상_적재는_통과한다(tmp_path):
     path = write_bronze(tmp_path)
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+
+def test_collected_at_디렉터리_Bronze도_검증을_통과한다(tmp_path):
+    path = write_directory_bronze(tmp_path)
+
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
