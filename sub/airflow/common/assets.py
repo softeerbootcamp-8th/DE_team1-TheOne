@@ -19,6 +19,3 @@ VEHICLE_CATALOG_CURATED = Asset("curated://vehicle_catalog")
 UBER_ELIGIBLE_VEHICLES_CURATED = Asset("curated://uber_eligible_vehicles")
 LYFT_ELIGIBLE_VEHICLES_CURATED = Asset("curated://lyft_eligible_vehicles")
 FUELECONOMY_VEHICLE_SPECS_CURATED = Asset("curated://fueleconomy_vehicle_specs")
-
-# 통합 결과. 하류가 이걸 구독합니다.
-VEHICLE_MASTER_CURATED = Asset("curated://vehicle_master")

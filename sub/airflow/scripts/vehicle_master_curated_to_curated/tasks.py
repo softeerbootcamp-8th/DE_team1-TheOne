@@ -8,7 +8,6 @@ from datetime import timedelta
 from airflow.sdk import task
 
 from schema.source import VEHICLE_MASTER_REQUIRED_NON_NULL
-from sub.airflow.common import assets
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
@@ -46,7 +45,6 @@ def build_vehicle_master_task(**context) -> dict:
     retries=1,
     retry_delay=timedelta(minutes=10),
     on_failure_callback=slack_failure_callback,
-    outlets=[assets.VEHICLE_MASTER_CURATED],
 )
 def validate_curated_task(result: dict, **context) -> None:
     """도시별 파일이 layout 규칙·스키마와 맞는지, 원천이 낡지 않았는지 봅니다."""
