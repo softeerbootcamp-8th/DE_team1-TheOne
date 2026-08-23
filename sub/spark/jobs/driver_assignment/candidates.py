@@ -6,7 +6,6 @@ from pyspark.sql.functions import (
     col,
     concat_ws,
     count,
-    countDistinct,
     dayofweek,
     element_at,
     floor,
@@ -125,7 +124,6 @@ def build_trip_candidates(
     drivers = drivers.withColumn("_bucket", pmod(col("_driver_index") - lit(1), lit(bucket_count)))
 
     trip_base = trips.drop("driver_id", "taxi_id", "taxi_model_id")
-    total_trips = trip_base.count()
     # 운행도 같은 버킷 수로 해시해 **한 버킷에만** 들어갑니다. 해시 입력이
     # (trip_key, seed) 라 같은 seed 는 같은 분할을 냅니다.
     candidates = trip_base.withColumn(
@@ -181,10 +179,12 @@ def build_trip_candidates(
         count(
             when(col("_c1_roster_ok") & col("_c2_tier_ok") & ~col("_c6_profile_ok"), 1)
         ).alias(C6_PROFILE),
-        countDistinct("trip_key").alias("_trips_with_candidate"),
     ).first()
     rejected = {
-        C_NO_CANDIDATE: total_trips - stats["_trips_with_candidate"],
+        # bucket_count <= driver_count이고 기사를 modulo로 배치하므로 모든 버킷에
+        # 기사가 최소 한 명 있습니다. 모든 트립도 그 버킷 중 하나에 들어가므로
+        # 전체 trip_key를 countDistinct할 필요 없이 이 값은 항상 0입니다.
+        C_NO_CANDIDATE: 0,
         C1_ROSTER: stats[C1_ROSTER],
         C2_TIER: stats[C2_TIER],
         C6_PROFILE: stats[C6_PROFILE],

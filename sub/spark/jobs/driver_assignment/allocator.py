@@ -133,22 +133,27 @@ def _allocate_day(
     if frame.empty:
         return pd.DataFrame(columns=OUTPUT_COLUMNS)
 
-    ordered = frame.sort_values(
+    # 새 DataFrame과 열별 Python list를 만들면 grouped UDF가 받은 원본, 정렬본,
+    # list가 동시에 살아 있어 그룹 메모리를 여러 번 점유합니다. 입력은 함수 밖에서
+    # 재사용하지 않으므로 제자리 정렬하고, 아래 순회도 pandas 배열 view를 사용합니다.
+    frame.sort_values(
         ["pickup_datetime", "trip_key", "preference_score", "tie_break", "driver_id"],
         ascending=[True, True, False, True, True],
         kind="stable",
+        inplace=True,
     )
+    ordered = frame
 
-    trip_keys = ordered["trip_key"].tolist()
-    driver_ids = ordered["driver_id"].tolist()
-    taxi_ids = ordered["taxi_id"].tolist()
-    pickups = ordered["pickup_datetime"].tolist()
-    dropoffs = ordered["dropoff_datetime"].tolist()
-    pickup_zones = ordered["PULocationID"].tolist()
-    dropoff_zones = ordered["DOLocationID"].tolist()
-    work_minute_caps = ordered["target_work_minutes"].tolist()
-    drive_budgets = ordered["target_drive_minutes"].tolist()
-    deadhead_caps = ordered["max_deadhead_minutes"].tolist()
+    trip_keys = ordered["trip_key"].array
+    driver_ids = ordered["driver_id"].array
+    taxi_ids = ordered["taxi_id"].array
+    pickups = ordered["pickup_datetime"].array
+    dropoffs = ordered["dropoff_datetime"].array
+    pickup_zones = ordered["PULocationID"].array
+    dropoff_zones = ordered["DOLocationID"].array
+    work_minute_caps = ordered["target_work_minutes"].array
+    drive_budgets = ordered["target_drive_minutes"].array
+    deadhead_caps = ordered["max_deadhead_minutes"].array
 
     picked: list[int] = []
     sequences: list[int] = []
@@ -235,11 +240,13 @@ def _allocate_day(
     return assigned[OUTPUT_COLUMNS]
 
 
-def allocate_trips(candidates: DataFrame, travel_times: DataFrame) -> tuple[DataFrame, dict[str, int]]:
+def allocate_trips(
+    candidates: DataFrame, travel_times: DataFrame
+) -> tuple[DataFrame, dict[str, int], int]:
     """날짜별 greedy 배정으로 운행 단일성과 기사별 시공간 연결을 보장합니다.
 
-    두 번째 반환값은 순차 배정 중 발생한 제약별 탈락 건수입니다(#644, 진단용 —
-    릴리스 계보에는 싣지 않음). `applyInPandas` 는 lazy 이므로 워커의 accumulator
+    두 번째 반환값은 순차 배정 중 발생한 제약별 탈락 건수이고, 세 번째는 배정 건수입니다
+    (#644, 진단용 — 릴리스 계보에는 싣지 않음). `applyInPandas` 는 lazy 이므로 워커의 accumulator
     갱신이 실제로 반영되려면 액션이 한 번 실행돼야 합니다 — 그래서 반환 전에
     직접 persist·count 합니다. 호출부가 다시 persist 해도 이미 캐시된 결과라
     비용이 들지 않습니다.
@@ -250,7 +257,11 @@ def allocate_trips(candidates: DataFrame, travel_times: DataFrame) -> tuple[Data
     _validate(candidates, travel_times)
     empty_counters = {name: 0 for name in COUNTER_NAMES}
     if candidates.isEmpty():
-        return candidates.sparkSession.createDataFrame([], ASSIGNMENT_SCHEMA), empty_counters
+        return (
+            candidates.sparkSession.createDataFrame([], ASSIGNMENT_SCHEMA),
+            empty_counters,
+            0,
+        )
     travel = {
         (int(row.from_location_id), int(row.to_location_id)): float(row.travel_minutes)
         for row in travel_times.collect()
@@ -271,8 +282,11 @@ def allocate_trips(candidates: DataFrame, travel_times: DataFrame) -> tuple[Data
         allocation_input(candidates)
         .groupBy("_bucket", "_service_date")
         .applyInPandas(allocate_group, schema=ASSIGNMENT_SCHEMA)
-        .persist(StorageLevel.MEMORY_AND_DISK)
+        # source_job은 배정 결과를 count·품질 집계·join·write에서 반복 사용합니다.
+        # JVM 메모리에 캐시하면 같은 executor의 Python/Arrow 피크와 겹치므로 디스크에만
+        # 저장해 worker 총 메모리를 안정적으로 제한합니다.
+        .persist(StorageLevel.DISK_ONLY)
     )
-    result.count()
+    assignment_count = result.count()
     rejected = {name: accumulator.value for name, accumulator in counters.items()}
-    return result, rejected
+    return result, rejected, assignment_count

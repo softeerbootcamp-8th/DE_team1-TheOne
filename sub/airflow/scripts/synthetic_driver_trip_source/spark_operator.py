@@ -29,15 +29,16 @@ DEFAULT_STORAGE = "s3" if JOB_ENV == "prod" else "local"
 
 # theone-spark 이미지 안 경로입니다 (shared/spark/Dockerfile 이 /home/hadoop 에 COPY).
 EMR_ENTRY_POINT = "/home/hadoop/sub/spark/jobs/driver_assignment/source_job.py"
-# 월 수백만 트립의 join·window·groupBy와 (bucket × service_date)
-# applyInPandas 그룹을 최대 10 task 로 병렬 처리합니다. executor 당 Python worker 를
-# 2개로 제한하고, Python·Arrow 버퍼가 쓰는 heap 밖 메모리는 8 GB overhead 로
-# 분리합니다. dynamic allocation 상한으로 한 Job이 사용하는 executor 비용도 제한합니다.
+# 월 수백만 트립의 join·window·groupBy와 (bucket × service_date) applyInPandas를
+# 최대 10 task로 처리합니다. 코드에서 고카디널리티 distinct와 Pandas 복제, 메모리
+# 캐시를 제거했으므로 executor는 기존 성공 형상인 2 cores / 6 GB heap을 사용하고,
+# Python·Arrow용 overhead만 2 GB로 명시합니다. dynamic allocation 상한으로 한 Job이
+# 사용하는 executor 비용도 제한합니다.
 EMR_SPARK_SUBMIT_PARAMETERS = (
     "--conf spark.driver.cores=2 --conf spark.driver.memory=6g "
     "--conf spark.driver.memoryOverhead=2g "
-    "--conf spark.executor.cores=2 --conf spark.executor.memory=8g "
-    "--conf spark.executor.memoryOverhead=8g "
+    "--conf spark.executor.cores=2 --conf spark.executor.memory=6g "
+    "--conf spark.executor.memoryOverhead=2g "
     "--conf spark.dynamicAllocation.minExecutors=1 "
     "--conf spark.dynamicAllocation.initialExecutors=3 "
     "--conf spark.dynamicAllocation.maxExecutors=5 "
