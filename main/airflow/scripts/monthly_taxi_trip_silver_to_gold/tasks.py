@@ -420,4 +420,8 @@ def validate_gold_task(**context) -> None:
             resolved["year_month"],
         )
         return
-    validate_gold_outputs(context["params"]["output_dir"], resolved["year_month"])
+    validate_gold_outputs(
+        context["params"]["output_dir"],
+        resolved["year_month"],
+        resolved["service_area"],
+    )

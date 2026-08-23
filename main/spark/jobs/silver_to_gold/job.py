@@ -197,7 +197,10 @@ def _csv_path(
 
 
 def _write_all_csv(
-    frames: dict[str, pd.DataFrame], output_dir: str, year_month: str
+    frames: dict[str, pd.DataFrame],
+    output_dir: str,
+    year_month: str,
+    service_area: str,
 ) -> dict[str, Path]:
     """3종을 임시 파일에 모두 쓴 뒤 한꺼번에 교체합니다.
 
@@ -212,7 +215,7 @@ def _write_all_csv(
     temporary: dict[str, Path] = {}
     try:
         for dataset, frame in frames.items():
-            path = _csv_path(output_dir, dataset, year_month)
+            path = _csv_path(output_dir, dataset, year_month, service_area)
             path.parent.mkdir(parents=True, exist_ok=True)
             staged = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
             frame.to_csv(staged, index=False)
@@ -220,7 +223,7 @@ def _write_all_csv(
 
         written: dict[str, Path] = {}
         for dataset, staged in temporary.items():
-            path = _csv_path(output_dir, dataset, year_month)
+            path = _csv_path(output_dir, dataset, year_month, service_area)
             staged.replace(path)
             written[dataset] = path
         return written
@@ -364,7 +367,9 @@ def main(args_list: list[str] | None = None) -> None:
             for dataset, rows in written.items():
                 logger.info("gold 적재 완료: dataset=%s rows=%d", dataset, rows)
         else:
-            for dataset, path in _write_all_csv(frames, args.output_dir, year_month).items():
+            for dataset, path in _write_all_csv(
+                frames, args.output_dir, year_month, args.service_area
+            ).items():
                 logger.info("gold 적재 완료: dataset=%s path=%s", dataset, path)
     finally:
         if enriched is not None:
