@@ -1,0 +1,9 @@
+# 손으로 UI 에서 추가하면 컨테이너를 다시 만들 때 사라질 수 있고, 무엇보다 재현이
+# 안 됩니다. 파일로 두면 기동 시 자동 등록됩니다.
+apiVersion: 1
+datasources:
+  - name: Prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true

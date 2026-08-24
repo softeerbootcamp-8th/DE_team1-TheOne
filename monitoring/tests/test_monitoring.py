@@ -149,3 +149,75 @@ def test_workflow_is_valid_yaml_and_passes_required_variables():
     for step in steps:
         if "envsubst" in step.get("run", ""):
             assert "EMR_APPLICATION_ID" in step.get("env", {})
+
+
+STACK = MONITORING / "stack"
+TARGET_IPS = {
+    "10.0.10.28": "theone-airflow",
+    "10.0.10.81": "theone-source-server",
+    "10.0.10.8": "theone-dashboard-server",
+    "10.0.0.113": "theone-gateway",
+}
+
+
+def _prometheus_config():
+    return yaml.safe_load((STACK / "prometheus.yml").read_text())
+
+
+def _stack_compose():
+    return yaml.safe_load((STACK / "docker-compose.yml").read_text())
+
+
+def test_prometheus_scrapes_every_ec2_host():
+    """대상을 빠뜨리면 그 인스턴스는 조용히 감시 밖에 남습니다."""
+    targets = {
+        t
+        for job in _prometheus_config()["scrape_configs"]
+        for sc in job["static_configs"]
+        for t in sc["targets"]
+    }
+    assert {f"{ip}:9100" for ip in TARGET_IPS} == targets
+
+
+def test_every_target_carries_a_readable_name():
+    """IP 만 있으면 대시보드에서 어느 인스턴스인지 알 수 없습니다."""
+    for job in _prometheus_config()["scrape_configs"]:
+        for sc in job["static_configs"]:
+            assert sc["labels"]["instance_name"] in TARGET_IPS.values()
+
+
+def test_prometheus_retention_is_bounded():
+    """보존 기간을 정하지 않으면 디스크가 찰 때까지 늘어납니다 (#698 과 같은 사고)."""
+    command = _stack_compose()["services"]["prometheus"]["command"]
+    assert any("--storage.tsdb.retention.time=" in c for c in command)
+
+
+def test_ui_ports_stay_on_loopback():
+    """3000·9090 을 0.0.0.0 에 열면 익명 접근 설정과 겹쳐 무인증 공개가 됩니다."""
+    services = _stack_compose()["services"]
+    for name in ("prometheus", "grafana"):
+        for mapping in services[name]["ports"]:
+            assert str(mapping).startswith("127.0.0.1:"), (name, mapping)
+
+
+def test_grafana_datasource_is_provisioned_not_clicked():
+    """UI 로 추가하면 재생성 때 사라지고 재현이 안 됩니다."""
+    path = STACK / "grafana/provisioning/datasources/prometheus.yml"
+    source = yaml.safe_load(path.read_text())["datasources"][0]
+    assert source["type"] == "prometheus"
+    assert source["url"] == "http://prometheus:9090"
+
+
+def test_stack_deploy_uses_ssm_without_stored_secrets():
+    """SSH 로 바꾸면 개인키가 Secrets 에 들어가고 러너 IP 대역을 열어야 합니다."""
+    workflow = WORKFLOW.read_text()
+    assert "AWS-RunShellScript" in workflow
+    assert "vars.MONITORING_INSTANCE_ID" in workflow
+    assert "secrets." not in workflow
+
+
+def test_stack_deploy_checks_the_ssm_result():
+    """기다리지 않으면 EC2 반영이 실패해도 워크플로가 초록불로 끝납니다."""
+    workflow = WORKFLOW.read_text()
+    assert "ssm wait command-executed" in workflow
+    assert "StandardErrorContent" in workflow
