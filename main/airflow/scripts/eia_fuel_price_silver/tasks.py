@@ -1,6 +1,6 @@
 """휘발유·전력 CLEAN Silver 두 개를 통합 연료비 Silver 로 붙이는 실행·검증 함수.
 
-산출물은 `gas_ev_price/year_month=YYYY-MM/` — Gold 가 읽는 자리입니다.
+산출물은 `gas_ev_price/year_month=YYYY-MM/input_version=<상류조합>/ny_fuel.parquet`입니다.
 출처는 `price_source` 로 남깁니다.
 
 대상 월을 파라미터로 받는 이유
@@ -31,16 +31,21 @@ from shared.airflow.common.validation import (
     parse_year_month,
     publish_success_marker,
     read_parquet,
-    require_file,
-    require_success_marker,
 )
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
+from shared.common.eia_fuel_version import (
+    FUEL_FILE_NAME,
+    fuel_source_tokens,
+    source_collected_at_token,
+)
+from shared.common.s3_reader import list_keys
+from shared.common.success_marker import data_key_is_complete, marker_path
 
 logger = logging.getLogger(__name__)
 
 SILVER_DIR = str(PROJECT_ROOT / "data" / "silver")
 INTEGRATED_DATASET = "gas_ev_price"
-INTEGRATED_FILE_NAME = "gas_ev_price.parquet"
+INTEGRATED_FILE_NAME = FUEL_FILE_NAME
 # 데이터가 나타내는 달. lambda loader 의 PARTITION_KEY 와 같아야 합니다.
 SILVER_PARTITION_KEY = "year_month"
 
@@ -70,22 +75,32 @@ def resolve_year_month(context: dict) -> str:
 
 
 def integrated_silver_file(
-    base_dir: str, year_month: str, service_area: str
+    base_dir: str, year_month: str, input_version: str, service_area: str
 ) -> Path:
+    if fuel_source_tokens(input_version) is None:
+        raise ValueError(f"Fuel input_version이 올바르지 않습니다: {input_version!r}")
     dataset_root = Path(base_dir) / INTEGRATED_DATASET
     area = service_area_segment(service_area)
     return (
         (dataset_root / area)
         / f"{SILVER_PARTITION_KEY}={year_month}"
+        / input_version
         / INTEGRATED_FILE_NAME
     )
 
 
-def integrated_silver_key(year_month: str, service_area: str) -> str:
+def integrated_silver_key(
+    year_month: str, input_version: str, service_area: str
+) -> str:
+    if fuel_source_tokens(input_version) is None:
+        raise ValueError(f"Fuel input_version이 올바르지 않습니다: {input_version!r}")
     prefix = service_area_prefix(
         "silver", INTEGRATED_DATASET, service_area=service_area
     )
-    return f"{prefix}/{SILVER_PARTITION_KEY}={year_month}/{INTEGRATED_FILE_NAME}"
+    return (
+        f"{prefix}/{SILVER_PARTITION_KEY}={year_month}/"
+        f"{input_version}/{INTEGRATED_FILE_NAME}"
+    )
 
 
 def month_day_count(year_month: str) -> int:
@@ -116,27 +131,40 @@ def require_clean_silver(
         (extractor.ELECTRICITY_DATASET, "eia_electricity_price_raw_to_silver_pipeline"),
     ):
         if storage == "local":
-            candidate = (
+            partition = (
                 service_area_root(Path(base_dir) / dataset, service_area)
-                / f"year_month={year_month}" / f"{dataset}.parquet"
+                / f"year_month={year_month}"
             )
+            candidates = []
+            for version in partition.glob("source_collected_at=*"):
+                token = source_collected_at_token(version.name)
+                path = version / f"{dataset}.parquet"
+                if token and path.is_file() and marker_path(version).is_file():
+                    candidates.append((token, path))
+            candidate = max(candidates, default=(None, None))[1]
         else:
-            prefix = service_area_prefix(
+            area_prefix = service_area_prefix(
                 "silver", dataset, service_area=service_area
             )
-            candidate = S3Location(
-                bucket, f"{prefix}/year_month={year_month}/{dataset}.parquet"
-            )
+            prefix = f"{area_prefix}/year_month={year_month}/"
+            keys = set(list_keys(bucket, prefix))
+            candidates = []
+            for key in keys:
+                parts = key.removeprefix(prefix).split("/")
+                if len(parts) != 2 or parts[1] != f"{dataset}.parquet":
+                    continue
+                token = source_collected_at_token(parts[0])
+                if token and data_key_is_complete(key, keys):
+                    candidates.append((token, key))
+            key = max(candidates, default=(None, None))[1]
+            candidate = S3Location(bucket, key) if key else None
 
-        try:
-            located = require_file(candidate)
-            require_success_marker(candidate.parent)
-        except FileNotFoundError:
+        if candidate is None:
             raise FileNotFoundError(
                 f"{dataset} CLEAN Silver 가 없습니다: {candidate} — "
                 f"{dag_id} 을 먼저 돌리세요."
-            ) from None
-        found[dataset] = str(located)
+            )
+        found[dataset] = str(candidate)
 
     logger.info("EIA CLEAN Silver 확인 (%s 대상): %s", year_month, found)
     return found
@@ -155,9 +183,12 @@ def validate_silver(result: object, service_area: str) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    expected_path = integrated_silver_file("", year_month, service_area)
-    if layout_tail(path, service_area=service_area) != layout_tail(
-        expected_path, service_area=service_area
+    input_version = result.get("input_version") if isinstance(result, dict) else None
+    expected_path = integrated_silver_file(
+        "", year_month, input_version, service_area
+    )
+    if layout_tail(path, segments=4, service_area=service_area) != layout_tail(
+        expected_path, segments=4, service_area=service_area
     ):
         raise ValueError(f"통합 연료비 Silver 경로 규칙이 다릅니다: {path}")
 

@@ -7,7 +7,7 @@
 
 import importlib
 import logging
-from datetime import datetime
+from datetime import timezone
 
 from airflow.sdk import task
 
@@ -33,9 +33,15 @@ def _layout():
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
     params = context["params"]
+    collected_at = (
+        context["dag_run"].start_date.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
     event = {
         "base_dir": params["bronze_dir"],
         "service_area": params["service_area"],
+        "collected_at": collected_at,
     }
     result = lambda_handler_for("eia_gas_price_raw_to_bronze")(
         event=event
@@ -50,13 +56,12 @@ def validate_bronze_task(result: dict, **context) -> None:
     parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
     layout = _layout()
     service_area = context["params"]["service_area"]
-    collected_date = datetime.strptime(result["collected_date"], "%Y-%m-%d").date()
     expected = layout.gas_bronze_file(
-        context["params"]["bronze_dir"], collected_date, service_area
+        context["params"]["bronze_dir"], result.get("collected_at"), service_area
     )
     path = require_file(parsed.locations[0])
-    if layout_tail(path, service_area=service_area) != layout_tail(
-        expected, service_area=service_area
+    if layout_tail(path, segments=4, service_area=service_area) != layout_tail(
+        expected, segments=4, service_area=service_area
     ):
         raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
 

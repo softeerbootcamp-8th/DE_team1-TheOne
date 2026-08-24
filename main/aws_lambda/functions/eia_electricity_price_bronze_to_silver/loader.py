@@ -8,7 +8,11 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
+from main.aws_lambda.common.monthly_dataset import (
+    collected_at_token,
+    join_segments,
+    service_area_segment,
+)
 
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
@@ -17,30 +21,32 @@ from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
 logger = logging.getLogger(__name__)
 
 DATASET = "eia_electricity_price"
-# 데이터가 나타내는 달입니다(수집한 달이 아닙니다). Bronze 는 `collected_date` 로
+# 데이터가 나타내는 달입니다(수집한 달이 아닙니다). Bronze 는 `collected_at`으로
 # 나뉘는데 — 한 파일에 이력이 통째로 들어 있어서 — Silver 부터는 데이터의 달로 나뉩니다.
 PARTITION_KEY = "year_month"
 FILE_NAME = f"{DATASET}.parquet"
 
 
 def silver_file(
-    base_dir: str, year_month: str, service_area: str
+    base_dir: str, year_month: str, source_collected_at: str, service_area: str
 ) -> Path:
     dataset_root = Path(base_dir) / DATASET
     area = service_area_segment(service_area)
     return (
         (dataset_root / area)
         / f"{PARTITION_KEY}={year_month}"
+        / f"source_collected_at={collected_at_token(source_collected_at)}"
         / FILE_NAME
     )
 
 
-def silver_key(year_month: str, service_area: str) -> str:
+def silver_key(year_month: str, source_collected_at: str, service_area: str) -> str:
     return join_segments(
         "silver",
         DATASET,
         service_area_segment(service_area),
         f"{PARTITION_KEY}={year_month}",
+        f"source_collected_at={collected_at_token(source_collected_at)}",
         FILE_NAME,
     )
 
@@ -58,12 +64,18 @@ class EiaElectricityPriceSilverLoader(Loader):
         self._year_month = year_month
         self._service_area = service_area
 
-    def write(self, data: list[dict]) -> WriteResult:
-        if not data:
+    def write(self, data: dict) -> WriteResult:
+        rows = data.get("rows") or []
+        if not rows:
             raise ValueError("적재할 충전 단가 Silver 데이터가 없습니다.")
 
-        table = pa.Table.from_pylist(data, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
-        path = silver_file(self._base_dir, self._year_month, self._service_area)
+        table = pa.Table.from_pylist(rows, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
+        path = silver_file(
+            self._base_dir,
+            self._year_month,
+            data["source_collected_at"],
+            self._service_area,
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         invalidate_success_marker(path.parent)
         atomic_write(
@@ -91,16 +103,21 @@ class EiaElectricityPriceS3SilverLoader(Loader):
         self._bucket = bucket
         self._service_area = service_area
 
-    def write(self, data: list[dict]) -> WriteResult:
-        if not data:
+    def write(self, data: dict) -> WriteResult:
+        rows = data.get("rows") or []
+        if not rows:
             raise ValueError("적재할 충전 단가 Silver 데이터가 없습니다.")
 
-        table = pa.Table.from_pylist(data, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
+        table = pa.Table.from_pylist(rows, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
         buffer = io.BytesIO()
         pq.write_table(table, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month, self._service_area),
+            key=silver_key(
+                self._year_month,
+                data["source_collected_at"],
+                self._service_area,
+            ),
             bucket=self._bucket,
             invalidate_parent_success=True,
         ).write(

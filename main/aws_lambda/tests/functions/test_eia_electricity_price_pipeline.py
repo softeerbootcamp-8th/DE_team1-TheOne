@@ -35,6 +35,7 @@ from main.aws_lambda.functions.eia_electricity_price_bronze_to_silver.transforme
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA as SCHEMA
 
 COLLECTED = date(2026, 8, 17)
+COLLECTED_AT = "2026-08-17T12:34:56.123456Z"
 ROWS = [(2025, 5, "NY", 20.0), (2025, 5, "CA", 99.0), (2025, 6, "NY", 21.0)]
 SERVICE_AREA = "NYC"
 
@@ -120,10 +121,10 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
 
     result = EiaElectricityPriceSilverLoader(
         str(tmp_path), "2025-05", SERVICE_AREA
-    ).write(rows)
+    ).write({"rows": rows, "source_collected_at": COLLECTED_AT})
 
     assert result.location == str(
-        silver_file(str(tmp_path), "2025-05", SERVICE_AREA)
+        silver_file(str(tmp_path), "2025-05", COLLECTED_AT, SERVICE_AREA)
     )
     assert result.row_count == 31
     table = pq.ParquetFile(result.location).read()
@@ -135,7 +136,7 @@ def test_빈_결과는_적재를_거부한다(tmp_path):
     with pytest.raises(ValueError, match="적재할"):
         EiaElectricityPriceSilverLoader(
             str(tmp_path), "2025-05", SERVICE_AREA
-        ).write([])
+        ).write({"rows": []})
 
 
 # --- Bronze 파티션 선택 규칙 ------------------------------------------------
@@ -150,8 +151,8 @@ from main.aws_lambda.functions.eia_electricity_price_bronze_to_silver.extractor 
 )
 
 
-def _write_bronze(base, collected: date, body: bytes) -> None:
-    path = layout.electricity_bronze_file(str(base), collected, SERVICE_AREA)
+def _write_bronze(base, collected_at: str, body: bytes) -> None:
+    path = layout.electricity_bronze_file(str(base), collected_at, SERVICE_AREA)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
     (path.parent / "_SUCCESS").touch()
@@ -165,15 +166,15 @@ def test_가장_최신_수집분을_고른다(tmp_path):
     파일을 집습니다.
     """
     bronze = tmp_path / "bronze"
-    _write_bronze(bronze, date(2025, 5, 10), _xlsx([(2025, 1, "NY", 20.0)]))
-    _write_bronze(bronze, COLLECTED, _xlsx(ROWS))
+    _write_bronze(bronze, "2025-05-10T00:00:00.000000Z", _xlsx([(2025, 1, "NY", 20.0)]))
+    _write_bronze(bronze, COLLECTED_AT, _xlsx(ROWS))
 
-    collected_date, partition = layout.newest_bronze_partition(
+    collected_at, partition = layout.newest_bronze_partition(
         str(bronze), layout.ELECTRICITY_DATASET, SERVICE_AREA
     )
 
-    assert collected_date == COLLECTED
-    assert partition.name == f"collected_date={COLLECTED.isoformat()}"
+    assert collected_at == COLLECTED_AT
+    assert partition.name == "collected_at=20260817T123456123456Z"
 
 
 def test_같은_내용을_다시_받으면_새_파티션을_만들지_않는다(tmp_path):
@@ -188,11 +189,11 @@ def test_같은_내용을_다시_받으면_새_파티션을_만들지_않는다(
     bronze = tmp_path / "bronze"
     body = _xlsx(ROWS)
     first = EiaElectricityPriceBronzeLoader(
-        str(bronze), date(2026, 8, 1), SERVICE_AREA
+        str(bronze), "2026-08-01T00:00:00.000000Z", SERVICE_AREA
     ).write({"body": body})
     (Path(first.location).parent / "_SUCCESS").touch()
     same = EiaElectricityPriceBronzeLoader(
-        str(bronze), date(2026, 9, 1), SERVICE_AREA
+        str(bronze), "2026-09-01T00:00:00.000000Z", SERVICE_AREA
     ).write({"body": body})
 
     assert same.location == first.location
@@ -207,17 +208,17 @@ def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
     """S3 배포(#558)에서 로컬 `newest_bronze_partition` 과 같은 "무조건 최신" 규칙이
     키 목록 기반으로도 성립하는지 고정합니다."""
     keys = [
-        layout.electricity_bronze_key(date(2025, 5, 10), SERVICE_AREA),
-        layout.electricity_bronze_key(COLLECTED, SERVICE_AREA),
+        layout.electricity_bronze_key("2025-05-10T00:00:00.000000Z", SERVICE_AREA),
+        layout.electricity_bronze_key(COLLECTED_AT, SERVICE_AREA),
     ]
     keys.extend(f"{key.rsplit('/', 1)[0]}/_SUCCESS" for key in list(keys))
 
-    collected_date, key = layout.newest_bronze_s3_key(
+    collected_at, key = layout.newest_bronze_s3_key(
         keys, layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME, SERVICE_AREA
     )
 
-    assert collected_date == COLLECTED
-    assert key == layout.electricity_bronze_key(COLLECTED, SERVICE_AREA)
+    assert collected_at == COLLECTED_AT
+    assert key == layout.electricity_bronze_key(COLLECTED_AT, SERVICE_AREA)
 
 
 def test_S3_키_목록이_비면_실패한다():
@@ -251,7 +252,7 @@ def test_service_area를_생략하면_즉시_실패한다():
 
 
 def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
-    path = layout.electricity_bronze_file(str(tmp_path), COLLECTED, "TX")
+    path = layout.electricity_bronze_file(str(tmp_path), COLLECTED_AT, "TX")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_xlsx(ROWS))
     (path.parent / "_SUCCESS").touch()
@@ -259,6 +260,7 @@ def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
     result = EiaElectricityPriceBronzeExtractor(str(tmp_path), "2025-05", "TX").extract()
 
     assert result["bronze_collected_date"] == COLLECTED
+    assert result["source_collected_at"] == COLLECTED_AT
     with pytest.raises(FileNotFoundError):
         EiaElectricityPriceBronzeExtractor(str(tmp_path), "2025-05", "NYC").extract()
 
@@ -266,8 +268,9 @@ def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
 def test_silver_쓰기_경로에_지역이_반영되고_서로_겹치지_않는다(tmp_path):
     rows = build_daily_prices("2025-05", _xlsx(ROWS), COLLECTED, SERVICE_AREA)
 
-    nyc = EiaElectricityPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(rows)
-    tx = EiaElectricityPriceSilverLoader(str(tmp_path), "2025-05", "TX").write(rows)
+    payload = {"rows": rows, "source_collected_at": COLLECTED_AT}
+    nyc = EiaElectricityPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(payload)
+    tx = EiaElectricityPriceSilverLoader(str(tmp_path), "2025-05", "TX").write(payload)
 
     assert nyc.location != tx.location
     assert "service_area=NYC" in nyc.location

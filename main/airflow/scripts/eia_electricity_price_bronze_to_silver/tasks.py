@@ -1,6 +1,6 @@
 """EIA 전력 Bronze 를 일별 충전 단가 CLEAN Silver 로 변환하는 실행·검증 함수.
 
-산출물은 `eia_electricity_price/year_month=YYYY-MM/` 입니다.
+산출물은 `eia_electricity_price/year_month=YYYY-MM/source_collected_at=<UTC>/` 입니다.
 
 대상 월을 파라미터로 받는 이유
 ---------------------------
@@ -16,6 +16,7 @@ from pathlib import Path
 from airflow.sdk import task
 
 from main.airflow.common.assets import join_segments, service_area_segment
+from main.airflow.common.monthly_bronze import collected_at_token
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
@@ -66,22 +67,26 @@ def resolve_year_month(context: dict) -> str:
     return default_year_month(reference)
 
 
-def silver_file(base_dir: str, year_month: str, service_area: str) -> Path:
+def silver_file(
+    base_dir: str, year_month: str, source_collected_at: str, service_area: str
+) -> Path:
     dataset_root = Path(base_dir) / DATASET
     area = service_area_segment(service_area)
     return (
         (dataset_root / area)
         / f"{SILVER_PARTITION_KEY}={year_month}"
+        / f"source_collected_at={collected_at_token(source_collected_at)}"
         / FILE_NAME
     )
 
 
-def silver_key(year_month: str, service_area: str) -> str:
+def silver_key(year_month: str, source_collected_at: str, service_area: str) -> str:
     return join_segments(
         "silver",
         DATASET,
         service_area_segment(service_area),
         f"{SILVER_PARTITION_KEY}={year_month}",
+        f"source_collected_at={collected_at_token(source_collected_at)}",
         FILE_NAME,
     )
 
@@ -104,9 +109,14 @@ def validate_silver(result: object, service_area: str) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    expected_path = silver_file("", year_month, service_area)
-    if layout_tail(path, service_area=service_area) != layout_tail(
-        expected_path, service_area=service_area
+    source_collected_at = (
+        result.get("source_collected_at") if isinstance(result, dict) else None
+    )
+    expected_path = silver_file(
+        "", year_month, source_collected_at, service_area
+    )
+    if layout_tail(path, segments=4, service_area=service_area) != layout_tail(
+        expected_path, segments=4, service_area=service_area
     ):
         raise ValueError(f"충전 단가 Silver 경로 규칙이 다릅니다: {path}")
 

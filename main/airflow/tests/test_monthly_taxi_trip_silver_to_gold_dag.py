@@ -15,7 +15,8 @@
 13. 경과일 계산에 실패해도(now가 None이거나 뺄셈이 안 되는 값) 예외 없이 None
 14. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
 15. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
-16. 운영 수동 실행도 S3 Silver 4종 완료본이 실제로 있어야 통과
+16. Fuel Silver는 최신 완료 `input_version`의 `ny_fuel.parquet`만 Gold 입력으로 선택
+17. 운영 수동 실행도 S3 Silver 4종 완료본이 실제로 있어야 통과
 """
 
 import importlib
@@ -35,6 +36,9 @@ from shared.airflow.common.slack_failure_callback import slack_success_callback
 
 GOLD_DAG_MODULE = importlib.import_module("dags.monthly_taxi_trip_silver_to_gold_dag")
 GOLD_DAG = GOLD_DAG_MODULE.monthly_taxi_trip_silver_to_gold_dag
+FUEL_INPUT_VERSION = (
+    "input_version=gas-20260820T123456123456Z__ev-20260819T123456123456Z"
+)
 
 
 def test_운영_Gold_EMR은_배포재시작에_안전하게_대기한다(monkeypatch):
@@ -89,14 +93,14 @@ def _write_inputs(
     ):
         _write_completed_version(root, dataset, year_month, token, service_area)
 
-    for dataset, file_name in {"gas_ev_price": "gas_ev_price.parquet"}.items():
-        partition = (
-            root / dataset / f"service_area={service_area}"
-            / f"year_month={year_month}"
-        )
-        partition.mkdir(parents=True)
-        (partition / file_name).touch()
-        (partition / "_SUCCESS").touch()
+    version = (
+        root / "gas_ev_price" / f"service_area={service_area}"
+        / f"year_month={year_month}"
+        / FUEL_INPUT_VERSION
+    )
+    version.mkdir(parents=True)
+    (version / "ny_fuel.parquet").touch()
+    (version / "_SUCCESS").touch()
 
 
 def _write_completed_version(
@@ -325,7 +329,8 @@ def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
         "year_month=2026-05/source_collected_at=20260820T123456123456Z"
     )
     assert resolved["fuel_price_path"].endswith(
-        "service_area=NYC/year_month=2026-05/gas_ev_price.parquet"
+        "service_area=NYC/year_month=2026-05/"
+        f"{FUEL_INPUT_VERSION}/ny_fuel.parquet"
     )
 
 
@@ -358,10 +363,12 @@ def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp
 
 def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):
     _write_inputs(tmp_path, "2026-05")
-    (
+    data_file = (
         tmp_path / "gas_ev_price/service_area=NYC/year_month=2026-05/"
-        "gas_ev_price.parquet"
-    ).unlink()
+        f"{FUEL_INPUT_VERSION}/ny_fuel.parquet"
+    )
+    data_file.unlink()
+    (data_file.parent / "gas_ev_price.parquet").touch()
 
     with pytest.raises(FileNotFoundError, match="eia_fuel_price_silver_pipeline"):
         dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
@@ -466,7 +473,11 @@ def test_운영_수동실행은_S3_Silver_4종_완료본이_있으면_통과한�
 
     def completed_keys(bucket, prefix):
         if "gas_ev_price" in prefix:
-            return [f"{prefix}gas_ev_price.parquet", f"{prefix}_SUCCESS"]
+            version = (
+                f"{prefix}input_version=gas-20260824T123456123456Z"
+                "__ev-20260823T123456123456Z/"
+            )
+            return [f"{version}ny_fuel.parquet", f"{version}_SUCCESS"]
         version = f"{prefix}source_collected_at=20260824T123456123456Z/"
         return [f"{version}data.parquet", f"{version}_SUCCESS"]
 
@@ -489,11 +500,42 @@ def test_운영_수동실행은_S3_데이터만_있고_SUCCESS가_없으면_실�
     monkeypatch.setattr(
         dag_module,
         "list_keys",
-        lambda bucket, prefix: [f"{prefix}gas_ev_price.parquet"],
+        lambda bucket, prefix: [
+            f"{prefix}input_version=gas-20260824T123456123456Z"
+            "__ev-20260823T123456123456Z/ny_fuel.parquet"
+        ],
         raising=False,
     )
 
     with pytest.raises(FileNotFoundError, match="완료본"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path, year="2098", month="2"),
+            logical_date=_logical_date(2098, 2),
+            dag_run=type("DagRun", (), {"partition_key": None})(),
+        )
+
+
+def test_운영_Fuel은_옛_파일명에_SUCCESS가_있어도_완료본으로_보지않는다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    def keys_with_legacy_fuel(bucket, prefix):
+        version = (
+            f"{prefix}input_version=gas-20260824T123456123456Z"
+            "__ev-20260823T123456123456Z/"
+            if "gas_ev_price" in prefix
+            else f"{prefix}source_collected_at=20260824T123456123456Z/"
+        )
+        name = "data.parquet"
+        return [f"{version}{name}", f"{version}_SUCCESS"]
+
+    monkeypatch.setattr(
+        dag_module, "list_keys", keys_with_legacy_fuel, raising=False
+    )
+
+    with pytest.raises(FileNotFoundError, match="gas_ev_price"):
         dag_module.validate_inputs_task.function(
             params=_params(tmp_path, year="2098", month="2"),
             logical_date=_logical_date(2098, 2),

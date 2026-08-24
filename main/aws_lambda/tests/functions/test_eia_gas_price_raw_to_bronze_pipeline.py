@@ -1,14 +1,12 @@
 """EIA 휘발유 원본 Raw→Bronze 적재의 지역(service_area) 처리 시나리오. 이슈 #843.
 
-1. service_area별로 Bronze 경로가 service_area=<sa>/collected_date=.../ 로 나간다
+1. Bronze 경로가 service_area/year_month/collected_at/원본파일 순서로 나간다
 2. FILE_URL_DICT에 없는 지역은 즉시 ValueError
 3. 지역별로 실제 다른 URL을 쓴다 (지역 코드가 URL에 반영 안 되면 지역 구분이
    이름표만 있고 실제로는 전부 같은 데이터를 받아오게 됨)
 4. 같은 지역에서 재수집해도 내용이 같으면 새 파티션을 만들지 않는다 (dedup)
 5. 다른 지역이면 내용이 같아도 서로의 dedup 이력에 영향을 주지 않는다
 """
-
-from datetime import date
 
 import pytest
 
@@ -21,8 +19,8 @@ from main.aws_lambda.functions.eia_gas_price_raw_to_bronze.loader import (
     EiaGasPriceBronzeLoader,
 )
 
-COLLECTED = date(2026, 8, 17)
-LATER = date(2026, 8, 24)
+COLLECTED = "2026-08-17T12:34:56.123456Z"
+LATER = "2026-08-24T12:34:56.123456Z"
 
 
 def test_지역별로_bronze_경로에_service_area_세그먼트가_들어간다(tmp_path):
@@ -32,6 +30,7 @@ def test_지역별로_bronze_경로에_service_area_세그먼트가_들어간다
 
     assert result.location == str(layout.gas_bronze_file(str(tmp_path), COLLECTED, "NYC"))
     assert "service_area=NYC" in result.location
+    assert "year_month=2026-08/collected_at=20260817T123456123456Z" in result.location
 
 
 def test_등록되지_않은_지역은_즉시_실패한다():

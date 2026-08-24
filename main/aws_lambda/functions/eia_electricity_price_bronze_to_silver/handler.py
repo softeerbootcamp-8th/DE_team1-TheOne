@@ -5,6 +5,7 @@ import os
 from pipeline_core.pipeline import Pipeline
 from pipeline_core.transformer import Transformer
 
+from main.aws_lambda.common import eia_fuel_price_layout as layout
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
 from .extractor import build_bronze_extractor
 from .loader import build_silver_loader
@@ -19,14 +20,17 @@ class EiaElectricityPriceTransformer(Transformer):
         self._markup = markup
         self._service_area = service_area
 
-    def transform(self, data: dict) -> list[dict]:
-        return build_daily_prices(
-            self._year_month,
-            data["electricity_body"],
-            data["bronze_collected_date"],
-            markup=self._markup,
-            service_area=self._service_area,
-        )
+    def transform(self, data: dict) -> dict:
+        return {
+            "rows": build_daily_prices(
+                self._year_month,
+                data["electricity_body"],
+                data["bronze_collected_date"],
+                markup=self._markup,
+                service_area=self._service_area,
+            ),
+            "source_collected_at": data["source_collected_at"],
+        }
 
 
 def lambda_handler(event: dict | None = None, context=None) -> dict:
@@ -54,9 +58,13 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         EiaElectricityPriceTransformer(year_month, markup, service_area),
     ).run()
 
+    source_collected_at = layout.silver_source_collected_at(
+        result.write_result.location
+    )
     return {
         "row_count": result.write_result.row_count,
         "locations": [result.write_result.location],
         "year_month": year_month,
         "markup": markup,
+        "source_collected_at": source_collected_at,
     }

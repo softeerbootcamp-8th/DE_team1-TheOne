@@ -167,9 +167,8 @@ def enrich_trips_with_fuel_cost(
         raise ValueError(f"HVFHV Silver에 {year_month}가 아닌 운행이 섞였습니다")
     if _has_rows(driver_snapshot.filter(F.col("snapshot_month") != year_month)):
         raise ValueError(f"기사 차량 스냅샷에 {year_month}가 아닌 행이 섞였습니다")
-    # 연료비 Silver는 다른 3종과 달리 그 시점까지의 과거 일별 가격을 전부 담고 있어
-    # (job.py의 latest_fuel_price_path), 대상 월 하루치만 걸러서 씁니다 — 다른
-    # 3종처럼 "섞이면 실패" 로 막지 않습니다.
+    # 경로에서 대상 월을 골랐더라도 파일 내용을 다시 제한해 잘못된 날짜가
+    # 운행과 조인되지 않게 합니다. 이후 일수 검증이 누락·중복을 잡습니다.
     fuel_price = fuel_price.filter(F.date_format("date", "yyyy-MM") == year_month)
     invalid_trip = (
         F.col("trip_miles").isNull()

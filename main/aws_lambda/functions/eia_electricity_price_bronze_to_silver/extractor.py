@@ -10,6 +10,7 @@
 """
 
 import logging
+from datetime import date
 
 from pipeline_core.extractor import Extractor
 
@@ -29,7 +30,7 @@ class EiaElectricityPriceBronzeExtractor(Extractor):
         self.name = f"eia_electricity_price_bronze:{base_dir}:{year_month}"
 
     def extract(self) -> dict:
-        collected_date, partition = layout.newest_bronze_partition(
+        collected_at, partition = layout.newest_bronze_partition(
             self._base_dir, layout.ELECTRICITY_DATASET, self._service_area
         )
         path = partition / layout.ELECTRICITY_FILE_NAME
@@ -40,7 +41,11 @@ class EiaElectricityPriceBronzeExtractor(Extractor):
             raise ValueError(f"EIA 전력 Bronze 파일이 비어 있습니다: {path}")
 
         logger.info("bronze_extract done path=%s bytes=%d", path, len(body))
-        return {"electricity_body": body, "bronze_collected_date": collected_date}
+        return {
+            "electricity_body": body,
+            "source_collected_at": collected_at,
+            "bronze_collected_date": date.fromisoformat(collected_at[:10]),
+        }
 
 
 class EiaElectricityPriceS3BronzeExtractor(Extractor):
@@ -55,7 +60,7 @@ class EiaElectricityPriceS3BronzeExtractor(Extractor):
     def extract(self) -> dict:
         prefix = layout.bronze_s3_prefix(layout.ELECTRICITY_DATASET, self._service_area)
         keys = list_keys(self._bucket, prefix)
-        collected_date, key = layout.newest_bronze_s3_key(
+        collected_at, key = layout.newest_bronze_s3_key(
             keys, layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME, self._service_area
         )
         body = get_object_bytes(self._bucket, key)
@@ -63,7 +68,11 @@ class EiaElectricityPriceS3BronzeExtractor(Extractor):
             raise ValueError(f"EIA 전력 Bronze 객체가 비어 있습니다: s3://{self._bucket}/{key}")
 
         logger.info("bronze_extract done key=%s bytes=%d", key, len(body))
-        return {"electricity_body": body, "bronze_collected_date": collected_date}
+        return {
+            "electricity_body": body,
+            "source_collected_at": collected_at,
+            "bronze_collected_date": date.fromisoformat(collected_at[:10]),
+        }
 
 
 def build_bronze_extractor(

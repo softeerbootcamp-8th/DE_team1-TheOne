@@ -4,8 +4,9 @@ Bronze 원본을 직접 읽지 않습니다 — 정제(주간·월간 원본을 
 `*_bronze_to_silver` 파이프라인이 이미 끝냈습니다(#512, #517). 이 단계는 **날짜로 붙이는
 일**만 합니다.
 
-두 CLEAN 은 대상 월 파티션 하나씩이고, 각자 자기 계보(`bronze_collected_date`, 전력은
-`ev_price_status`)를 싣고 옵니다. 그래서 여기서 원본을 다시 열어 볼 이유가 없습니다.
+두 CLEAN 은 대상 월 아래 수집 원천별 버전으로 남고, 각자 자기 계보
+(`bronze_collected_date`, 전력은 `ev_price_status`)를 싣고 옵니다. 여기서는 완료된 최신
+버전을 하나씩 고르고 원본은 다시 열지 않습니다.
 """
 
 import io
@@ -17,11 +18,11 @@ from main.aws_lambda.common.monthly_dataset import (
 )
 
 import pyarrow.parquet as pq
-from botocore.exceptions import ClientError
 from pipeline_core.extractor import Extractor
 
-from shared.common.s3_reader import get_object_bytes
-from shared.common.success_marker import marker_key, marker_path
+from shared.common.eia_fuel_version import source_collected_at_token
+from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.success_marker import data_key_is_complete, marker_path
 
 logger = logging.getLogger(__name__)
 
@@ -36,25 +37,31 @@ _DAG_ID = {
 
 
 def clean_silver_file(
-    base_dir: str, dataset: str, year_month: str, service_area: str
+    base_dir: str,
+    dataset: str,
+    year_month: str,
+    source_collected_at: str,
+    service_area: str,
 ) -> Path:
     dataset_root = Path(base_dir) / dataset
     area = service_area_segment(service_area)
     return (
         (dataset_root / area)
         / f"{PARTITION_KEY}={year_month}"
+        / f"source_collected_at={source_collected_at}"
         / f"{dataset}.parquet"
     )
 
 
 def clean_silver_key(
-    dataset: str, year_month: str, service_area: str
+    dataset: str, year_month: str, source_collected_at: str, service_area: str
 ) -> str:
     return join_segments(
         "silver",
         dataset,
         service_area_segment(service_area),
         f"{PARTITION_KEY}={year_month}",
+        f"source_collected_at={source_collected_at}",
         f"{dataset}.parquet",
     )
 
@@ -68,42 +75,53 @@ def _rows_from_bytes(dataset: str, body: bytes) -> list[dict]:
 
 def _read(
     base_dir: str, dataset: str, year_month: str, service_area: str
-) -> list[dict]:
-    path = (
+) -> tuple[list[dict], str]:
+    partition = (
         service_area_root(Path(base_dir) / dataset, service_area)
-        / f"{PARTITION_KEY}={year_month}" / f"{dataset}.parquet"
+        / f"{PARTITION_KEY}={year_month}"
     )
-    if path.is_file() and marker_path(path.parent).is_file():
+    candidates = []
+    for version in partition.glob("source_collected_at=*"):
+        token = source_collected_at_token(version.name)
+        path = version / f"{dataset}.parquet"
+        if token and path.is_file() and marker_path(version).is_file():
+            candidates.append((token, path))
+    if candidates:
+        token, path = max(candidates)
         # `pq.read_table` 은 경로의 `year_month=` 를 컬럼으로 덧붙입니다. 파일에
         # 실제로 쓰인 것만 봐야 하므로 ParquetFile 로 직접 읽습니다.
         rows = _rows_from_bytes(dataset, path.read_bytes())
         logger.info("clean_silver_extract done path=%s rows=%d", path, len(rows))
-        return rows
+        return rows, token
     raise FileNotFoundError(
-        f"{dataset} CLEAN Silver 가 없습니다: {path} — "
+        f"{dataset} CLEAN Silver 가 없습니다: {partition} — "
         f"{_DAG_ID[dataset]} 을 먼저 돌리세요."
     )
 
 
 def _read_s3(
     bucket: str, dataset: str, year_month: str, service_area: str
-) -> list[dict]:
-    prefix = service_area_prefix("silver", dataset, service_area=service_area)
-    key = f"{prefix}/{PARTITION_KEY}={year_month}/{dataset}.parquet"
-    try:
-        get_object_bytes(
-            bucket,
-            marker_key(f"{prefix}/{PARTITION_KEY}={year_month}"),
-        )
+) -> tuple[list[dict], str]:
+    area_prefix = service_area_prefix("silver", dataset, service_area=service_area)
+    prefix = f"{area_prefix}/{PARTITION_KEY}={year_month}/"
+    keys = set(list_keys(bucket, prefix))
+    candidates = []
+    for key in keys:
+        relative = key.removeprefix(prefix)
+        parts = relative.split("/")
+        if len(parts) != 2 or parts[1] != f"{dataset}.parquet":
+            continue
+        token = source_collected_at_token(parts[0])
+        if token and data_key_is_complete(key, keys):
+            candidates.append((token, key))
+    if candidates:
+        token, key = max(candidates)
         body = get_object_bytes(bucket, key)
-    except ClientError:
-        body = None
-    if body is not None:
         rows = _rows_from_bytes(dataset, body)
         logger.info("clean_silver_extract done key=%s rows=%d", key, len(rows))
-        return rows
+        return rows, token
     raise FileNotFoundError(
-        f"{dataset} CLEAN Silver 가 없습니다: s3://{bucket}/{key} — "
+        f"{dataset} CLEAN Silver 가 없습니다: s3://{bucket}/{prefix} — "
         f"{_DAG_ID[dataset]} 을 먼저 돌리세요."
     )
 
@@ -118,21 +136,27 @@ class EiaFuelPriceCleanExtractor(Extractor):
         self.name = f"eia_fuel_price_clean:{base_dir}:{year_month}"
 
     def extract(self) -> dict:
+        gas_rows, gas_source = _read(
+            self._base_dir, GAS_DATASET, self._year_month, self._service_area
+        )
+        electricity_rows, ev_source = _read(
+            self._base_dir,
+            ELECTRICITY_DATASET,
+            self._year_month,
+            self._service_area,
+        )
         return {
-            "gas_rows": _read(
-                self._base_dir, GAS_DATASET, self._year_month, self._service_area
-            ),
-            "electricity_rows": _read(
-                self._base_dir, ELECTRICITY_DATASET, self._year_month, self._service_area
-            ),
+            "gas_rows": gas_rows,
+            "electricity_rows": electricity_rows,
+            "gas_source_collected_at": gas_source,
+            "ev_source_collected_at": ev_source,
         }
 
 
 class EiaFuelPriceCleanS3Extractor(Extractor):
     """휘발유·전력 CLEAN Silver 를 S3 에서 함께 읽습니다.
 
-    각 CLEAN 은 대상 월 파티션 하나뿐이라 위치가 `year_month` 로 고정됩니다 — 파티션
-    나열이 필요 없어 raw_to_bronze 쪽의 "최신 파티션 찾기" 와 다릅니다.
+    대상 월 아래 완료된 최신 `source_collected_at` 버전을 원천별로 고릅니다.
     """
 
     def __init__(self, bucket: str, year_month: str, service_area: str):
@@ -142,13 +166,20 @@ class EiaFuelPriceCleanS3Extractor(Extractor):
         self.name = f"eia_fuel_price_clean_s3:{bucket}:{year_month}"
 
     def extract(self) -> dict:
+        gas_rows, gas_source = _read_s3(
+            self._bucket, GAS_DATASET, self._year_month, self._service_area
+        )
+        electricity_rows, ev_source = _read_s3(
+            self._bucket,
+            ELECTRICITY_DATASET,
+            self._year_month,
+            self._service_area,
+        )
         return {
-            "gas_rows": _read_s3(
-                self._bucket, GAS_DATASET, self._year_month, self._service_area
-            ),
-            "electricity_rows": _read_s3(
-                self._bucket, ELECTRICITY_DATASET, self._year_month, self._service_area
-            ),
+            "gas_rows": gas_rows,
+            "electricity_rows": electricity_rows,
+            "gas_source_collected_at": gas_source,
+            "ev_source_collected_at": ev_source,
         }
 
 

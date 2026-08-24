@@ -22,6 +22,7 @@ from main.airflow.common.assets import (
     service_area_root,
 )
 from main.airflow.common.monthly_bronze import latest_local_silver_version
+from shared.common.eia_fuel_version import FUEL_FILE_NAME, fuel_source_tokens
 from shared.common.s3_reader import list_keys
 from shared.common.success_marker import marker_path
 
@@ -103,6 +104,30 @@ def _resolve_versioned_input(
     raise FileNotFoundError(
         f"Silver 버전이 없습니다: {partition}. {upstream_dag} 을 먼저 돌리세요."
     )
+
+
+def _latest_fuel_price(partition: Path) -> Path | None:
+    candidates = []
+    for version in partition.glob("input_version=*"):
+        source_tokens = fuel_source_tokens(version.name)
+        path = version / FUEL_FILE_NAME
+        if source_tokens and path.is_file() and marker_path(version).is_file():
+            candidates.append((*source_tokens, path))
+    return max(candidates, default=(None, None, None))[-1]
+
+
+def _has_completed_fuel_s3(keys: set[str], prefix: str) -> bool:
+    for key in keys:
+        relative = key.removeprefix(prefix)
+        parts = relative.split("/")
+        if len(parts) != 2 or parts[1] != FUEL_FILE_NAME:
+            continue
+        if (
+            fuel_source_tokens(parts[0])
+            and f"{key.rsplit('/', 1)[0]}/_SUCCESS" in keys
+        ):
+            return True
+    return False
 
 
 def resolve_target_year_month(
@@ -195,13 +220,14 @@ def resolve_input_paths(
             service_area=service_area,
         )
 
-    fuel_path = (
+    fuel_partition = (
         service_area_root(params["fuel_price_path"], service_area)
-        / f"year_month={year_month}" / "gas_ev_price.parquet"
+        / f"year_month={year_month}"
     )
-    if not fuel_path.is_file() or not marker_path(fuel_path.parent).is_file():
+    fuel_path = _latest_fuel_price(fuel_partition)
+    if fuel_path is None:
         raise FileNotFoundError(
-            f"Silver 파일이 없습니다: {fuel_path}. "
+            f"Silver 파일이 없습니다: {fuel_partition}. "
             "eia_fuel_price_silver_pipeline 을 먼저 돌리세요."
         )
     resolved_files["fuel_price_path"] = str(fuel_path)
@@ -228,11 +254,16 @@ def validate_prod_input_partitions(
             f"year_month={year_month}/"
         )
         keys = set(list_keys(bucket, prefix))
-        if not any(
-            key.endswith(".parquet")
-            and f"{key.rsplit('/', 1)[0]}/_SUCCESS" in keys
-            for key in keys
-        ):
+        completed = (
+            _has_completed_fuel_s3(keys, prefix)
+            if dataset == "gas_ev_price"
+            else any(
+                key.endswith(".parquet")
+                and f"{key.rsplit('/', 1)[0]}/_SUCCESS" in keys
+                for key in keys
+            )
+        )
+        if not completed:
             missing.append(dataset)
     if missing:
         raise FileNotFoundError(

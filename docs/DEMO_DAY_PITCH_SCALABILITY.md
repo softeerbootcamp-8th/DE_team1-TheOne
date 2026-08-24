@@ -220,7 +220,7 @@
 | 그룹 | 데이터셋 | 파일명 방식 | 확장 방법 |
 |---|---|---|---|
 | 1 | driver_vehicle_monthly_snapshot, lease_vehicle_inventory | `<수집시각>.parquet` 타임스탬프 버저닝 | 기존 `staged_silver_version_path`/`commit_staged_silver`를 그대로 재사용 |
-| 2 | eia_gas_price, eia_electricity_price, eia_fuel_price | 매달 같은 고정 파일명(`eia_gas_price.parquet` 등) 덮어쓰기 | `<파일명>.staged.parquet` 규칙을 새로 만들고, validate task가 (기존처럼 이전 태스크가 미리 계산해준 경로를 받는 게 아니라) **자기 xcom에서 staging 경로를 스스로 도출**하도록 배선을 바꿔야 함 |
+| 2 | eia_gas_price, eia_electricity_price, eia_fuel_price | CLEAN은 `source_collected_at`, Fuel은 복합 `input_version` | 최종 버전 경로에 직접 쓰고 검증 성공 후 `_SUCCESS`를 발행 |
 
 - 그룹 2는 그룹 1과 배선 구조 자체가 다르다는 게 이번 조사의 핵심 발견이다 —
   단순히 "같은 패턴을 5번 복붙"이 아니라, 두 개의 서로 다른 확장 작업이 필요하다.
@@ -314,8 +314,8 @@ Docs는 정적 리포트, 히스토리가 아님). 원본을 매번 다시 스�
 
 F-5 하위 이슈 `#839`, `#851`, `#840`~`#849`를 통해 main 파이프라인의
 Bronze·Silver·Gold 경로와 대시보드 조회에
-`service_area=<sa>/year_month=<ym>` 계층을 반영했다. EIA Bronze는 월 대신
-수집일을 축으로 쓰므로 `service_area=<sa>/collected_date=<date>` 순서를 사용한다.
+`service_area=<sa>/year_month=<ym>` 계층을 반영했다. EIA Bronze도 수집 월 아래
+정밀 수집 버전을 두어 `service_area=<sa>/year_month=<ym>/collected_at=<UTC>`를 사용한다.
 
 최종 정리 `#849`에서 경로 함수의 `service_area`를 필수로 바꾸고,
 지역 경로가 없을 때 비지역 예전 경로를 읽던 이중 탐색을 제거했다. 따라서
@@ -476,7 +476,7 @@ transfer였다. #912 이후 해당 copy 경로 자체가 제거됐다.
 | 3 | `postgres_loader.py:32-35,58-71,74-104` — `_next_version`·`_PRIMARY_KEYS`·`_validate_written_rows` 전부 `year_month`만 봄 | 버전이 지역 간 공유 카운터가 된다(TX 첫 적재가 v2). **셋을 반드시 같이 고쳐야 한다** — PK만 빼면 IntegrityError, 검증만 빼면 다른 지역 행을 세서 매번 롤백. *일부만 고치면 안 고친 것보다 나쁘다* |
 | 4 | `dashboard/datasource.py:47-52` — `MAX(version) WHERE year_month = t.year_month` 상관 서브쿼리 | NYC v3, TX v1이면 서브쿼리가 둘 다 3을 반환 → **TX 행이 대시보드에서 전부 사라진다.** `:67`이 컬럼을 dataclass에서 자동 유도하므로 컬럼 추가만으론 에러도 안 난다 |
 | 5 | `dashboard/app.py:191` `.iloc[0]`, `:60` `merge(on=["driver_id","year_month"])` | 헤드라인 지표가 **아무 지역이나 하나 집어온다**(동전 던지기). **`driver_id`는 지역 간 유니크하지 않음이 확인됐다**(#805) — `build_driver_ids()`가 `SD0000`~`SD1999`를 지역 성분 없이 만든다. 조인이 fan-out돼 모든 집계가 부풀어 오르므로 조인 키에 `service_area`를 넣어야 한다 |
-| 6 | `silver_to_gold/job.py:133-137` `latest_fuel_price_path` S3 — `max(keys)`가 전체 서브트리 사전순 비교 | `service_area=TX`가 사전순 뒤라 **월과 무관하게 TX 유가가 NYC Gold에 들어간다.** EIA 시리즈는 원래 주(州)별이라 진짜 wrong-value 경로 |
+| 6 | `silver_to_gold/job.py`의 Fuel S3 입력 선택 | 지역·대상 월 아래 완료된 `input_version`만 골라 다른 지역이나 월의 유가가 Gold에 섞이지 않는다. |
 | 7 | `silver_to_gold/job.py:148-149` `_csv_path` | 로컬 모드에서 **두 지역이 서로의 Gold CSV를 덮어쓴다.** `validate_gold_outputs`(`tasks.py:286-295`)는 마지막에 쓴 지역을 검증 |
 | 8 | `monthly_taxi_trip_raw_to_silver/tasks.py:226-241` `existing_silver_partitions` (#165 가드) | 로컬·S3 양쪽 모두 **조용히 `[]` 반환** → #165 파티션 소실 가드가 공허하게 통과. 가드가 죽은 걸 아무도 모른다 |
 | 9 | `monthly_bronze.py:43` S3 파생 브랜치 — `base.name`으로 키를 처음부터 재구성 | `base`가 `.../monthly_taxi_trip/service_area=NYC`면 `base.name`이 `"service_area=NYC"` → 키가 `silver/service_area=NYC/...`가 되어 **데이터셋 디렉터리가 사라진다** |
@@ -500,13 +500,11 @@ transfer였다. #912 이후 해당 copy 경로 자체가 제거됐다.
 `year_month=NYC:2026-08` 디렉터리가 조용히 만들어지는 것보다 훨씬 낫다.
 **이 가드는 유지하고, `service_area` 형식 가드도 대칭으로 추가할 것.**
 
-### EIA 3종은 파티션 축이 다르다 — 단일 규칙이 안 먹히는 예외
+### EIA 3종도 월·수집 버전 계약으로 통일됐다
 
-`main/aws_lambda/common/eia_fuel_price_layout.py:31`, 사유는 `:9-20` 주석:
-**EIA Bronze는 `collected_date=`로 파티션된다, `year_month=`가 아니다.** 한 파일에
-26년치 이력이 들어있어 "그 파일의 월"이라는 개념이 없기 때문이다. 따라서
-`service_area=`를 넣는 모양이 다른 3종과 다르다 —
-`<dataset>/service_area=<sa>/collected_date=<d>/<file>`.
+EIA Bronze 파일은 여러 해의 이력을 담으므로 `year_month`는 데이터 월이 아니라
+**수집 월**입니다. 정확한 이력은 그 아래 `collected_at`으로 구분하며 원본 파일명은
+유지합니다: `<dataset>/service_area=<sa>/year_month=<ym>/collected_at=<UTC>/<file>`.
 
 덤으로 **지역이 URL이 아니라 파일명에도 박혀 있다** — `GAS_FILE_NAME =
 "gasoline_weekly_ny.xls"`(`:34`). `bronze_s3_prefix`/`newest_bronze_s3_key`가
@@ -679,7 +677,7 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
   않는다는 것도 코드 대조로 확인한 사실이다 — Loader가 경로를 문자열로 받고,
   파일명 패턴 검증(`job.py:271-279`)이 디렉터리를 보지 않는다. 예외는
   `latest_partition_files`(`job.py:201-209`)의 한 레벨 glob 하나다.
-- F의 "조용히 틀린 값" 11개 지점, "요란하게 죽는" 4개 지점, EIA `collected_date=`
+- F의 "조용히 틀린 값" 11개 지점, "요란하게 죽는" 4개 지점, EIA 수집 버전
   파티션 축 차이, 대시보드 3개 지점, 마이그레이션 도구 부재(`ALTER TABLE` 0건),
   테스트 하드 블로커 3개 — **전부 코드를 읽어 file:line으로 확인한 사실**이다.
 - `region` 이름 충돌도 사실이다 — `region_name=os.getenv("AWS_DEFAULT_REGION")`
@@ -749,7 +747,7 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
 5. [ ] **Gold Postgres 3함수 동시 수정**(`_next_version`, `_PRIMARY_KEYS`,
        `_validate_written_rows`) + 마이그레이션 SQL 런북 — *일부만 고치면 안 고친
        것보다 나쁘다*
-6. [ ] 경로 계층 추가(EIA는 `collected_date=` 축이라 별도 취급) → 대시보드 →
+6. [ ] 경로 계층 추가(EIA는 수집 월/시각을 함께 취급) → 대시보드 →
        `max_active_runs` 상향
 
 ### 그 외

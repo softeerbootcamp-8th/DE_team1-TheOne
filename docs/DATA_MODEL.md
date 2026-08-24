@@ -104,8 +104,32 @@ Gold는 `_SUCCESS`가 있는 최신 버전만 읽습니다. 같은 Bronze 수집
 Lambda가 처리하는 소규모 2종만 `data.parquet` 단일 파일을 사용하며, 생산 파이프라인은
 서로의 파일 형식을 허용하지 않습니다.
 
-EIA Bronze의 `collected_date=`와 고정 파일명 Silver의 `year_month=`도 파티션 바로 아래
-`_SUCCESS`를 둡니다. marker 없는 파티션은 Bronze→Silver·Silver 결합·Gold에서 읽지 않습니다.
+EIA Bronze는 수집 월과 정밀 수집 시각을 함께 보존하며 원본 파일명을 유지합니다.
+CLEAN Silver는 사용한 Bronze 버전을 `source_collected_at`으로 계승합니다.
+
+```text
+data/bronze/{eia_gas_price,eia_electricity_price}/service_area=<지역>/year_month=YYYY-MM/
+└── collected_at=YYYYMMDDTHHMMSSffffffZ/
+    ├── gasoline_weekly_ny.xls 또는 sales_revenue.xlsx
+    └── _SUCCESS
+
+data/silver/{eia_gas_price,eia_electricity_price}/service_area=<지역>/year_month=YYYY-MM/
+└── source_collected_at=YYYYMMDDTHHMMSSffffffZ/
+    ├── eia_gas_price.parquet 또는 eia_electricity_price.parquet
+    └── _SUCCESS
+```
+
+통합 연료비 Silver는 실행 시각 대신 두 CLEAN Silver 입력 조합을 자연 키로 씁니다.
+
+```text
+data/silver/gas_ev_price/service_area=<지역>/year_month=YYYY-MM/
+└── input_version=gas-<수집토큰>__ev-<수집토큰>/
+    ├── ny_fuel.parquet
+    └── _SUCCESS
+```
+
+같은 입력 조합의 재처리는 같은 파일을 교체하고, 어느 한 입력 버전이라도 바뀌면 새
+`input_version` 파일을 만듭니다. Gold는 marker가 있는 최신 입력 조합만 읽습니다.
 
 그 밖의 Spark Silver 쓰기는 `partitionOverwriteMode=dynamic` 입니다
 ([shared/spark/common/io.py](../shared/spark/common/io.py)). 재실행하면 **해당 파티션만**
