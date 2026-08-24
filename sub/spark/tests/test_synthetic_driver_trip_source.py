@@ -80,6 +80,9 @@ def test_임시행제한은_입력과_출력경로를_프로덕션에서_분리�
 @pytest.fixture(scope="module")
 def spark():
     session = get_or_create_spark_session("test_synthetic_driver_trip_source")
+    # 로컬 픽스처는 수십 행짜리라 기본값 200 파티션이면 셔플마다 200 태스크가
+    # 뜹니다. local[3] 에 맞춰 낮춥니다 (실험용 측정).
+    session.conf.set("spark.sql.shuffle.partitions", "4")
     yield session
     session.stop()
 
