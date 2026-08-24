@@ -5,6 +5,8 @@ config_hash가 다른 전월은 이어받지 않고, 임의 과거 월부터 재
 
 `sub/prototype/synthesize.py`와의 동등성 테스트는 마이그레이션 검증(#605,
 #609) 완료 후 prototype과 함께 제거했다.
+
+#974: 첫 달에 만든 전체 차량 목록과 차종별 대수는 이후 달에도 유지한다.
 """
 
 from __future__ import annotations
@@ -211,6 +213,28 @@ def test_published_현재상태로_재생한_노이즈는_전월_체크포인트
         replayed.sort_values("driver_id").reset_index(drop=True),
         second.noise_state.sort_values("driver_id").reset_index(drop=True),
     )
+
+
+def test_연속된_두달의_전체차량과_차종별대수는_같다():
+    config, master = _config(400), _vehicle_master()
+    first = synthesize_month(
+        target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
+        previous_current=None, previous_events=None, previous_noise=None,
+    )
+    second = synthesize_month(
+        target_month="2024-02", config=config, vehicle_master=master, trip_pool=POOL,
+        previous_current=first.current, previous_events=first.events,
+        previous_noise=first.noise_state,
+    )
+
+    first_fleet = first.fleet_units.sort_values("taxi_id").reset_index(drop=True)
+    second_fleet = second.fleet_units.sort_values("taxi_id").reset_index(drop=True)
+    pd.testing.assert_frame_equal(first_fleet, second_fleet)
+    assert first_fleet["taxi_id"].is_unique
+
+    active = second.current.loc[second.current["exited_on"].isna(), "taxi_id"].astype(str)
+    assert active.is_unique
+    assert set(active) <= set(second_fleet["taxi_id"].astype(str))
 
 
 # ── 2. 기존 Spark 경로용 뷰 변환 (#606, #609) ──────────────────────────────

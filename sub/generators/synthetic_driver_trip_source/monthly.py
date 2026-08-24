@@ -45,6 +45,7 @@ from sub.spark.jobs.driver_master.traits import load_bootstrap_pools
 CHECKPOINT_DIR_NAME = "driver_state"
 PREFERENCES_FILE = "driver_preferences.parquet"
 CURRENT_DRIVER_VEHICLE_FILE = "current_driver_vehicle.parquet"
+FLEET_UNITS_FILE = "fleet_units.parquet"
 # `S3CheckpointStore` 와 같은 뿌리를 씁니다 — 체크포인트와 그 파생 스냅샷이 흩어지면
 # 어느 달을 지워야 하는지 사람이 두 곳을 봐야 합니다.
 S3_STATE_PREFIX = S3_PUBLISHED_RUNTIME_PREFIX
@@ -93,6 +94,10 @@ def _preferences_bytes(frame: pd.DataFrame) -> bytes:
     )
 
 
+def _fleet_units_bytes(frame: pd.DataFrame) -> bytes:
+    return _table_bytes(pa.Table.from_pandas(frame, preserve_index=False))
+
+
 @dataclass(frozen=True)
 class MonthlyStatePaths:
     """경로가 `Path` 가 아니라 `str` 인 이유 — `s3://` 도 담습니다.
@@ -104,6 +109,7 @@ class MonthlyStatePaths:
     snapshot_dir: str
     preferences_path: str
     current_driver_vehicle_path: str
+    fleet_units_path: str
     clip_rate: float
 
 
@@ -118,7 +124,7 @@ def _data_month_partition(root: str | Path, value: date) -> str:
 def _snapshot_root(output_dir: str | Path, *, storage: str, bucket: str | None) -> str:
     """스냅샷을 어디에 둘지. `storage=s3` 면 로컬 `output_dir` 은 무시합니다.
 
-    EMR 워커는 Airflow 컨테이너의 로컬 디스크를 못 보므로, 운영에서 이 두 파일이
+    EMR 워커는 Airflow 컨테이너의 로컬 디스크를 못 보므로, 운영에서 이 세 파일이
     로컬에 남으면 executor 가 `spark.read.parquet` 에서 죽습니다.
     """
     if storage == "local":
@@ -268,16 +274,31 @@ def _validate_state(
 ) -> MonthlyStatePaths:
     preferences_path = _join(snapshot_dir, PREFERENCES_FILE)
     current_driver_vehicle_path = _join(snapshot_dir, CURRENT_DRIVER_VEHICLE_FILE)
+    fleet_units_path = _join(snapshot_dir, FLEET_UNITS_FILE)
     if not _exists(preferences_path):
         raise FileNotFoundError(f"기사 선호 파일이 없습니다: {preferences_path}")
     if not _exists(current_driver_vehicle_path):
         raise FileNotFoundError(f"current_driver_vehicle 파일이 없습니다: {current_driver_vehicle_path}")
+    if not _exists(fleet_units_path):
+        raise FileNotFoundError(f"전체 차량 파일이 없습니다: {fleet_units_path}")
     preferences = read_parquet_uri(preferences_path)
     if preferences["driver_id"].isna().any() or preferences["driver_id"].duplicated().any():
         raise ValueError("기사 선호 driver_id는 null 없이 고유해야 합니다")
     missing = set(_active_driver_ids(snapshot_dir)) - set(preferences["driver_id"].astype(str))
     if missing:
         raise ValueError(f"활성 기사 선호가 없습니다: {sorted(missing)[:5]}")
+    fleet_units = read_parquet_uri(fleet_units_path)
+    if fleet_units["taxi_id"].isna().any() or fleet_units["taxi_id"].duplicated().any():
+        raise ValueError("전체 차량 taxi_id는 null 없이 고유해야 합니다")
+    current_driver_vehicle = read_parquet_uri(current_driver_vehicle_path)
+    assigned = set(
+        current_driver_vehicle.loc[
+            current_driver_vehicle["lease_ended_on"].isna(), "taxi_id"
+        ].astype(str)
+    )
+    unknown = assigned - set(fleet_units["taxi_id"].astype(str))
+    if unknown:
+        raise ValueError(f"전체 차량 목록에 없는 차량이 배정됐습니다: {sorted(unknown)[:5]}")
     target_month = snapshot_dir.rstrip("/").rsplit("/", 1)[-1].removeprefix("data_month=")
     # `checkpoint.read_manifest` 는 로컬 전용입니다 — storage=s3 면 항상 None 을 줘서
     # "체크포인트가 없습니다" 로 잘못 죽습니다.
@@ -287,7 +308,11 @@ def _validate_state(
     if manifest is None:
         raise FileNotFoundError(f"체크포인트가 없습니다: {checkpoint_dir}")
     return MonthlyStatePaths(
-        snapshot_dir, preferences_path, current_driver_vehicle_path, manifest["clip_rate"]
+        snapshot_dir,
+        preferences_path,
+        current_driver_vehicle_path,
+        fleet_units_path,
+        manifest["clip_rate"],
     )
 
 
@@ -309,10 +334,13 @@ def prepare_monthly_state(
     checkpoint_dir = output_root / CHECKPOINT_DIR_NAME
     snapshot_root = _snapshot_root(output_root, storage=storage, bucket=bucket)
     target = _data_month_partition(snapshot_root, snapshot_date)
-    # 완결 신호는 **두 파일이 모두** 있는지입니다. S3 에는 rename 이 없어 디렉터리
+    # 완결 신호는 **세 파일이 모두** 있는지입니다. S3 에는 rename 이 없어 디렉터리
     # 존재만 보면 반쯤 올라간 파티션을 완결된 것으로 오인합니다.
-    if storage == "local" and _exists(_join(target, PREFERENCES_FILE)) and _exists(
-        _join(target, CURRENT_DRIVER_VEHICLE_FILE)
+    if (
+        storage == "local"
+        and _exists(_join(target, PREFERENCES_FILE))
+        and _exists(_join(target, CURRENT_DRIVER_VEHICLE_FILE))
+        and _exists(_join(target, FLEET_UNITS_FILE))
     ):
         return _validate_state(target, checkpoint_dir, storage=storage, bucket=bucket)
 
@@ -368,12 +396,16 @@ def prepare_monthly_state(
 
     preferences = adapters.to_driver_preferences(result.profiles)
     current_driver_vehicle = adapters.to_current_driver_vehicle(result.current, vehicle_pool)
+    fleet_units = result.fleet_units.rename(
+        columns={"weekly_price_usd": "weekly_lease_fee"}
+    )
 
     if is_s3_uri(target):
         return _publish_to_s3(
             target,
             preferences=preferences,
             current_driver_vehicle=current_driver_vehicle,
+            fleet_units=fleet_units,
             bucket=bucket,
             clip_rate=result.clip_rate,
         )
@@ -387,7 +419,10 @@ def prepare_monthly_state(
         _write_current_driver_vehicle(
             current_driver_vehicle, staged_partition / CURRENT_DRIVER_VEHICLE_FILE
         )
+        fleet_units.to_parquet(staged_partition / FLEET_UNITS_FILE, index=False)
         _validate_state(str(staged_partition), checkpoint_dir)
+        # 이전 버전의 두 파일짜리 상태가 남아 있으면 새 세 파일 묶음으로 교체합니다.
+        shutil.rmtree(target, ignore_errors=True)
         staged_partition.rename(target)
         return _validate_state(target, checkpoint_dir)
     finally:
@@ -399,23 +434,34 @@ def _publish_to_s3(
     *,
     preferences: pd.DataFrame,
     current_driver_vehicle: pd.DataFrame,
+    fleet_units: pd.DataFrame,
     bucket: str | None,
     clip_rate: float,
 ) -> MonthlyStatePaths:
     """staging→rename 대신 순서로 원자성을 흉내냅니다.
 
     S3 에 rename 이 없어서, `current_driver_vehicle` 을 **마지막에** 올립니다.
-    완결 판정이 두 파일의 동시 존재라, 중간에 죽으면 다음 실행이 미완결로 봅니다.
+    완결 판정이 세 파일의 동시 존재라, 중간에 죽으면 다음 실행이 미완결로 봅니다.
     """
     _put_bytes(_join(target, PREFERENCES_FILE), _preferences_bytes(preferences))
+    _put_bytes(_join(target, FLEET_UNITS_FILE), _fleet_units_bytes(fleet_units))
     _put_bytes(
         _join(target, CURRENT_DRIVER_VEHICLE_FILE),
         _current_driver_vehicle_bytes(current_driver_vehicle),
     )
     preferences_path = _join(target, PREFERENCES_FILE)
     current_driver_vehicle_path = _join(target, CURRENT_DRIVER_VEHICLE_FILE)
-    if not _exists(preferences_path) or not _exists(current_driver_vehicle_path):
+    fleet_units_path = _join(target, FLEET_UNITS_FILE)
+    if (
+        not _exists(preferences_path)
+        or not _exists(current_driver_vehicle_path)
+        or not _exists(fleet_units_path)
+    ):
         raise FileNotFoundError(f"S3 런타임 상태 공개가 완료되지 않았습니다: {target}")
     return MonthlyStatePaths(
-        target, preferences_path, current_driver_vehicle_path, clip_rate
+        target,
+        preferences_path,
+        current_driver_vehicle_path,
+        fleet_units_path,
+        clip_rate,
     )
