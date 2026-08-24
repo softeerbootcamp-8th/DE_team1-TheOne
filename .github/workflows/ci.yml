@@ -302,8 +302,13 @@ jobs:
   docker-build:
     name: 이미지 빌드
     needs: changes
+    # PR 에서만 굽습니다. develop push 때는 배포 워크플로가 **같은 Dockerfile 로 같은
+    # 이미지를 다시 구워 ECR 에 올리므로**, 여기서 한 번 더 굽는 것은 순수 중복입니다
+    # (측정값: spark 126s, airflow 165s). 그 커밋은 PR CI 에서 이미 빌드가 통과했고,
+    # 깨지면 배포가 빨간불로 멈춥니다 — 잃는 신호가 없습니다.
+    #
     # 바뀐 런타임이 하나도 없으면 job 자체가 뜨지 않습니다 (빈 matrix 는 에러라 먼저 거릅니다).
-    if: needs.changes.outputs.runtimes != '[]'
+    if: github.event_name == 'pull_request' && needs.changes.outputs.runtimes != '[]'
     runs-on: ubuntu-latest
     strategy:
       # 한 런타임이 깨져도 나머지 결과를 봐야 어디까지 성한지 압니다.
