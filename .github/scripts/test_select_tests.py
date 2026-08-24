@@ -21,6 +21,7 @@
 19. conftest·__init__ 변경은 전체 (수집 자체에 영향)
 20. 닿는 테스트가 없으면 전체 — 매핑 누락으로 아무것도 안 도는 쪽을 막음
 21. 선별 결과는 실재하는 파일만
+22. 루트 compose 변경은 Airflow 로그 보존 계약 테스트를 선택
 """
 
 import importlib.util
@@ -117,6 +118,17 @@ def test_분류되지_않은_GitHub_CI_스크립트는_스크립트_테스트만
 
     assert result.full == {".github/scripts"}
     assert result.tests == {}
+
+
+def test_루트_compose_변경은_Airflow_로그_보존_계약을_선택한다():
+    """compose 는 원격 로깅 설정의 소유자입니다. 매핑이 없으면 아무것도 안 돕니다."""
+    for compose in ("docker-compose.ec2.yml", "docker-compose.yml"):
+        result = select_tests.select_tests([compose])
+
+        assert result.full == set()
+        assert result.tests["main/airflow"] == {
+            "tests/test_compose_remote_logging.py"
+        }
 
 
 def test_모니터링_변경은_제품_테스트를_선택하지_않는다():
@@ -396,6 +408,7 @@ def test_선별된_테스트는_실재하는_파일이다():
         "sub/spark/jobs/driver_assignment/allocator.py",
         "sub/spark/jobs/driver_master/traits.py",
         "main/spark/jobs/silver_to_gold/job.py",
+        "docker-compose.ec2.yml",
     ):
         selection = select_tests.select_tests([changed])
         for project, chosen in selection.tests.items():
