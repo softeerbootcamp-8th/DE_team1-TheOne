@@ -123,12 +123,31 @@
 > Spark 성능 최적화
 
 <details>
-<summary><a href="/docs/SPARK_PARTITION_ETC_OPTIMIZATION.md">스파크 파티션 개수 및 기타 설정 최적화</a></summary>
+<summary><a href="/docs/SPARK_PARTITION_ETC_OPTIMIZATION.md">Silver → Gold Shuffle Partition 최적화</a></summary>
 
 - 과도한 Scheduling Overhead가 예상되어 파티션 수 변경 실험을 진행했습니다.
-  - 결과 : 200개(기존) -> 32개(변경 후) (소요 시간 : 40% 절감)
-- checkpoint 제거(eager=False 설정)
-  - 결과 : 7.3% 추가 절감
+  - 결과: Spark 기본값 200개 대신 실측 최적값 32개를 적용했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/SPARK_OPTIMIZATION_BROADCAST.md">Silver → Gold Broadcast Join 최적화</a></summary>
+
+- 작은 차량·유가 dimension을 broadcast해 큰 운행 DataFrame의 join shuffle을 줄였습니다.
+  - 결과: broadcast 완전 비활성화 대조군이 14.2% 느렸습니다.
+</details>
+
+<details>
+<summary><a href="/docs/SPARK_OPTIMIZATION_LAZY_CHECKPOINT.md">Silver → Gold Lazy Checkpoint 최적화</a></summary>
+
+- 반복 배정의 lineage 절단은 유지하고 checkpoint 즉시 실행만 지연했습니다.
+  - 결과: Jobs·Stages 8.7% 감소, 실행시간 7.3% 단축을 확인했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/SPARK_OPTIMIZATION_STRATEGIC_CACHING.md">Silver → Gold 전략적 캐싱</a></summary>
+
+- 반복 사용되는 중간 결과만 persist하고 수명주기에 맞춰 unpersist합니다.
+  - 결과: 전체 Silver 입력 추가 캐시는 1.0% 느려 적용하지 않았습니다.
 </details>
 
 ### 파이프라인 설계
@@ -136,7 +155,7 @@
 
 ### AWS 인프라 설계
 
-### [의사결정 문서](./docs/decision_making/README.md)
+### [의사결정 문서]([./docs/decision_making/README.md])
 > 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
 
 
