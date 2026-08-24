@@ -94,16 +94,33 @@ SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName="MemoryAllo
         └─ 이 조합인 지표만. JobId 차원 지표는 애초에 후보에 들어오지 않습니다
 ```
 
-`Worker*Used` 계열은 **앱 수준에 아예 없습니다.** 작업 하나하나의 워커 사용률은
-EMR Serverless 콘솔의 job run 상세에서 봅니다. 대시보드는 앱 수준 지표만 씁니다.
+### 워커 사용량은 Metrics Insights 로 봅니다
 
-| 보고 싶은 것 | 앱 수준 지표 |
+`Worker*Used`(실제 사용량)는 **앱 수준에 아예 없고 `JobId` 별로만** 발행됩니다. 그렇다고
+포기할 필요는 없습니다 — Metrics Insights 는 **서버에서 집계**해 `GROUP BY` 결과만
+돌려주므로, 스캔한 지표가 위젯 개수에 잡히지 않습니다.
+
+```sql
+SELECT SUM(WorkerMemoryUsed) FROM "AWS/EMRServerless"
+WHERE ApplicationId = '...' GROUP BY WorkerType
+```
+
+작업이 2000개든 2만개든 위젯에는 `Spark_Driver`·`Spark_Executor` 두 줄만 돌아옵니다.
+
+**위젯 하나에 Metrics Insights 쿼리는 1개까지입니다.** `GetMetricData` 가 호출당 1개만
+받고, 위젯 하나가 한 번의 호출로 그려지기 때문입니다. 그래서 `used / allocated` 비율을
+한 위젯에 담을 수 없어 used·allocated 를 나란한 두 위젯으로 둡니다. 두 개를 넣으면
+배포는 통과하고 위젯만 깨지므로 테스트가 막습니다.
+
+| 보고 싶은 것 | 방법 |
 |---|---|
-| 용량 상한에 붙었나 | `MemoryAllocated` / `MaxMemoryAllowed`, `CPUAllocated` / `MaxCPUAllowed` |
-| 워커가 몇 개 떠 있나 | `RunningWorkerCount`, `PendingCreationWorkerCount` |
-| 작업 상태 | `RunningJobs`, `PendingJobs`, `FailedJobs`, `SuccessJobs` |
+| 워커가 실제로 얼마나 쓰나 | Metrics Insights — `WorkerMemoryUsed`, `WorkerCpuUsed` |
+| 얼마나 할당됐나 | Metrics Insights — `WorkerMemoryAllocated`, `WorkerCpuAllocated` |
+| 애플리케이션 용량 상한에 붙었나 | 앱 수준 — `MemoryAllocated`/`MaxMemoryAllowed`, `CPUAllocated`/`MaxCPUAllowed` |
+| 워커가 몇 개 떠 있나 | 앱 수준 — `RunningWorkerCount`, `PendingCreationWorkerCount` |
+| 작업 상태 | 앱 수준 — `RunningJobs`, `PendingJobs`, `FailedJobs`, `SuccessJobs` |
 
-테스트가 스키마 고정과 지표명을 모두 잡습니다.
+테스트가 스키마 고정, 지표명, Metrics Insights 경유 여부, 위젯당 쿼리 수를 모두 잡습니다.
 
 ## 최초 1회 준비
 

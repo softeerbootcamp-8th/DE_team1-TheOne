@@ -53,12 +53,16 @@ def _dashboard():
     return json.loads(rendered)
 
 
-def test_dashboard_shows_emr_job_states_and_capacity():
+def test_dashboard_shows_job_states_worker_usage_and_capacity():
     titles = {
         widget["properties"].get("title") for widget in _dashboard()["widgets"]
     }
     assert {
         "EMR Serverless job states",
+        "EMR worker memory used (GB)",
+        "EMR worker memory allocated (GB)",
+        "EMR worker CPU used (vCPU)",
+        "EMR worker CPU allocated (vCPU)",
         "EMR application capacity used (%)",
         "EMR worker count",
     }.issubset(titles)
@@ -89,11 +93,45 @@ def test_every_search_pins_the_dimension_schema():
         assert f"SEARCH('{APP_SCHEMA} " in expression, f"스키마 미고정: {expression}"
 
 
-def test_dashboard_avoids_metrics_published_only_per_job():
-    """앱 수준에는 Worker*Used 가 아예 없습니다 — 쓰면 폭증하거나 빈 위젯이 됩니다."""
-    body = (MONITORING / "dashboard.json").read_text()
-    for metric in PER_JOB_METRICS:
-        assert metric not in body, f"{metric} 은 JobId 차원으로만 발행됩니다"
+def _widget_expressions():
+    for widget in _dashboard()["widgets"]:
+        if widget["type"] != "metric":
+            continue
+        expressions = [
+            item.get("expression", "")
+            for row in widget["properties"]["metrics"]
+            for item in row
+            if isinstance(item, dict)
+        ]
+        yield widget["properties"]["title"], expressions
+
+
+def test_per_job_metrics_are_only_read_through_metrics_insights():
+    """작업별 지표를 SEARCH 로 끌어오면 작업 수만큼 시계열이 늘어 한도를 넘습니다.
+
+    Metrics Insights 는 서버에서 집계해 GROUP BY 결과만 돌려주므로 스캔한 지표가
+    위젯 개수에 잡히지 않습니다. Worker*Used 는 앱 수준에 아예 없어서 사용량을 보려면
+    이 경로뿐입니다. 그래서 '쓰지 마라' 가 아니라 '이 경로로만 써라' 로 고정합니다.
+    """
+    for title, expressions in _widget_expressions():
+        for expression in expressions:
+            used = {m for m in PER_JOB_METRICS if m in expression}
+            if not used:
+                continue
+            assert expression.startswith("SELECT "), (
+                f"{title}: {used} 를 SEARCH 로 읽고 있습니다 — Metrics Insights 를 쓰세요"
+            )
+
+
+def test_each_widget_has_at_most_one_metrics_insights_query():
+    """GetMetricData 는 호출당 Metrics Insights 쿼리를 1개만 받습니다. 위젯 하나가
+
+    한 번의 호출로 그려지므로, 두 개를 넣으면 배포는 통과하고 위젯만 깨집니다.
+    used/allocated 비율을 한 위젯에 못 담는 이유가 이것입니다.
+    """
+    for title, expressions in _widget_expressions():
+        count = sum(1 for e in expressions if e.startswith("SELECT "))
+        assert count <= 1, f"{title}: Metrics Insights 쿼리가 {count}개입니다"
 
 
 def test_dashboard_metric_names_are_published_at_app_level():
