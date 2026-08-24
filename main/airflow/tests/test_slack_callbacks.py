@@ -7,7 +7,9 @@
    모든 검증 가드의 실패가 아무한테도 안 감 (#546)
 5. 렌더한 결과의 시도 표기가 분자·분모 같은 축을 씀 — clear 후 재실행에서
    `2 / 1` 이 나가던 문제 (#550)
-6. 실패 사유를 싣되 길면 자름. 없으면 `None` 이 아니라 `(사유 없음)`
+6. 실패 사유를 싣되 길면 자름. 없으면 `None` 이 아니라 `(사유 없음)`.
+   여러 줄이면 한 줄로 접음 — Slack 인라인 코드는 줄을 못 넘어서 EMR 실패
+   사유처럼 줄바꿈이 있으면 백틱이 글자 그대로 찍힘
 7. Block Kit은 상태·실행 유형·원인·조치를 먼저, 기술 식별자를 나중에 표시
 8. Gold 성공은 대상 연월과 Asset 실행 유형을 표시
 9. 모든 알림(텍스트·Block)이 파티션 키를 표시 — 지역 축(#674)이 들어가면 이걸로
@@ -344,6 +346,38 @@ def test_긴_예외는_잘라서_싣는다(text):
     assert reason.endswith("...`")
 
 
+# EMR Serverless 실패 사유는 "Last few exceptions:" 뒤에 예외를 줄 단위로 붙입니다.
+MULTILINE_EXCEPTION = RuntimeError(
+    "EMR Serverless job 실패: Serverless Job failed: FAILED - Job failed, please check "
+    "complete logs in configured logging destination. ExitCode: 1. Last few exceptions:\n"
+    "psycopg2.errors.UniqueViolation: duplicate key value violates unique constraint\n"
+    '"driver_aggregation_pkey"'
+)
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_여러_줄_사유도_한_줄로_접어_싣는다(text):
+    """Slack 의 인라인 코드(백틱 1개)는 줄을 넘지 못합니다. 여러 줄 사유를 그대로
+    실으면 여는 백틱과 닫는 백틱이 서로 다른 줄에 놓여 양쪽 다 짝이 없어지고,
+    Slack 이 코드로 렌더하지 않고 백틱을 글자 그대로 찍습니다 — 실제 EMR 실패
+    알림이 이렇게 깨져서 왔습니다. 다른 항목은 값이 한 줄이라 멀쩡했습니다.
+    """
+    rendered = _render(text, exception=MULTILINE_EXCEPTION)
+
+    reason = next(line for line in rendered.splitlines() if line.startswith("*원인*"))
+    assert reason.count("`") == 2, "백틱이 짝이 맞아야 코드로 렌더됩니다"
+    assert "driver_aggregation_pkey" in reason, "접느라 뒷부분을 잃으면 안 됩니다"
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_사유_안의_백틱이_코드_스팬을_깨지_않는다(text):
+    """검증 실패 메시지가 경로를 백틱으로 감싸는 경우가 있습니다."""
+    rendered = _render(text, exception=RuntimeError("`s3://de-theone/x` 가 없습니다"))
+
+    reason = next(line for line in rendered.splitlines() if line.startswith("*원인*"))
+    assert reason.count("`") == 2
+
+
 @pytest.mark.parametrize("text", ALERT_TEXTS)
 def test_예외가_없으면_None_이_아니라_사유_없음으로_찍는다(text):
     """`exception` 은 None 일 수 있고, `| string` 을 먼저 태우면 "None" 이 찍힙니다."""
@@ -453,3 +487,12 @@ def test_배포는_웹훅_커넥션을_환경변수로_넣는다():
 
     # 웹훅 URL 이 저장소에 박히지 않았는지
     assert "hooks.slack.com/services/T" not in compose + workflow
+
+
+@pytest.mark.parametrize("blocks", ALL_ALERT_BLOCKS)
+def test_Block에서도_여러_줄_사유가_코드_스팬을_깨지_않는다(blocks):
+    """텍스트 폴백과 Block Kit 이 같은 REASON_TEXT 를 씁니다. 한쪽만 고치면
+    실제로 나가는 Block 쪽이 깨진 채로 남습니다.
+    """
+    for line in _render_blocks(blocks, exception=MULTILINE_EXCEPTION).splitlines():
+        assert line.count("`") % 2 == 0, f"짝 없는 백틱: {line!r}"
