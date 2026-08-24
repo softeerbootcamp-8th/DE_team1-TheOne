@@ -13,7 +13,7 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 
-from schema.gold import DriverMonthlyProfit, MonthlyVehicleRecommendation
+from schema.gold import DriverMonthlyProfit, DriverCarSuggestion
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +23,7 @@ TABLES = (_DRIVER_AGGREGATION, _DRIVER_CAR_SUGGESTION)
 
 _TABLE_MODELS = {
     _DRIVER_AGGREGATION: DriverMonthlyProfit,
-    _DRIVER_CAR_SUGGESTION: MonthlyVehicleRecommendation,
+    _DRIVER_CAR_SUGGESTION: DriverCarSuggestion,
 }
 
 # PRIMARY KEY는 저장소 쪽 결정이라 dataclass에는 없는 정보라 별도로 둡니다.

@@ -69,10 +69,10 @@ class DriverMonthlyProfit:
 """
 [재고를 반영한 기사별 차량 추천]
 input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA / schema/gold.py - DriverMonthlyProfit
-output: schema/gold.py - MonthlyVehicleRecommendation
+output: schema/gold.py - DriverCarSuggestion
 """
 @dataclass(frozen=True)
-class MonthlyVehicleRecommendation:
+class DriverCarSuggestion:
     version: int
     """ 골드 데이터 버전 """
     
@@ -127,44 +127,3 @@ class MonthlyVehicleRecommendation:
 
     expected_revenue_increase: float
     """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverMonthlyProfit.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
-
-
-"""대시보드 호환용 과거 시뮬레이션 스키마. #927 이후 Gold Job은 적재하지 않습니다."""
-@dataclass(frozen=True)
-class DriverVehicleProfitSimulation:
-    version: int
-    driver_id: str
-    year_month: str
-    service_area: str
-    comfort_eligible: bool
-    extra_comfort_eligible: bool
-    candidate_vehicle_model_id: str
-    manufacturer: str
-    model_name: str
-    model_year: int
-    recommendation_reason: str
-    fuel_efficiency: float
-    recommended_monthly_lease_fee: float
-    expected_monthly_fuel_cost: float
-    expected_monthly_net_profit: float
-    expected_net_profit_increase: float
-    expected_revenue_increase: float
-
-
-"""대시보드 호환용 과거 Gold 재고 스키마. #927 이후 Gold Job은 적재하지 않습니다."""
-@dataclass(frozen=True)
-class LeaseVehicleInventory:
-    version: int
-    year_month: str
-    service_area: str
-    vehicle_model_id: str
-    manufacturer: str
-    model_name: str
-    model_year: int
-    fuel_type: str
-    fuel_efficiency: float
-    comfort_eligible: bool
-    extra_comfort_eligible: bool
-    weekly_lease_fee: float
-    image_url: str
-    stock: int
