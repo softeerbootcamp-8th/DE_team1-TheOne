@@ -6,9 +6,7 @@
 ## 증상
 
 도메인을 따로 사지 않고, gateway 인스턴스의 Elastic IP가 기본으로 갖고 있는 AWS
-퍼블릭 DNS(`ec2-43-200-202-72.ap-northeast-2.compute.amazonaws.com`)로 인증서를
-받으려 했다. 이 도메인은 실제로 정상 resolve된다(`dig`로 확인 완료). 그런데
-`certbot`을 돌리면 다음 에러로 계속 실패했다.
+퍼블릭 DNS로 인증서를 받으려 했다. 그런데 `certbot`을 돌리면 다음 에러로 계속 실패했다.
 
 ```
 sudo certbot --nginx -d ec2-43-200-202-72.ap-northeast-2.compute.amazonaws.com
@@ -22,10 +20,7 @@ by policy
 ## 원인
 
 Let's Encrypt는 `*.amazonaws.com`처럼 클라우드 제공업체가 소유한 공유 도메인에는
-정책적으로 인증서 발급을 거부한다(악용 방지 목적의 차단 목록). 도메인이 실제로
-안 뜨거나 소유권을 증명 못 해서가 아니라 — DNS도 정상이고 서버 설정도 문제없다 —
-그 도메인 자체가 애초에 발급 대상에서 제외되어 있는 것이라, nginx나 방화벽 쪽을
-아무리 고쳐도 해결되지 않는다.
+정책적으로 인증서 발급을 거부한다(악용 방지 목적의 차단 목록). 
 
 ## 해결
 
