@@ -2,8 +2,8 @@
 
 1. latest를 찾은 뒤 ETag·Last-Modified를 조건부 HEAD에 함께 전달
 2. 304는 미변경, 200은 변경으로 판정하고 대상 월·version을 반환
-3. API가 미변경이어도 대상 월 Bronze가 없으면 하위 DAG를 다시 실행
-4. 로컬과 S3에서 대상 월 Bronze가 있으면 미변경 분기를 Skip
+3. API가 미변경이어도 대상 월 Bronze나 대응 Silver 완료본이 없으면 하위 DAG를 다시 실행
+4. 로컬과 S3에서 최신 Bronze와 대응 Silver 완료본이 있으면 미변경 분기를 Skip
 5. 원천별 변경 분기는 서로 독립적으로 하위 DAG를 실행
 6. 성공한 원천만 상태를 기록하고 실패한 분기는 다음 실행에 남김
 7. 변경 또는 복구된 하위 DAG를 모두 기다린 뒤 READY Asset을 정확히 한 번 발행
@@ -27,6 +27,7 @@ YEAR_MONTH = "2026-08"
 READY_PARTITION_KEY = f"NYC:{YEAR_MONTH}"
 ETAG = '"47b92fc60237333c9667c4bcbe1c9573-97"'
 LAST_MODIFIED = "Fri, 21 Aug 2026 00:00:00 GMT"
+COLLECTION_TOKEN = "20260822T010203123456Z"
 
 
 def _response(
@@ -83,6 +84,51 @@ def _check(dataset: str, service_area: str = "NYC"):
             "service_area": service_area,
         },
     )
+
+
+def _local_roots(tmp_path, monkeypatch, dataset: str):
+    bronze_root = tmp_path / "bronze"
+    silver_root = tmp_path / "silver" / dataset
+    monkeypatch.setenv("BRONZE_STORAGE", "local")
+    monkeypatch.setenv("BRONZE_DIR", str(bronze_root))
+    monkeypatch.setenv(task_module.SILVER_DIR_ENVS[dataset], str(silver_root))
+    return bronze_root, silver_root
+
+
+def _write_local_bronze(
+    bronze_root, dataset: str, service_area: str = "NYC", token: str = COLLECTION_TOKEN
+):
+    data = (
+        bronze_root
+        / dataset
+        / f"service_area={service_area}"
+        / f"year_month={YEAR_MONTH}"
+        / f"collected_at={token}"
+        / "data.parquet"
+    )
+    data.parent.mkdir(parents=True, exist_ok=True)
+    data.touch()
+
+
+def _write_local_silver(
+    silver_root,
+    service_area: str = "NYC",
+    token: str = COLLECTION_TOKEN,
+    *,
+    data: bool = True,
+    success: bool = True,
+):
+    version = (
+        silver_root
+        / f"service_area={service_area}"
+        / f"year_month={YEAR_MONTH}"
+        / f"source_collected_at={token}"
+    )
+    version.mkdir(parents=True, exist_ok=True)
+    if data:
+        (version / "data.parquet").touch()
+    if success:
+        (version / "_SUCCESS").touch()
 
 
 def test_이전_validator를_조건부_HEAD에_보내고_304를_미변경으로_판정한다(
@@ -177,8 +223,7 @@ def test_API가_미변경이어도_로컬_Bronze가_없으면_재실행한다(
     monkeypatch,
 ):
     _mock_unchanged_source(monkeypatch, "monthly_taxi_trip")
-    monkeypatch.setenv("BRONZE_STORAGE", "local")
-    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+    _local_roots(tmp_path, monkeypatch, "monthly_taxi_trip")
 
     result = _check("monthly_taxi_trip")
 
@@ -189,95 +234,110 @@ def test_API가_미변경이어도_로컬_Bronze가_없으면_재실행한다(
     ("dataset", "dataset_dir"),
     task_module.BRONZE_DATASET_DIRS.items(),
 )
-def test_API가_미변경이고_로컬_Bronze가_있으면_Skip한다(
+def test_API가_미변경이고_로컬_Bronze와_Silver가_있으면_Skip한다(
     tmp_path,
     monkeypatch,
     dataset,
     dataset_dir,
 ):
     _mock_unchanged_source(monkeypatch, dataset)
-    monkeypatch.setenv("BRONZE_STORAGE", "local")
-    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
-    partition = (
-        tmp_path
-        / dataset_dir
-        / "service_area=NYC"
-        / f"year_month={YEAR_MONTH}"
-    )
-    partition.mkdir(parents=True)
-    (partition / "20260822T010203123456Z.parquet").touch()
+    bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
+    _write_local_bronze(bronze_root, dataset_dir)
+    _write_local_silver(silver_root)
 
     assert _check(dataset) is False
 
 
-def test_API가_미변경이고_새_로컬_Bronze가_있으면_Skip한다(tmp_path, monkeypatch):
+def test_API가_미변경이고_Silver가_없으면_재실행한다(tmp_path, monkeypatch):
     dataset = "monthly_taxi_trip"
     _mock_unchanged_source(monkeypatch, dataset)
-    monkeypatch.setenv("BRONZE_STORAGE", "local")
-    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
-    data = (
-        tmp_path
-        / dataset
-        / "service_area=NYC"
-        / f"year_month={YEAR_MONTH}"
-        / "collected_at=20260822T010203123456Z"
-        / "data.parquet"
-    )
-    data.parent.mkdir(parents=True)
-    data.touch()
+    bronze_root, _ = _local_roots(tmp_path, monkeypatch, dataset)
+    _write_local_bronze(bronze_root, dataset)
 
-    assert _check(dataset) is False
+    assert _check(dataset)["refresh_required"] is True
+
+
+def test_최신_Bronze보다_이전_Silver만_있으면_재실행한다(tmp_path, monkeypatch):
+    dataset = "monthly_taxi_trip"
+    _mock_unchanged_source(monkeypatch, dataset)
+    bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
+    _write_local_bronze(bronze_root, dataset)
+    _write_local_silver(silver_root, token="20260821T010203123456Z")
+
+    assert _check(dataset)["refresh_required"] is True
+
+
+@pytest.mark.parametrize(("data", "success"), [(True, False), (False, True)])
+def test_미완료_Silver는_재실행한다(tmp_path, monkeypatch, data, success):
+    dataset = "monthly_taxi_trip"
+    _mock_unchanged_source(monkeypatch, dataset)
+    bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
+    _write_local_bronze(bronze_root, dataset)
+    _write_local_silver(silver_root, data=data, success=success)
+
+    assert _check(dataset)["refresh_required"] is True
 
 
 def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, monkeypatch):
     dataset = "monthly_taxi_trip"
     _mock_unchanged_source(monkeypatch, dataset)
-    monkeypatch.setenv("BRONZE_STORAGE", "local")
-    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+    bronze_root, _ = _local_roots(tmp_path, monkeypatch, dataset)
     (
-        tmp_path
+        bronze_root
         / dataset
         / "service_area=NYC"
         / f"year_month={YEAR_MONTH}"
-        / "collected_at=20260822T010203123456Z"
+        / f"collected_at={COLLECTION_TOKEN}"
     ).mkdir(parents=True)
 
     assert _check(dataset)["refresh_required"] is True
 
 
 @pytest.mark.parametrize(
-    ("keys", "refresh_required"),
+    ("bronze_keys", "silver_keys", "refresh_required"),
     [
-        ([], True),
+        ([], [], True),
         (
             [
-                "bronze/lease_vehicle_inventory/"
-                "service_area=NYC/year_month=2026-08/"
-                "20260822T010203123456Z.parquet"
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet"
+            ],
+            [],
+            True,
+        ),
+        (
+            [
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet"
+            ],
+            [
+                "silver/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/source_collected_at={COLLECTION_TOKEN}/"
+                "data.parquet",
+                "silver/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/source_collected_at={COLLECTION_TOKEN}/"
+                "_SUCCESS",
             ],
             False,
         ),
         (
             [
                 "bronze/lease_vehicle_inventory/service_area=NYC/"
-                "year_month=2026-08/"
-                "collected_at=20260822T010203123456Z/data.parquet"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet"
             ],
-            False,
-        ),
-        (
             [
-                "bronze/lease_vehicle_inventory/service_area=NYC/"
-                "year_month=2026-08/"
-                "collected_at=20260822T010203123456Z/"
+                "silver/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/source_collected_at={COLLECTION_TOKEN}/"
+                "data.parquet"
             ],
             True,
         ),
     ],
 )
-def test_S3_Bronze_존재여부로_미변경_원천의_재실행을_판정한다(
+def test_S3_Bronze와_Silver_존재여부로_미변경_원천의_재실행을_판정한다(
     monkeypatch,
-    keys,
+    bronze_keys,
+    silver_keys,
     refresh_required,
 ):
     dataset = "lease_vehicle_inventory"
@@ -288,7 +348,7 @@ def test_S3_Bronze_존재여부로_미변경_원천의_재실행을_판정한다
 
     def list_keys(bucket, prefix):
         prefixes.append((bucket, prefix))
-        return keys
+        return bronze_keys if prefix.startswith("bronze/") else silver_keys
 
     monkeypatch.setattr(task_module, "list_keys", list_keys)
 
@@ -298,13 +358,17 @@ def test_S3_Bronze_존재여부로_미변경_원천의_재실행을_판정한다
         assert result["refresh_required"] is True
     else:
         assert result is False
-    assert prefixes == [
-        (
+    assert prefixes[0] == (
+        "lake",
+        "bronze/lease_vehicle_inventory/service_area=NYC/"
+        f"year_month={YEAR_MONTH}/",
+    )
+    if bronze_keys:
+        assert prefixes[1] == (
             "lake",
-            "bronze/lease_vehicle_inventory/service_area=NYC/"
-            "year_month=2026-08/",
+            "silver/lease_vehicle_inventory/service_area=NYC/"
+            f"year_month={YEAR_MONTH}/",
         )
-    ]
 
 
 def test_다른지역_Bronze는_대상지역의_중복수집을_막지않는다(
@@ -312,22 +376,22 @@ def test_다른지역_Bronze는_대상지역의_중복수집을_막지않는다(
 ):
     dataset = "monthly_taxi_trip"
     _mock_unchanged_source(monkeypatch, dataset)
-    monkeypatch.setenv("BRONZE_STORAGE", "local")
-    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
-    tx_data = (
-        tmp_path
-        / dataset
-        / "service_area=TX"
-        / f"year_month={YEAR_MONTH}"
-        / "collected_at=20260822T010203123456Z"
-        / "data.parquet"
-    )
-    tx_data.parent.mkdir(parents=True)
-    tx_data.touch()
+    bronze_root, _ = _local_roots(tmp_path, monkeypatch, dataset)
+    _write_local_bronze(bronze_root, dataset, service_area="TX")
 
     result = _check(dataset, service_area="NYC")
 
     assert result["refresh_required"] is True
+
+
+def test_다른지역_Silver는_대상지역의_누락을_가리지않는다(tmp_path, monkeypatch):
+    dataset = "monthly_taxi_trip"
+    _mock_unchanged_source(monkeypatch, dataset)
+    bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
+    _write_local_bronze(bronze_root, dataset, service_area="NYC")
+    _write_local_silver(silver_root, service_area="TX")
+
+    assert _check(dataset, service_area="NYC")["refresh_required"] is True
 
 
 def test_같은지역과_원본의_두번째_감시는_skip한다(tmp_path, monkeypatch):
@@ -342,21 +406,12 @@ def test_같은지역과_원본의_두번째_감시는_skip한다(tmp_path, monk
     monkeypatch.setattr(
         task_module, "inspect_source", lambda *args, **kwargs: next(inspections)
     )
-    monkeypatch.setenv("BRONZE_STORAGE", "local")
-    monkeypatch.setenv("BRONZE_DIR", str(tmp_path))
+    bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
 
     assert _check(dataset)["refresh_required"] is True
 
-    data = (
-        tmp_path
-        / dataset
-        / "service_area=NYC"
-        / f"year_month={YEAR_MONTH}"
-        / "collected_at=20260822T010203123456Z"
-        / "data.parquet"
-    )
-    data.parent.mkdir(parents=True)
-    data.touch()
+    _write_local_bronze(bronze_root, dataset)
+    _write_local_silver(silver_root)
 
     assert _check(dataset) is False
 

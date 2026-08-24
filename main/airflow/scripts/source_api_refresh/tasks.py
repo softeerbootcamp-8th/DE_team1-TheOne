@@ -13,7 +13,11 @@ from airflow.sdk import Variable, task
 from airflow.task.trigger_rule import TriggerRule
 
 from main.airflow.common import assets
-from main.airflow.common.monthly_bronze import bronze_collection_token
+from main.airflow.common.monthly_bronze import (
+    SILVER_PART_PATTERN,
+    bronze_collection_token,
+    latest_local_silver_version,
+)
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.common.s3_reader import list_keys
 
@@ -29,6 +33,11 @@ BRONZE_DATASET_DIRS = {
     "driver_vehicle_monthly_snapshot": "driver_vehicle_monthly_snapshot",
     "lease_vehicle_inventory": "lease_vehicle_inventory",
 }
+SILVER_DIR_ENVS = {
+    "monthly_taxi_trip": "SILVER_DIR",
+    "driver_vehicle_monthly_snapshot": "DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER_DIR",
+    "lease_vehicle_inventory": "LEASE_VEHICLE_INVENTORY_SILVER_DIR",
+}
 
 
 def state_key(dataset: str, service_area: str) -> str:
@@ -43,9 +52,9 @@ def state_key(dataset: str, service_area: str) -> str:
     return f"{STATE_KEY_PREFIX}{dataset}__{service_area}"
 
 
-def _bronze_partition_exists(
+def _latest_bronze_collection_token(
     dataset: str, year_month: str, service_area: str
-) -> bool:
+) -> str | None:
     dataset_dir = BRONZE_DATASET_DIRS[dataset]
     storage = os.getenv("BRONZE_STORAGE", "local")
     if storage == "local":
@@ -62,8 +71,13 @@ def _bronze_partition_exists(
             *partition.glob("*.parquet"),
             *partition.glob("collected_at=*/data.parquet"),
         )
-        return any(
-            path.is_file() and bronze_collection_token(path) for path in candidates
+        return max(
+            (
+                token
+                for path in candidates
+                if path.is_file() and (token := bronze_collection_token(path))
+            ),
+            default=None,
         )
     if storage == "s3":
         bucket = os.environ["DATA_LAKE_S3_BUCKET"]
@@ -71,9 +85,52 @@ def _bronze_partition_exists(
             f"bronze/{dataset_dir}/service_area={service_area}/"
             f"year_month={year_month}/"
         )
-        return any(
-            bronze_collection_token(PurePosixPath(key))
-            for key in list_keys(bucket, prefix)
+        return max(
+            (
+                token
+                for key in list_keys(bucket, prefix)
+                if (token := bronze_collection_token(PurePosixPath(key)))
+            ),
+            default=None,
+        )
+    raise ValueError(f"알 수 없는 BRONZE_STORAGE: {storage!r} (local 또는 s3)")
+
+
+def _silver_version_exists(
+    dataset: str,
+    year_month: str,
+    service_area: str,
+    collection_token: str,
+) -> bool:
+    storage = os.getenv("BRONZE_STORAGE", "local")
+    version_name = f"source_collected_at={collection_token}"
+    if storage == "local":
+        default_root = PROJECT_ROOT / "data" / "silver" / dataset
+        root = Path(os.getenv(SILVER_DIR_ENVS[dataset], str(default_root)))
+        partition = root / f"service_area={service_area}" / f"year_month={year_month}"
+        latest = latest_local_silver_version(partition)
+        return latest is not None and (
+            latest.name == version_name or latest.stem == collection_token
+        )
+    if storage == "s3":
+        bucket = os.environ["DATA_LAKE_S3_BUCKET"]
+        partition_prefix = (
+            f"silver/{dataset}/service_area={service_area}/"
+            f"year_month={year_month}/"
+        )
+        keys = list_keys(bucket, partition_prefix)
+        version_prefix = f"{partition_prefix}{version_name}/"
+        names = {
+            key.removeprefix(version_prefix)
+            for key in keys
+            if key.startswith(version_prefix)
+            and "/" not in key.removeprefix(version_prefix)
+        }
+        has_data = "data.parquet" in names or any(
+            SILVER_PART_PATTERN.fullmatch(name) for name in names
+        )
+        return ("_SUCCESS" in names and has_data) or (
+            f"{partition_prefix}{collection_token}.parquet" in keys
         )
     raise ValueError(f"알 수 없는 BRONZE_STORAGE: {storage!r} (local 또는 s3)")
 
@@ -243,18 +300,28 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
     )
     # mark_processed_task 는 context 없이 result 만 받으므로 지역을 여기서 실어
     # 보냅니다 — 상태를 읽은 키와 쓰는 키가 어긋나면 안 됩니다.
-    bronze_exists = _bronze_partition_exists(
+    collection_token = _latest_bronze_collection_token(
         dataset, result["year_month"], service_area
     )
-    result["refresh_required"] = result["changed"] or not bronze_exists
+    bronze_exists = collection_token is not None
+    silver_exists = bool(collection_token) and _silver_version_exists(
+        dataset,
+        result["year_month"],
+        service_area,
+        collection_token,
+    )
+    result["refresh_required"] = (
+        result["changed"] or not bronze_exists or not silver_exists
+    )
     logger.info(
         "원천 HEAD 검사: dataset=%s service_area=%s year_month=%s changed=%s "
-        "bronze_exists=%s refresh_required=%s etag=%s",
+        "bronze_exists=%s silver_exists=%s refresh_required=%s etag=%s",
         dataset,
         service_area,
         result["year_month"],
         result["changed"],
         bronze_exists,
+        silver_exists,
         result["refresh_required"],
         result["etag"],
     )
