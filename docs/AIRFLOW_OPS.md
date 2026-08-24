@@ -9,6 +9,7 @@ DAG **14개**를 EC2 위 Docker Airflow 로 돌립니다 — `sub/airflow/dags` 
 - [4. 재시도 정책](#4-재시도-정책)
 - [5. 장애 알림 설계](#5-장애-알림-설계)
 - [6. 스케줄](#6-스케줄)
+- [7. 실행 로그 보존](#7-실행-로그-보존)
 
 ---
 
@@ -136,3 +137,81 @@ SLA는 대상월 계산이 원천의 "latest" 해석에 달려 있어 절대 날
 
 원천 릴리스와 수집이 같은 날인 것은 의도적입니다 — 수집은 실패하면 2회 재시도(exponential backoff)하므로
 릴리스가 조금 늦어도 흡수됩니다. 그래도 못 받으면 Slack 으로 최종 실패가 옵니다.
+
+---
+
+## 7. 실행 로그 보존
+
+태스크 로그는 EC2 의 named volume 과 **S3 양쪽**에 남습니다. 볼륨은 배포·컨테이너
+재생성에는 살아남지만 인스턴스나 EBS 를 교체하면 실행 이력이 통째로 사라지고, UI 가
+`127.0.0.1:8080` 바인딩이라 로그를 보려면 매번 SSH 터널이 필요합니다 — 장애 알림의
+로그 링크를 온콜이 그 자리에서 열지 못한다는 뜻입니다.
+
+```
+s3://de-theone/
+  ├─ source/ · bronze/ · silver/     ← 데이터 계층
+  ├─ emr/
+  └─ logs/
+       └─ airflow/dag_id=.../run_id=.../task_id=.../attempt=1.log
+```
+
+`logs/` 를 데이터 계층 **안**이 아니라 옆에 둡니다. 안에 넣으면 레이크 스캔과
+Lifecycle 규칙이 로그까지 함께 걸립니다. 그 아래 `airflow/` 한 단계는 나중에
+EMR·Lambda 로그를 같은 접두사로 모을 자리입니다.
+
+key 가 `attempt=` 까지 갈라지므로 **재시도가 첫 실패 로그를 덮어쓰지 않습니다.**
+Airflow 기본 `log_filename_template` 이 만드는 구조이고, 업그레이드로 바뀌면 조용히
+유실되므로 계약 테스트로 고정했습니다(`main/airflow/tests/test_compose_remote_logging.py`).
+
+### 자격증명과 암호화
+
+커넥션을 만들지 않고 **인스턴스 role 을 그대로 씁니다.** `remote_log_conn_id` 가 비면
+S3Hook 이 커넥션 조회를 건너뛰고 boto 기본 체인으로 떨어집니다. Connection 을 쓰면 그
+값이 Postgres 볼륨에만 남아, 볼륨이 날아갔을 때 파이프라인은 초록불인데 로그만 조용히
+안 올라갑니다(#546 과 같은 실패 양상).
+
+> **role 에 `logs/airflow/*` 의 `PutObject` 와 `GetObject` 가 둘 다 필요합니다.**
+> Get 이 빠지면 완료된 태스크 로그가 UI 에서 통째로 안 보입니다 — 로그가 사라진 것처럼
+> 보이지만 실제로는 S3 에 있습니다.
+
+업로드는 객체마다 `ServerSideEncryption: AES256` 을 명시합니다
+(`AIRFLOW__LOGGING__ENCRYPT_S3_LOGS`). 버킷 기본 암호화와 별개로 붙으므로 기본값이
+바뀌어도 로그는 암호화된 채 올라갑니다.
+
+### 보존 기간
+
+**만료 90일 규칙 하나**입니다. 버킷에 직접 겁니다(저장소에 IaC 가 없어 수동 절차입니다).
+
+```bash
+aws s3api put-bucket-lifecycle-configuration --bucket de-theone \
+  --lifecycle-configuration '{
+    "Rules": [{
+      "ID": "airflow-logs-expire-90d",
+      "Status": "Enabled",
+      "Filter": {"Prefix": "logs/airflow/"},
+      "Expiration": {"Days": 90}
+    }]
+  }'
+```
+
+IA·Glacier 전이 단계를 두지 않습니다. 태스크 로그는 객체 하나가 수 KB~수백 KB 인데
+Standard-IA 는 128KB, Glacier 는 40KB 를 최소 청구 단위로 잡아 작은 객체는 오히려
+비싸집니다. 규모도 전이할 만큼이 아닙니다 — daily DAG 1개 + 나머지 월간·주간이라
+월 태스크 인스턴스가 200건 안팎이고, 건당 100KB 로 잡아도 **월 20MB(추정)** 입니다.
+Standard 로 1년을 통째로 둬도 월 $0.01 이 안 되는데, 전이 요청 비용이 그보다 큽니다.
+
+### 조회 절차
+
+```bash
+# 1. 알림에 찍힌 dag_id / run_id / task_id 로 바로 받기 (SSH 터널 불필요)
+aws s3 cp s3://de-theone/logs/airflow/dag_id=<DAG>/run_id=<RUN>/task_id=<TASK>/attempt=1.log -
+
+# 2. 어느 시도가 있었는지 모를 때
+aws s3 ls --recursive s3://de-theone/logs/airflow/dag_id=<DAG>/run_id=<RUN>/
+
+# 3. UI 로 볼 때는 평소대로 (완료된 태스크는 Airflow 가 S3 에서 읽어옵니다)
+ssh -N -L 8080:localhost:8080 <인스턴스>
+```
+
+로컬 `docker compose up` 은 원격 로깅을 켜지 않습니다. AWS 자격증명 없이 떠야 하기
+때문이고, 이것도 같은 계약 테스트가 지킵니다.
