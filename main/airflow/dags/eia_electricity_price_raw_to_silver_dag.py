@@ -5,7 +5,10 @@ from datetime import datetime, timedelta
 from airflow.models import Variable
 from airflow.sdk import Param, dag
 
-from main.airflow.common.assets import DEFAULT_SERVICE_AREA
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
 from main.airflow.scripts.eia_electricity_price_bronze_to_silver.tasks import (
     SILVER_DIR,
     bronze_to_silver_task,
@@ -37,7 +40,7 @@ default_args = {
     schedule="0 6 1 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "fuel", "eia", "ev", "silver"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),

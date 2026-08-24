@@ -45,7 +45,7 @@ def test_DAG는_월간_스케줄로_Raw부터_Silver까지_네_task를_순서대
     assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
     assert DAG.get_task("validate_bronze").downstream_task_ids == {"bronze_to_silver"}
     assert DAG.get_task("bronze_to_silver").downstream_task_ids == {"validate_silver"}
-    assert DAG.catchup is False and DAG.max_active_runs == 1
+    assert DAG.catchup is False and DAG.max_active_runs == 3
 
 
 def test_수집과_변환만_장애유형에_맞게_재시도한다():

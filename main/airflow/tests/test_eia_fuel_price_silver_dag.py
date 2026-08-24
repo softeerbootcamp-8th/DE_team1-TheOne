@@ -102,7 +102,7 @@ def test_DAG는_월간_스케줄로_확인_통합_검증을_순서대로_처리�
     assert set(DAG.task_ids) == {"check_clean_silver", "combine_silver", "validate_silver"}
     assert DAG.get_task("check_clean_silver").downstream_task_ids == {"combine_silver"}
     assert DAG.get_task("combine_silver").downstream_task_ids == {"validate_silver"}
-    assert DAG.catchup is False and DAG.max_active_runs == 1
+    assert DAG.catchup is False and DAG.max_active_runs == 3
 
 
 def test_통합만_재시도하고_확인과_검증은_재시도하지_않는다():

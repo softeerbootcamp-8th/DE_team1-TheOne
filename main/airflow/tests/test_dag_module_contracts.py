@@ -7,6 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from main.airflow.common.assets import MAX_ACTIVE_SERVICE_AREA_RUNS
+
 
 DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
 
@@ -46,7 +48,7 @@ def test_DAG_동시실행과_catchup_계약을_유지한다(module_name, dag_var
     dag = getattr(importlib.import_module(f"dags.{module_name}"), dag_variable)
 
     assert dag.catchup is False
-    assert dag.max_active_runs == 1
+    assert dag.max_active_runs == MAX_ACTIVE_SERVICE_AREA_RUNS
 
 
 @pytest.mark.parametrize(

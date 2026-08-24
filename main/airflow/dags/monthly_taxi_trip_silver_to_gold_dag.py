@@ -11,7 +11,10 @@ from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 # provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
 from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
 from main.airflow.common import assets
-from main.airflow.common.assets import DEFAULT_SERVICE_AREA
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
@@ -156,7 +159,7 @@ def _build_gold_operator():
     ),
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "taxi", "gold", "spark"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
