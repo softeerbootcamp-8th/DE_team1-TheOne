@@ -32,6 +32,7 @@ on:
       - 'main/spark/__init__.py'
       - 'main/spark/jobs/**'
       - 'main/__init__.py'
+      - 'main/common/**'
       - 'sub/__init__.py'
       - 'sub/spark/**'
       - 'sub/generators/**'

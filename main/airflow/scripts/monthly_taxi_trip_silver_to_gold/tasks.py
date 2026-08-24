@@ -22,7 +22,7 @@ from main.airflow.common.assets import (
     service_area_root,
 )
 from main.airflow.common.monthly_bronze import latest_local_silver_version
-from shared.common.eia_fuel_version import FUEL_FILE_NAME, fuel_source_tokens
+from main.common.eia_fuel_version import FUEL_FILE_NAME, fuel_source_tokens
 from shared.common.s3_reader import list_keys
 from shared.common.success_marker import marker_path
 

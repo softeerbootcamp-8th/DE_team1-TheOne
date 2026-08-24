@@ -7,7 +7,7 @@ from pipeline_core.pipeline import Pipeline
 from pipeline_core.transformer import Transformer
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
-from shared.common.eia_fuel_version import fuel_source_tokens
+from main.common.eia_fuel_version import fuel_source_tokens
 from .extractor import build_clean_extractor
 from .loader import build_silver_loader
 from .transformer import combine_daily_prices

@@ -29,7 +29,7 @@ from main.aws_lambda.common.monthly_dataset import (
     join_segments,
     service_area_segment,
 )
-from shared.common.eia_fuel_version import (
+from main.common.eia_fuel_version import (
     require_collected_at_token,
     source_collected_at_token,
 )

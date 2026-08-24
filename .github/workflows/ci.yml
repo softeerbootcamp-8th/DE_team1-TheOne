@@ -50,6 +50,7 @@ jobs:
             airflow:
               # `.github/scripts/check_image_filters.py` 가 Dockerfile COPY 와 대조합니다.
               - 'main/__init__.py'
+              - 'main/common/**'
               - 'main/airflow/**'
               - 'main/aws_lambda/__init__.py'
               - 'main/aws_lambda/common/**'
@@ -86,6 +87,7 @@ jobs:
               - 'Makefile'
               - '.dockerignore'
               - 'main/__init__.py'
+              - 'main/common/**'
               - 'main/spark/__init__.py'
               - 'main/spark/jobs/**'
               - 'sub/__init__.py'
@@ -104,6 +106,7 @@ jobs:
               - 'main/aws_lambda/functions/**'
               - 'main/aws_lambda/common/**'
               - 'main/__init__.py'
+              - 'main/common/**'
               - 'sub/__init__.py'
               - 'shared/__init__.py'
               - 'schema/**'

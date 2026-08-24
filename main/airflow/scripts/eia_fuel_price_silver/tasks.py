@@ -33,7 +33,7 @@ from shared.airflow.common.validation import (
     read_parquet,
 )
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
-from shared.common.eia_fuel_version import (
+from main.common.eia_fuel_version import (
     FUEL_FILE_NAME,
     fuel_source_tokens,
     source_collected_at_token,

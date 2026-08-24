@@ -9,6 +9,7 @@
 이슈 #912 (월별 3종의 공개 버전):
 5. `_SUCCESS`가 있는 source_collected_at 디렉터리만 공개 버전으로 고른다
 6. S3에서도 미완료 디렉터리를 무시하고 완료된 최신 버전을 고른다
+7. EMR가 쓰는 EIA 버전 계약은 이미지에 복사되는 `main/common`에서 import한다
 이슈 #845 (Gold가 연료비를 올바른 지역으로 읽는지):
 11. `main()`이 `--service_area`를 연료비와 월간 3종 최신 경로 조회에 그대로 넘긴다
 """
@@ -24,6 +25,12 @@ S3_REGION = "ap-northeast-2"
 SERVICE_AREA = "NYC"
 GAS_TOKEN = "20260824T123456123456Z"
 EV_TOKEN = "20260820T123456123456Z"
+
+
+def test_EMR_EIA버전계약은_main_패키지에_포함된다():
+    assert job.fuel_source_tokens.__module__ == "main.common.eia_fuel_version"
+    dockerfile = job.PROJECT_ROOT / "shared/spark/Dockerfile"
+    assert "COPY main/common/ /home/hadoop/main/common/" in dockerfile.read_text()
 
 
 def _write_fuel_version(
