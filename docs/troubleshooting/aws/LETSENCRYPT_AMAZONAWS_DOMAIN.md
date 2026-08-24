@@ -1,5 +1,8 @@
 # Let's Encrypt가 AWS 기본 제공 도메인엔 인증서를 안 줌
 
+> `*.amazonaws.com` 공유 도메인은 정책상 인증서 발급이 차단되어 있었음.
+> 무료 와일드카드 DNS `sslip.io`로 전환해 해결.
+
 ## 증상
 
 도메인을 따로 사지 않고, gateway 인스턴스의 Elastic IP가 기본으로 갖고 있는 AWS

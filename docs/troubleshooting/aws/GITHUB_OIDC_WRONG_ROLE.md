@@ -1,5 +1,8 @@
 # GitHub Actions OIDC가 "Not authorized"로 계속 실패함 — 원인은 트러스트 정책이 아니었음
 
+> GitHub 레포 Variable이 EC2용 IAM role을 가리키고 있어 OIDC assume이 거부됨.
+> GitHub Actions 배포 전용 role ARN으로 교체해 해결.
+
 ## 증상
 
 `deploy-dashboard.yml`의 "AWS 임시 자격증명 취득 (OIDC)" 단계가 `Assuming role with

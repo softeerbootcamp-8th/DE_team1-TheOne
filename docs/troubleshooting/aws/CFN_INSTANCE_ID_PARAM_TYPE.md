@@ -1,5 +1,9 @@
 # CloudFormation 배포가 exit 255 로만 죽음 — 범인은 파라미터 타입이었음
 
+> 인스턴스 ID 파라미터 타입이 `AWS::EC2::Instance::Id`라 배포 role에 없는
+> `ec2:DescribeInstances` 호출이 거부됨. `Type: String` + `AllowedPattern`으로
+> 교체해 해결.
+
 ## 증상
 
 `deploy-monitoring.yml` 의 "CloudFormation 배포" 단계가 이유 없이 실패.

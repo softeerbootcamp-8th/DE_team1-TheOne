@@ -1,5 +1,8 @@
 # S3 DeleteObject 권한 누락 — 놓친 이유는 "누가 S3를 만지는가"를 서비스 단위로만 셌기 때문
 
+> Airflow DAG가 직접 `DeleteObject`를 호출하는 주체라는 걸 놓쳐 권한이 빠져 있었음.
+> `theone-airflow-role`에 `s3:DeleteObject`를 추가해 해결.
+
 > 과거 장애 기록. #912 이후 Airflow의 staging copy/delete 승격은 제거됐으며 writer가
 > 최종 경로의 기존 `_SUCCESS`만 무효화한 뒤 직접 적재한다.
 
