@@ -60,7 +60,12 @@ def validate_curated_task(result: dict, **context) -> None:
     loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader")
 
     parsed = parse_handler_result(result)
+    # 적재 경로 검증용. 이제 실행일이 아니라 읽은 원천의 최신 수집일입니다.
     collected_date = parse_iso_date(result.get("collected_date"))
+    # ★ 낡음 판정은 `as_of`(읽기 상한, 보통 실행일) 로 해야 합니다.
+    #   `collected_date` 는 원천 날짜에서 나온 값이라 그걸 기준으로 재면 원천이
+    #   전부 반 년 낡아도 나이가 0 으로 나와 가드가 통째로 무력해집니다.
+    as_of = parse_iso_date(result.get("as_of") or result.get("collected_date"))
 
     total_rows = 0
     seen_cities: set[str] = set()
@@ -97,7 +102,7 @@ def validate_curated_task(result: dict, **context) -> None:
             f"{total_rows} != {parsed.row_count}"
         )
 
-    _require_fresh_sources(result.get("source_collected_dates"), collected_date)
+    _require_fresh_sources(result.get("source_collected_dates"), as_of)
     logger.info("Curated 검증 통과: cities=%d rows=%d", len(seen_cities), total_rows)
 
 

@@ -84,6 +84,26 @@ class VehicleMasterCuratedExtractor(Extractor):
         # 이번 실행이 읽은 원천 스냅샷 날짜. Pipeline 이 중간 데이터를 감추므로
         # 핸들러가 반환값을 만들 때 여기서 읽습니다 (Loader.paths 와 같은 방식).
         self.source_collected_dates: dict[str, str] = {}
+        self._resolved: dict[str, tuple[date, object]] | None = None
+
+    def resolve_source_dates(self) -> dict[str, str]:
+        """파케이를 읽기 전에 각 원천의 최신 파티션 날짜만 확정합니다.
+
+        핸들러가 Loader 를 만들기 **전에** 출력 파티션 날짜를 정해야 해서
+        필요합니다. 결과를 캐시하므로 `extract()` 가 목록 조회를 다시 하지
+        않습니다.
+        """
+        if self._resolved is None:
+            self._resolved = {
+                source_layout.DATASET: layout.latest_date_partition(
+                    source_layout.dataset_path(self._base_dir), self.as_of
+                )
+                for _, source_layout, _ in SOURCES
+            }
+        return {
+            dataset: resolved[0].isoformat()
+            for dataset, resolved in self._resolved.items()
+        }
 
     def extract(self) -> SourceTables:
         tables = SourceTables(as_of=self.as_of)
@@ -110,8 +130,8 @@ class VehicleMasterCuratedExtractor(Extractor):
         Curated 파일명은 데이터셋마다 고정이라 같은 파티션에 여러 파일이 쌓이지
         않습니다. Raw 처럼 최신 파일을 고를 필요가 없습니다.
         """
-        dataset_dir = source_layout.dataset_path(self._base_dir)
-        collected_date, partition = layout.latest_date_partition(dataset_dir, self.as_of)
+        self.resolve_source_dates()
+        collected_date, partition = self._resolved[source_layout.DATASET]
 
         sub_dirs = sorted(d for d in partition.glob(f"{sub_key}=*") if d.is_dir())
         if not sub_dirs:
@@ -152,6 +172,32 @@ class VehicleMasterCuratedS3Extractor(Extractor):
         load_local_env()
         self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
         self.source_collected_dates: dict[str, str] = {}
+        self._resolved: dict[str, tuple[date, list[str]]] | None = None
+
+    def resolve_source_dates(self) -> dict[str, str]:
+        """파케이를 내려받기 전에 각 원천의 최신 파티션 날짜만 확정합니다.
+
+        나열한 key 목록까지 캐시합니다 — 캐시하지 않으면 `extract()` 가
+        데이터셋마다 LIST 를 한 번 더 부릅니다.
+        """
+        if self._resolved is None:
+            resolved: dict[str, tuple[date, list[str]]] = {}
+            for _, source_layout, _ in SOURCES:
+                prefix = f"source/curated/{source_layout.DATASET}/"
+                all_keys = list_keys(self._bucket, prefix)
+                if not all_keys:
+                    raise FileNotFoundError(
+                        f"원천 Curated 데이터셋이 없습니다: s3://{self._bucket}/{prefix}"
+                    )
+                collected_date = layout.latest_date_from_keys(
+                    all_keys, self.as_of, f"s3://{self._bucket}/{prefix}"
+                )
+                resolved[source_layout.DATASET] = (collected_date, all_keys)
+            self._resolved = resolved
+        return {
+            dataset: resolved[0].isoformat()
+            for dataset, resolved in self._resolved.items()
+        }
 
     def extract(self) -> SourceTables:
         tables = SourceTables(as_of=self.as_of)
@@ -174,13 +220,8 @@ class VehicleMasterCuratedS3Extractor(Extractor):
         self, source_layout: ModuleType, sub_key: str
     ) -> tuple[date, list[dict]]:
         prefix = f"source/curated/{source_layout.DATASET}/"
-        all_keys = list_keys(self._bucket, prefix)
-        if not all_keys:
-            raise FileNotFoundError(f"원천 Curated 데이터셋이 없습니다: s3://{self._bucket}/{prefix}")
-
-        collected_date = layout.latest_date_from_keys(
-            all_keys, self.as_of, f"s3://{self._bucket}/{prefix}"
-        )
+        self.resolve_source_dates()
+        collected_date, all_keys = self._resolved[source_layout.DATASET]
         date_prefix = f"{prefix}{layout.DATE_PARTITION_KEY}={collected_date.isoformat()}/"
         date_keys = sorted(
             k for k in all_keys
