@@ -312,17 +312,12 @@ def _require_non_null(frame: DataFrame, columns: set[str], label: str) -> None:
 
 
 def build_lease_vehicle_inventory(
-    current_driver_vehicle: DataFrame,
+    fleet_units: DataFrame,
     vehicle_master: DataFrame,
 ) -> DataFrame:
-    """보유 차량을 차종·연식별 API 재고로 집계합니다.
-
-    `taxi_id` 로 먼저 dedup 합니다 — 이번 달 안에 기사가 바뀐 차량(퇴사 기사의
-    차량이 신규 기사에게 재배정된 경우)이 `current_driver_vehicle`에 두 행으로
-    남아 있으면 그 차량이 재고에 두 번 집계됩니다.
-    """
+    """배정 여부와 무관한 전체 보유 차량을 차종·연식별 API 재고로 집계합니다."""
     fleet = (
-        current_driver_vehicle.dropDuplicates(["taxi_id"]).groupBy(
+        fleet_units.dropDuplicates(["taxi_id"]).groupBy(
             "make_key",
             "model_key",
             "model_year",
@@ -887,6 +882,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
     ).transform(raw_trips).persist(StorageLevel.DISK_ONLY)
     preferences = read(str(state.preferences_path))
     current_driver_vehicle = read(str(state.current_driver_vehicle_path))
+    fleet_units = read(str(state.fleet_units_path))
     vehicle_master = read(args.vehicle_master_path)
     candidates, candidate_rejects = build_trip_candidates(
         trips,
@@ -935,7 +931,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
         seed=config.global_seed,
     ).persist(StorageLevel.DISK_ONLY)
     inventory_source = build_lease_vehicle_inventory(
-        current_driver_vehicle, vehicle_master
+        fleet_units, vehicle_master
     ).persist(StorageLevel.DISK_ONLY)
     try:
         if args.storage == "s3":

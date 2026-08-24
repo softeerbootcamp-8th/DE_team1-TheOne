@@ -6,6 +6,7 @@
 4. 정제 코드 소유권 → source job의 HVFHV 정제는 shared/ 를 그대로 쓰고, sub/ 자체
    스키마(schema/source)는 shared/ 가 쓰는 main 쪽 스키마와 구조가 같아야 함
 5. S3 발행 키 → `published/NYC` 아래에서 source_api 와 dataset 이름이 같음 (#859)
+6. 전체 차량 재고 → 배정되지 않은 차량까지 `stock`에 포함 (#974)
 """
 
 from datetime import date, datetime
@@ -386,11 +387,11 @@ def test_경력은_근속보다_짧을_수_없고_시드마다_재현된다(spar
     assert run(42) == run(42)              # 같은 시드면 재현
 
 
-def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집계한다(spark):
-    current_driver_vehicle = _current_driver_vehicle(spark, [
+def test_보유차량은_미배정차량까지_차종별_전체재고로_집계한다(spark):
+    fleet_units = _current_driver_vehicle(spark, [
         (f"driver-{i}", taxi_id, date(2023, 1, 1), date(2023, 1, 1), None,
          "KIA", "SPORTAGE", 2023, 574.0, True, False)
-        for i, taxi_id in enumerate(("taxi-1", "taxi-2"))
+        for i, taxi_id in enumerate(("taxi-1", "taxi-2", "taxi-unassigned"))
     ])
     vehicle_master = spark.createDataFrame(
         [
@@ -409,12 +410,12 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
         "combined_mpg_max double, image_url string, product string",
     )
 
-    inventory = build_lease_vehicle_inventory(current_driver_vehicle, vehicle_master)
+    inventory = build_lease_vehicle_inventory(fleet_units, vehicle_master)
     row = inventory.first()
 
     assert inventory.columns == LEASE_VEHICLE_INVENTORY_SCHEMA.names
     assert inventory.count() == 1
-    assert row.stock == 2
+    assert row.stock == 3
     assert row.fuel_efficiency == 26.0
     assert row.manufacturer == "KIA" and row.model_name == "SPORTAGE"
     assert row.comfort_eligible is True and row.extra_comfort_eligible is False
@@ -424,10 +425,8 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
 
 
 def test_보유차량_재고는_재배정된_taxi_id를_두_번_세지_않는다(spark):
-    """#609 — 퇴사 기사와 신규 기사가 같은 달에 같은 taxi_id 를 나눠 갖고 있으면
-    (재배정) `current_driver_vehicle`에 그 taxi_id 가 두 행으로 남습니다. taxi_id
-    로 먼저 dedup 하지 않으면 물리적으로 한 대인 차량이 재고 두 대로 집계됩니다."""
-    current_driver_vehicle = _current_driver_vehicle(spark, [
+    """전체 차량 입력에 같은 taxi_id가 중복돼도 한 대로만 집계합니다."""
+    fleet_units = _current_driver_vehicle(spark, [
         ("driver-1", "taxi-1", date(2020, 1, 1), date(2020, 1, 1), date(2026, 1, 15),
          "KIA", "SPORTAGE", 2023, 574.0, True, False),
         ("driver-2", "taxi-1", date(2026, 1, 15), date(2026, 1, 15), None,
@@ -439,7 +438,7 @@ def test_보유차량_재고는_재배정된_taxi_id를_두_번_세지_않는다
         "combined_mpg_max double, image_url string, product string",
     )
 
-    inventory = build_lease_vehicle_inventory(current_driver_vehicle, vehicle_master)
+    inventory = build_lease_vehicle_inventory(fleet_units, vehicle_master)
 
     assert inventory.first().stock == 1
 
