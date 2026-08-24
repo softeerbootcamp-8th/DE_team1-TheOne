@@ -58,6 +58,7 @@ def _write_clean(
         path = clean_silver_file(str(silver), "eia_gas_price", year_month, service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=GAS_SCHEMA), path)
+        (path.parent / "_SUCCESS").touch()
     if electricity:
         rows = [
             {"date": date(year, month, d), "ev_price": 0.4,
@@ -69,11 +70,12 @@ def _write_clean(
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=EV_SCHEMA), path)
+        (path.parent / "_SUCCESS").touch()
 
 
 def _write_silver(silver, year_month, rows, source=EIA, schema=SCHEMA,
                   collected=COLLECTED, status=FINAL, service_area="NYC"):
-    path = silver_tasks.staged_integrated_silver_file(
+    path = silver_tasks.integrated_silver_file(
         str(silver), year_month, service_area
     )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -135,6 +137,7 @@ def test_비지역_electricity_CLEAN으로는_대상지역_누락을_대신하�
     gas_path = clean_silver_file(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
     gas_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(gas_rows, schema=GAS_SCHEMA), gas_path)
+    (gas_path.parent / "_SUCCESS").touch()
 
     legacy = (
         tmp_path / "eia_electricity_price" / "year_month=2025-05"
@@ -185,6 +188,11 @@ def test_S3_CLEAN_두_객체를_고정된_월_키로_확인한다(monkeypatch):
         silver_tasks,
         "require_file",
         lambda location: seen.append(location) or location,
+    )
+    monkeypatch.setattr(
+        silver_tasks,
+        "require_success_marker",
+        lambda directory: None,
     )
 
     found = silver_tasks.require_clean_silver("unused", "2025-05", "NYC")
@@ -256,7 +264,7 @@ def test_다른_출처가_만든_산출물은_EIA_검증에서_실패한다(tmp_
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
-    path = silver_tasks.staged_integrated_silver_file(
+    path = silver_tasks.integrated_silver_file(
         str(tmp_path), "2024-03", "NYC"
     )
     with pytest.raises(FileNotFoundError):
@@ -300,7 +308,7 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
             "row_count": 31,
             "locations": [
                 "s3://data-lake/silver/gas_ev_price/service_area=NYC/"
-                "year_month=2024-03/.staging/gas_ev_price.parquet"
+                "year_month=2024-03/gas_ev_price.parquet"
             ],
         },
         "NYC",
@@ -309,7 +317,7 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
     assert isinstance(seen[0], silver_tasks.S3Location)
 
 
-# --- stage-then-commit (#757) -------------------------------------------------
+# --- validate-then-publish (#912) --------------------------------------------
 
 
 def _write_at(path, rows: int) -> None:
@@ -342,16 +350,11 @@ class _FakeOutletEvents(dict):
         return value
 
 
-def test_검증_실패시_기존_최종_산출물도_asset_발행도_안_일어난다(tmp_path):
-    """이슈 핵심 — commit·발행이 검증보다 먼저 일어나면 검증 안 된 데이터가 최종
-    경로를 덮어쓰고, Gold가 승격 전 산출물을 보게 됩니다(#757)."""
+def test_검증_실패시_SUCCESS와_asset을_공개하지_않는다(tmp_path):
     final = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03", "NYC")
-    _write_at(final, 31)
-
-    staged = silver_tasks.staged_integrated_silver_file(str(tmp_path), "2024-03", "NYC")
-    _write_at(staged, 30)
+    _write_at(final, 30)
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 30, "locations": [str(staged)]}
+        {"year_month": "2024-03", "row_count": 30, "locations": [str(final)]}
     )
     outlet_events = _FakeOutletEvents()
 
@@ -362,16 +365,16 @@ def test_검증_실패시_기존_최종_산출물도_asset_발행도_안_일어�
             outlet_events=outlet_events,
         )
 
-    assert pq.ParquetFile(final).read().num_rows == 31
-    assert staged.is_file()
+    assert final.is_file()
+    assert not (final.parent / "_SUCCESS").exists()
     assert outlet_events == {}
 
 
-def test_검증_통과시_최종_경로로_승격되고_asset이_발행된다(tmp_path):
-    staged = silver_tasks.staged_integrated_silver_file(str(tmp_path), "2024-03", "NYC")
-    _write_at(staged, 31)
+def test_검증_통과시_SUCCESS와_asset이_발행된다(tmp_path):
+    final = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03", "NYC")
+    _write_at(final, 31)
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 31, "locations": [str(staged)]}
+        {"year_month": "2024-03", "row_count": 31, "locations": [str(final)]}
     )
     outlet_events = _FakeOutletEvents()
 
@@ -381,8 +384,7 @@ def test_검증_통과시_최종_경로로_승격되고_asset이_발행된다(tm
         outlet_events=outlet_events,
     )
 
-    final = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03", "NYC")
     assert final.is_file()
-    assert not staged.exists()
+    assert (final.parent / "_SUCCESS").is_file()
     assert pq.ParquetFile(final).read().num_rows == 31
     assert outlet_events[silver_tasks.assets.FUEL_PRICE_SILVER].partitions

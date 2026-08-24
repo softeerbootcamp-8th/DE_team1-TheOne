@@ -108,6 +108,7 @@ def _write_local_bronze(
     )
     data.parent.mkdir(parents=True, exist_ok=True)
     data.touch()
+    (data.parent / "_SUCCESS").touch()
 
 
 def _write_local_silver(
@@ -300,7 +301,9 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
         (
             [
                 "bronze/lease_vehicle_inventory/service_area=NYC/"
-                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet",
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/_SUCCESS",
             ],
             [],
             True,
@@ -308,7 +311,9 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
         (
             [
                 "bronze/lease_vehicle_inventory/service_area=NYC/"
-                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet",
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/_SUCCESS",
             ],
             [
                 "silver/lease_vehicle_inventory/service_area=NYC/"
@@ -323,7 +328,9 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
         (
             [
                 "bronze/lease_vehicle_inventory/service_area=NYC/"
-                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet",
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/_SUCCESS",
             ],
             [
                 "silver/lease_vehicle_inventory/service_area=NYC/"

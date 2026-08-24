@@ -15,6 +15,7 @@
 
 from datetime import date
 from io import BytesIO
+from pathlib import Path
 
 import pyarrow.parquet as pq
 import pytest
@@ -22,7 +23,7 @@ from openpyxl import Workbook
 
 from main.aws_lambda.functions.eia_electricity_price_bronze_to_silver.loader import (
     EiaElectricityPriceSilverLoader,
-    staged_silver_file,
+    silver_file,
 )
 from main.aws_lambda.functions.eia_electricity_price_bronze_to_silver.transformer import (
     CENTS_PER_DOLLAR,
@@ -122,7 +123,7 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
     ).write(rows)
 
     assert result.location == str(
-        staged_silver_file(str(tmp_path), "2025-05", SERVICE_AREA)
+        silver_file(str(tmp_path), "2025-05", SERVICE_AREA)
     )
     assert result.row_count == 31
     table = pq.ParquetFile(result.location).read()
@@ -153,6 +154,7 @@ def _write_bronze(base, collected: date, body: bytes) -> None:
     path = layout.electricity_bronze_file(str(base), collected, SERVICE_AREA)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(body)
+    (path.parent / "_SUCCESS").touch()
 
 
 def test_가장_최신_수집분을_고른다(tmp_path):
@@ -188,6 +190,7 @@ def test_같은_내용을_다시_받으면_새_파티션을_만들지_않는다(
     first = EiaElectricityPriceBronzeLoader(
         str(bronze), date(2026, 8, 1), SERVICE_AREA
     ).write({"body": body})
+    (Path(first.location).parent / "_SUCCESS").touch()
     same = EiaElectricityPriceBronzeLoader(
         str(bronze), date(2026, 9, 1), SERVICE_AREA
     ).write({"body": body})
@@ -207,6 +210,7 @@ def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
         layout.electricity_bronze_key(date(2025, 5, 10), SERVICE_AREA),
         layout.electricity_bronze_key(COLLECTED, SERVICE_AREA),
     ]
+    keys.extend(f"{key.rsplit('/', 1)[0]}/_SUCCESS" for key in list(keys))
 
     collected_date, key = layout.newest_bronze_s3_key(
         keys, layout.ELECTRICITY_DATASET, layout.ELECTRICITY_FILE_NAME, SERVICE_AREA
@@ -250,6 +254,7 @@ def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
     path = layout.electricity_bronze_file(str(tmp_path), COLLECTED, "TX")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_xlsx(ROWS))
+    (path.parent / "_SUCCESS").touch()
 
     result = EiaElectricityPriceBronzeExtractor(str(tmp_path), "2025-05", "TX").extract()
 

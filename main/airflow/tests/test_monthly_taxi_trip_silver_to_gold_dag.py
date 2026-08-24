@@ -80,42 +80,33 @@ def _logical_date(year: int, month: int) -> datetime:
 def _write_inputs(
     root: Path, year_month: str, service_area: str = "NYC"
 ) -> None:
-    monthly_taxi_trip = (
-        root / "monthly_taxi_trip" / f"service_area={service_area}"
-        / f"year_month={year_month}"
-    )
-    monthly_taxi_trip.mkdir(parents=True)
-    (monthly_taxi_trip / "part-00000.parquet").touch()
+    token = "20260820T123456123456Z"
+    for dataset in (
+        "monthly_taxi_trip",
+        "driver_vehicle_monthly_snapshot",
+        "lease_vehicle_inventory",
+    ):
+        _write_completed_version(root, dataset, year_month, token, service_area)
 
-    files = {
-        "driver_vehicle_monthly_snapshot": "driver_vehicle_monthly_snapshot.parquet",
-        "lease_vehicle_inventory": "lease_vehicle_inventory.parquet",
-        "gas_ev_price": "gas_ev_price.parquet",
-    }
-    for dataset, file_name in files.items():
+    for dataset, file_name in {"gas_ev_price": "gas_ev_price.parquet"}.items():
         partition = (
             root / dataset / f"service_area={service_area}"
             / f"year_month={year_month}"
         )
         partition.mkdir(parents=True)
         (partition / file_name).touch()
-
-
-def _write_version(root: Path, dataset: str, year_month: str, file_name: str) -> Path:
-    path = (
-        root / dataset / "service_area=NYC" / f"year_month={year_month}"
-        / file_name
-    )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
-    return path
+        (partition / "_SUCCESS").touch()
 
 
 def _write_completed_version(
-    root: Path, dataset: str, year_month: str, token: str
+    root: Path,
+    dataset: str,
+    year_month: str,
+    token: str,
+    service_area: str = "NYC",
 ) -> Path:
     version = (
-        root / dataset / "service_area=NYC" / f"year_month={year_month}"
+        root / dataset / f"service_area={service_area}" / f"year_month={year_month}"
         / f"source_collected_at={token}"
     )
     version.mkdir(parents=True, exist_ok=True)
@@ -291,12 +282,12 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
 
 def test_대상연월은_기준일_이하_최신_HVFHV_파티션이다(tmp_path):
     for year_month in ("2026-03", "2026-05", "2026-09"):
-        partition = (
-            tmp_path / "monthly_taxi_trip" / "service_area=NYC"
-            / f"year_month={year_month}"
+        _write_completed_version(
+            tmp_path,
+            "monthly_taxi_trip",
+            year_month,
+            "20260820T123456123456Z",
         )
-        partition.mkdir(parents=True)
-        (partition / "part-00000.parquet").touch()
 
     resolved = dag_module.resolve_target_year_month(
         _logical_date(2026, 6), _params(tmp_path),
@@ -324,36 +315,17 @@ def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
 
     assert resolved["year"] == "2026" and resolved["month"] == "5"
     assert resolved["monthly_taxi_trip_path"].endswith(
-        "monthly_taxi_trip/service_area=NYC/year_month=2026-05/part-*.parquet"
+        "year_month=2026-05/source_collected_at=20260820T123456123456Z"
     )
     assert resolved["driver_vehicle_monthly_snapshot_path"].endswith(
-        "service_area=NYC/year_month=2026-05/driver_vehicle_monthly_snapshot.parquet"
+        "year_month=2026-05/source_collected_at=20260820T123456123456Z"
     )
     assert resolved["lease_vehicle_inventory_path"].endswith(
-        "service_area=NYC/year_month=2026-05/lease_vehicle_inventory.parquet"
+        "year_month=2026-05/source_collected_at=20260820T123456123456Z"
     )
     assert resolved["fuel_price_path"].endswith(
         "service_area=NYC/year_month=2026-05/gas_ev_price.parquet"
     )
-
-
-def test_API_Silver는_가장최신_collected_at_파일만_선택한다(tmp_path):
-    _write_inputs(tmp_path, "2026-05")
-    older = "20260820T123456123456Z.parquet"
-    latest = "20260821T123456123456Z.parquet"
-    for dataset in (
-        "monthly_taxi_trip",
-        "driver_vehicle_monthly_snapshot",
-        "lease_vehicle_inventory",
-    ):
-        _write_version(tmp_path, dataset, "2026-05", older)
-        _write_version(tmp_path, dataset, "2026-05", latest)
-
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
-
-    assert Path(resolved["monthly_taxi_trip_path"]).name == latest
-    assert Path(resolved["driver_vehicle_monthly_snapshot_path"]).name == latest
-    assert Path(resolved["lease_vehicle_inventory_path"]).name == latest
 
 
 def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp_path):
@@ -722,24 +694,7 @@ def test_validate_inputs는_대상지역을_함께_반환한다(tmp_path):
 
 def _write_scoped_inputs(root: Path, year_month: str, service_area: str) -> None:
     """지역 계층 아래에 Silver 4종을 씁니다."""
-    monthly_taxi_trip = (
-        root / "monthly_taxi_trip" / f"service_area={service_area}"
-        / f"year_month={year_month}"
-    )
-    monthly_taxi_trip.mkdir(parents=True)
-    (monthly_taxi_trip / "part-00000.parquet").touch()
-
-    for dataset, file_name in {
-        "driver_vehicle_monthly_snapshot": "driver_vehicle_monthly_snapshot.parquet",
-        "lease_vehicle_inventory": "lease_vehicle_inventory.parquet",
-        "gas_ev_price": "gas_ev_price.parquet",
-    }.items():
-        partition = (
-            root / dataset / f"service_area={service_area}"
-            / f"year_month={year_month}"
-        )
-        partition.mkdir(parents=True)
-        (partition / file_name).touch()
+    _write_inputs(root, year_month, service_area)
 
 
 def test_Gold_입력은_지역_계층_아래도_찾는다(tmp_path):

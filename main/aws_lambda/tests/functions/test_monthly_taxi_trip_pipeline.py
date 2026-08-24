@@ -26,6 +26,7 @@ API_URL = "http://source.example"
 DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
 DATASET_RESPONSE_URL = f"{DATASET_URL}?service_area=NYC"
 LATEST_URL = f"{API_URL}/v1/data/latest/datasets/monthly_taxi_trip"
+DATASET_RESPONSE_URL = f"{DATASET_URL}?service_area=NYC"
 FIRST_COLLECTED_AT = datetime(
     2026, 8, 20, 10, 15, 30, 123456, tzinfo=timezone.utc
 )
@@ -174,6 +175,7 @@ def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_
     _clock(monkeypatch, FIRST_COLLECTED_AT, SECOND_COLLECTED_AT)
 
     first = lambda_handler(_event(tmp_path))
+    (Path(first["locations"][0]).parent / "_SUCCESS").touch()
     second = lambda_handler(_event(tmp_path))
 
     assert second["locations"] == first["locations"]

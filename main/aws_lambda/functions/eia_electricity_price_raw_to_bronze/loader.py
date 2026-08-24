@@ -6,7 +6,7 @@ from datetime import date
 from pipeline_core.loader import Loader, WriteResult
 
 from main.aws_lambda.common import eia_fuel_price_layout as layout
-from shared.aws_lambda.common.atomic_write import atomic_write
+from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
 from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
@@ -44,6 +44,7 @@ class EiaElectricityPriceBronzeLoader(Loader):
             return WriteResult(location=str(duplicate), row_count=1)
 
         path.parent.mkdir(parents=True, exist_ok=True)
+        invalidate_success_marker(path.parent)
         atomic_write(path, lambda temporary: temporary.write_bytes(body))
 
         logger.info("적재 완료: %s (%d bytes)", path, len(body))
@@ -71,6 +72,7 @@ class EiaElectricityPriceS3BronzeLoader(Loader):
         result = S3Loader(
             key=key,
             bucket=self._bucket,
+            invalidate_parent_success=True,
         ).write(
             S3Object(body=body, row_count=1)
         )

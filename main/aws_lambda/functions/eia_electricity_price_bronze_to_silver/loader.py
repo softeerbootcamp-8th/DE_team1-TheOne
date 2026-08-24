@@ -11,7 +11,7 @@ from pipeline_core.loader import Loader, WriteResult
 from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
 
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA
-from shared.aws_lambda.common.atomic_write import atomic_write
+from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
 from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
@@ -45,21 +45,6 @@ def silver_key(year_month: str, service_area: str) -> str:
     )
 
 
-def staged_silver_file(
-    base_dir: str, year_month: str, service_area: str
-) -> Path:
-    """검증 전 씁니다. `silver_file`과 격리된 디렉터리라 검증 실패해도 최종
-    경로는 이전 상태 그대로 남습니다(#757)."""
-    final = silver_file(base_dir, year_month, service_area)
-    return final.parent / ".staging" / final.name
-
-
-def staged_silver_key(year_month: str, service_area: str) -> str:
-    final = silver_key(year_month, service_area)
-    parent, name = final.rsplit("/", 1)
-    return f"{parent}/.staging/{name}"
-
-
 class EiaElectricityPriceSilverLoader(Loader):
     """대상 월 한 달치를 고정 경로의 로컬 Parquet 하나로 저장합니다."""
 
@@ -78,8 +63,9 @@ class EiaElectricityPriceSilverLoader(Loader):
             raise ValueError("적재할 충전 단가 Silver 데이터가 없습니다.")
 
         table = pa.Table.from_pylist(data, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
-        path = staged_silver_file(self._base_dir, self._year_month, self._service_area)
+        path = silver_file(self._base_dir, self._year_month, self._service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
+        invalidate_success_marker(path.parent)
         atomic_write(
             path,
             lambda temporary: pq.write_table(table, temporary, compression="snappy"),
@@ -114,8 +100,9 @@ class EiaElectricityPriceS3SilverLoader(Loader):
         pq.write_table(table, buffer, compression="snappy")
 
         result = S3Loader(
-            key=staged_silver_key(self._year_month, self._service_area),
+            key=silver_key(self._year_month, self._service_area),
             bucket=self._bucket,
+            invalidate_parent_success=True,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=table.num_rows)
         )

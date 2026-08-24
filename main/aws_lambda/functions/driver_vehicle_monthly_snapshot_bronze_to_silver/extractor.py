@@ -14,6 +14,7 @@ from main.aws_lambda.common.monthly_dataset import (
     service_area_segment,
 )
 from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 
 from .loader import DATASET
 
@@ -81,8 +82,11 @@ def _bronze_s3_prefix(year_month: str, service_area: str) -> str:
 
 
 def _newest_key(keys: list[str], prefix: str) -> str:
+    key_set = set(keys)
     candidates = [
-        (key, bronze_collection_token(PurePosixPath(key))) for key in keys
+        (key, bronze_collection_token(PurePosixPath(key)))
+        for key in keys
+        if data_key_is_complete(key, key_set)
     ]
     candidates = [(key, token) for key, token in candidates if token]
     if not candidates:
@@ -102,7 +106,11 @@ def _newest_bronze_path(
         *partition.glob("*.parquet"),
         *partition.glob("collected_at=*/data.parquet"),
     ]
-    candidates = [path for path in candidates if bronze_collection_token(path)]
+    candidates = [
+        path
+        for path in candidates
+        if bronze_collection_token(path) and data_path_is_complete(path)
+    ]
     if candidates:
         return max(candidates, key=bronze_collection_token)
     raise FileNotFoundError(

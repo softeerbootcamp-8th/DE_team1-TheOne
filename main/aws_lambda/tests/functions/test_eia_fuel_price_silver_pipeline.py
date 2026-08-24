@@ -77,6 +77,7 @@ def _write_clean(
         path = clean_silver_file(str(silver), dataset, year_month, service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=schema), path)
+        (path.parent / "_SUCCESS").touch()
 
 
 def test_날짜로_붙여_통합_스키마로_적재한다(tmp_path):
@@ -151,7 +152,7 @@ def test_산출물_경로는_데이터의_달을_쓴다(tmp_path):
     result = lambda_handler({"year_month": "2025-05", "silver_dir": str(tmp_path)})
 
     assert (
-        "gas_ev_price/service_area=NYC/year_month=2025-05/.staging/gas_ev_price.parquet"
+        "gas_ev_price/service_area=NYC/year_month=2025-05/gas_ev_price.parquet"
         in result["locations"][0]
     )
 
@@ -190,6 +191,7 @@ def _write_gas(silver, year_month, price, service_area=SERVICE_AREA):
     pq.write_table(
         pa.Table.from_pylist(_gas_rows(price=price), schema=GAS_SCHEMA), path
     )
+    (path.parent / "_SUCCESS").touch()
 
 
 def test_지역_경로와_옛_경로가_모두_있으면_지역_경로를_읽는다(tmp_path):
@@ -227,6 +229,6 @@ def test_service_area를_TX로_주면_읽기_쓰기_모두_그_경로로_나간�
     )
 
     assert (
-        "gas_ev_price/service_area=TX/year_month=2025-05/.staging/gas_ev_price.parquet"
+        "gas_ev_price/service_area=TX/year_month=2025-05/gas_ev_price.parquet"
         in result["locations"][0]
     )

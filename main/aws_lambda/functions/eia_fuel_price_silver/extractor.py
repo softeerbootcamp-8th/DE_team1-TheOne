@@ -21,6 +21,7 @@ from botocore.exceptions import ClientError
 from pipeline_core.extractor import Extractor
 
 from shared.common.s3_reader import get_object_bytes
+from shared.common.success_marker import marker_key, marker_path
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +73,7 @@ def _read(
         service_area_root(Path(base_dir) / dataset, service_area)
         / f"{PARTITION_KEY}={year_month}" / f"{dataset}.parquet"
     )
-    if path.is_file():
+    if path.is_file() and marker_path(path.parent).is_file():
         # `pq.read_table` 은 경로의 `year_month=` 를 컬럼으로 덧붙입니다. 파일에
         # 실제로 쓰인 것만 봐야 하므로 ParquetFile 로 직접 읽습니다.
         rows = _rows_from_bytes(dataset, path.read_bytes())
@@ -90,6 +91,10 @@ def _read_s3(
     prefix = service_area_prefix("silver", dataset, service_area=service_area)
     key = f"{prefix}/{PARTITION_KEY}={year_month}/{dataset}.parquet"
     try:
+        get_object_bytes(
+            bucket,
+            marker_key(f"{prefix}/{PARTITION_KEY}={year_month}"),
+        )
         body = get_object_bytes(bucket, key)
     except ClientError:
         body = None

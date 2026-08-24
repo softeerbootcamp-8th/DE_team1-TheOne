@@ -8,7 +8,7 @@
 6. 경고 severity GX 실패는 Data Docs에 남기되 파이프라인을 중단하지 않는다.
 7. Suite에 저장할 날짜 InSet 값은 ISO 문자열로 왕복한다.
 8. s3:// 위치는 Path로 접히지 않고 S3 조회로 검증한다.
-9. commit_staged_file — 검증된 단일 파일을 최종 위치로 승격한다 (#757).
+9. 검증 성공 후에만 로컬·S3 `_SUCCESS` marker를 공개한다 (#912).
 """
 
 import io
@@ -24,15 +24,16 @@ import pytest
 from shared.airflow.common import validation
 from shared.airflow.common.validation import (
     S3Location,
-    commit_staged_file,
     layout_tail,
     location_size,
     parse_handler_result,
     parse_location,
     parse_iso_date,
     parse_year_month,
+    publish_success_marker,
     read_parquet,
     require_file,
+    require_success_marker,
     run_gx_validation,
 )
 
@@ -413,58 +414,41 @@ def test_location_size는_로컬과_s3를_같은_방식으로_준다(monkeypatch
     assert location_size(parse_location(S3_URI)) == 5
 
 
-# --- commit_staged_file (#757) -----------------------------------------------
+# --- success marker (#912) ---------------------------------------------------
 
 
-def test_로컬_승격은_staged를_final로_옮기고_기존_final을_덮어쓴다(tmp_path):
-    staged = tmp_path / ".staging" / "data.parquet"
-    staged.parent.mkdir(parents=True)
-    staged.write_bytes(b"new")
-    final = tmp_path / "data.parquet"
-    final.write_bytes(b"old")
+def test_로컬_SUCCESS는_공개_전에는_없고_공개하면_읽힌다(tmp_path):
+    directory = tmp_path / "year_month=2026-08"
 
-    commit_staged_file(staged, final)
+    with pytest.raises(FileNotFoundError, match="marker"):
+        require_success_marker(directory)
 
-    assert not staged.exists()
-    assert final.read_bytes() == b"new"
+    publish_success_marker(directory)
 
-
-def test_로컬_승격은_final_디렉터리가_없어도_만든다(tmp_path):
-    staged = tmp_path / ".staging" / "data.parquet"
-    staged.parent.mkdir(parents=True)
-    staged.write_bytes(b"new")
-    final = tmp_path / "year_month=2026-08" / "data.parquet"
-
-    commit_staged_file(staged, final)
-
-    assert final.read_bytes() == b"new"
+    assert (directory / "_SUCCESS").is_file()
+    require_success_marker(directory)
 
 
-def test_S3_승격은_복사_후_staged_키를_지운다(monkeypatch):
+def test_S3_SUCCESS를_최종_prefix에_쓴다(monkeypatch):
     calls = []
 
     class FakeClient:
-        def copy(self, source, bucket, key):
-            calls.append(("copy", source, bucket, key))
-
-        def delete_object(self, Bucket, Key):
-            calls.append(("delete", Bucket, Key))
+        def put_object(self, Bucket, Key, Body):
+            calls.append((Bucket, Key, Body))
 
     monkeypatch.setattr(validation.boto3, "client", lambda name: FakeClient())
-    staged = S3Location("lake", "silver/x/year_month=2026-08/.staging/data.parquet")
-    final = S3Location("lake", "silver/x/year_month=2026-08/data.parquet")
+    directory = S3Location("lake", "silver/x/year_month=2026-08")
 
-    commit_staged_file(staged, final)
+    publish_success_marker(directory)
 
-    copy_index = calls.index(
-        ("copy", {"Bucket": "lake", "Key": staged.key}, "lake", final.key)
-    )
-    delete_index = calls.index(("delete", "lake", staged.key))
-    assert copy_index < delete_index
+    assert calls == [("lake", f"{directory.key}/_SUCCESS", b"")]
 
 
-def test_승격은_staged와_final의_위치_종류가_다르면_실패한다(tmp_path):
-    with pytest.raises(TypeError, match="위치 종류가 다릅니다"):
-        commit_staged_file(tmp_path / "data.parquet", S3Location("lake", "data.parquet"))
-    with pytest.raises(TypeError, match="위치 종류가 다릅니다"):
-        commit_staged_file(S3Location("lake", "data.parquet"), tmp_path / "data.parquet")
+def test_S3_SUCCESS가_없으면_읽기를_거부한다(monkeypatch):
+    def missing(bucket, key):
+        raise RuntimeError("NoSuchKey")
+
+    monkeypatch.setattr(validation, "get_object_stream", missing)
+
+    with pytest.raises(FileNotFoundError, match="_SUCCESS"):
+        require_success_marker(S3Location("lake", "silver/x/year_month=2026-08"))

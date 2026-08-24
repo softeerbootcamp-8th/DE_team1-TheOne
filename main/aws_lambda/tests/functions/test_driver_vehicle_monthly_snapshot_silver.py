@@ -71,6 +71,7 @@ def _bronze(
     partition.mkdir(parents=True, exist_ok=True)
     path = partition / "20260801T000000000000Z.parquet"
     pq.write_table(pa.Table.from_pylist(rows), path)
+    (partition / "_SUCCESS").touch()
     return path
 
 
@@ -82,7 +83,6 @@ def _event(tmp_path: Path, service_area: str = SERVICE_AREA) -> dict:
         "silver_output_path": str(
             silver_root
             / f"year_month={YEAR_MONTH}"
-            / ".staging"
             / VERSION_DIR
         ),
         "service_area": service_area,
@@ -123,6 +123,12 @@ def _put_bronze(
         Key=key,
         Body=sink.getvalue().to_pybytes(),
     )
+    marker_parent = key.rsplit("/", 1)[0]
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{marker_parent}/_SUCCESS",
+        Body=b"",
+    )
 
 
 def _s3_event(
@@ -135,7 +141,7 @@ def _s3_event(
         "year_month": year_month,
         "silver_output_path": (
             f"s3://{S3_BUCKET}/silver/{DATASET}/{area}year_month={year_month}/"
-            f".staging/{VERSION_DIR}"
+            f"{VERSION_DIR}"
         ),
         "service_area": service_area,
     }
@@ -147,12 +153,12 @@ def _silver_key(
 ) -> str:
     area = f"service_area={service_area}/"
     return (
-        f"silver/{DATASET}/{area}year_month={year_month}/.staging/"
+        f"silver/{DATASET}/{area}year_month={year_month}/"
         f"{VERSION_DIR}/data.parquet"
     )
 
 
-def test_정제한_기사차량스냅샷을_검증전_버전디렉터리_part로_적재한다(tmp_path):
+def test_정제한_기사차량스냅샷을_최종_버전디렉터리에_적재한다(tmp_path):
     rows = _rows()
     rows[0]["manufacturer"] = " kia "
     rows[0]["model_name"] = " sportage "
@@ -162,7 +168,7 @@ def test_정제한_기사차량스냅샷을_검증전_버전디렉터리_part로
 
     path = Path(result["locations"][0])
     assert path == (
-        tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
+        tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}"
         / VERSION_DIR / "data.parquet"
     )
     assert result["row_count"] == 1
@@ -205,7 +211,7 @@ def test_새수집시각은_별도_파일로_적재한다(tmp_path):
     second_event = {
         **first_event,
         "silver_output_path": str(
-            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
+            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}"
             / "source_collected_at=20260822T123456123456Z"
         ),
     }
@@ -272,7 +278,7 @@ def test_교체중_실패해도_기존월파일과_임시파일이_남지않는�
 def test_Silver스키마가_아닌_테이블은_적재하지_않는다(tmp_path):
     loader = DriverVehicleMonthlySnapshotSilverLoader(
         str(
-            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
+            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}"
             / VERSION_DIR
         )
     )
@@ -301,7 +307,7 @@ def test_bronze_파티션이_없으면_실패한다(tmp_path):
         "bronze_dir": str(tmp_path / "bronze"),
         "year_month": YEAR_MONTH,
         "silver_output_path": str(
-            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}" / ".staging"
+            tmp_path / "silver" / "service_area=NYC" / f"year_month={YEAR_MONTH}"
             / VERSION_DIR
         ),
         "service_area": SERVICE_AREA,

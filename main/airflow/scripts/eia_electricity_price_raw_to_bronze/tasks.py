@@ -13,7 +13,13 @@ from airflow.sdk import task
 
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from shared.airflow.common.validation import layout_tail, location_size, parse_handler_result, require_file
+from shared.airflow.common.validation import (
+    layout_tail,
+    location_size,
+    parse_handler_result,
+    publish_success_marker,
+    require_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,4 +63,5 @@ def validate_bronze_task(result: dict, **context) -> None:
     size = location_size(path)
     if size < layout.ELECTRICITY_MIN_BYTES:
         raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({path})")
+    publish_success_marker(path.parent)
     logger.info("bronze 검증 통과: %s (%d bytes)", path, size)
