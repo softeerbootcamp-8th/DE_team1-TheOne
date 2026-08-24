@@ -24,18 +24,18 @@ FILE_NAME = f"{DATASET}.parquet"
 
 
 def silver_file(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str, year_month: str, service_area: str
 ) -> Path:
     dataset_root = Path(base_dir) / DATASET
     area = service_area_segment(service_area)
     return (
-        (dataset_root / area if area else dataset_root)
+        (dataset_root / area)
         / f"{PARTITION_KEY}={year_month}"
         / FILE_NAME
     )
 
 
-def silver_key(year_month: str, service_area: str | None = None) -> str:
+def silver_key(year_month: str, service_area: str) -> str:
     return join_segments(
         "silver",
         DATASET,
@@ -46,7 +46,7 @@ def silver_key(year_month: str, service_area: str | None = None) -> str:
 
 
 def staged_silver_file(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str, year_month: str, service_area: str
 ) -> Path:
     """검증 전 씁니다. `silver_file`과 격리된 디렉터리라 검증 실패해도 최종
     경로는 이전 상태 그대로 남습니다(#757)."""
@@ -54,7 +54,7 @@ def staged_silver_file(
     return final.parent / ".staging" / final.name
 
 
-def staged_silver_key(year_month: str, service_area: str | None = None) -> str:
+def staged_silver_key(year_month: str, service_area: str) -> str:
     final = silver_key(year_month, service_area)
     parent, name = final.rsplit("/", 1)
     return f"{parent}/.staging/{name}"
@@ -67,7 +67,7 @@ class EiaGasPriceSilverLoader(Loader):
         self,
         base_dir: str,
         year_month: str,
-        service_area: str | None = None,
+        service_area: str,
     ):
         self._base_dir = base_dir
         self._year_month = year_month
@@ -98,8 +98,8 @@ class EiaGasPriceS3SilverLoader(Loader):
     def __init__(
         self,
         year_month: str,
+        service_area: str,
         bucket: str | None = None,
-        service_area: str | None = None,
     ):
         self._year_month = year_month
         self._bucket = bucket
@@ -133,14 +133,14 @@ def build_silver_loader(
     base_dir: str,
     bucket: str | None,
     year_month: str,
-    service_area: str | None = None,
+    service_area: str,
 ) -> Loader:
     if storage == "local":
         return EiaGasPriceSilverLoader(base_dir, year_month, service_area)
     if storage == "s3":
         return EiaGasPriceS3SilverLoader(
             year_month,
+            service_area,
             bucket=bucket,
-            service_area=service_area,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

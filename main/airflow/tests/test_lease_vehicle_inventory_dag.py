@@ -178,7 +178,7 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir, service_area=None: next(results),
+        lambda result, base_dir, service_area: next(results),
     )
     monkeypatch.setattr(
         task_module,
@@ -193,6 +193,7 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
             "base_dir": "/bronze",
             "silver_dir": "/silver",
             "api_base_url": "http://source",
+            "service_area": "NYC",
         },
     )
 
@@ -203,6 +204,7 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
         "base_dir": "/bronze",
         "silver_dir": "/silver",
         "api_base_url": "http://source",
+        "service_area": "NYC",
     }]
 
 
@@ -211,14 +213,18 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir, service_area=None: validated.append(result)
+        lambda result, base_dir, service_area: validated.append(result)
         or (Path("same.parquet"), []),
     )
 
     result = _raw_result(source_changed=False)
     validated_result = DAG.get_task("validate_bronze").python_callable(
         result,
-        params={"base_dir": "/bronze", "silver_dir": str(tmp_path)},
+        params={
+            "base_dir": "/bronze",
+            "silver_dir": str(tmp_path),
+            "service_area": "NYC",
+        },
     )
 
     assert validated_result["silver_version_path"].endswith(SOURCE_VERSION)
@@ -230,7 +236,7 @@ def test_TX_Bronze검증은_지역별_Silver경로를_만든다(tmp_path, monkey
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir, service_area=None: seen.append(service_area)
+        lambda result, base_dir, service_area: seen.append(service_area)
         or (Path("same.parquet"), []),
     )
 

@@ -37,7 +37,7 @@ def _row() -> dict:
 
 
 def test_교체실패는_기존파일을_보존하고_tmp를_정리한다(tmp_path, monkeypatch):
-    loader, data = EiaFuelPriceSilverLoader(str(tmp_path), "2026-08"), [_row()]
+    loader, data = EiaFuelPriceSilverLoader(str(tmp_path), "2026-08", "NYC"), [_row()]
     loader.write(data)
     originals = {path: path.read_bytes() for path in tmp_path.rglob("*.parquet")}
     attempted_sources = []

@@ -25,6 +25,7 @@ from main.spark.jobs.silver_to_gold import job
 
 S3_BUCKET = "test-de-theone"
 S3_REGION = "ap-northeast-2"
+SERVICE_AREA = "NYC"
 
 
 @pytest.fixture
@@ -40,25 +41,27 @@ def s3_client():
 
 def test_로컬에서_가장_최근_파티션_파일을_고른다(tmp_path):
     for year_month in ("2026-01", "2026-04", "2026-05"):
-        partition = tmp_path / f"year_month={year_month}"
-        partition.mkdir()
+        partition = tmp_path / "service_area=NYC" / f"year_month={year_month}"
+        partition.mkdir(parents=True)
         (partition / "gas_ev_price.parquet").touch()
 
-    result = job.latest_fuel_price_path(str(tmp_path))
+    result = job.latest_fuel_price_path(str(tmp_path), SERVICE_AREA)
 
-    assert result == str(tmp_path / "year_month=2026-05" / "gas_ev_price.parquet")
+    assert result == str(
+        tmp_path / "service_area=NYC/year_month=2026-05/gas_ev_price.parquet"
+    )
 
 
 def test_로컬에_파티션이_하나도_없으면_FileNotFoundError(tmp_path):
     with pytest.raises(FileNotFoundError):
-        job.latest_fuel_price_path(str(tmp_path))
+        job.latest_fuel_price_path(str(tmp_path), SERVICE_AREA)
 
 
 def test_로컬_파티션_디렉터리는_있는데_파일이_없으면_FileNotFoundError(tmp_path):
-    (tmp_path / "year_month=2026-05").mkdir()
+    (tmp_path / "service_area=NYC/year_month=2026-05").mkdir(parents=True)
 
     with pytest.raises(FileNotFoundError):
-        job.latest_fuel_price_path(str(tmp_path))
+        job.latest_fuel_price_path(str(tmp_path), SERVICE_AREA)
 
 
 def test_로컬_연료비는_지역별로_자기_파일만_고른다(tmp_path):
@@ -96,20 +99,16 @@ def test_S3_연료비도_지역별로_자기_파일만_고른다(s3_client):
     assert "service_area=TX" not in nyc
 
 
-def test_연료비_지역_경로가_없으면_지역없는_경로로_폴백한다(tmp_path):
-    """아직 지역 계층으로 옮겨지지 않은 데이터셋도 읽어야 합니다 — 이 폴백이 있어야
-    #840~#845 를 데이터셋별로 하나씩 머지할 수 있습니다."""
+def test_연료비는_지역없는_옛_경로를_읽지않는다(tmp_path):
     partition = tmp_path / "year_month=2026-05"
     partition.mkdir()
     (partition / "gas_ev_price.parquet").touch()
 
-    assert job.latest_fuel_price_path(str(tmp_path), "NYC") == str(
-        partition / "gas_ev_price.parquet"
-    )
+    with pytest.raises(FileNotFoundError):
+        job.latest_fuel_price_path(str(tmp_path), "NYC")
 
 
-def test_연료비는_지역_경로를_지역없는_경로보다_먼저_본다(tmp_path):
-    """순서가 뒤집히면 이미 옮긴 데이터셋이 옛 경로의 낡은 데이터를 집어갑니다."""
+def test_연료비는_지역없는_옛_경로를_무시한다(tmp_path):
     legacy = tmp_path / "year_month=2026-09"
     legacy.mkdir()
     (legacy / "gas_ev_price.parquet").touch()
@@ -117,7 +116,6 @@ def test_연료비는_지역_경로를_지역없는_경로보다_먼저_본다(t
     scoped.mkdir(parents=True)
     (scoped / "gas_ev_price.parquet").touch()
 
-    # 지역 경로가 더 오래된 달이어도 지역 경로가 이겨야 합니다.
     assert job.latest_fuel_price_path(str(tmp_path), "NYC") == str(
         scoped / "gas_ev_price.parquet"
     )
@@ -128,42 +126,50 @@ def test_S3에서도_가장_최근_파티션_파일을_고른다(s3_client):
     for year_month in ("2026-01", "2026-04", "2026-05"):
         s3_client.put_object(
             Bucket=S3_BUCKET,
-            Key=f"{prefix}/year_month={year_month}/gas_ev_price.parquet",
+            Key=(
+                f"{prefix}/service_area={SERVICE_AREA}/"
+                f"year_month={year_month}/gas_ev_price.parquet"
+            ),
             Body=b"x",
         )
 
-    result = job.latest_fuel_price_path(f"s3://{S3_BUCKET}/{prefix}")
+    result = job.latest_fuel_price_path(
+        f"s3://{S3_BUCKET}/{prefix}", SERVICE_AREA
+    )
 
-    assert result == f"s3://{S3_BUCKET}/{prefix}/year_month=2026-05/gas_ev_price.parquet"
+    assert result == (
+        f"s3://{S3_BUCKET}/{prefix}/service_area=NYC/"
+        "year_month=2026-05/gas_ev_price.parquet"
+    )
 
 
 def test_같은_파티션에_버전이_여러개면_최신_하나만_고른다(tmp_path):
-    partition = tmp_path / "year_month=2026-05"
-    partition.mkdir()
+    partition = tmp_path / "service_area=NYC/year_month=2026-05"
+    partition.mkdir(parents=True)
     older = partition / "20260820T123456123456Z.parquet"
     latest = partition / "20260821T123456123456Z.parquet"
     older.touch()
     latest.touch()
 
-    result = job.latest_partition_file(str(tmp_path), "2026-05")
+    result = job.latest_partition_file(str(tmp_path), "2026-05", SERVICE_AREA)
 
     assert result == str(latest)
 
 
 def test_타임스탬프_버전이_없으면_구_part파일_전체_glob을_반환한다(tmp_path):
-    partition = tmp_path / "year_month=2026-05"
-    partition.mkdir()
+    partition = tmp_path / "service_area=NYC/year_month=2026-05"
+    partition.mkdir(parents=True)
     (partition / "part-00000.parquet").touch()
     (partition / "part-00001.parquet").touch()
 
-    result = job.latest_partition_file(str(tmp_path), "2026-05")
+    result = job.latest_partition_file(str(tmp_path), "2026-05", SERVICE_AREA)
 
     assert result == str(partition / "part-*.parquet")
 
 
 def test_파티션_디렉터리가_없으면_FileNotFoundError(tmp_path):
     with pytest.raises(FileNotFoundError):
-        job.latest_partition_file(str(tmp_path), "2026-05")
+        job.latest_partition_file(str(tmp_path), "2026-05", SERVICE_AREA)
 
 
 def test_S3에서도_같은_파티션의_최신_버전만_고른다(s3_client):
@@ -171,14 +177,17 @@ def test_S3에서도_같은_파티션의_최신_버전만_고른다(s3_client):
     for name in ("20260820T123456123456Z.parquet", "20260821T123456123456Z.parquet"):
         s3_client.put_object(
             Bucket=S3_BUCKET,
-            Key=f"{prefix}/year_month=2026-05/{name}",
+            Key=f"{prefix}/service_area=NYC/year_month=2026-05/{name}",
             Body=b"x",
         )
 
-    result = job.latest_partition_file(f"s3://{S3_BUCKET}/{prefix}", "2026-05")
+    result = job.latest_partition_file(
+        f"s3://{S3_BUCKET}/{prefix}", "2026-05", SERVICE_AREA
+    )
 
     assert result == (
-        f"s3://{S3_BUCKET}/{prefix}/year_month=2026-05/20260821T123456123456Z.parquet"
+        f"s3://{S3_BUCKET}/{prefix}/service_area=NYC/"
+        "year_month=2026-05/20260821T123456123456Z.parquet"
     )
 
 
@@ -187,19 +196,22 @@ def test_S3_구_part레이아웃은_파일전체_glob을_반환한다(s3_client)
     for name in ("part-00000.parquet", "part-00001.parquet"):
         s3_client.put_object(
             Bucket=S3_BUCKET,
-            Key=f"{prefix}/year_month=2026-05/{name}",
+            Key=f"{prefix}/service_area=NYC/year_month=2026-05/{name}",
             Body=b"x",
         )
 
-    result = job.latest_partition_file(f"s3://{S3_BUCKET}/{prefix}", "2026-05")
+    result = job.latest_partition_file(
+        f"s3://{S3_BUCKET}/{prefix}", "2026-05", SERVICE_AREA
+    )
 
     assert result == (
-        f"s3://{S3_BUCKET}/{prefix}/year_month=2026-05/part-*.parquet"
+        f"s3://{S3_BUCKET}/{prefix}/service_area=NYC/"
+        "year_month=2026-05/part-*.parquet"
     )
 
 
 def test_로컬_source_collected_at은_SUCCESS가_있는_최신버전만_고른다(tmp_path):
-    partition = tmp_path / "year_month=2026-05"
+    partition = tmp_path / "service_area=NYC/year_month=2026-05"
     completed = partition / "source_collected_at=20260821T123456123456Z"
     incomplete = partition / "source_collected_at=20260822T123456123456Z"
     for version in (completed, incomplete):
@@ -207,14 +219,14 @@ def test_로컬_source_collected_at은_SUCCESS가_있는_최신버전만_고른�
         (version / "part-00000.parquet").touch()
     (completed / "_SUCCESS").touch()
 
-    result = job.latest_partition_file(str(tmp_path), "2026-05")
+    result = job.latest_partition_file(str(tmp_path), "2026-05", SERVICE_AREA)
 
     assert result == str(completed)
 
 
 def test_S3_source_collected_at은_SUCCESS가_있는_최신버전만_고른다(s3_client):
     prefix = "silver/driver_vehicle_monthly_snapshot"
-    partition = f"{prefix}/year_month=2026-05"
+    partition = f"{prefix}/service_area=NYC/year_month=2026-05"
     completed = f"{partition}/source_collected_at=20260821T123456123456Z"
     incomplete = f"{partition}/source_collected_at=20260822T123456123456Z"
     for version in (completed, incomplete):
@@ -225,7 +237,9 @@ def test_S3_source_collected_at은_SUCCESS가_있는_최신버전만_고른다(s
         )
     s3_client.put_object(Bucket=S3_BUCKET, Key=f"{completed}/_SUCCESS", Body=b"")
 
-    result = job.latest_partition_file(f"s3://{S3_BUCKET}/{prefix}", "2026-05")
+    result = job.latest_partition_file(
+        f"s3://{S3_BUCKET}/{prefix}", "2026-05", SERVICE_AREA
+    )
 
     assert result == f"s3://{S3_BUCKET}/{completed}"
 
@@ -254,7 +268,7 @@ def test_main은_service_area를_모든_기본입력_조회에_그대로_넘긴�
         monthly_calls.append((base_path, year_month, service_area))
         return f"{base_path}/service_area={service_area}/year_month={year_month}/data"
 
-    def _spy(fuel_price_dir, service_area=None):
+    def _spy(fuel_price_dir, service_area):
         fuel_calls.append((fuel_price_dir, service_area))
         raise _StopAfterFuelPriceLookup
 

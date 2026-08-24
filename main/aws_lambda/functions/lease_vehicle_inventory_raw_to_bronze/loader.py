@@ -9,8 +9,8 @@ from .extractor import DATASET
 def build_loader(
     storage: str,
     base_dir: str,
+    service_area: str,
     bucket: str | None = None,
-    service_area: str | None = None,
 ) -> Loader:
     """storage 파라미터로 로컬/S3 Loader 중 하나를 고릅니다."""
     return build_bronze_loader(

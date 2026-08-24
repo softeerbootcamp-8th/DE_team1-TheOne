@@ -83,16 +83,9 @@ def latest_local_silver_version(partition: Path) -> Path | None:
 def silver_version_path(
     base_dir: str | Path,
     result: dict,
-    service_area: str | None = None,
+    service_area: str,
 ) -> Path | S3Location:
-    """Bronze 수집 시각을 자연 키로 쓰는 Silver 버전 디렉터리입니다.
-
-    `service_area=None` 이면 지역 계층 없이 **지금과 완전히 같은 경로**를 만듭니다.
-    API 3종(monthly_taxi_trip / driver_vehicle_monthly_snapshot /
-    lease_vehicle_inventory)이 이 함수를 공유하므로, 데이터셋별로 하나씩 지역을
-    켜려면 이 기본값이 필요합니다(#840~#842). 삽입 위치 규칙은
-    `main.airflow.common.assets` 가 정의합니다.
-    """
+    """Bronze 수집 시각을 자연 키로 쓰는 지역별 Silver 버전 디렉터리입니다."""
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
     collected_at = result.get("collected_at")
@@ -121,14 +114,14 @@ def silver_version_path(
                 "silver", dataset_dir, area, f"year_month={year_month}", version_dir
             ),
         )
-    local = base / area if area else base
+    local = base / area
     return local / f"year_month={year_month}" / version_dir
 
 
 def staged_silver_version_path(
     base_dir: str | Path,
     result: dict,
-    service_area: str | None = None,
+    service_area: str,
 ) -> Path | S3Location:
     """`silver_version_path`와 격리된 검증 전 디렉터리입니다."""
     final = silver_version_path(base_dir, result, service_area)
@@ -261,7 +254,7 @@ def validate_monthly_parquet_bronze(
     *,
     dataset_dir: str,
     base_dir: str | Path | None = None,
-    service_area: str | None = None,
+    service_area: str,
 ) -> tuple[Path | S3Location, str]:
     parsed = parse_handler_result(result, expected_locations=1)
     year_month = parse_year_month(result.get("year_month"), field="year_month")
@@ -272,11 +265,11 @@ def validate_monthly_parquet_bronze(
         raise ValueError(f"Bronze 원본 파일이 없습니다: {path}")
     partition = bronze_partition(path)
     area = service_area_segment(service_area)
-    dataset_root = partition.parent.parent if area else partition.parent
+    dataset_root = partition.parent.parent
     if (
         partition.name != f"year_month={year_month}"
         or dataset_root.name != dataset_dir
-        or (area and partition.parent.name != area)
+        or partition.parent.name != area
     ):
         raise ValueError(f"Bronze 원본 경로가 월 파티션 계약과 다릅니다: {path}")
     collected_at = result.get("collected_at")
@@ -290,8 +283,7 @@ def validate_monthly_parquet_bronze(
         )
     if base_dir is not None and isinstance(path, Path):
         expected_root = Path(base_dir) / dataset_dir
-        if area:
-            expected_root /= area
+        expected_root /= area
         expected_partition = expected_root / f"year_month={year_month}"
         if partition.resolve() != expected_partition.resolve():
             raise ValueError(

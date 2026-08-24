@@ -11,9 +11,8 @@
 4. CLEAN 안에 날짜가 중복되면 실패
 5. 단가가 허용 범위 밖이면 실패
 6. 입력 CLEAN 이 없으면 돌려야 할 DAG 를 알려주며 실패
-7. 지역 경로와 옛 경로가 모두 있으면 지역 경로를 읽는다 (#843/#851 — 탐색 순서가
-   뒤집히면 옛 경로의 낡은 값을 조용히 집음)
-8. 지역 경로가 없으면 옛 경로로 폴백한다 (아직 안 옮긴 데이터셋과의 하위호환)
+7. 지역 없는 옛 경로는 읽지 않는다
+8. 지역 경로와 옛 경로가 모두 있어도 지역 경로만 읽는다
 9. service_area를 TX로 주면 읽기·쓰기 모두 그 경로로 나간다 — 두 CLEAN을 읽는 지역과
    결합 결과를 쓰는 지역이 같음을 함께 증명 (#845)
 """
@@ -42,6 +41,7 @@ from schema.silver import (
 
 GAS_COLLECTED = date(2026, 8, 10)
 EV_COLLECTED = date(2026, 8, 17)
+SERVICE_AREA = "NYC"
 
 
 def _gas_rows(days=31, price=3.4, collected=GAS_COLLECTED):
@@ -63,7 +63,13 @@ def _ev_rows(days=31, price=0.4, collected=EV_COLLECTED, status="Final"):
     ]
 
 
-def _write_clean(silver, gas_rows, ev_rows, year_month="2025-05", service_area=None):
+def _write_clean(
+    silver,
+    gas_rows,
+    ev_rows,
+    year_month="2025-05",
+    service_area=SERVICE_AREA,
+):
     for dataset, rows, schema in (
         ("eia_gas_price", gas_rows, GAS_SCHEMA),
         ("eia_electricity_price", ev_rows, EV_SCHEMA),
@@ -131,10 +137,12 @@ def test_단가가_허용범위_밖이면_실패한다(gas_price, ev_price):
 )
 def test_입력_CLEAN_이_없으면_돌려야_할_DAG_를_알려주며_실패한다(tmp_path, missing, expected_dag):
     _write_clean(tmp_path, _gas_rows(), _ev_rows())
-    clean_silver_file(str(tmp_path), missing, "2025-05").unlink()
+    clean_silver_file(str(tmp_path), missing, "2025-05", SERVICE_AREA).unlink()
 
     with pytest.raises(FileNotFoundError, match=expected_dag):
-        EiaFuelPriceCleanExtractor(str(tmp_path), "2025-05").extract()
+        EiaFuelPriceCleanExtractor(
+            str(tmp_path), "2025-05", SERVICE_AREA
+        ).extract()
 
 
 def test_산출물_경로는_데이터의_달을_쓴다(tmp_path):
@@ -154,22 +162,29 @@ def test_산출물_경로는_데이터의_달을_쓴다(tmp_path):
 
 
 def test_CLEAN_S3_키가_로컬_경로_규칙과_대응된다():
-    assert clean_silver_key("eia_gas_price", "2025-05") == (
-        "silver/eia_gas_price/year_month=2025-05/eia_gas_price.parquet"
+    assert clean_silver_key("eia_gas_price", "2025-05", SERVICE_AREA) == (
+        "silver/eia_gas_price/service_area=NYC/"
+        "year_month=2025-05/eia_gas_price.parquet"
     )
-    assert clean_silver_key("eia_electricity_price", "2025-05") == (
-        "silver/eia_electricity_price/year_month=2025-05/eia_electricity_price.parquet"
+    assert clean_silver_key(
+        "eia_electricity_price", "2025-05", SERVICE_AREA
+    ) == (
+        "silver/eia_electricity_price/service_area=NYC/"
+        "year_month=2025-05/eia_electricity_price.parquet"
     )
 
 
 def test_산출물_S3_키도_데이터의_달을_쓴다():
-    assert silver_key("2025-05") == "silver/gas_ev_price/year_month=2025-05/gas_ev_price.parquet"
+    assert silver_key("2025-05", SERVICE_AREA) == (
+        "silver/gas_ev_price/service_area=NYC/"
+        "year_month=2025-05/gas_ev_price.parquet"
+    )
 
 
 # --- 지역(service_area) 이중 탐색 (#843/#851) -------------------------------
 
 
-def _write_gas(silver, year_month, price, service_area=None):
+def _write_gas(silver, year_month, price, service_area=SERVICE_AREA):
     path = clean_silver_file(str(silver), "eia_gas_price", year_month, service_area)
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(
@@ -178,8 +193,11 @@ def _write_gas(silver, year_month, price, service_area=None):
 
 
 def test_지역_경로와_옛_경로가_모두_있으면_지역_경로를_읽는다(tmp_path):
-    """탐색 순서가 뒤집히면 옛 경로의 낡은 값을 조용히 집습니다."""
-    _write_gas(tmp_path, "2025-05", price=1.0, service_area=None)
+    legacy = tmp_path / "eia_gas_price/year_month=2025-05/eia_gas_price.parquet"
+    legacy.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist(_gas_rows(price=1.0), schema=GAS_SCHEMA), legacy
+    )
     _write_gas(tmp_path, "2025-05", price=9.0, service_area="NYC")
 
     rows = _read(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
@@ -187,12 +205,15 @@ def test_지역_경로와_옛_경로가_모두_있으면_지역_경로를_읽는
     assert {row["gas_price"] for row in rows} == {9.0}
 
 
-def test_지역_경로가_없으면_옛_경로로_폴백한다(tmp_path):
-    _write_gas(tmp_path, "2025-05", price=3.4, service_area=None)
+def test_지역_경로가_없으면_옛_경로를_읽지않는다(tmp_path):
+    legacy = tmp_path / "eia_gas_price/year_month=2025-05/eia_gas_price.parquet"
+    legacy.parent.mkdir(parents=True)
+    pq.write_table(
+        pa.Table.from_pylist(_gas_rows(price=3.4), schema=GAS_SCHEMA), legacy
+    )
 
-    rows = _read(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
-
-    assert {row["gas_price"] for row in rows} == {3.4}
+    with pytest.raises(FileNotFoundError):
+        _read(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
 
 
 def test_service_area를_TX로_주면_읽기_쓰기_모두_그_경로로_나간다(tmp_path):

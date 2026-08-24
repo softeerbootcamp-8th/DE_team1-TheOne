@@ -26,7 +26,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         storage,
         base_dir,
         bucket=bucket,
-        service_area=event.get("service_area"),
+        service_area=event["service_area"],
     )
     result = Pipeline(
         LeaseVehicleInventoryExtractor(api_base_url, requested_year_month(event)),

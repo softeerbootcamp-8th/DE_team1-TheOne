@@ -85,6 +85,7 @@ def _event(tmp_path) -> dict:
         "base_dir": str(tmp_path),
         "year": "2026",
         "month": "8",
+        "service_area": "NYC",
     }
 
 
@@ -108,7 +109,8 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     assert path.name == "data.parquet"
     assert path.parent.name == "collected_at=20260820T101530123456Z"
     assert path.parent.parent.name == f"year_month={YEAR_MONTH}"
-    assert path.parent.parent.parent.name == "monthly_taxi_trip"
+    assert path.parent.parent.parent.name == "service_area=NYC"
+    assert path.parent.parent.parent.parent.name == "monthly_taxi_trip"
     assert result["collected_at"] == "2026-08-20T10:15:30.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
     assert result["source_changed"] is True
@@ -190,7 +192,13 @@ def test_월을_지정하지않으면_latest의_최종URL에서_실제월을_확
     requested = []
     _api(monkeypatch, requested)
 
-    result = lambda_handler({"api_base_url": API_URL, "base_dir": str(tmp_path)})
+    result = lambda_handler(
+        {
+            "api_base_url": API_URL,
+            "base_dir": str(tmp_path),
+            "service_area": "NYC",
+        }
+    )
 
     assert requested == [LATEST_URL]
     assert result["year_month"] == YEAR_MONTH
@@ -212,6 +220,8 @@ def test_다른host로_이동한_응답은_저장하지않는다(tmp_path, monke
 
 @pytest.mark.parametrize("event", [{"year": "2026"}, {"month": "08"}])
 def test_연월은_둘다_주거나_둘다_비워야한다(event, tmp_path):
-    event.update({"api_base_url": API_URL, "base_dir": str(tmp_path)})
+    event.update(
+        {"api_base_url": API_URL, "base_dir": str(tmp_path), "service_area": "NYC"}
+    )
     with pytest.raises(ValueError, match="함께"):
         lambda_handler(event)

@@ -68,17 +68,17 @@ def resolve_year_month(context: dict) -> str:
     return default_year_month(reference)
 
 
-def silver_file(base_dir: str, year_month: str, service_area: str | None = None) -> Path:
+def silver_file(base_dir: str, year_month: str, service_area: str) -> Path:
     dataset_root = Path(base_dir) / DATASET
     area = service_area_segment(service_area)
     return (
-        (dataset_root / area if area else dataset_root)
+        (dataset_root / area)
         / f"{SILVER_PARTITION_KEY}={year_month}"
         / FILE_NAME
     )
 
 
-def silver_key(year_month: str, service_area: str | None = None) -> str:
+def silver_key(year_month: str, service_area: str) -> str:
     return join_segments(
         "silver",
         DATASET,
@@ -89,7 +89,7 @@ def silver_key(year_month: str, service_area: str | None = None) -> str:
 
 
 def staged_silver_file(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str, year_month: str, service_area: str
 ) -> Path:
     """검증 전 위치. lambda loader의 `staged_silver_file`과 같은 규칙이어야
     합니다(#757) — 어긋나면 이 검증이 엉뚱한 자리를 보고도 통과합니다."""
@@ -97,7 +97,7 @@ def staged_silver_file(
     return final.parent / ".staging" / final.name
 
 
-def staged_silver_key(year_month: str, service_area: str | None = None) -> str:
+def staged_silver_key(year_month: str, service_area: str) -> str:
     final = silver_key(year_month, service_area)
     parent, name = final.rsplit("/", 1)
     return f"{parent}/.staging/{name}"
@@ -108,7 +108,7 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def validate_silver(result: object, service_area: str | None = None) -> None:
+def validate_silver(result: object, service_area: str) -> None:
     """스키마·행 수·날짜 완결성을 확인합니다.
 
     날짜가 하루라도 비면 하류의 일자 조인에서 그 날이 통째로 매칭 실패하고, 그건

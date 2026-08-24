@@ -28,10 +28,8 @@ DATASET_URL_PATTERN = re.compile(
 SERVICE_AREA_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
-def service_area_segment(service_area: str | None) -> str:
-    if service_area is None:
-        return ""
-    if not SERVICE_AREA_PATTERN.fullmatch(service_area or ""):
+def service_area_segment(service_area: str) -> str:
+    if not SERVICE_AREA_PATTERN.fullmatch(service_area):
         raise ValueError(
             f"service_area 는 대문자 코드여야 합니다(예: NYC): {service_area!r}"
         )
@@ -42,29 +40,12 @@ def join_segments(*segments: str | None) -> str:
     return "/".join(segment for segment in segments if segment)
 
 
-def _candidate_segments(service_area: str | None) -> tuple[str | None, ...]:
-    if service_area is None:
-        return (None,)
-    return (service_area_segment(service_area), None)
+def service_area_root(root: str | Path, service_area: str) -> Path:
+    return Path(root) / service_area_segment(service_area)
 
 
-def candidate_roots(
-    root: str | Path, service_area: str | None = None
-) -> tuple[Path, ...]:
-    base = Path(root)
-    return tuple(
-        base / segment if segment else base
-        for segment in _candidate_segments(service_area)
-    )
-
-
-def candidate_prefixes(
-    *head: str, service_area: str | None = None
-) -> tuple[str, ...]:
-    return tuple(
-        join_segments(*head, segment) if segment else join_segments(*head)
-        for segment in _candidate_segments(service_area)
-    )
+def service_area_prefix(*head: str, service_area: str) -> str:
+    return join_segments(*head, service_area_segment(service_area))
 
 
 def collected_at_token(value: str) -> str:
@@ -198,13 +179,11 @@ class MonthlyParquetBronzeLoader(Loader):
         base_dir: str,
         dataset: str,
         dataset_dir: str,
-        service_area: str | None = None,
+        service_area: str,
     ):
         self._base_dir = Path(base_dir)
         self._dataset = dataset
         self._dataset_dir = dataset_dir
-        # None 이면 지역 계층 없이 지금과 같은 경로입니다 — 데이터셋별로 하나씩
-        # 켜기 위한 기본값(#840~#842). 규칙은 이 런타임 모듈이 소유합니다.
         self._service_area = service_area
         self.payload: dict = {}
         self.path: Path | None = None
@@ -257,7 +236,7 @@ class MonthlyParquetBronzeLoader(Loader):
         dataset_root = self._base_dir / self._dataset_dir
         area = service_area_segment(self._service_area)
         return (
-            (dataset_root / area if area else dataset_root)
+            (dataset_root / area)
             / f"year_month={payload['year_month']}"
             / _collected_at_dir_name(payload)
             / BRONZE_DATA_FILE_NAME
@@ -271,8 +250,8 @@ class S3MonthlyParquetBronzeLoader(Loader):
         self,
         dataset: str,
         dataset_dir: str,
+        service_area: str,
         bucket: str | None = None,
-        service_area: str | None = None,
     ):
         load_local_env()
         self._dataset = dataset
@@ -340,8 +319,8 @@ def build_bronze_loader(
     base_dir: str,
     dataset: str,
     dataset_dir: str,
+    service_area: str,
     bucket: str | None = None,
-    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
         return MonthlyParquetBronzeLoader(
