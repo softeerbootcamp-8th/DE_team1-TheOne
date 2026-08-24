@@ -75,6 +75,7 @@ NAT 라우팅을 담당하므로 `net.ipv4.ip_forward` 를 건드리지 않는 �
 | 파일 | 내용 |
 |---|---|
 | `dashboard.json` | 대시보드 본문. `${AWS_REGION}`, `${EMR_APPLICATION_ID}` 를 `envsubst` 로 치환 |
+| `stack/grafana/provisioning/alerting/` | Grafana Slack 알림 (수신처 · 경로 · 규칙) |
 | `alert-topic-policy.json` | EventBridge 가 Topic 에 발행하도록 허용하는 정책 |
 | `emr-failure-event-pattern.json` | `FAILED`/`CANCELLED` 만 걸러내는 이벤트 패턴 |
 
@@ -220,3 +221,52 @@ aws sns subscribe --topic-arn <AlertTopicArn> \
 ```
 
 Slack 은 같은 Topic 을 AWS Chatbot 에 연결하면 됩니다.
+
+
+## Grafana Slack 알림
+
+호스트 지표가 임계를 넘으면 Airflow 와 **같은 채널**로 알립니다. 웹훅도 같은 Secret
+(`SLACK_WEBHOOK_URL`) 이라 로테이션할 때 고칠 곳이 하나입니다.
+
+### 임계값 — 실측 평시값 기준
+
+| 규칙 | 임계 | 지속 | 심각도 | 평시 실측 |
+|---|---|---|---|---|
+| 노드 응답 없음 | `up == 0` | 2분 | critical | 4대 모두 1 |
+| 디스크 | 80% | 10분 | warning | 14~40% |
+| 디스크 | 90% | 5분 | critical | 〃 |
+| 메모리 | 90% | 10분 | warning | 41~59% |
+| CPU | 90% | 15분 | warning | 0.3~39% (airflow 39%) |
+
+CPU 만 15분으로 길게 잡았습니다 — Airflow 는 잡이 돌면 정상적으로 튑니다.
+
+swap 규칙은 두지 않습니다. 인스턴스에 swap 이 없어서 실측이 `NaN` 이고, 규칙을 두면
+영원히 NoData 로 울립니다.
+
+### 웹훅은 파일에 없습니다
+
+```
+GitHub Secret SLACK_WEBHOOK_URL
+  → 배포가 ~/monitoring/.env 에 기록
+  → compose 가 컨테이너 환경변수로 전달
+  → 프로비저닝이 $__env{SLACK_WEBHOOK_URL} 로 읽음
+```
+
+`$__env{}` 가 아니면 Grafana 는 그 문자열을 **그대로 저장**하고 전송이 URL 파싱에서
+실패합니다. 알림이 조용히 안 가는 형태라 로그를 봐야만 압니다. 테스트가 고정합니다.
+
+### `noDataState` 는 전부 `Alerting`
+
+지표가 안 오는 것 자체가 문제입니다. `OK` 로 두면 node_exporter 가 죽었을 때 조용해져,
+**감시가 멈춘 것을 감시가 알려주지 않는** 상태가 됩니다.
+
+### 데이터소스 uid 를 고정한 이유
+
+규칙이 `uid` 로 데이터소스를 지목합니다. 비워 두면 Grafana 가 난수를 만들고, 컨테이너를
+다시 만들 때 값이 바뀌어 **규칙은 남고 평가만 실패**합니다. `theone-prometheus` 로
+고정했습니다.
+
+### 남아 있는 기본 수신처
+
+Grafana 가 만드는 `grafana-default-email` 은 SMTP 미설정으로 실패합니다. 알림 경로가
+`slack` 을 가리키므로 실제로 쓰이지 않지만, 로그에 SMTP 오류가 보이면 이것입니다.

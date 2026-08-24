@@ -449,12 +449,18 @@ def test_grafana_datasource_is_provisioned_not_clicked():
     assert source["url"] == "http://prometheus:9090"
 
 
-def test_stack_deploy_uses_ssm_without_stored_secrets():
-    """SSH 로 바꾸면 개인키가 Secrets 에 들어가고 러너 IP 대역을 열어야 합니다."""
+def test_stack_deploy_uses_ssm_not_ssh():
+    """SSH 로 바꾸면 개인키가 Secrets 에 들어가고 러너 IP 대역을 열어야 합니다.
+
+    예전에는 `secrets.` 자체를 금지했습니다. 지키려던 것은 "개인키를 Secrets 에 두지
+    말 것" 인데 단정이 그보다 넓어서, Slack 웹훅처럼 개인키가 아닌 값도 함께 막혔습니다.
+    실제로 지켜야 하는 것만 남깁니다 — 접속 수단은 SSM 이고 키 자재는 두지 않습니다.
+    """
     workflow = WORKFLOW.read_text()
     assert "AWS-RunShellScript" in workflow
     assert "vars.MONITORING_INSTANCE_ID" in workflow
-    assert "secrets." not in workflow
+    for forbidden in ("EC2_SSH_PRIVATE_KEY", "ssh-action", "PRIVATE_KEY", "id_rsa"):
+        assert forbidden not in workflow, f"{forbidden} 이 들어왔습니다 — SSM 을 유지하세요"
 
 
 def test_stack_deploy_checks_the_ssm_result():
@@ -462,3 +468,85 @@ def test_stack_deploy_checks_the_ssm_result():
     workflow = WORKFLOW.read_text()
     assert "ssm wait command-executed" in workflow
     assert "StandardErrorContent" in workflow
+
+
+# --- Grafana Slack 알림 -------------------------------------------------------
+ALERTING = STACK / "grafana/provisioning/alerting"
+
+
+def _alerting(name):
+    return yaml.safe_load((ALERTING / name).read_text())
+
+
+def test_웹훅은_저장소_파일에_없다():
+    """파일에 박으면 저장소 이력에 영구히 남고 로테이션이 불가능합니다."""
+    for path in ALERTING.glob("*.yaml"):
+        body = path.read_text()
+        assert "hooks.slack.com/services/T" not in body, path.name
+
+
+def test_수신처가_환경변수로_웹훅을_읽는다():
+    """`$__env{}` 가 아니면 Grafana 는 문자열 그대로 저장하고, 전송이 URL 파싱에서
+    실패합니다. 알림이 조용히 안 가는 형태라 로그를 봐야만 압니다.
+    """
+    receivers = _alerting("contact-points.yaml")["contactPoints"][0]["receivers"]
+    slack = next(r for r in receivers if r["type"] == "slack")
+
+    assert slack["settings"]["url"] == "$__env{SLACK_WEBHOOK_URL}"
+
+
+def test_compose_가_웹훅을_필수값으로_넘긴다():
+    """비어 있으면 컨테이너가 안 뜨는 쪽이 낫습니다 — 뜨고 알림만 안 오는 것보다."""
+    compose = (STACK / "docker-compose.yml").read_text()
+
+    assert "SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:?" in compose
+
+
+def test_배포가_웹훅을_env_파일로_내려준다():
+    workflow = WORKFLOW.read_text()
+
+    assert "SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}" in workflow
+    assert "echo SLACK_WEBHOOK_URL=" in workflow
+
+
+def test_알림_경로가_슬랙으로_간다():
+    policy = _alerting("policies.yaml")["policies"][0]
+
+    assert policy["receiver"] == "slack"
+    # 호스트별로 묶어야 어느 인스턴스를 봐야 하는지가 메시지 단위로 갈립니다.
+    assert "instance_name" in policy["group_by"]
+
+
+def test_규칙이_고정된_데이터소스_uid를_쓴다():
+    """uid 를 비우면 Grafana 가 난수를 만들고, 컨테이너를 다시 만들 때 값이 바뀌어
+    규칙이 데이터소스를 잃습니다 — 규칙은 남고 평가만 실패합니다.
+    """
+    datasource = yaml.safe_load(
+        (STACK / "grafana/provisioning/datasources/prometheus.yml").read_text()
+    )["datasources"][0]
+    uid = datasource["uid"]
+
+    for group in _alerting("rules.yaml")["groups"]:
+        for rule in group["rules"]:
+            used = {
+                q["datasourceUid"]
+                for q in rule["data"]
+                if q["datasourceUid"] != "__expr__"
+            }
+            assert used == {uid}, f"{rule['title']}: {used}"
+
+
+def test_지표가_안_오는_것도_알린다():
+    """`noDataState: OK` 로 두면 node_exporter 가 죽었을 때 조용해집니다 — 감시가
+    멈춘 것을 감시가 알려주지 않는 상태가 됩니다.
+    """
+    for group in _alerting("rules.yaml")["groups"]:
+        for rule in group["rules"]:
+            assert rule["noDataState"] == "Alerting", rule["title"]
+
+
+def test_없는_지표로_규칙을_만들지_않는다():
+    """swap 은 인스턴스에 없어서(실측 NaN) 규칙을 두면 영원히 NoData 로 울립니다."""
+    body = (ALERTING / "rules.yaml").read_text()
+
+    assert "node_memory_Swap" not in body

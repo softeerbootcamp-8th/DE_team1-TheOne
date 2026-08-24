@@ -1,0 +1,254 @@
+# 호스트 알림 규칙. 임계값은 실측 평시값을 기준으로 잡았습니다.
+#
+#   디스크  14~40%   -> 80% 경고 / 90% 심각
+#   메모리  41~59%   -> 90% 경고
+#   CPU     0.3~39%  -> 90% 가 15분 지속될 때만 경고
+#
+# swap 은 인스턴스에 없어서(실측 NaN) 규칙을 두지 않습니다 — 두면 영원히 NoData 입니다.
+#
+# UI 에서 만들면 컨테이너를 다시 만들 때 사라집니다. 데이터소스와 같은 이유로 파일에 둡니다.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: host
+  folder: theone
+  interval: 1m
+  rules:
+  - uid: theone-node-down
+    title: 노드 응답 없음
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: theone-prometheus
+      model:
+        refId: A
+        expr: up{job="node"}
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: lt
+            params:
+            - 1
+          operator:
+            type: and
+          query:
+            params:
+            - A
+          reducer:
+            type: last
+            params: []
+          type: query
+        intervalMs: 60000
+        maxDataPoints: 43200
+    noDataState: Alerting
+    execErrState: Error
+    for: 2m
+    labels:
+      severity: critical
+    annotations:
+      summary: node_exporter 가 응답하지 않습니다. 인스턴스나 컨테이너가 내려갔을 수 있습니다.
+  - uid: theone-disk-high
+    title: 디스크 사용률 80% 초과
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: theone-prometheus
+      model:
+        refId: A
+        expr: 100 - (node_filesystem_avail_bytes{job="node",mountpoint="/"} / node_filesystem_size_bytes{job="node",mountpoint="/"}
+          * 100)
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 80
+          operator:
+            type: and
+          query:
+            params:
+            - A
+          reducer:
+            type: last
+            params: []
+          type: query
+        intervalMs: 60000
+        maxDataPoints: 43200
+    noDataState: Alerting
+    execErrState: Error
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: 루트 파티션이 80% 를 넘었습니다. `docker image prune -af` 로 회수되는지 확인하세요.
+  - uid: theone-disk-critical
+    title: 디스크 사용률 90% 초과
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: theone-prometheus
+      model:
+        refId: A
+        expr: 100 - (node_filesystem_avail_bytes{job="node",mountpoint="/"} / node_filesystem_size_bytes{job="node",mountpoint="/"}
+          * 100)
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 90
+          operator:
+            type: and
+          query:
+            params:
+            - A
+          reducer:
+            type: last
+            params: []
+          type: query
+        intervalMs: 60000
+        maxDataPoints: 43200
+    noDataState: Alerting
+    execErrState: Error
+    for: 5m
+    labels:
+      severity: critical
+    annotations:
+      summary: 루트 파티션이 90% 를 넘었습니다. 곧 쓰기가 실패합니다.
+  - uid: theone-memory-high
+    title: 메모리 사용률 90% 초과
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: theone-prometheus
+      model:
+        refId: A
+        expr: 100 * (1 - node_memory_MemAvailable_bytes{job="node"} / node_memory_MemTotal_bytes{job="node"})
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 90
+          operator:
+            type: and
+          query:
+            params:
+            - A
+          reducer:
+            type: last
+            params: []
+          type: query
+        intervalMs: 60000
+        maxDataPoints: 43200
+    noDataState: Alerting
+    execErrState: Error
+    for: 10m
+    labels:
+      severity: warning
+    annotations:
+      summary: 메모리가 90% 를 넘었습니다. OOM 으로 컨테이너가 죽을 수 있습니다.
+  - uid: theone-cpu-high
+    title: CPU 사용률 90% 초과 (15분)
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: theone-prometheus
+      model:
+        refId: A
+        expr: 100 - (avg by (instance, instance_name) (rate(node_cpu_seconds_total{job="node",mode="idle"}[5m]))
+          * 100)
+        instant: true
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 600
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 90
+          operator:
+            type: and
+          query:
+            params:
+            - A
+          reducer:
+            type: last
+            params: []
+          type: query
+        intervalMs: 60000
+        maxDataPoints: 43200
+    noDataState: Alerting
+    execErrState: Error
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: CPU 가 15분 넘게 90% 를 유지합니다. 잡이 몰렸거나 무언가 돌고 있습니다.
