@@ -1,8 +1,7 @@
 """대시보드 Gold 데이터 소스.
 
 `DASHBOARD_DATA_SOURCE` 환경변수(local|rds, 기본 local)로 로컬 CSV와 RDS를 전환한다.
-RDS 쪽 SELECT 컬럼은 `schema.gold`의 dataclass 필드에서 그대로 만든다 — Gold RDS에
-컬럼이 추가돼도(예: monthly_report.is_rerun, #756) 이 파일을 손댈 필요가 없다.
+RDS 쪽 SELECT 컬럼은 `schema.gold`의 dataclass 필드에서 그대로 만든다.
 
 Gold RDS는 같은 지역·월에 재실행 이력이 버전으로 쌓이므로(`postgres_loader.py`),
 `service_area`, `year_month`별 최신 version 행만 읽는다.
@@ -16,19 +15,23 @@ from pathlib import Path
 import pandas as pd
 import psycopg2
 
-from schema.gold import DriverMonthlyProfit, MonthlyReport, MonthlyVehicleRecommendation
+from schema.gold import (
+    DriverMonthlyProfit,
+    DriverVehicleProfitSimulation,
+    LeaseVehicleInventory,
+)
 
 _TABLE_MODELS = {
-    "monthly_report": MonthlyReport,
+    "lease_vehicle_inventory": LeaseVehicleInventory,
     "driver_aggregation": DriverMonthlyProfit,
-    "driver_car_suggestion": MonthlyVehicleRecommendation,
+    "driver_vehicle_profit_simulation": DriverVehicleProfitSimulation,
 }
 
 
 class DataSource(ABC):
     @abstractmethod
     def load(self, dataset: str) -> pd.DataFrame:
-        """`dataset`(monthly_report/driver_aggregation/driver_car_suggestion)을 읽는다."""
+        """Gold 물리 테이블 `dataset`을 읽는다."""
 
 
 class LocalCsvDataSource(DataSource):

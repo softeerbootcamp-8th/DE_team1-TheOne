@@ -2,7 +2,7 @@
 
 1. 로컬 CSV 파티션을 모두 이어붙인다
 2. 로컬 파티션이 하나도 없으면 빈 데이터프레임
-3. RDS 쿼리 컬럼은 schema.gold 필드에서 자동 생성된다 (하드코딩 컬럼 금지)
+3. RDS 쿼리 컬럼은 현재 Gold 3종 schema.gold 필드에서 자동 생성된다
 4. RDS는 service_area·year_month별 최신 version 행만 읽는다
 5. RDS는 같은 (year_month, version) 안의 여러 행(기사별)을 전부 읽는다
 6. 알 수 없는 dataset 이름은 RdsDataSource에서 즉시 ValueError
@@ -20,17 +20,26 @@ import pytest
 from datasource import (
     LocalCsvDataSource,
     RdsDataSource,
+    _TABLE_MODELS,
     _latest_version_query,
     build_data_source,
 )
-from schema.gold import DriverMonthlyProfit, MonthlyReport
+from schema.gold import DriverMonthlyProfit, LeaseVehicleInventory
+
+
+def test_RDS_소스는_현재_Gold_3종만_노출한다():
+    assert set(_TABLE_MODELS) == {
+        "driver_aggregation",
+        "driver_vehicle_profit_simulation",
+        "lease_vehicle_inventory",
+    }
 
 
 def test_로컬_소스는_모든_파티션을_이어붙인다(tmp_path):
     for service_area, year_month in (("NYC", "2026-01"), ("TX", "2026-02")):
         partition = (
             tmp_path
-            / "monthly_report"
+            / "lease_vehicle_inventory"
             / f"service_area={service_area}"
             / f"year_month={year_month}"
         )
@@ -38,26 +47,28 @@ def test_로컬_소스는_모든_파티션을_이어붙인다(tmp_path):
         pd.DataFrame(
             [{"service_area": service_area, "year_month": year_month}]
         ).to_csv(
-            partition / "monthly_report.csv", index=False
+            partition / "lease_vehicle_inventory.csv", index=False
         )
 
-    frame = LocalCsvDataSource(tmp_path).load("monthly_report")
+    frame = LocalCsvDataSource(tmp_path).load("lease_vehicle_inventory")
 
     assert sorted(frame["year_month"]) == ["2026-01", "2026-02"]
     assert sorted(frame["service_area"]) == ["NYC", "TX"]
 
 
 def test_로컬_소스는_파티션이_없으면_빈_데이터프레임(tmp_path):
-    frame = LocalCsvDataSource(tmp_path).load("monthly_report")
+    frame = LocalCsvDataSource(tmp_path).load("lease_vehicle_inventory")
 
     assert frame.empty
 
 
 def test_최신버전_쿼리는_스키마_필드_순서로_컬럼을_고른다():
-    query = _latest_version_query("monthly_report", ["year_month", "is_rerun"])
+    query = _latest_version_query(
+        "lease_vehicle_inventory", ["year_month", "vehicle_model_id"]
+    )
 
     assert "t.year_month" in query
-    assert "t.is_rerun" in query
+    assert "t.vehicle_model_id" in query
     assert "MAX(version)" in query
     assert "service_area = t.service_area" in query
     assert "year_month = t.year_month" in query
@@ -76,64 +87,69 @@ def _sqlite_conn_with(table: str, columns: list[str], rows: list[dict]) -> sqlit
     return conn
 
 
-def _monthly_report_row(year_month: str, version: int, **overrides) -> dict:
+def _lease_vehicle_inventory_row(
+    year_month: str, version: int, **overrides
+) -> dict:
     row = {
         "version": version,
         "year_month": year_month,
-        # Gold 자연 키의 일부입니다(#809) — driver_id 가 지역 간 유니크하지 않아서
-        # 지역이 키에 있어야 두 지역의 같은 기사 ID 가 한 행으로 안 취급됩니다.
         "service_area": "NYC",
-        "threshold_profit_increase": 500.0,
-        "is_rerun": False,
-        "recommended_driver_count": 1,
-        "avg_net_profit_increase_per_driver": 10.0,
-        "avg_revenue_increase_per_driver": 5.0,
-        "total_revenue_increase": 100.0,
+        "vehicle_model_id": "MODEL1",
+        "manufacturer": "KIA",
+        "model_name": "FORTE",
+        "model_year": 2026,
+        "fuel_type": "GAS",
+        "fuel_efficiency": 30.0,
+        "comfort_eligible": True,
+        "extra_comfort_eligible": False,
+        "weekly_lease_fee": 500.0,
+        "image_url": "https://example.com/model1.png",
+        "stock": 10,
     }
     row.update(overrides)
     return row
 
 
 def test_RDS_소스는_컬럼을_스키마에서_자동생성한다(monkeypatch):
-    columns = [field.name for field in fields(MonthlyReport)]
+    columns = [field.name for field in fields(LeaseVehicleInventory)]
     conn = _sqlite_conn_with(
-        "monthly_report",
+        "lease_vehicle_inventory",
         columns,
-        [_monthly_report_row("2026-05", 1, total_revenue_increase=999.0)],
+        [_lease_vehicle_inventory_row("2026-05", 1, stock=999)],
     )
     monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
 
-    frame = RdsDataSource("dsn").load("monthly_report")
+    frame = RdsDataSource("dsn").load("lease_vehicle_inventory")
 
     assert set(frame.columns) == set(columns)
-    assert frame.loc[0, "total_revenue_increase"] == 999.0
+    assert frame.loc[0, "stock"] == 999
 
 
 def test_RDS_소스는_지역과_year_month별_최신_버전만_읽는다(monkeypatch):
-    columns = [field.name for field in fields(MonthlyReport)]
+    columns = [field.name for field in fields(LeaseVehicleInventory)]
     conn = _sqlite_conn_with(
-        "monthly_report",
+        "lease_vehicle_inventory",
         columns,
         [
-            _monthly_report_row("2026-05", 1, total_revenue_increase=100.0),
-            _monthly_report_row("2026-05", 2, total_revenue_increase=200.0),
-            _monthly_report_row(
-                "2026-05", 1, service_area="TX", total_revenue_increase=400.0
+            _lease_vehicle_inventory_row("2026-05", 1, stock=100),
+            _lease_vehicle_inventory_row("2026-05", 2, stock=200),
+            _lease_vehicle_inventory_row(
+                "2026-05", 1, service_area="TX", stock=400
             ),
-            _monthly_report_row("2026-06", 1, total_revenue_increase=300.0),
+            _lease_vehicle_inventory_row("2026-06", 1, stock=300),
         ],
     )
     monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
 
-    frame = RdsDataSource("dsn").load("monthly_report")
+    frame = RdsDataSource("dsn").load("lease_vehicle_inventory")
 
     assert len(frame) == 3
     by_area_month = frame.set_index(["service_area", "year_month"])
     assert (
-        by_area_month.loc[("NYC", "2026-05"), "total_revenue_increase"] == 200.0
+        by_area_month.loc[("NYC", "2026-05"), "stock"] == 200
     )
     assert (
-        by_area_month.loc[("TX", "2026-05"), "total_revenue_increase"] == 400.0
+        by_area_month.loc[("TX", "2026-05"), "stock"] == 400
     )
 
 
