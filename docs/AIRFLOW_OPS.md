@@ -46,6 +46,13 @@ LocalExecutor의 전역 `parallelism`은 기본값 32를 유지합니다. EMR와
 `deferrable=True`라 대기 중 worker slot을 반환하므로, 세 지역 규모에서는 별도 증설하지
 않습니다. queued→running 지연과 EC2 CPU·메모리를 측정해 병목이 확인될 때만 조정합니다.
 
+API 수집과 소규모 ETL도 운영에서는 AWS Lambda로 원격 실행합니다. Main 원천 3종과
+Sub Source→Raw 4종은 공통 `invoke_lambda()`를 사용하며, `LAMBDA_INVOKE=remote`일 때
+boto3로 동기 호출합니다. Lambda 응답은 기존 XCom dict 계약으로 복원하고 Airflow의
+validation Task가 실제 S3 산출물을 다시 확인합니다. 상세한 호출 범위와 실패 계약은
+[실행 자원 격리를 위한 Lambda 원격 호출](pipeline/AIRFLOW_LAMBDA_RESPONSIBILITIES.md)에
+정리했습니다.
+
 ---
 
 ## 4. 재시도 정책
