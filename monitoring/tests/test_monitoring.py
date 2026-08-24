@@ -96,35 +96,72 @@ def test_usage_widgets_show_the_total_of_both_worker_types():
         assert "SUM(u)" in expressions, f"{title}: 합계선이 없습니다"
 
 
-# CloudWatch 가 색을 지정하지 않은 계열에 순서대로 주는 기본 팔레트의 앞부분.
-# GROUP BY 결과에는 색을 지정할 수 없어 여기서 차례로 가져갑니다.
-DEFAULT_PALETTE_HEAD = {"#1f77b4", "#ff7f0e"}
+# CloudWatch 가 색을 지정하지 않은 계열에 주는 기본 팔레트. 위젯 안 "순번"으로 배정되며,
+# 다른 계열이 같은 색을 지정해 뒀는지는 보지 않습니다.
+DEFAULT_PALETTE = [
+    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
+]
 
 
-def test_total_and_ceiling_avoid_the_auto_assigned_colors():
-    """`GROUP BY` 결과는 색을 지정할 수 없어 기본 팔레트를 순서대로 씁니다.
+def _rendered_colors(widget):
+    """위젯이 실제로 그릴 색을 순번대로 계산합니다.
 
-    driver·executor 가 파랑·주황을 가져가므로, 합계나 상한에 그 색을 주면 선이 겹쳐
-    보여 구분이 안 됩니다. 실제로 합계를 파랑(#1f77b4)으로 뒀다가 driver 와 헷갈렸습니다.
+    `GROUP BY WorkerType` 은 driver·executor 두 계열이 되므로 순번을 둘 소비합니다.
+    """
+    colors, index = [], 0
+    for row in widget["properties"]["metrics"]:
+        for item in row:
+            if not isinstance(item, dict):
+                continue
+            count = 2 if "GROUP BY WorkerType" in item.get("expression", "") else 1
+            explicit = item.get("color")
+            for offset in range(count):
+                slot = index + offset
+                colors.append((
+                    item["id"],
+                    (explicit or DEFAULT_PALETTE[slot % len(DEFAULT_PALETTE)]).lower(),
+                ))
+            index += count
+    return colors
+
+
+def test_no_two_lines_in_a_widget_get_the_same_color():
+    """자동 색은 위젯 안 순번으로 정해지고, 다른 계열의 지정색을 피해 가지 않습니다.
+
+    합계·상한을 범례 앞으로 옮겼더니 워커 선이 3·4번 순번으로 밀려 초록·빨강을 받았고,
+    합계·상한에 지정한 초록·빨강과 똑같아져 네 선이 두 쌍으로 겹쳐 보였습니다.
+    `GROUP BY` 결과에는 색을 지정할 수 없으므로 순서로만 막을 수 있습니다.
     """
     for widget in _dashboard()["widgets"]:
         if widget["type"] != "metric":
             continue
-        if "used (" not in widget["properties"].get("title", ""):
-            continue
-        colored = {
-            item["id"]: item.get("color")
-            for row in widget["properties"]["metrics"]
-            for item in row
-            if isinstance(item, dict) and item["id"] in {"tot", "cap"}
-        }
-        assert set(colored) == {"tot", "cap"}, "합계·상한 색을 지정해야 합니다"
-        for name, color in colored.items():
-            assert color, f"{name}: 색이 없으면 팔레트에서 자동 배정돼 겹칩니다"
-            assert color.lower() not in DEFAULT_PALETTE_HEAD, (
-                f"{name}: {color} 는 GROUP BY 계열이 가져가는 색입니다"
+        colors = _rendered_colors(widget)
+        seen = {}
+        for series_id, color in colors:
+            assert color not in seen, (
+                f"{widget['properties'].get('title')}: {series_id} 와 {seen[color]} 가 "
+                f"모두 {color} 입니다"
             )
-        assert colored["tot"].lower() != colored["cap"].lower()
+            seen[color] = series_id
+
+
+def test_grouped_series_come_first_so_they_take_the_base_palette():
+    """색을 지정할 수 없는 계열이 앞에 와야 합니다.
+
+    뒤로 밀리면 팔레트 뒤쪽 색을 받는데, 그 색을 다른 계열이 이미 지정해 뒀을 수 있습니다.
+    """
+    for widget in _dashboard()["widgets"]:
+        if widget["type"] != "metric":
+            continue
+        rows = widget["properties"]["metrics"]
+        grouped = [n for n, row in enumerate(rows)
+                   if "GROUP BY WorkerType" in row[0].get("expression", "")]
+        if not grouped:
+            continue
+        assert grouped == [0], (
+            f"{widget['properties'].get('title')}: GROUP BY 계열이 첫 번째가 아닙니다"
+        )
 
 
 def test_usage_widgets_draw_the_ceiling_from_a_metric():

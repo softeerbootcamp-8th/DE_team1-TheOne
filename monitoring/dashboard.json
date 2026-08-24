@@ -79,6 +79,12 @@
         "metrics": [
           [
             {
+              "expression": "SELECT SUM(WorkerMemoryUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "u"
+            }
+          ],
+          [
+            {
               "expression": "SUM(u)",
               "label": "합계 (driver + executor)",
               "id": "tot",
@@ -91,12 +97,6 @@
               "label": "용량 상한 (GB)",
               "id": "cap",
               "color": "#d62728"
-            }
-          ],
-          [
-            {
-              "expression": "SELECT SUM(WorkerMemoryUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
-              "id": "u"
             }
           ]
         ],
@@ -126,6 +126,12 @@
         "metrics": [
           [
             {
+              "expression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "u"
+            }
+          ],
+          [
+            {
               "expression": "SUM(u)",
               "label": "합계 (driver + executor)",
               "id": "tot",
@@ -138,12 +144,6 @@
               "label": "용량 상한 (vCPU)",
               "id": "cap",
               "color": "#d62728"
-            }
-          ],
-          [
-            {
-              "expression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
-              "id": "u"
             }
           ]
         ],
