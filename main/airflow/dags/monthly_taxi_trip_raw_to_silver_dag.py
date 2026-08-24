@@ -9,10 +9,6 @@ from airflow.sdk import Param, dag
 
 # provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
 from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
-from shared.airflow.common.lambda_remote import (
-    JsonLambdaInvokeFunctionOperator,
-    templated_json_payload,
-)
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
@@ -27,6 +23,7 @@ from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
     DEFAULT_SILVER_DIR,
     MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
     PROJECT_ROOT,
+    raw_to_bronze_task,
     validate_bronze_task,
     validate_silver_task,
 )
@@ -114,22 +111,11 @@ default_args = {
 def monthly_taxi_trip_raw_to_silver_pipeline():
     bronze_to_silver_task = _bronze_to_silver_operator()
 
-    raw_result = JsonLambdaInvokeFunctionOperator(
-        task_id="raw_to_bronze",
-        function_name="monthly_taxi_trip_raw_to_bronze",
-        aws_conn_id="aws_default",
-        invocation_type="RequestResponse",
-        payload=templated_json_payload(
-            api_base_url="params.api_base_url",
-            base_dir="params.base_dir",
-            year="params.year",
-            month="params.month",
-            service_area="params.service_area",
-        ),
+    raw_result = raw_to_bronze_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
         retry_exponential_backoff=True,
-    ).output
+    )()
     bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     bronze_checked >> bronze_to_silver_task
 

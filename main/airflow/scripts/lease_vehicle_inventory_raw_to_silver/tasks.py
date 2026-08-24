@@ -7,7 +7,7 @@ from pathlib import Path
 
 from airflow.sdk import task
 
-from shared.airflow.common.lambda_runtime import lambda_handler_for
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     S3Location,
@@ -67,14 +67,20 @@ def raw_to_bronze_task(**context) -> dict:
 def _collect_bronze(params: dict) -> dict:
     event = {
         "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
-        "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
         "year": params.get("year"),
         "month": params.get("month"),
     }
     if params.get("service_area") is not None:
         event["service_area"] = params["service_area"]
     logger.info("보유 차량 데이터 Raw→Bronze 수집 시작: %s", event)
-    return lambda_handler_for("lease_vehicle_inventory_raw_to_bronze")(event=event)
+    return invoke_lambda(
+        "lease_vehicle_inventory_raw_to_bronze",
+        package="main.aws_lambda.functions",
+        event=event,
+        local_event={
+            "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
+        },
+    )
 
 
 @task(task_id="validate_bronze")
@@ -83,6 +89,10 @@ def validate_bronze_task(result: dict, **context) -> dict:
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     service_area = params.get("service_area")
     _, missing = _validate_bronze_result(result, base_dir, service_area)
+    if missing:
+        logger.warning("보유 차량 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
+        result = _collect_bronze(params)
+        _, missing = _validate_bronze_result(result, base_dir, service_area)
     if missing:
         raise ValueError(f"보유 차량 Bronze 필수 컬럼 누락: {missing}")
     bronze_path = parse_handler_result(result, expected_locations=1).locations[0]
@@ -126,7 +136,11 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
     if isinstance(bronze_location, S3Location):
         event.update(storage="s3", bucket=bronze_location.bucket)
     logger.info("보유 차량 데이터 Bronze→Silver 정제 시작: %s", event)
-    return lambda_handler_for("lease_vehicle_inventory_bronze_to_silver")(event=event)
+    return invoke_lambda(
+        "lease_vehicle_inventory_bronze_to_silver",
+        package="main.aws_lambda.functions",
+        event=event,
+    )
 
 
 @task(task_id="validate_silver")
