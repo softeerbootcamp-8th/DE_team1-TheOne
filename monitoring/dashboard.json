@@ -9,7 +9,7 @@
       "width": 24,
       "height": 2,
       "properties": {
-        "markdown": "# TheOne EMR Serverless\n두 선의 **간격이 과잉 할당**, `Allocated` 가 100% 에 붙으면 **용량 상한에 막힌 것**입니다. EC2 호스트 자원은 Grafana 에서 봅니다."
+        "markdown": "# TheOne EMR Serverless\n**언제 얼마나 썼는지**를 실제 사용량으로 봅니다. 붉은 선이 애플리케이션 용량 상한이고, 거기에 붙으면 자원이 모자란 것입니다. EC2 호스트 자원은 Grafana 에서 봅니다."
       }
     },
     {
@@ -63,60 +63,29 @@
       "width": 12,
       "height": 7,
       "properties": {
-        "title": "EMR memory — used vs allocated (%)",
+        "title": "EMR memory used (GB)",
         "region": "${AWS_REGION}",
         "period": 60,
         "yAxis": {
           "left": {
             "min": 0,
-            "max": 100,
-            "label": "% of app capacity",
+            "label": "GB",
             "showUnits": false
           }
-        },
-        "annotations": {
-          "horizontal": [
-            {
-              "label": "용량 상한 (GB)",
-              "value": 100,
-              "color": "#d13212"
-            }
-          ]
         },
         "metrics": [
           [
             {
-              "expression": "SELECT SUM(WorkerMemoryUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}'",
-              "id": "u",
-              "visible": false
-            }
-          ],
-          [
-            {
-              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"MemoryAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
-              "id": "a",
-              "visible": false
+              "expression": "SELECT SUM(WorkerMemoryUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "u"
             }
           ],
           [
             {
               "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"MaxMemoryAllowed\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
-              "id": "m",
-              "visible": false
-            }
-          ],
-          [
-            {
-              "expression": "IF(m>0,100*u/m,0)",
-              "label": "Used (실제 사용)",
-              "id": "up"
-            }
-          ],
-          [
-            {
-              "expression": "IF(m>0,100*a/m,0)",
-              "label": "Allocated (할당)",
-              "id": "ap"
+              "label": "용량 상한 (GB)",
+              "id": "cap",
+              "color": "#d13212"
             }
           ]
         ]
@@ -129,60 +98,29 @@
       "width": 12,
       "height": 7,
       "properties": {
-        "title": "EMR CPU — used vs allocated (%)",
+        "title": "EMR CPU used (vCPU)",
         "region": "${AWS_REGION}",
         "period": 60,
         "yAxis": {
           "left": {
             "min": 0,
-            "max": 100,
-            "label": "% of app capacity",
+            "label": "vCPU",
             "showUnits": false
           }
-        },
-        "annotations": {
-          "horizontal": [
-            {
-              "label": "용량 상한 (vCPU)",
-              "value": 100,
-              "color": "#d13212"
-            }
-          ]
         },
         "metrics": [
           [
             {
-              "expression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}'",
-              "id": "u",
-              "visible": false
-            }
-          ],
-          [
-            {
-              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"CPUAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
-              "id": "a",
-              "visible": false
+              "expression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "u"
             }
           ],
           [
             {
               "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"MaxCPUAllowed\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
-              "id": "m",
-              "visible": false
-            }
-          ],
-          [
-            {
-              "expression": "IF(m>0,100*u/m,0)",
-              "label": "Used (실제 사용)",
-              "id": "up"
-            }
-          ],
-          [
-            {
-              "expression": "IF(m>0,100*a/m,0)",
-              "label": "Allocated (할당)",
-              "id": "ap"
+              "label": "용량 상한 (vCPU)",
+              "id": "cap",
+              "color": "#d13212"
             }
           ]
         ]

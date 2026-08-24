@@ -53,37 +53,62 @@ def _dashboard():
     return json.loads(rendered)
 
 
-def test_dashboard_shows_job_states_utilization_and_workers():
+def test_dashboard_shows_job_states_usage_and_workers():
     titles = {
         widget["properties"].get("title") for widget in _dashboard()["widgets"]
     }
     assert {
         "EMR Serverless job states",
-        "EMR memory — used vs allocated (%)",
-        "EMR CPU — used vs allocated (%)",
+        "EMR memory used (GB)",
+        "EMR CPU used (vCPU)",
         "EMR worker count",
     }.issubset(titles)
 
 
-def test_utilization_widgets_put_used_and_allocated_on_one_axis():
-    """따로 그리면 두 그래프를 눈으로 나눠 읽어야 합니다.
-
-    분모를 앱 용량 상한(`Max*Allowed`)으로 통일하면 사용량과 할당량이 같은 축에 올라가
-    한 위젯에 담깁니다. 두 선의 간격이 과잉 할당, `Allocated` 가 100% 면 상한에 막힌
-    것 — 눈금 하나로 판정됩니다.
-
-    앱 수준 `MemoryAllocated`/`CPUAllocated` 를 분모로 쓰면 안 됩니다. 작업 전환 순간
-    0~2 로 떨어져 비율이 179% 까지 튑니다(실측).
+def test_usage_widgets_split_driver_and_executor():
+    """합치면 튜닝 대상이 안 보입니다. 자원의 대부분은 executor 가 씁니다
+    (실측 executor 23.85GB vs driver 4.44GB) — 합계만 보면 driver 를 줄여야 하는지
+    executor 를 줄여야 하는지 알 수 없습니다.
     """
     for title, expressions in _widget_expressions():
-        if "used vs allocated" not in title:
+        if "used (" not in title:
+            continue
+        selects = [e for e in expressions if e.startswith("SELECT ")]
+        assert selects, f"{title}: Metrics Insights 쿼리가 없습니다"
+        assert all("GROUP BY WorkerType" in e for e in selects), (
+            f"{title}: driver·executor 를 나누지 않습니다"
+        )
+
+
+def test_usage_widgets_draw_the_ceiling_from_a_metric():
+    """"20GB 사용" 은 상한을 모르면 해석이 안 됩니다. 상한선이 있어야 남은 여유가 보입니다.
+
+    값을 박지 않고 `Max*Allowed` 지표로 그립니다. maximumCapacity 를 올렸을 때
+    선이 따라 올라가야 하고, 박아두면 조용히 틀린 기준을 보여줍니다.
+    """
+    for title, expressions in _widget_expressions():
+        if "used (" not in title:
             continue
         joined = " ".join(expressions)
         assert "MaxMemoryAllowed" in joined or "MaxCPUAllowed" in joined, (
-            f"{title}: 분모가 용량 상한이 아닙니다"
+            f"{title}: 상한선이 없습니다"
         )
-        ratios = [e for e in expressions if e.startswith("IF(m>0,100*")]
-        assert len(ratios) == 2, f"{title}: used·allocated 두 선이 있어야 합니다"
+
+
+def test_usage_widgets_avoid_the_app_level_allocated_gauge():
+    """앱 수준 `MemoryAllocated`/`CPUAllocated` 는 워커가 도는 중에도 0 으로 끊깁니다.
+
+    작업별 사용량과 나란히 두면 "사용량 > 할당량" 이 활성 표본의 21~28% 에서 나타나
+    보는 사람을 혼란스럽게 합니다(실측 330 표본). 상한값은 상수라 그런 일이 없습니다.
+    """
+    for title, expressions in _widget_expressions():
+        if "used (" not in title:
+            continue
+        for name in ("MemoryAllocated", "CPUAllocated"):
+            for expression in expressions:
+                assert f'MetricName="{name}"' not in expression, (
+                    f"{title}: {name} 는 0 으로 끊겨 동반 지표로 쓸 수 없습니다"
+                )
 
 
 def test_metrics_insights_widgets_aggregate_per_minute():
