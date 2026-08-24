@@ -7,10 +7,13 @@ def test_로컬_재처리는_기존_SUCCESS를_무효화한다(tmp_path):
     directory.mkdir()
     marker = directory / "_SUCCESS"
     marker.touch()
+    quarantine = directory / "_QUARANTINED.json"
+    quarantine.write_text("{}")
 
     invalidate_success_marker(directory)
 
     assert not marker.exists()
+    assert not quarantine.exists()
 
 
 def test_S3_재처리는_SUCCESS를_먼저_지우고_데이터를_쓴다(monkeypatch):
@@ -38,5 +41,12 @@ def test_S3_재처리는_SUCCESS를_먼저_지우고_데이터를_쓴다(monkeyp
         "delete",
         {"Bucket": "lake", "Key": "silver/x/year_month=2026-08/_SUCCESS"},
     )
-    assert calls[1][0] == "put"
-    assert calls[1][1]["Key"] == "silver/x/year_month=2026-08/data.parquet"
+    assert calls[1] == (
+        "delete",
+        {
+            "Bucket": "lake",
+            "Key": "silver/x/year_month=2026-08/_QUARANTINED.json",
+        },
+    )
+    assert calls[2][0] == "put"
+    assert calls[2][1]["Key"] == "silver/x/year_month=2026-08/data.parquet"

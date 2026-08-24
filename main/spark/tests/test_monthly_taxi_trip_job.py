@@ -392,6 +392,7 @@ def test_버전_loader는_기존_SUCCESS를_지우고_최종디렉터리에_쓴�
     final = tmp_path / "year_month=2026-08/source_collected_at=x"
     final.mkdir(parents=True)
     (final / "_SUCCESS").touch()
+    (final / "_QUARANTINED.json").write_text("{}")
     calls = []
 
     class FakeWriter:
@@ -414,6 +415,7 @@ def test_버전_loader는_기존_SUCCESS를_지우고_최종디렉터리에_쓴�
     assert result.location == str(final)
     assert result.row_count == 7
     assert not (final / "_SUCCESS").exists()
+    assert not (final / "_QUARANTINED.json").exists()
 
 
 def test_main은_Spark_자동_SUCCESS_생성을_비활성화한다(tmp_path, monkeypatch):
@@ -493,6 +495,11 @@ def test_버전_쓰기실패해도_기존_SUCCESS는_즉시_무효화된다(tmp_
 def test_S3_버전은_기존_SUCCESS를_지우고_최종_prefix에_part를_남긴다(s3_client):
     final_key = "silver/monthly_taxi_trip/year_month=2026-08/source_collected_at=x"
     s3_client.put_object(Bucket=S3_BUCKET, Key=f"{final_key}/_SUCCESS", Body=b"")
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{final_key}/_QUARANTINED.json",
+        Body=b"{}",
+    )
 
     class FakeWriter:
         def mode(self, value):

@@ -12,7 +12,7 @@ import boto3
 from pipeline_core.loader import Loader, WriteResult
 
 from shared.common.env import load_local_env
-from shared.common.success_marker import marker_key
+from shared.common.success_marker import marker_key, quarantine_marker_key
 
 BUCKET_ENV_VAR = "DATA_LAKE_S3_BUCKET"
 
@@ -52,6 +52,10 @@ class S3Loader(Loader):
             self._client.delete_object(
                 Bucket=self._bucket,
                 Key=marker_key(parent),
+            )
+            self._client.delete_object(
+                Bucket=self._bucket,
+                Key=quarantine_marker_key(parent),
             )
         self._client.put_object(
             Bucket=self._bucket,

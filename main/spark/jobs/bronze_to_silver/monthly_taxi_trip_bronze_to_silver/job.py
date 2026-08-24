@@ -15,6 +15,8 @@ from shared.common.success_marker import (
     data_path_is_complete,
     marker_key,
     marker_path,
+    quarantine_marker_key,
+    quarantine_marker_path,
 )
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
@@ -106,12 +108,18 @@ class SilverVersionDirectoryLoader(Loader):
         row_count = data.count()
         if is_s3_path(self._path):
             parsed = urlsplit(self._path)
-            boto3.client("s3").delete_object(
+            client = boto3.client("s3")
+            client.delete_object(
                 Bucket=parsed.netloc,
                 Key=marker_key(parsed.path.lstrip("/")),
             )
+            client.delete_object(
+                Bucket=parsed.netloc,
+                Key=quarantine_marker_key(parsed.path.lstrip("/")),
+            )
         else:
             marker_path(self._path).unlink(missing_ok=True)
+            quarantine_marker_path(self._path).unlink(missing_ok=True)
         payload.write.mode("overwrite").parquet(self._path)
         return WriteResult(location=self._path, row_count=row_count)
 

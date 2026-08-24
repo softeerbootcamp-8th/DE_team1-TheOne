@@ -1,17 +1,25 @@
+from collections.abc import Callable
 from contextlib import nullcontext
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 import io
+import json
 import logging
 import os
 from pathlib import Path, PurePosixPath
+from uuid import uuid4
 
 import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 
 from shared.common.s3_reader import get_object_bytes, get_object_stream
-from shared.common.success_marker import marker_key, marker_path
+from shared.common.success_marker import (
+    marker_key,
+    marker_path,
+    quarantine_marker_key,
+    quarantine_marker_path,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -191,16 +199,107 @@ def require_file(path: Path | S3Location) -> Path | S3Location:
 
 
 def publish_success_marker(directory: Path | S3Location) -> None:
-    """검증이 끝난 디렉터리를 공개합니다. 데이터 이동은 하지 않습니다."""
+    """격리 상태를 지우고 검증이 끝난 디렉터리를 공개합니다."""
     if isinstance(directory, S3Location):
-        boto3.client("s3").put_object(
+        client = boto3.client("s3")
+        client.delete_object(
+            Bucket=directory.bucket,
+            Key=quarantine_marker_key(directory.key),
+        )
+        client.put_object(
             Bucket=directory.bucket,
             Key=marker_key(directory.key),
             Body=b"",
         )
         return
     Path(directory).mkdir(parents=True, exist_ok=True)
+    quarantine_marker_path(directory).unlink(missing_ok=True)
     marker_path(directory).touch()
+
+
+def publish_quarantine_marker(
+    directory: Path | S3Location,
+    *,
+    run_id: str,
+    layer: str,
+    reason: str,
+    retryable: bool = False,
+    failed_at: datetime | None = None,
+) -> None:
+    """성공 상태를 지우고 품질 실패 원인을 JSON 종결 상태로 기록합니다."""
+    timestamp = failed_at or datetime.now(timezone.utc)
+    payload = json.dumps(
+        {
+            "failed_at": timestamp.isoformat(),
+            "layer": layer,
+            "reason": reason,
+            "retryable": retryable,
+            "run_id": run_id,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    ).encode("utf-8")
+    if isinstance(directory, S3Location):
+        client = boto3.client("s3")
+        client.delete_object(
+            Bucket=directory.bucket,
+            Key=marker_key(directory.key),
+        )
+        client.put_object(
+            Bucket=directory.bucket,
+            Key=quarantine_marker_key(directory.key),
+            Body=payload,
+        )
+        return
+
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    marker_path(directory).unlink(missing_ok=True)
+    quarantine = quarantine_marker_path(directory)
+    temporary = quarantine.with_name(f".{quarantine.name}.{uuid4().hex}.tmp")
+    try:
+        temporary.write_bytes(payload)
+        temporary.replace(quarantine)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _run_id(context: dict) -> str:
+    dag_run = context.get("dag_run")
+    task_instance = context.get("task_instance")
+    value = (
+        context.get("run_id")
+        or getattr(dag_run, "run_id", None)
+        or getattr(task_instance, "run_id", None)
+    )
+    return str(value or "unknown")
+
+
+def run_quality_gate(
+    directory: Path | S3Location | Callable[[], Path | S3Location],
+    validator: Callable[[], object],
+    *,
+    layer: str,
+    context: dict,
+):
+    """검증 결과를 상호 배타적인 성공·격리 marker로 전환합니다."""
+    try:
+        result = validator()
+    except Exception as exc:
+        target = directory() if callable(directory) else directory
+        try:
+            publish_quarantine_marker(
+                target,
+                run_id=_run_id(context),
+                layer=layer,
+                reason=f"{type(exc).__name__}: {exc}",
+            )
+        except Exception:
+            logger.exception("품질 격리 marker 기록 실패: %s", target)
+        raise
+
+    target = directory() if callable(directory) else directory
+    publish_success_marker(target)
+    return result
 
 
 def require_success_marker(directory: Path | S3Location) -> None:

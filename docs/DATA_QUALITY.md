@@ -56,8 +56,10 @@ Spark 쓰기는 `partitionOverwriteMode=dynamic` 을 씁니다 —
 **월 배치가 재시도될 때 지난달이 통째로 사라지는 사고가 여기서 납니다.**
 
 월별 Bronze는 `collected_at=.../`, Silver는 `source_collected_at=.../` 버전을 보존합니다.
-writer는 최종 경로에 직접 쓰면서 이전 `_SUCCESS`를 제거하고, Airflow가 저장 파일을
-검증한 뒤 marker를 다시 기록합니다. downstream은 marker 없는 버전을 읽지 않습니다.
+writer는 쓰기 전에 이전 종결 marker를 제거합니다. 검증 성공은 `_SUCCESS`, 품질 실패는
+원인·run ID·실패 시각을 담은 `_QUARANTINED.json`으로 기록하며 둘은 동시에 존재하지
+않습니다. downstream은 `_SUCCESS`가 있는 버전만 읽습니다. 격리 marker는 재시도 명령이
+아니며 수집·변환의 일시 장애만 Airflow 재시도 정책으로 처리합니다.
 감시 DAG는 하위 DAG가 성공한 뒤에만 ETag 상태를 기록하므로 검증 실패 시 재처리됩니다.
 
 ---
