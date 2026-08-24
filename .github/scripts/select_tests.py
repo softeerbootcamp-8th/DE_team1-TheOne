@@ -432,7 +432,7 @@ def run(selection: Selection, only: str | None = None) -> None:
             paths = [str(target / "tests")]
         else:
             paths = [str(target / path) for path in sorted(selection.tests[project])]
-        command = ["uv", "run", "--frozen", "pytest", "-q", *paths]
+        command = ["uv", "run", "--frozen", "pytest", "-q", "--durations=25", *paths]
         print(f"==> {project}: {' '.join(paths)}", flush=True)
         subprocess.run(command, cwd=runtime, env=environment, check=True)
 

@@ -53,3 +53,5 @@ TEST_CONFIG_DATA = {
 
 TEST_CONFIG = build_config(TEST_CONFIG_DATA)
 TEST_SCORE_WEIGHTS = TEST_CONFIG.allocation.score_weights
+
+# 측정용 임시 주석 (실험 브랜치)
