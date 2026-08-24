@@ -6,6 +6,7 @@
 4. latest 응답의 최종 URL에서 실제 월을 확인
 5. 다른 host로 이동한 응답은 저장 전에 거부
 6. service_area를 지정하면 데이터셋과 월 사이의 지역 경로에 저장
+7. 응답 URL의 service_area가 요청과 다르면 저장 전에 거부
 """
 
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+DATASET_RESPONSE_URL = f"{DATASET_URL}?service_area=NYC"
 LATEST_URL = f"{API_URL}/v1/data/latest/datasets/monthly_taxi_trip"
 FIRST_COLLECTED_AT = datetime(
     2026, 8, 20, 10, 15, 30, 123456, tzinfo=timezone.utc
@@ -56,7 +58,7 @@ CONTENT = _parquet_bytes()
 
 
 class Response:
-    def __init__(self, *, url=DATASET_URL, content=CONTENT):
+    def __init__(self, *, url=DATASET_RESPONSE_URL, content=CONTENT):
         self.url = url
         self.content = content
 
@@ -69,7 +71,7 @@ def _api(
     requested: list[str] | None = None,
     *,
     content: bytes = CONTENT,
-    response_url: str = DATASET_URL,
+    response_url: str = DATASET_RESPONSE_URL,
 ) -> None:
     def get(url, **kwargs):
         if requested is not None:
@@ -220,6 +222,17 @@ def test_다른host로_이동한_응답은_저장하지않는다(tmp_path, monke
     )
 
     with pytest.raises(ValueError, match="같은 host"):
+        lambda_handler(_event(tmp_path))
+
+    assert not list(tmp_path.rglob("*.parquet"))
+
+
+def test_응답_service_area가_요청과_다르면_저장하지않는다(
+    tmp_path, monkeypatch
+):
+    _api(monkeypatch, response_url=f"{DATASET_URL}?service_area=TX")
+
+    with pytest.raises(ValueError, match="service_area가 요청과 다릅니다"):
         lambda_handler(_event(tmp_path))
 
     assert not list(tmp_path.rglob("*.parquet"))
