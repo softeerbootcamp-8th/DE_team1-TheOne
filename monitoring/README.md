@@ -112,15 +112,44 @@ WHERE ApplicationId = '...' GROUP BY WorkerType
 한 위젯에 담을 수 없어 used·allocated 를 나란한 두 위젯으로 둡니다. 두 개를 넣으면
 배포는 통과하고 위젯만 깨지므로 테스트가 막습니다.
 
+### 사용률 위젯을 읽는 법
+
+분모를 **앱 용량 상한**(`MaxMemoryAllowed` / `MaxCPUAllowed`)으로 통일해서, 사용량과
+할당량을 같은 축에 올렸습니다. 한 위젯에 두 선입니다.
+
+```
+Allocated (할당)   ─────────  EMR 이 워커에 잡아준 양
+Used (실제 사용)   ─────────  워커가 실제로 쓴 양
+```
+
+- **두 선의 간격** = 과잉 할당. 잡아만 두고 안 쓰는 만큼입니다
+- **`Allocated` 가 100%** = 애플리케이션 용량 상한에 막힘. 대기가 생깁니다
+- **`Used` 가 `Allocated` 에 붙음** = 워커가 빠듯함
+
+분모로 앱 수준 `MemoryAllocated`/`CPUAllocated` 를 쓰면 안 됩니다. 작업 전환 순간
+0~2 로 떨어져 비율이 **179%** 까지 튑니다(실측). 상한값은 상수라 그런 일이 없습니다.
+
+### period 는 60 이어야 합니다
+
+Metrics Insights 의 `SUM` 은 **기간 안의 모든 샘플을 더합니다.** 지표가 1분 간격이라
+`period: 300` 을 쓰면 샘플 5개가 합쳐져 값이 5배가 됩니다.
+
+```
+period=60    executor 메모리  23.8 GB   ← 맞음 (앱 할당 28.0 GB 와 정합)
+period=300   executor 메모리 118.9 GB   ← 5배로 부풂
+```
+
+그래프는 멀쩡해 보이고 숫자만 틀리는 실패라 테스트가 고정합니다.
+
 | 보고 싶은 것 | 방법 |
 |---|---|
-| 워커가 실제로 얼마나 쓰나 | Metrics Insights — `WorkerMemoryUsed`, `WorkerCpuUsed` |
-| 얼마나 할당됐나 | Metrics Insights — `WorkerMemoryAllocated`, `WorkerCpuAllocated` |
-| 애플리케이션 용량 상한에 붙었나 | 앱 수준 — `MemoryAllocated`/`MaxMemoryAllowed`, `CPUAllocated`/`MaxCPUAllowed` |
+| 워커 사용률·할당률 | Metrics Insights `WorkerMemoryUsed`/`WorkerCpuUsed` ÷ 상한 |
 | 워커가 몇 개 떠 있나 | 앱 수준 — `RunningWorkerCount`, `PendingCreationWorkerCount` |
 | 작업 상태 | 앱 수준 — `RunningJobs`, `PendingJobs`, `FailedJobs`, `SuccessJobs` |
+| 작업 하나의 상세 | EMR Serverless 콘솔의 job run 상세, Spark UI |
 
-테스트가 스키마 고정, 지표명, Metrics Insights 경유 여부, 위젯당 쿼리 수를 모두 잡습니다.
+테스트가 스키마 고정, 지표명, Metrics Insights 경유 여부, 위젯당 쿼리 수, period 를
+모두 잡습니다.
 
 ## 최초 1회 준비
 
