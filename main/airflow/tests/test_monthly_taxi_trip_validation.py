@@ -10,11 +10,12 @@ Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 S3 Bronze 위치는 로컬 Path로 변환하지 않고 객체 바이트로 검증합니다.
 S3 Silver 버전은 Bronze와 같은 버킷의 monthly_taxi_trip prefix로 계산합니다.
-Silver는 최종 경로에 직접 쓰되, 검증을 통과해야 `_SUCCESS`로 공개됩니다.
-실패하면 데이터 파일은 있어도 후속 reader가 읽지 않습니다(#912).
+Silver는 검증 성공 시 `_SUCCESS`, 실패 시 `_QUARANTINED.json`으로 전환됩니다.
+격리 버전은 데이터 파일을 보존하되 후속 reader가 읽지 않습니다(#945).
 """
 
 import io
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -559,10 +560,13 @@ def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
     write_silver(tmp_path / "silver", rows=5)
 
     result = result_for(bronze_path)
+    quarantine = Path(result["silver_version_path"]) / "_QUARANTINED.json"
+    quarantine.write_text("{}")
     validate_silver(result)
 
     assert Path(result["silver_version_path"]).is_dir()
     assert (Path(result["silver_version_path"]) / "_SUCCESS").is_file()
+    assert not quarantine.exists()
 
 
 def test_검증에_실패하면_최종_파일은_있어도_SUCCESS는_없다(tmp_path, monkeypatch):
@@ -576,6 +580,9 @@ def test_검증에_실패하면_최종_파일은_있어도_SUCCESS는_없다(tmp
 
     assert Path(result["silver_version_path"]).is_dir()
     assert not (Path(result["silver_version_path"]) / "_SUCCESS").exists()
+    quarantine = Path(result["silver_version_path"]) / "_QUARANTINED.json"
+    assert json.loads(quarantine.read_text())["layer"] == "silver"
+    assert list(Path(result["silver_version_path"]).glob("part-*.parquet"))
 
 
 def test_silver_파티션에_파일이_없으면_막는다(tmp_path, monkeypatch):
@@ -868,6 +875,11 @@ def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않
     assert instances["validate_bronze"].try_number == 1
     assert instances["bronze_to_silver"].state == "upstream_failed"
     assert instances["validate_silver"].state == "upstream_failed"
+    quarantine = Path(path).parent / "_QUARANTINED.json"
+    payload = json.loads(quarantine.read_text())
+    assert payload["layer"] == "bronze"
+    assert payload["retryable"] is False
+    assert payload["run_id"] == run.run_id
     assert callbacks == ["validate_bronze"]
     assert "gx_validation failed layer=bronze" in caplog.text
     assert "column=invalid_required_row_ratio" in caplog.text

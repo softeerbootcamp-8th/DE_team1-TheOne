@@ -75,11 +75,12 @@
 
 ```text
 data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/data.parquet
-data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/_SUCCESS
+data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/{_SUCCESS|_QUARANTINED.json}
 ```
 
-writer는 최종 디렉터리에 원본을 쓰고 Airflow 검증이 끝난 뒤 `_SUCCESS`를 기록합니다.
-동일 원본 재사용과 downstream 최신 수집본 선택은 marker가 있는 버전만 대상으로 합니다.
+writer는 최종 디렉터리에 원본을 쓰고 Airflow 검증 성공 시 `_SUCCESS`, 품질 실패 시
+`_QUARANTINED.json`을 기록합니다. 둘은 상호 배타적이며 downstream은 `_SUCCESS`가
+있는 버전만 대상으로 합니다.
 
 원천 API 3종의 Silver는 Bronze 수집 시각을 `source_collected_at` 자연 키로 보존합니다.
 
@@ -87,16 +88,16 @@ writer는 최종 디렉터리에 원본을 쓰고 Airflow 검증이 끝난 뒤 `
 data/silver/monthly_taxi_trip/year_month=YYYY-MM/
 └── source_collected_at=YYYYMMDDTHHMMSSffffffZ/
     ├── part-*.parquet
-    └── _SUCCESS
+    └── {_SUCCESS|_QUARANTINED.json}
 
 data/silver/{driver_vehicle_monthly_snapshot,lease_vehicle_inventory}/year_month=YYYY-MM/
 └── source_collected_at=YYYYMMDDTHHMMSSffffffZ/
     ├── data.parquet
-    └── _SUCCESS
+    └── {_SUCCESS|_QUARANTINED.json}
 ```
 
-Spark/Lambda writer는 최종 `source_collected_at=.../`에 직접 쓰되 기존 `_SUCCESS`를
-먼저 제거합니다. Airflow가 스키마·행 수·품질을 검증한 뒤 `_SUCCESS`를 기록합니다.
+Spark/Lambda writer는 최종 `source_collected_at=.../`에 직접 쓰되 기존 종결 marker를
+먼저 제거합니다. Airflow가 스키마·행 수·품질을 검증해 성공 또는 격리 상태를 기록합니다.
 Gold는 `_SUCCESS`가 있는 최신 버전만 읽습니다. 같은 Bronze 수집본의
 재시도는 같은 최종 경로를 교체하므로 파일 관점에서 멱등하고, 이전 수집 버전은 남습니다.
 

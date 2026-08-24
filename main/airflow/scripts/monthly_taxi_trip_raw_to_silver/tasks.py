@@ -25,8 +25,8 @@ from shared.airflow.common.validation import (
     parse_location,
     parse_handler_result,
     parse_year_month,
-    publish_success_marker,
     run_gx_validation,
+    run_quality_gate,
 )
 from shared.common.s3_reader import list_keys
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
@@ -271,7 +271,20 @@ def existing_silver_partitions(
     on_failure_callback=slack_failure_callback,
 )
 def validate_bronze_task(result: dict, **context) -> dict:
+    state = {"result": result}
+    return run_quality_gate(
+        lambda: parse_handler_result(
+            state["result"], expected_locations=1
+        ).locations[0].parent,
+        lambda: _validate_bronze(state, context),
+        layer="bronze",
+        context=context,
+    )
+
+
+def _validate_bronze(state: dict, context: dict) -> dict:
     """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
+    result = state["result"]
     params = context.get("params", {})
     # Param이 없는 호출(단위 테스트 등)에서도 기존 리터럴과 같게 동작해야 합니다.
     configured_threshold = params.get("error_threshold")
@@ -285,6 +298,7 @@ def validate_bronze_task(result: dict, **context) -> dict:
     if missing:
         logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
         result = _collect_bronze(params)
+        state["result"] = result
         summary = _bronze_quality_result(
             result, params, list(SCHEMA.names)
         )
@@ -344,8 +358,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
             invalid_ratio=invalid_ratio,
             extra_columns=extra_columns,
         )
-    bronze_path = parse_handler_result(result, expected_locations=1).locations[0]
-    publish_success_marker(bronze_path.parent)
     service_area = params.get("service_area")
     version_path = silver_version_path(
         DEFAULT_SILVER_DIR,
@@ -391,6 +403,16 @@ def _bronze_quality_result(
     on_failure_callback=slack_failure_callback,
 )
 def validate_silver_task(raw_result: dict, **context) -> None:
+    version_path = parse_location(raw_result["silver_version_path"])
+    run_quality_gate(
+        version_path,
+        lambda: _validate_silver(raw_result),
+        layer="silver",
+        context=context,
+    )
+
+
+def _validate_silver(raw_result: dict) -> None:
     """Spark 실행이 만든 Silver 버전 파일을 직접 열어서 확인합니다."""
     parsed = parse_handler_result(raw_result, expected_locations=1)
     # 반환값을 쓰지 않습니다 — 이 호출 자체가 검증입니다. YYYY-MM 이 아니면
@@ -453,5 +475,3 @@ def validate_silver_task(raw_result: dict, **context) -> None:
         raise ValueError(
             f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
-
-    publish_success_marker(version_path)

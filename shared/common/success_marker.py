@@ -5,6 +5,7 @@ from pathlib import Path, PurePosixPath
 
 
 SUCCESS_FILE = "_SUCCESS"
+QUARANTINE_FILE = "_QUARANTINED.json"
 
 
 def marker_path(directory: str | Path) -> Path:
@@ -13,6 +14,14 @@ def marker_path(directory: str | Path) -> Path:
 
 def marker_key(prefix: str) -> str:
     return f"{prefix.rstrip('/')}/{SUCCESS_FILE}"
+
+
+def quarantine_marker_path(directory: str | Path) -> Path:
+    return Path(directory) / QUARANTINE_FILE
+
+
+def quarantine_marker_key(prefix: str) -> str:
+    return f"{prefix.rstrip('/')}/{QUARANTINE_FILE}"
 
 
 def data_path_is_complete(path: Path) -> bool:

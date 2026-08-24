@@ -8,12 +8,13 @@
 6. 경고 severity GX 실패는 Data Docs에 남기되 파이프라인을 중단하지 않는다.
 7. Suite에 저장할 날짜 InSet 값은 ISO 문자열로 왕복한다.
 8. s3:// 위치는 Path로 접히지 않고 S3 조회로 검증한다.
-9. 검증 성공 후에만 로컬·S3 `_SUCCESS` marker를 공개한다 (#912).
+9. 로컬·S3 성공·격리 marker는 상호 배타적으로 전환된다 (#945).
 """
 
 import io
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -30,6 +31,7 @@ from shared.airflow.common.validation import (
     parse_location,
     parse_iso_date,
     parse_year_month,
+    publish_quarantine_marker,
     publish_success_marker,
     read_parquet,
     require_file,
@@ -414,11 +416,13 @@ def test_location_size는_로컬과_s3를_같은_방식으로_준다(monkeypatch
     assert location_size(parse_location(S3_URI)) == 5
 
 
-# --- success marker (#912) ---------------------------------------------------
+# --- quality state marker (#945) --------------------------------------------
 
 
 def test_로컬_SUCCESS는_공개_전에는_없고_공개하면_읽힌다(tmp_path):
     directory = tmp_path / "year_month=2026-08"
+    directory.mkdir()
+    (directory / "_QUARANTINED.json").write_text("{}")
 
     with pytest.raises(FileNotFoundError, match="marker"):
         require_success_marker(directory)
@@ -426,22 +430,90 @@ def test_로컬_SUCCESS는_공개_전에는_없고_공개하면_읽힌다(tmp_pa
     publish_success_marker(directory)
 
     assert (directory / "_SUCCESS").is_file()
+    assert not (directory / "_QUARANTINED.json").exists()
     require_success_marker(directory)
+
+
+def test_로컬_품질실패는_SUCCESS를_지우고_격리사유를_기록한다(tmp_path):
+    directory = tmp_path / "year_month=2026-08"
+    directory.mkdir()
+    (directory / "_SUCCESS").touch()
+
+    publish_quarantine_marker(
+        directory,
+        run_id="manual__2026-08-24",
+        layer="bronze",
+        reason="ValueError: row_count=0",
+        failed_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+    )
+
+    assert not (directory / "_SUCCESS").exists()
+    assert json.loads((directory / "_QUARANTINED.json").read_text()) == {
+        "failed_at": "2026-08-24T00:00:00+00:00",
+        "layer": "bronze",
+        "reason": "ValueError: row_count=0",
+        "retryable": False,
+        "run_id": "manual__2026-08-24",
+    }
 
 
 def test_S3_SUCCESS를_최종_prefix에_쓴다(monkeypatch):
     calls = []
 
     class FakeClient:
+        def delete_object(self, Bucket, Key):
+            calls.append(("delete", Bucket, Key))
+
         def put_object(self, Bucket, Key, Body):
-            calls.append((Bucket, Key, Body))
+            calls.append(("put", Bucket, Key, Body))
 
     monkeypatch.setattr(validation.boto3, "client", lambda name: FakeClient())
     directory = S3Location("lake", "silver/x/year_month=2026-08")
 
     publish_success_marker(directory)
 
-    assert calls == [("lake", f"{directory.key}/_SUCCESS", b"")]
+    assert calls == [
+        ("delete", "lake", f"{directory.key}/_QUARANTINED.json"),
+        ("put", "lake", f"{directory.key}/_SUCCESS", b""),
+    ]
+
+
+def test_S3_품질실패는_SUCCESS를_지우고_격리JSON을_쓴다(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def delete_object(self, Bucket, Key):
+            calls.append(("delete", Bucket, Key))
+
+        def put_object(self, Bucket, Key, Body):
+            calls.append(("put", Bucket, Key, json.loads(Body)))
+
+    monkeypatch.setattr(validation.boto3, "client", lambda name: FakeClient())
+    directory = S3Location("lake", "silver/x/year_month=2026-08")
+
+    publish_quarantine_marker(
+        directory,
+        run_id="scheduled__2026-08-24",
+        layer="silver",
+        reason="ValueError: schema",
+        failed_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+    )
+
+    assert calls == [
+        ("delete", "lake", f"{directory.key}/_SUCCESS"),
+        (
+            "put",
+            "lake",
+            f"{directory.key}/_QUARANTINED.json",
+            {
+                "failed_at": "2026-08-24T00:00:00+00:00",
+                "layer": "silver",
+                "reason": "ValueError: schema",
+                "retryable": False,
+                "run_id": "scheduled__2026-08-24",
+            },
+        ),
+    ]
 
 
 def test_S3_SUCCESS가_없으면_읽기를_거부한다(monkeypatch):
