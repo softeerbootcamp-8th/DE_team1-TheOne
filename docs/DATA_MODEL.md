@@ -75,11 +75,11 @@
 
 ```text
 data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/data.parquet
+data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/_SUCCESS
 ```
 
-writer는 이 디렉터리 구조만 새로 만들고, 전환 중 reader는 기존
-`year_month=YYYY-MM/YYYYMMDDTHHMMSSffffffZ.parquet`도 함께 읽습니다. 동일 원본이면
-신·구 경로 중 최신 수집본을 재사용해 중복 버전을 만들지 않습니다.
+writer는 최종 디렉터리에 원본을 쓰고 Airflow 검증이 끝난 뒤 `_SUCCESS`를 기록합니다.
+동일 원본 재사용과 downstream 최신 수집본 선택은 marker가 있는 버전만 대상으로 합니다.
 
 원천 API 3종의 Silver는 Bronze 수집 시각을 `source_collected_at` 자연 키로 보존합니다.
 
@@ -95,15 +95,17 @@ data/silver/{driver_vehicle_monthly_snapshot,lease_vehicle_inventory}/year_month
     └── _SUCCESS
 ```
 
-Spark/Lambda writer는 `.staging/source_collected_at=.../`에 먼저 씁니다. Airflow가
-스키마·행 수·품질을 검증한 뒤 최종 디렉터리로 승격하고 `_SUCCESS`를 마지막에
-기록합니다. Gold는 `_SUCCESS`가 있는 최신 버전만 읽습니다. 같은 Bronze 수집본의
+Spark/Lambda writer는 최종 `source_collected_at=.../`에 직접 쓰되 기존 `_SUCCESS`를
+먼저 제거합니다. Airflow가 스키마·행 수·품질을 검증한 뒤 `_SUCCESS`를 기록합니다.
+Gold는 `_SUCCESS`가 있는 최신 버전만 읽습니다. 같은 Bronze 수집본의
 재시도는 같은 최종 경로를 교체하므로 파일 관점에서 멱등하고, 이전 수집 버전은 남습니다.
 
 `monthly_taxi_trip`은 월 2,040만 행을 Spark의 `part-*.parquet` 다중 파일로 적재합니다.
 Lambda가 처리하는 소규모 2종만 `data.parquet` 단일 파일을 사용하며, 생산 파이프라인은
-서로의 파일 형식을 허용하지 않습니다. 전환 중 Gold reader는 기존 timestamp 단일 파일과
-구 Spark part 레이아웃도 읽습니다.
+서로의 파일 형식을 허용하지 않습니다.
+
+EIA Bronze의 `collected_date=`와 고정 파일명 Silver의 `year_month=`도 파티션 바로 아래
+`_SUCCESS`를 둡니다. marker 없는 파티션은 Bronze→Silver·Silver 결합·Gold에서 읽지 않습니다.
 
 그 밖의 Spark Silver 쓰기는 `partitionOverwriteMode=dynamic` 입니다
 ([shared/spark/common/io.py](../shared/spark/common/io.py)). 재실행하면 **해당 파티션만**

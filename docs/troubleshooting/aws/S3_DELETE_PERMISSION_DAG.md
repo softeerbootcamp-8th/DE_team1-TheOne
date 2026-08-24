@@ -1,5 +1,8 @@
 # S3 DeleteObject 권한 누락 — 놓친 이유는 "누가 S3를 만지는가"를 서비스 단위로만 셌기 때문
 
+> 과거 장애 기록. #912 이후 Airflow의 staging copy/delete 승격은 제거됐으며 writer가
+> 최종 경로의 기존 `_SUCCESS`만 무효화한 뒤 직접 적재한다.
+
 ## 증상
 
 Silver 검증(GX) 통과 후 최종 버전 경로로 승격하는 단계에서 실패.
@@ -21,9 +24,9 @@ IAM 권한을 챙길 때 "이 파이프라인에서 S3를 만지는 주체가 �
 필요로 하는 `PutObject`/`GetObject`는 다 챙겼는데, 정작 이번에 `DeleteObject`를
 호출한 주체는 Lambda도 Spark도 아니라 **DAG 자체(Airflow Python 코드)**였다.
 
-`main/airflow/common/monthly_bronze.py`의 `commit_staged_silver` 함수가
+`main/airflow/common/monthly_bronze.py`의 구 `commit_staged_silver` 함수가
 `validate_silver_task` 안에서 boto3로 직접 `copy` + `delete_object`를 호출해
-staging 파일을 최종 경로로 승격시키는 구조다. 즉 **오케스트레이션 레이어(DAG)도
+staging 파일을 최종 경로로 승격시키던 구조였다. 즉 **오케스트레이션 레이어(DAG)도
 데이터 레이크에 직접 쓰기/삭제 작업을 하는 주체 중 하나**인데, "DAG는 서비스들을
 호출만 하고 정작 S3 API는 안 부른다"고 암묵적으로 가정하고 있어서 이 권한을
 빠뜨렸다. 게다가 이 role은 지금까지 S3에 쓰기(Put)/읽기(Get)만 했지 지우는
