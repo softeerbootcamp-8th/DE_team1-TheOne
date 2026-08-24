@@ -18,7 +18,10 @@ from datetime import datetime, timedelta
 
 from airflow.sdk import Param, dag
 
-from main.airflow.common.assets import DEFAULT_SERVICE_AREA
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
 from main.airflow.scripts.eia_fuel_price_silver.tasks import (
     SILVER_DIR,
     check_clean_silver_task,
@@ -47,7 +50,7 @@ default_args = {
     schedule="0 8 1 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "fuel", "eia", "silver"],
     params={
         # 비우면 전력 공개 지연(약 3개월)만큼 물러선 달을 채웁니다.

@@ -32,7 +32,7 @@
 | B — 스키마 드리프트 3단계 | Bronze/Silver 검증 | ❌ 설계만, 코드 없음 | 컬럼 추가는 통과, 필수 소실만 차단 |
 | C — 검증-후-커밋 | Bronze→Silver 적재 | ⚠️ 1/6만 구현, 5/6 설계 | 검증 통과 못 한 데이터는 최종 경로에 안 남는다 |
 | E — 월별 이상치 탐지 | Silver/Gold 결과 | ❌ 설계만, 코드 없음 | 사람이 다 못 보는 양이 되면 이상한 달을 스스로 짚어준다 |
-| F — 지역 축(`service_area`) 파티셔닝 | 전 단계 + Gold 트리거 | ❌ 설계만, 코드 없음(#674 대체) | 지역별로 수집·집계 시기가 달라도 서로 안 기다림 (단, 지금은 동시 실행은 아님) |
+| F — 지역 축(`service_area`) 파티셔닝 | 전 단계 + Gold 트리거 | ⚠️ 데이터 격리·3개 동시 실행 구현, 지역 등록·fan-out 별도 | 세 지역까지 수집·집계를 병렬 실행 |
 
 발표 순서 제안: **A → D → B → C → E → F**. "지금도 이미 하고 있는 것"(A)으로 신뢰를
 얻고, "왜 데이터셋마다 검증이 다른가"(D)로 설계 원칙을 보여준 뒤, 그 원칙이
@@ -373,8 +373,8 @@ C3(Gold의 비동기 다중소스 트리거)를 지역 축까지 확장하면 �
    지역 코드 → {EIA 가스/전력 시리즈 URL, EIA 파일명, 택시존 스키마 참조} 매핑.
    지금은 `NYC` 하나만 등록. 새 지역을 추가한다는 건 "이 레지스트리에 항목을
    추가하는 일"이 된다(단, 4번 문제가 해결된 지역만 등록 가능).
-5. **실행 동시성**: 파티션이 독립인 것과 **동시에 실행되는 것은 다르다.** 지금
-   설정으로는 리전이 늘어도 직렬로 처리된다 — 아래 별도 절에서 다룬다.
+5. **실행 동시성**: 파티션의 독립성과 실행 상한은 별도 계약이다. 지금 설정은
+   서로 다른 세 지역 DagRun까지 허용하고 네 번째부터 대기시킨다 — 아래 별도 절 참고.
 6. **`service_area`는 데이터로만 흘린다 — 설정(env var)으로 만들면 안 된다.**
    지금 경로 env var 5종(`BRONZE_DIR`, `SILVER_DIR`, `GOLD_DIR`,
    `DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SILVER_DIR`,
@@ -388,37 +388,27 @@ C3(Gold의 비동기 다중소스 트리거)를 지역 축까지 확장하면 �
 
 **핵심 통찰의 이면**: "리전마다 새 DAG를 만들 필요가 없다"는 게 이 설계의
 장점인데, 바로 그래서 **모든 리전이 한 DAG의 DAG run으로 들어온다.** 그리고
-현재 `main/`의 DAG 6개는 전부 `max_active_runs=1`이다
-(`monthly_taxi_trip_raw_to_silver_dag.py:55`,
-`monthly_taxi_trip_silver_to_gold_dag.py:157` 등). Executor도 단일 노드
-LocalExecutor(`docker-compose.yml:50`)다.
+현재 지역 파티션을 받는 `main/` DAG 8개는 공용 계약
+`MAX_ACTIVE_SERVICE_AREA_RUNS=3`을 사용한다. Executor는 단일 노드
+LocalExecutor(`docker-compose.yml:50`)이고 전역 `parallelism`은 기본값 32다.
 
 결과: `"NYC:2026-08"`과 `"TX:2026-08"`은 Airflow 입장에서 서로 다른 파티션이지만
-**실행은 큐에 줄을 선다.** 리전이 N개면 벽시계 시간이 N배로 늘어난다. 설계
-문서가 "지역별로 독립적으로 처리된다"고 말할 때, 그건 *논리적 독립*(서로의
-준비 여부를 기다리지 않음)이고 *물리적 병렬*이 아니다. 발표에서 이 둘을 섞어
-말하면 안 된다.
+세 지역까지는 **물리적으로 병렬 실행**되고 네 번째 지역부터 큐에 줄을 선다.
+파티션의 논리적 독립과 실행 상한 3개는 별도 계약이며, `max_active_runs`가 지역
+DagRun 자체를 만들어 주는 것은 아니다.
 
-**고치는 비용이 한 줄이 아닌 이유**: `max_active_runs`를 올리는 것만으로는
-부족하다. Bronze→Silver와 Silver→Gold의 EMR 오퍼레이터가 둘 다
-`wait_for_completion=True, deferrable=False`
-(`monthly_taxi_trip_raw_to_silver_dag.py:162-165`,
-`monthly_taxi_trip_silver_to_gold_dag.py:124-128`)로 되어 있어서, EMR 잡이 도는
-내내(`execution_timeout=timedelta(hours=3)`) **Airflow 워커 슬롯을 하나 붙잡고
-waiter를 폴링한다.** 이건 의도된 선택이다 — Gold DAG에 "aiobotocore를 새로
-추가하지 않고 LocalExecutor의 worker가 waiter를 폴링합니다"라는 주석이 그대로
-달려 있다. 즉 리전 N개를 동시에 돌리려면 N개 슬롯이 3시간까지 폴링만 하며
-점유된다.
+Bronze→Silver와 Silver→Gold의 EMR 오퍼레이터, 하위 DAG를 기다리는 TriggerDagRun
+오퍼레이터는 모두 `deferrable=True`다. 외부 실행을 기다리는 동안 triggerer로
+넘어가 worker slot을 반환하므로, 지역 수만큼 장시간 폴링 슬롯을 확보할 필요는 없다.
 
 | 선택지 | 비용 | 판단 |
 |---|---|---|
-| `max_active_runs`를 리전 수로 올리고 슬롯만 늘림 | 슬롯 N개가 폴링으로 점유. 리전 3~5개까지는 충분 | **초기 확장은 이걸로 시작** |
-| EMR 오퍼레이터를 `deferrable=True`로 전환 | `aiobotocore` 의존성 추가 — 지금 일부러 피한 선택을 되돌리는 것 | 리전이 두 자릿수로 갈 때 재검토 |
+| `max_active_runs=3`, `parallelism=32` 유지 | 세 지역까지 병렬, 네 번째부터 대기 | **현재 채택** |
+| `parallelism` 상향 | 단일 EC2에서 scheduler와 CPU·메모리 경쟁 증가 | queued 병목을 실측한 뒤 검토 |
 | Executor를 Celery/Kubernetes로 교체 | 로컬 실행 제약과 충돌, 운영 복잡도 급증 | 이번 범위 밖 |
 
-**결정**: 리전 3~5개 규모까지는 `max_active_runs` 상향 + 슬롯 확보로 간다.
-`deferrable` 전환은 "폴링 슬롯이 실제로 부족해졌을 때" 트리거되는 후속 작업으로
-남긴다 — 지금 미리 aiobotocore를 넣는 건 과잉이다.
+**결정**: 세 지역 규모까지는 `max_active_runs=3`과 기존 `parallelism=32`로 간다.
+worker slot 증설과 Executor 교체는 실제 queued 지연이 확인되기 전에는 과잉이다.
 
 ### 이 설계로 **손댈 게 없는** 것 — Silver 단일 파일 적재
 
@@ -578,12 +568,9 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
    **8개 DAG에 parametrize**. `service_area` Param을 추가하면 8케이스가 전부
    깨지므로 `DAG_PARAMS` 전 항목을 같이 고쳐야 한다. (이 테스트가 #743 변경을
    병합에서 유실시킨 바로 그 계약이다 — 같은 함정을 두 번 밟지 말 것.)
-2. **`max_active_runs == 1` 단정이 6파일 13케이스** —
-   `test_dag_module_contracts.py:49`(7), `test_dag_concurrency.py:16,20,24`(3),
-   EIA 3종 각 1. 위 "실행 동시성" 절의 상향 단계가 여기 전부 걸린다. 특히
-   `test_dag_concurrency.py`의 docstring이 "같은 출력 파티션을 쓰는 DAG"라고
-   *이유*를 적어놨는데, 파티션 키에 지역이 들어가면 그 전제가 바뀌므로
-   **숫자만 올리는 게 아니라 근거를 다시 세워야 한다.**
+2. **해결됨 — `max_active_runs == 3` 계약** — 지역 파티션을 받는 main DAG 8개와
+   관련 계약 테스트가 공용 상한 3을 강제한다. `test_dag_concurrency.py`도
+   `service_area`로 격리된 서로 다른 지역이라는 근거를 명시한다.
 3. **`test_monthly_taxi_trip_silver_to_gold_dag.py:89`** —
    `IdentityMapper.to_downstream("2026-05") == "2026-05"`. IdentityMapper는
    항등이라 복합 키로도 통과하지만 **더 이상 아무것도 검증하지 않는다.** 복합 키
@@ -638,13 +625,10 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
   판단했었다. 이번에 구체적으로 설계해보니 비용이 생각보다 크지 않다는 걸
   알게 됐고, 그래서 이슈를 갱신했다.
 - **Q. 리전이 10개면 10개가 동시에 도나?**
-  A. **아니다. 지금 설정으로는 순서대로 돈다.** 모든 DAG가
-  `max_active_runs=1`이고 단일 노드 LocalExecutor라, 파티션은 독립이어도 실행은
-  큐에 줄을 선다. 리전 3~5개까지는 `max_active_runs` 상향과 워커 슬롯 확보로
-  해결하기로 정했고, 그 이상은 EMR 오퍼레이터를 `deferrable=True`로 바꿔야
-  하는데 이건 지금 일부러 피한 `aiobotocore` 의존성을 다시 들이는 일이라
-  "폴링 슬롯이 실제로 부족해진 뒤에" 하기로 미뤘다. 논리적 독립과 물리적
-  병렬을 구분해서 설계했다는 게 요점이다.
+  A. **아니다. 세 지역까지 동시에 돌고 나머지는 큐에서 기다린다.** EMR와 하위
+  DAG 대기는 이미 `deferrable=True`라 worker slot을 장시간 점유하지 않는다.
+  네 지역 이상이 필요하면 queued 지연과 EC2 자원을 실측해 상한과 Executor를
+  다시 결정한다.
 - **Q. Silver 파일 구조는 안 바꿔도 되나? 단일 parquet에 쓰는 게 나중에 걸리지 않나?**
   A. 검토했고 안 걸린다. 멀티리전은 파일 하나를 키우는 게 아니라 개수를
   늘리므로, 단일 파일 쓰기 비용은 리전 수와 무관하다. Loader는 경로를 문자열로
@@ -689,13 +673,9 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
 - B의 `PULocationID`/`DOLocationID`/`pickup_zone`/`dropoff_zone` 선택 컬럼
   분류는 F의 4번 문제를 부분적으로 완화한다는 것도 실제 분류 결과에서
   나온 사실이다(지어낸 연결이 아니다).
-- F의 5번(실행 동시성) 제약은 코드에 있는 사실이다: `main/`의 DAG 6개 전부
-  `max_active_runs=1`, Executor는 단일 노드 LocalExecutor
-  (`docker-compose.yml:50`), 두 EMR 오퍼레이터가
-  `wait_for_completion=True, deferrable=False`로 워커 슬롯을 최대 3시간 점유
-  (`monthly_taxi_trip_raw_to_silver_dag.py:162-165`,
-  `monthly_taxi_trip_silver_to_gold_dag.py:124-128`). `deferrable=False`가
-  aiobotocore를 피하려는 의도적 선택이라는 것도 후자의 주석에 명시돼 있다.
+- F의 5번(실행 동시성)은 구현됐다: 지역 파티션을 받는 `main/` DAG 8개는
+  `max_active_runs=3`, Executor는 단일 노드 LocalExecutor다. EMR와 하위 DAG
+  대기는 `deferrable=True`라 대기 중 worker slot을 반환한다.
 - Silver 단일 파일 적재(`SingleParquetFileLoader`)가 리전 축 추가에 영향받지
   않는다는 것도 코드 대조로 확인한 사실이다 — Loader가 경로를 문자열로 받고,
   파일명 패턴 검증(`job.py:271-279`)이 디렉터리를 보지 않는다. 예외는
@@ -716,12 +696,11 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
 
 ### 확인이 더 필요한 것 / 발표에서 정직하게 인정할 것
 
-- B, D, E, F는 **코드가 전혀 없다.** "설계를 마쳤다"까지만 말하고 "구현했다"고
-  말하지 않는다.
-- F에서 "지역별로 독립적으로 처리된다"고 말할 때 **동시에 실행된다는 뜻이
-  아니다.** 지금 설정으로는 리전 수만큼 벽시계 시간이 늘어난다. "독립적으로
-  트리거된다"까지만 주장하고, 동시성은 `max_active_runs`/슬롯 확보라는 후속
-  작업이 필요하다고 밝힐 것.
+- B, D, E는 **코드가 전혀 없다.** "설계를 마쳤다"까지만 말하고 "구현했다"고
+  말하지 않는다. F는 데이터 격리와 세 지역 동시 실행 상한까지 구현됐지만,
+  실제 지역 등록과 지역별 DagRun fan-out은 별도 운영·구현 범위다.
+- F는 세 지역까지 물리적으로 병렬 실행할 수 있다. 다만 `max_active_runs=3`은
+  실행 상한일 뿐 지역 DagRun을 자동 생성하지 않는다는 점을 함께 밝힌다.
 - F는 1~3번 문제만 설계로 풀리고, **4번(택시존 스키마)은 완전히 안 풀린다.**
   B의 선택 컬럼 처리가 "컬럼이 없는 경우"만 완화하고, "같은 이름인데 의미가
   다른 위치 표현"까지는 못 잡는다는 걸 질문받으면 그대로 인정할 것.
@@ -787,10 +766,8 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
 - [ ] `test_dry_run_contract.py`가 사라진 경위 확인 (develop `b43a138`)
 - [ ] #740 staleness 워치독이 asset-triggered 경로에서 구조적으로 안 울리는
       문제 — **멀티리전과 무관하게 지금 죽어 있으므로 별도 이슈로**
-- [ ] F 구현 시 `max_active_runs=1`을 리전 수에 맞게 상향 + LocalExecutor 워커
-      슬롯 확보. EMR 오퍼레이터가 `deferrable=False`로 슬롯을 최대 3시간
-      점유하므로 "리전 N개 = 슬롯 N개"로 계산해야 한다. `deferrable=True`
-      전환(aiobotocore 추가)은 슬롯이 실제로 부족해진 뒤에 별도 이슈로
+- [x] 지역 파티션 main DAG 8개의 `max_active_runs=3` 상향. EMR와 하위 DAG
+      대기는 `deferrable=True`이고 LocalExecutor `parallelism=32`는 유지한다.
 - [ ] F 구현 시 `latest_partition_files`(`monthly_taxi_trip_bronze_to_silver/job.py:201-209`)의
       한 레벨 `year_month=` glob을 `service_area=` 계층까지 내려가도록 수정. 나머지
       Silver 적재 경로는 변경 불필요 (근거는 F 절의 "손댈 게 없는 것" 참고)

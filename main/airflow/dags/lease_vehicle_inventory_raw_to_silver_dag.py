@@ -14,7 +14,10 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
-from main.airflow.common.assets import DEFAULT_SERVICE_AREA
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
@@ -43,7 +46,7 @@ default_args = {
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "lease", "vehicle", "inventory", "bronze", "silver"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),

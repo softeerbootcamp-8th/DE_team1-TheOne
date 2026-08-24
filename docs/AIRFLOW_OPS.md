@@ -1,6 +1,6 @@
 # Airflow 운영 — 태스크 설계와 장애 알림
 
-DAG **13개**를 EC2 위 Docker Airflow 로 돌립니다 — `sub/airflow/dags` 9개, `main/airflow/dags` 4개.
+DAG **14개**를 EC2 위 Docker Airflow 로 돌립니다 — `sub/airflow/dags` 6개, `main/airflow/dags` 8개.
 두 제품이 같은 Airflow 인스턴스를 쓰되 DAG 폴더는 나눠 마운트합니다.
 
 - [1. 태스크 분할 기준](#1-태스크-분할-기준)
@@ -23,11 +23,16 @@ raw_to_bronze → validate_bronze → bronze_to_silver → validate_silver
 
 수집·변환·검증을 나눈 덕에 **재시도 정책도 태스크별로 달리** 줄 수 있습니다.
 
-## 2. 동시 실행 차단
+## 2. 동시 실행 제한
 
-모든 DAG 에 `max_active_runs=1` 을 겁니다.
-수동 트리거가 겹치면 **같은 파티션에 두 실행이 동시에 씁니다.**
-이 규약은 계약 테스트로 강제합니다 — 새 DAG 가 빠뜨리면 CI 에서 걸립니다.
+지역 파티션을 받는 `main/` DAG 8개는 `max_active_runs=3`으로, 지역 축이 없는
+`sub/` DAG 6개는 `max_active_runs=1`로 실행합니다. main DAG의 Bronze·Silver 경로와
+Gold 자연 키가 `service_area`로 격리되어 서로 다른 세 지역은 동시에 처리할 수 있습니다.
+네 번째 지역부터는 실행 중인 DagRun이 끝날 때까지 대기합니다.
+
+`max_active_runs=3`은 실행 **상한**일 뿐 지역 DagRun을 자동 생성하지 않습니다.
+지역별 트리거는 서로 다른 `service_area`를 전달해야 하고, 같은 지역·같은 월을 수동으로
+중복 트리거하지 않는 운영 규약은 유지합니다. 이 동시성 값은 계약 테스트로 강제합니다.
 
 ## 3. 무거운 작업의 분리 실행
 
@@ -37,8 +42,9 @@ Spark job 은 Airflow 프로세스 안에서 돌리지 않고 `BashOperator` 로
 대신 별도 프로세스는 DAG 파싱 때의 `sys.path` 를 물려받지 않아 `PYTHONPATH` 를 명시해야 합니다 —
 이 규약도 계약 테스트로 강제합니다(같은 실수를 두 번 했습니다).
 
-> **진행 중**: 동시 실행 태스크 수(`parallelism`) 조정은 측정 중입니다.
-> 조정 전 로그를 [`data/experiments/airflow_logs_before_parallelism4_*`](../data/experiments/) 에 보관해 두었습니다.
+LocalExecutor의 전역 `parallelism`은 기본값 32를 유지합니다. EMR와 하위 DAG 대기는
+`deferrable=True`라 대기 중 worker slot을 반환하므로, 세 지역 규모에서는 별도 증설하지
+않습니다. queued→running 지연과 EC2 CPU·메모리를 측정해 병목이 확인될 때만 조정합니다.
 
 ---
 
