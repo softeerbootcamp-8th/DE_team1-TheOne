@@ -25,6 +25,7 @@ from sub.config import build_config
 from sub.generators.synthetic_driver_trip_source import monthly
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_master.preference import PREFERENCE_COLUMNS
+from shared.common.source_published_layout import dataset_key, manifest_key
 
 BUCKET = "test-lake"
 REGION = "ap-northeast-2"
@@ -39,10 +40,10 @@ def _make_bucket():
     return client
 
 
-def _config(initial_count: int = 30):
+def _config(initial_count: int = 30, bootstrap_date: date = SNAPSHOT_DATE):
     data = {k: (dict(v) if isinstance(v, dict) else v) for k, v in TEST_CONFIG_DATA.items()}
     data["driver"] = {**data["driver"], "initial_count": initial_count}
-    data["bootstrap"] = {**data["bootstrap"], "snapshot_date": SNAPSHOT_DATE.isoformat()}
+    data["bootstrap"] = {**data["bootstrap"], "snapshot_date": bootstrap_date.isoformat()}
     return build_config(data)
 
 
@@ -168,6 +169,38 @@ def _upload_vehicle_master(client) -> str:
     return f"s3://{BUCKET}/{key}"
 
 
+def _upload_published_snapshot(client, *, config, year_month: str, taxi_id: str) -> None:
+    import io
+    import json
+
+    snapshot = pd.DataFrame(
+        {
+            "driver_id": ["DRIVER_0"],
+            "taxi_id": [taxi_id],
+            "join_date": [date(2026, 1, 1)],
+            "exit_date": [None],
+            "vehicle_since": [date(2026, 1, 1)],
+        }
+    )
+    body = io.BytesIO()
+    snapshot.to_parquet(body, index=False)
+    key = dataset_key("driver_vehicle_monthly_snapshot", year_month)
+    client.put_object(Bucket=BUCKET, Key=key, Body=body.getvalue())
+    run = RunContext.create(year_month, config)
+    client.put_object(
+        Bucket=BUCKET,
+        Key=manifest_key(year_month),
+        Body=json.dumps(
+            {
+                "year_month": year_month,
+                "run_id": run.run_id,
+                "config_hash": run.config_hash,
+                "datasets": {"driver_vehicle_monthly_snapshot": {"key": key}},
+            }
+        ).encode(),
+    )
+
+
 @mock_aws
 def test_storage_s3면_스냅샷_두_파일이_S3로_가고_재실행이_같은_결과다(tmp_path, monkeypatch):
     """`vehicle_master` 도 `s3://` 로 받습니다 — pandas 가 boto3 로 읽습니다."""
@@ -238,6 +271,84 @@ def test_S3_스냅샷은_두_파일이_모두_있어야_완결로_본다(tmp_pat
     from shared.common.s3_reader import read_parquet_uri
 
     assert len(read_parquet_uri(state.preferences_path)) == 30
+
+
+@mock_aws
+def test_계속월은_폐기된_체크포인트가_아니라_전월_published를_승계한다(
+    tmp_path, monkeypatch
+):
+    from sub.generators.synthetic_driver_state import adapters, fleet
+
+    client = _make_bucket()
+    vehicle_master_uri = _upload_vehicle_master(client)
+    vehicle_pool = adapters.vehicle_pool_from_silver(_vehicle_master_silver())
+    taxi_id = fleet.expand_fleet_units(
+        fleet.build_fleet_stock(vehicle_pool, driver_count=1)
+    ).iloc[0]["taxi_id"]
+    config = _config(initial_count=1, bootstrap_date=date(2026, 1, 1))
+    _upload_published_snapshot(
+        client, config=config, year_month="2026-01", taxi_id=str(taxi_id)
+    )
+    monkeypatch.setattr(monthly, "load_bootstrap_pools", lambda **_: _bootstrap_pools())
+
+    def legacy_checkpoint_must_not_be_read(*_args, **_kwargs):
+        raise AssertionError("폐기된 S3 체크포인트를 조회했습니다")
+
+    monkeypatch.setattr(
+        monthly.checkpoint,
+        "resolve_previous_checkpoint",
+        legacy_checkpoint_must_not_be_read,
+    )
+
+    state = monthly.prepare_monthly_state(
+        hvfhv_input_dir=f"s3://{BUCKET}/source/raw/hvfhv",
+        output_dir=tmp_path / "state",
+        snapshot_date=date(2026, 2, 1),
+        config=config,
+        vehicle_master_path=vehicle_master_uri,
+        storage="s3",
+        bucket=BUCKET,
+    )
+
+    assert state.snapshot_dir.startswith(
+        f"s3://{BUCKET}/source/published/NYC/_runtime/"
+    )
+    current = pd.read_parquet(_bytes_io(client.get_object(
+        Bucket=BUCKET,
+        Key=state.current_driver_vehicle_path.split(f"s3://{BUCKET}/", 1)[1],
+    )["Body"].read()))
+    assert current.loc[0, "driver_id"] == "DRIVER_0"
+    assert pd.isna(current.loc[0, "lease_ended_on"])
+
+
+@mock_aws
+def test_전월_published_manifest의_config_hash가_다르면_승계를_거부한다():
+    import json
+
+    client = _make_bucket()
+    config = _config(initial_count=1, bootstrap_date=date(2026, 1, 1))
+    client.put_object(
+        Bucket=BUCKET,
+        Key=manifest_key("2026-01"),
+        Body=json.dumps(
+            {"run_id": "old", "config_hash": "different", "datasets": {}}
+        ).encode(),
+    )
+
+    with pytest.raises(monthly.checkpoint.CheckpointLineageError, match="published 릴리스"):
+        monthly._resolve_previous_published(
+            RunContext.create("2026-02", config), bucket=BUCKET
+        )
+
+
+@mock_aws
+def test_부트스트랩월은_전월_published를_요구하지_않는다():
+    _make_bucket()
+    config = _config(initial_count=1, bootstrap_date=date(2026, 1, 1))
+
+    assert monthly._resolve_previous_published(
+        RunContext.create("2026-01", config), bucket=BUCKET
+    ) == (None, None, None, None, None)
 
 
 # --- source_job 의 --env 분기 -------------------------------------------------

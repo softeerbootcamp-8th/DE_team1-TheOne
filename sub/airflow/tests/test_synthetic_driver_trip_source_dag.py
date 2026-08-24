@@ -12,6 +12,7 @@
 import hashlib
 import io
 import json
+import re
 import sys
 import threading
 import urllib.error
@@ -520,8 +521,9 @@ def test_EMR_build_source_release는_최적화된_2core_worker와_상한을_지�
 
     for expected in (
         "spark.driver.cores=2",
-        "spark.driver.memory=6g",
-        "spark.driver.memoryOverhead=2g",
+        # 드라이버는 heap 보다 overhead 가 큽니다 (#894) — 아래 테스트가 이유를 고정합니다.
+        "spark.driver.memory=3g",
+        "spark.driver.memoryOverhead=5g",
         "spark.executor.cores=2",
         "spark.executor.memory=6g",
         "spark.executor.memoryOverhead=2g",
@@ -530,6 +532,33 @@ def test_EMR_build_source_release는_최적화된_2core_worker와_상한을_지�
         "spark.dynamicAllocation.maxExecutors=5",
     ):
         assert f"--conf {expected}" in parameters
+
+
+def test_드라이버_메모리는_파이썬_쪽에_더_준다(monkeypatch):
+    """`prepare_monthly_state` 가 SparkSession 보다 먼저 pandas 로 도는 구조 때문입니다.
+
+    그 시점에는 JVM 힙이 놀고 일하는 것은 overhead 쪽 파이썬 프로세스입니다. 실제
+    2026-02 전체 파일로 측정한 최대 RSS 가 2,150 MiB 라, 옛 배분(overhead 2g)으로는
+    컬럼 프로젝션을 넣어도 부족합니다. 컨테이너 총량은 8g 로 같아 과금은 그대로입니다.
+    """
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    parameters = operator_module.emr_build().job_driver["sparkSubmit"][
+        "sparkSubmitParameters"
+    ]
+
+    def gigabytes(key: str) -> int:
+        match = re.search(rf"--conf {re.escape(key)}=(\d+)g", parameters)
+        assert match, f"{key} 를 찾지 못했습니다"
+        return int(match.group(1))
+
+    heap = gigabytes("spark.driver.memory")
+    overhead = gigabytes("spark.driver.memoryOverhead")
+    assert overhead > heap, "파이썬 쪽(overhead)이 더 커야 합니다"
+    # 총량이 커지면 EMR Serverless 워커 크기가 올라가 과금이 늘어납니다.
+    assert heap + overhead == 8
 
 
 def test_EMR_은_storage_를_s3_로_고정한다(monkeypatch):

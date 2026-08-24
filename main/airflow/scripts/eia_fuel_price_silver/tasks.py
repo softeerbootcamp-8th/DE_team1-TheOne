@@ -19,14 +19,16 @@ from airflow.sdk import task
 
 from main.airflow.common import assets
 from main.airflow.common.assets import (
-    candidate_prefixes, candidate_roots, service_area_segment,
+    service_area_prefix, service_area_root, service_area_segment,
 )
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     S3Location,
+    commit_staged_file,
     layout_tail,
     parse_handler_result,
+    parse_location,
     parse_year_month,
     read_parquet,
     require_file,
@@ -67,15 +69,37 @@ def resolve_year_month(context: dict) -> str:
 
 
 def integrated_silver_file(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str, year_month: str, service_area: str
 ) -> Path:
     dataset_root = Path(base_dir) / INTEGRATED_DATASET
     area = service_area_segment(service_area)
     return (
-        (dataset_root / area if area else dataset_root)
+        (dataset_root / area)
         / f"{SILVER_PARTITION_KEY}={year_month}"
         / INTEGRATED_FILE_NAME
     )
+
+
+def integrated_silver_key(year_month: str, service_area: str) -> str:
+    prefix = service_area_prefix(
+        "silver", INTEGRATED_DATASET, service_area=service_area
+    )
+    return f"{prefix}/{SILVER_PARTITION_KEY}={year_month}/{INTEGRATED_FILE_NAME}"
+
+
+def staged_integrated_silver_file(
+    base_dir: str, year_month: str, service_area: str
+) -> Path:
+    """검증 전 위치. lambda loader의 `staged_silver_file`과 같은 규칙이어야
+    합니다(#757) — 어긋나면 이 검증이 엉뚱한 자리를 보고도 통과합니다."""
+    final = integrated_silver_file(base_dir, year_month, service_area)
+    return final.parent / ".staging" / final.name
+
+
+def staged_integrated_silver_key(year_month: str, service_area: str) -> str:
+    final = integrated_silver_key(year_month, service_area)
+    parent, name = final.rsplit("/", 1)
+    return f"{parent}/.staging/{name}"
 
 
 def month_day_count(year_month: str) -> int:
@@ -86,16 +110,9 @@ def month_day_count(year_month: str) -> int:
 
 
 def require_clean_silver(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str, year_month: str, service_area: str
 ) -> dict[str, str]:
-    """두 CLEAN Silver 의 대상 월 파티션이 모두 있는지 변환 **전에** 확인합니다.
-
-    하나만 있으면 변환이 더 안쪽에서 죽어 어느 정제가 문제인지 로그를 파야 합니다.
-
-    지역 경로를 먼저 보고, 없으면 지역 없는 경로를 봅니다 — #843/#844가 쓰기 쪽을
-    지역별로 옮기는 동안, 아직 안 옮긴 지역 없는 CLEAN도 계속 통과해야 합니다
-    (#845 전 최소 대응. `extractor._read`/`_read_s3` 와 같은 탐색 순서).
-    """
+    """같은 지역의 두 CLEAN Silver 월 파티션을 변환 전에 확인합니다."""
     extractor = importlib.import_module(
         "main.aws_lambda.functions.eia_fuel_price_silver.extractor"
     )
@@ -113,36 +130,32 @@ def require_clean_silver(
         (extractor.ELECTRICITY_DATASET, "eia_electricity_price_raw_to_silver_pipeline"),
     ):
         if storage == "local":
-            candidates = [
-                root / f"year_month={year_month}" / f"{dataset}.parquet"
-                for root in candidate_roots(Path(base_dir) / dataset, service_area)
-            ]
-        else:
-            candidates = [
-                S3Location(bucket, f"{prefix}/year_month={year_month}/{dataset}.parquet")
-                for prefix in candidate_prefixes(
-                    "silver", dataset, service_area=service_area
-                )
-            ]
-
-        located = None
-        for candidate in candidates:
-            try:
-                located = require_file(candidate)
-                break
-            except FileNotFoundError:
-                continue
-        if located is None:
-            raise FileNotFoundError(
-                f"{dataset} CLEAN Silver 가 없습니다: {candidates} — {dag_id} 을 먼저 돌리세요."
+            candidate = (
+                service_area_root(Path(base_dir) / dataset, service_area)
+                / f"year_month={year_month}" / f"{dataset}.parquet"
             )
+        else:
+            prefix = service_area_prefix(
+                "silver", dataset, service_area=service_area
+            )
+            candidate = S3Location(
+                bucket, f"{prefix}/year_month={year_month}/{dataset}.parquet"
+            )
+
+        try:
+            located = require_file(candidate)
+        except FileNotFoundError:
+            raise FileNotFoundError(
+                f"{dataset} CLEAN Silver 가 없습니다: {candidate} — "
+                f"{dag_id} 을 먼저 돌리세요."
+            ) from None
         found[dataset] = str(located)
 
     logger.info("EIA CLEAN Silver 확인 (%s 대상): %s", year_month, found)
     return found
 
 
-def validate_silver(result: object, service_area: str | None = None) -> None:
+def validate_silver(result: object, service_area: str) -> None:
     """스키마·행 수·날짜 완결성·출처를 확인합니다.
 
     날짜가 하루라도 비면 Gold 의 일자 조인에서 그 날 운행이 통째로 매칭 실패하고,
@@ -155,7 +168,9 @@ def validate_silver(result: object, service_area: str | None = None) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    expected_path = integrated_silver_file("", year_month, service_area)
+    # 검증 전이라 아직 staged 위치입니다 — 최종 위치는 검증 통과 후 commit_staged_file
+    # 로만 채워집니다(#757).
+    expected_path = staged_integrated_silver_file("", year_month, service_area)
     if layout_tail(path, service_area=service_area) != layout_tail(
         expected_path, service_area=service_area
     ):
@@ -241,6 +256,22 @@ def validate_silver_task(**context) -> None:
     year_month = result["year_month"]
     service_area = assets.resolve_service_area(context.get("params", {}))
     validate_silver(result, service_area)
+
+    # 검증을 통과했으니 이제 최종 경로로 승격합니다 — 그 전에는 실패해도 최종
+    # 경로가 이전 상태 그대로 남습니다(#757). Asset 발행은 그 뒤여야 Gold가
+    # 승격 전 산출물을 보지 않습니다.
+    staged = parse_location(result["locations"][0])
+    storage = os.getenv("BRONZE_STORAGE", "local")
+    bucket = os.getenv("DATA_LAKE_S3_BUCKET")
+    final = (
+        S3Location(bucket, integrated_silver_key(year_month, service_area))
+        if storage == "s3"
+        else integrated_silver_file(
+            context["params"]["silver_dir"], year_month, service_area
+        )
+    )
+    commit_staged_file(staged, final)
+
     assets.publish_month_partition(
         context.get("outlet_events"),
         assets.FUEL_PRICE_SILVER,

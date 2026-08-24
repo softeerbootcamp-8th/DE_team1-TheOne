@@ -38,13 +38,32 @@ def _pin_process_time_zone() -> None:
             time.tzset()
 
 
+# hadoop-aws/aws-java-sdk-bundle 버전. pyspark==3.5.6 이 번들한 Hadoop 클라이언트가
+# 3.3.4 라 그 버전에 맞춥니다 — hadoop-aws 와 번들 Hadoop 버전이 어긋나면 흔히
+# NoSuchMethodError 로 늦게, 애매하게 실패합니다(#712).
+#
+# main/spark/pyproject.toml 의 pyspark 버전을 올리면 이 값도 같이 확인하세요 —
+# uv 가 관리하는 pip 의존성이 아니라 spark.jars.packages 로 받는 Maven 좌표라
+# uv.lock 이 어긋남을 잡아주지 않습니다. 번들 버전은
+# `jars/hadoop-client-api-*.jar` 파일명으로 확인합니다.
+_S3A_HADOOP_VERSION = "3.3.4"
+_S3A_AWS_SDK_VERSION = "1.12.262"
+
+
 def get_or_create_spark_session(
     app_name: str,
     driver_memory: Optional[str] = None,
     *,
     local_mode: bool = True,
+    enable_s3: bool = False,
 ) -> SparkSession:
-    """로컬은 local[3], 운영은 spark-submit이 지정한 EMR 세션을 사용합니다."""
+    """로컬은 local[3], 운영은 spark-submit이 지정한 EMR 세션을 사용합니다.
+
+    `enable_s3=True` 는 로컬 pyspark(pip 설치본)에 hadoop-aws/aws-java-sdk-bundle
+    을 얹어 `s3://` 를 읽을 수 있게 합니다 — EMR 은 EMRFS 가 이미 있어 필요 없고,
+    이미 만들어진 세션(EMR)에서는 이 config 들이 `getOrCreate()` 에서 조용히
+    무시되므로 운영에는 영향이 없습니다(#712).
+    """
     _pin_process_time_zone()
 
     builder = SparkSession.builder.appName(app_name).config(
@@ -61,6 +80,22 @@ def get_or_create_spark_session(
         )
     if driver_memory:
         builder = builder.config("spark.driver.memory", driver_memory)
+    if enable_s3:
+        builder = (
+            builder.config(
+                "spark.jars.packages",
+                f"org.apache.hadoop:hadoop-aws:{_S3A_HADOOP_VERSION},"
+                f"com.amazonaws:aws-java-sdk-bundle:{_S3A_AWS_SDK_VERSION}",
+            )
+            # 기존 코드가 전부 s3:// 를 쓰므로(EMRFS 관례), s3:// 도 S3A 로
+            # 풀어야 호출부를 하나도 안 고칩니다. s3a:// 도 그대로 받습니다.
+            .config("spark.hadoop.fs.s3.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+            .config(
+                "spark.hadoop.fs.s3a.aws.credentials.provider",
+                "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+            )
+        )
     session = builder.getOrCreate()
     # getOrCreate 는 이미 만들어진 세션을 돌려줄 수 있고, 그때는 위 config 가 무시됩니다.
     # 타임존은 런타임에 바꿀 수 있으므로 반환 직전에 다시 못박습니다.

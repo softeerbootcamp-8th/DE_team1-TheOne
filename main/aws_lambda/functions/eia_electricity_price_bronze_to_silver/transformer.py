@@ -124,13 +124,13 @@ def build_daily_prices(
     year_month: str,
     electricity_body: bytes,
     bronze_collected_date: date,
+    service_area: str,
     markup: float = PUBLIC_CHARGING_MARKUP,
-    service_area: str | None = None,
 ) -> list[dict]:
     """대상 월의 일별 충전 단가."""
     datetime.strptime(year_month, "%Y-%m")
 
-    state = resolve_state(service_area) if service_area is not None else STATE
+    state = resolve_state(service_area)
     electricity = parse_electricity_monthly(electricity_body, state)
     if year_month not in electricity:
         available = f"{min(electricity)} ~ {max(electricity)}"

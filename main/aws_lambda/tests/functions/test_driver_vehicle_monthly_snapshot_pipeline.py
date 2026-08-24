@@ -62,10 +62,14 @@ class Response:
         return None
 
 
-def _api(monkeypatch, requested: list[str]) -> None:
+def _api(monkeypatch, requested: list[tuple[str, dict | None]]) -> None:
     def get(url, **kwargs):
-        requested.append(url)
-        return Response()
+        params = kwargs.get("params")
+        requested.append((url, params))
+        response = Response()
+        if params:
+            response.url = f"{url}?service_area={params['service_area']}"
+        return response
 
     monkeypatch.setattr(monthly_dataset.requests, "get", get)
 
@@ -88,7 +92,7 @@ def test_기사차량스냅샷Parquet만_직접받아_footer행수와함께_Bron
     )
 
     path = Path(result["locations"][0])
-    assert requested == [DATASET_URL]
+    assert requested == [(DATASET_URL, {"service_area": "TX"})]
     assert path.read_bytes() == CONTENT
     assert path.name == "data.parquet"
     assert path.parent.name == "collected_at=20260820T101531123456Z"

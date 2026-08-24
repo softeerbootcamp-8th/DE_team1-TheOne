@@ -6,6 +6,7 @@ import logging
 import os
 from pathlib import Path, PurePosixPath
 
+import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
 
@@ -186,6 +187,29 @@ def require_file(path: Path | S3Location) -> Path | S3Location:
     if path.stat().st_size == 0:
         raise ValueError(f"적재 파일이 비어 있습니다: {path}")
     return path
+
+
+def commit_staged_file(staged: Path | S3Location, final: Path | S3Location) -> None:
+    """검증된 단일 파일을 최종 위치로 승격합니다(있으면 덮어씀).
+
+    `main.airflow.common.monthly_bronze.commit_staged_silver`는 버전 디렉터리·
+    `_SUCCESS` 마커가 있는 API 3종 전용입니다. 이 함수는 그런 버전 관리 없이
+    고정 파일명 하나를 그 자리에서 덮어쓰는 데이터셋(EIA 등)을 위한 최소 버전입니다
+    — 검증 실패 시 staged 파일만 남고 final은 이전 상태 그대로 유지됩니다.
+    """
+    if isinstance(final, S3Location):
+        if not isinstance(staged, S3Location):
+            raise TypeError("staged와 final의 위치 종류가 다릅니다")
+        client = boto3.client("s3")
+        client.copy(
+            {"Bucket": staged.bucket, "Key": staged.key}, final.bucket, final.key
+        )
+        client.delete_object(Bucket=staged.bucket, Key=staged.key)
+        return
+    if isinstance(staged, S3Location):
+        raise TypeError("staged와 final의 위치 종류가 다릅니다")
+    final.parent.mkdir(parents=True, exist_ok=True)
+    Path(staged).replace(final)
 
 
 def parquet_file(path: Path | S3Location) -> pq.ParquetFile:

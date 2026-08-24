@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -28,10 +28,8 @@ DATASET_URL_PATTERN = re.compile(
 SERVICE_AREA_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
-def service_area_segment(service_area: str | None) -> str:
-    if service_area is None:
-        return ""
-    if not SERVICE_AREA_PATTERN.fullmatch(service_area or ""):
+def service_area_segment(service_area: str) -> str:
+    if not SERVICE_AREA_PATTERN.fullmatch(service_area):
         raise ValueError(
             f"service_area 는 대문자 코드여야 합니다(예: NYC): {service_area!r}"
         )
@@ -42,29 +40,12 @@ def join_segments(*segments: str | None) -> str:
     return "/".join(segment for segment in segments if segment)
 
 
-def _candidate_segments(service_area: str | None) -> tuple[str | None, ...]:
-    if service_area is None:
-        return (None,)
-    return (service_area_segment(service_area), None)
+def service_area_root(root: str | Path, service_area: str) -> Path:
+    return Path(root) / service_area_segment(service_area)
 
 
-def candidate_roots(
-    root: str | Path, service_area: str | None = None
-) -> tuple[Path, ...]:
-    base = Path(root)
-    return tuple(
-        base / segment if segment else base
-        for segment in _candidate_segments(service_area)
-    )
-
-
-def candidate_prefixes(
-    *head: str, service_area: str | None = None
-) -> tuple[str, ...]:
-    return tuple(
-        join_segments(*head, segment) if segment else join_segments(*head)
-        for segment in _candidate_segments(service_area)
-    )
+def service_area_prefix(*head: str, service_area: str) -> str:
+    return join_segments(*head, service_area_segment(service_area))
 
 
 def collected_at_token(value: str) -> str:
@@ -144,18 +125,24 @@ class MonthlyParquetAPIExtractor(Extractor):
         dataset: str,
         year_month: str | None,
         *,
+        service_area: str | None = None,
         timeout: int = 180,
     ):
         self._api_base_url = api_base_url.rstrip("/")
         self._dataset = dataset
         self._year_month = year_month
+        self._service_area = service_area
+        service_area_segment(service_area)
         self._timeout = timeout
 
     def extract(self) -> dict:
         year_month = self._year_month or "latest"
         endpoint = f"v1/data/{year_month}/datasets/{self._dataset}"
+        params = {"service_area": self._service_area} if self._service_area else None
         response = requests.get(
-            urljoin(f"{self._api_base_url}/", endpoint), timeout=self._timeout
+            urljoin(f"{self._api_base_url}/", endpoint),
+            params=params,
+            timeout=self._timeout,
         )
         response.raise_for_status()
         collected_at = (
@@ -178,6 +165,13 @@ class MonthlyParquetAPIExtractor(Extractor):
         match = DATASET_URL_PATTERN.fullmatch(target.path.rstrip("/"))
         if not match or match.group(2) != self._dataset:
             raise ValueError(f"데이터셋 응답 URL이 올바르지 않습니다: {response_url}")
+        if self._service_area:
+            areas = parse_qs(target.query).get("service_area")
+            if areas != [self._service_area]:
+                raise ValueError(
+                    "데이터셋 응답 URL의 service_area가 요청과 다릅니다: "
+                    f"{response_url}"
+                )
         year_month = match.group(1)
         try:
             datetime.strptime(year_month, "%Y-%m")
@@ -198,13 +192,11 @@ class MonthlyParquetBronzeLoader(Loader):
         base_dir: str,
         dataset: str,
         dataset_dir: str,
-        service_area: str | None = None,
+        service_area: str,
     ):
         self._base_dir = Path(base_dir)
         self._dataset = dataset
         self._dataset_dir = dataset_dir
-        # None 이면 지역 계층 없이 지금과 같은 경로입니다 — 데이터셋별로 하나씩
-        # 켜기 위한 기본값(#840~#842). 규칙은 이 런타임 모듈이 소유합니다.
         self._service_area = service_area
         self.payload: dict = {}
         self.path: Path | None = None
@@ -257,7 +249,7 @@ class MonthlyParquetBronzeLoader(Loader):
         dataset_root = self._base_dir / self._dataset_dir
         area = service_area_segment(self._service_area)
         return (
-            (dataset_root / area if area else dataset_root)
+            (dataset_root / area)
             / f"year_month={payload['year_month']}"
             / _collected_at_dir_name(payload)
             / BRONZE_DATA_FILE_NAME
@@ -271,8 +263,8 @@ class S3MonthlyParquetBronzeLoader(Loader):
         self,
         dataset: str,
         dataset_dir: str,
+        service_area: str,
         bucket: str | None = None,
-        service_area: str | None = None,
     ):
         load_local_env()
         self._dataset = dataset
@@ -340,8 +332,8 @@ def build_bronze_loader(
     base_dir: str,
     dataset: str,
     dataset_dir: str,
+    service_area: str,
     bucket: str | None = None,
-    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
         return MonthlyParquetBronzeLoader(

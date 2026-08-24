@@ -39,6 +39,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pyspark==3.5.6",   # EMR 7.13의 Spark 버전과 일치
+    # 이 버전을 올리면 shared/spark/common/session.py 의 _S3A_HADOOP_VERSION 도
+    # 번들 Hadoop 버전(jars/hadoop-client-api-*.jar)에 맞춰 같이 확인하세요(#712).
     "pytest==9.1.1",
     "moto==5.2.2",   # AWS 모킹 (S3 파티션 탐색 테스트)
 ]

@@ -4,11 +4,12 @@ import os
 from datetime import datetime, timedelta
 
 from airflow.models import Variable
-from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
+# provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
+from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
 from main.airflow.common import assets
 from main.airflow.common.assets import DEFAULT_SERVICE_AREA
 from shared.airflow.common.slack_failure_callback import (

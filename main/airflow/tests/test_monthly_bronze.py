@@ -29,10 +29,13 @@ def _result(year_month: str = "2026-07") -> dict:
 
 
 def test_로컬_Silver는_source_collected_at_최종과_staging경로를_계산한다(tmp_path):
-    final = monthly_bronze.silver_version_path(tmp_path, _result())
-    staged = monthly_bronze.staged_silver_version_path(tmp_path, _result())
+    final = monthly_bronze.silver_version_path(tmp_path, _result(), "NYC")
+    staged = monthly_bronze.staged_silver_version_path(tmp_path, _result(), "NYC")
 
-    assert final == tmp_path / "year_month=2026-07" / f"source_collected_at={TOKEN}"
+    assert final == (
+        tmp_path / "service_area=NYC" / "year_month=2026-07"
+        / f"source_collected_at={TOKEN}"
+    )
     assert staged == final.parent / ".staging" / final.name
 
 
@@ -43,15 +46,20 @@ def test_S3_Silver도_source_collected_at_최종과_staging경로를_계산한�
         f"collected_at={TOKEN}/data.parquet"
     ]
 
-    final = monthly_bronze.silver_version_path("s3://de-theone/silver", result)
-    staged = monthly_bronze.staged_silver_version_path("s3://de-theone/silver", result)
+    final = monthly_bronze.silver_version_path(
+        "s3://de-theone/silver", result, "NYC"
+    )
+    staged = monthly_bronze.staged_silver_version_path(
+        "s3://de-theone/silver", result, "NYC"
+    )
 
     assert final == S3Location(
-        "de-theone", f"silver/year_month=2026-07/source_collected_at={TOKEN}"
+        "de-theone",
+        f"silver/service_area=NYC/year_month=2026-07/source_collected_at={TOKEN}",
     )
     assert staged == S3Location(
         "de-theone",
-        f"silver/year_month=2026-07/.staging/source_collected_at={TOKEN}",
+        f"silver/service_area=NYC/year_month=2026-07/.staging/source_collected_at={TOKEN}",
     )
 
 

@@ -1,6 +1,6 @@
 # Gold DB 스키마 변경 런북
 
-Gold 3종(`monthly_report`, `driver_aggregation`, `driver_car_suggestion`)은 RDS
+Gold 3종(`monthly_report`, `driver_aggregation`, `driver_vehicle_profit_simulation`)은 RDS
 PostgreSQL에 적재됩니다. 이 문서는 **그 테이블의 스키마를 바꿀 때** 무엇을 해야 하는지를
 적습니다.
 
@@ -39,9 +39,7 @@ f"CREATE TABLE IF NOT EXISTS {table} (\n    " + ... + f",\n    PRIMARY KEY ({pri
 ```
 
 거꾸로 하면 1번과 2번 사이에 도는 잡이 전부 실패합니다. 반대로 1번을 먼저 하면,
-**옛 코드도 새 스키마에서 계속 동작해야 합니다** — 컬럼 추가는 `INSERT`가 컬럼명을
-명시하므로(`INSERT INTO t (col, ...) VALUES %s`) 옛 코드가 새 컬럼을 몰라도 문제없지만,
-새 컬럼이 `NOT NULL`이면 옛 코드의 `INSERT`가 실패합니다.
+일반적인 컬럼 추가는 옛 코드도 계속 동작하도록 구성해야 합니다.
 
 그래서 **`NOT NULL` 컬럼을 추가할 때는 1번과 2번 사이의 창을 짧게** 하거나,
 nullable로 넣고 배포 후 `SET NOT NULL`을 따로 거는 2단계로 나눕니다. 아래 스크립트는
@@ -65,17 +63,25 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 ```sql
 \d monthly_report
 \d driver_aggregation
-\d driver_car_suggestion
+\d driver_vehicle_profit_simulation
 ```
 
 세 테이블 모두 `service_area` 컬럼이 `not null`이고, PK가
-`(service_area, year_month, version[, driver_id])`인지 봅니다.
+`(service_area, year_month, version[, driver_id[, candidate_vehicle_model_id]])`인지
+확인합니다. 기존 `driver_car_suggestion` 물리 테이블은 이 적재 범위에서 변경하지 않습니다.
 
 ## 이력
 
 | 날짜 | 스크립트 | 내용 | 관련 |
 |---|---|---|---|
 | 2026-08-23 | `2026-08-23_add_service_area.sql` | 3종에 `service_area` 추가, PK를 `(service_area, ...)`로 확장. 기존 행은 `'NYC'` 백필 | #809, #674, #805 |
+
+### 추천 후보 확장 주의사항
+
+- 새 Gold 실행부터 `driver_vehicle_profit_simulation`은 기사 수 × 차량 모델 수 행을
+  저장하며 별도 추천 여부 컬럼은 두지 않습니다.
+- 적재기가 새 물리 테이블을 생성하므로 별도 전환 마이그레이션은 실행하지 않습니다.
+- 기존 `driver_car_suggestion` 물리 테이블은 그대로 유지합니다.
 
 ### 2026-08-23 주의사항
 

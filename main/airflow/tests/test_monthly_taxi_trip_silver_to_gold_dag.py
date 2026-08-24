@@ -76,8 +76,13 @@ def _logical_date(year: int, month: int) -> datetime:
     return datetime(year, month, 13, tzinfo=timezone.utc)
 
 
-def _write_inputs(root: Path, year_month: str) -> None:
-    monthly_taxi_trip = root / "monthly_taxi_trip" / f"year_month={year_month}"
+def _write_inputs(
+    root: Path, year_month: str, service_area: str = "NYC"
+) -> None:
+    monthly_taxi_trip = (
+        root / "monthly_taxi_trip" / f"service_area={service_area}"
+        / f"year_month={year_month}"
+    )
     monthly_taxi_trip.mkdir(parents=True)
     (monthly_taxi_trip / "part-00000.parquet").touch()
 
@@ -87,13 +92,19 @@ def _write_inputs(root: Path, year_month: str) -> None:
         "gas_ev_price": "gas_ev_price.parquet",
     }
     for dataset, file_name in files.items():
-        partition = root / dataset / f"year_month={year_month}"
+        partition = (
+            root / dataset / f"service_area={service_area}"
+            / f"year_month={year_month}"
+        )
         partition.mkdir(parents=True)
         (partition / file_name).touch()
 
 
 def _write_version(root: Path, dataset: str, year_month: str, file_name: str) -> Path:
-    path = root / dataset / f"year_month={year_month}" / file_name
+    path = (
+        root / dataset / "service_area=NYC" / f"year_month={year_month}"
+        / file_name
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.touch()
     return path
@@ -103,7 +114,7 @@ def _write_completed_version(
     root: Path, dataset: str, year_month: str, token: str
 ) -> Path:
     version = (
-        root / dataset / f"year_month={year_month}"
+        root / dataset / "service_area=NYC" / f"year_month={year_month}"
         / f"source_collected_at={token}"
     )
     version.mkdir(parents=True, exist_ok=True)
@@ -215,6 +226,7 @@ def test_생산자가_bare_월을_발행하면_소비자가_요란하게_실패�
             _logical_date(2026, 8),
             _params(tmp_path),
             str(tmp_path / "monthly_taxi_trip"),
+            "NYC",
             partition_key="2026-05",
         )
 
@@ -224,6 +236,7 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
         _logical_date(2026, 8),
         _params(tmp_path),
         str(tmp_path / "monthly_taxi_trip"),
+        "NYC",
         partition_key="NYC:2026-05",
     )
 
@@ -232,12 +245,16 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
 
 def test_대상연월은_기준일_이하_최신_HVFHV_파티션이다(tmp_path):
     for year_month in ("2026-03", "2026-05", "2026-09"):
-        partition = tmp_path / "monthly_taxi_trip" / f"year_month={year_month}"
+        partition = (
+            tmp_path / "monthly_taxi_trip" / "service_area=NYC"
+            / f"year_month={year_month}"
+        )
         partition.mkdir(parents=True)
         (partition / "part-00000.parquet").touch()
 
     resolved = dag_module.resolve_target_year_month(
-        _logical_date(2026, 6), _params(tmp_path), str(tmp_path / "monthly_taxi_trip")
+        _logical_date(2026, 6), _params(tmp_path),
+        str(tmp_path / "monthly_taxi_trip"), "NYC"
     )
 
     assert resolved == "2026-05"
@@ -248,6 +265,7 @@ def test_year_month_파라미터가_파티션보다_우선한다(tmp_path):
         _logical_date(2026, 6),
         _params(tmp_path, year="2025", month="7"),
         str(tmp_path / "monthly_taxi_trip"),
+        "NYC",
     )
 
     assert resolved == "2025-07"
@@ -256,20 +274,20 @@ def test_year_month_파라미터가_파티션보다_우선한다(tmp_path):
 def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
     _write_inputs(tmp_path, "2026-05")
 
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
     assert resolved["year"] == "2026" and resolved["month"] == "5"
     assert resolved["monthly_taxi_trip_path"].endswith(
-        "monthly_taxi_trip/year_month=2026-05/part-*.parquet"
+        "monthly_taxi_trip/service_area=NYC/year_month=2026-05/part-*.parquet"
     )
     assert resolved["driver_vehicle_monthly_snapshot_path"].endswith(
-        "year_month=2026-05/driver_vehicle_monthly_snapshot.parquet"
+        "service_area=NYC/year_month=2026-05/driver_vehicle_monthly_snapshot.parquet"
     )
     assert resolved["lease_vehicle_inventory_path"].endswith(
-        "year_month=2026-05/lease_vehicle_inventory.parquet"
+        "service_area=NYC/year_month=2026-05/lease_vehicle_inventory.parquet"
     )
     assert resolved["fuel_price_path"].endswith(
-        "year_month=2026-05/gas_ev_price.parquet"
+        "service_area=NYC/year_month=2026-05/gas_ev_price.parquet"
     )
 
 
@@ -285,7 +303,7 @@ def test_API_Silver는_가장최신_collected_at_파일만_선택한다(tmp_path
         _write_version(tmp_path, dataset, "2026-05", older)
         _write_version(tmp_path, dataset, "2026-05", latest)
 
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
     assert Path(resolved["monthly_taxi_trip_path"]).name == latest
     assert Path(resolved["driver_vehicle_monthly_snapshot_path"]).name == latest
@@ -303,13 +321,13 @@ def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp
     ):
         _write_completed_version(tmp_path, dataset, "2026-05", completed_token)
         incomplete = (
-            tmp_path / dataset / "year_month=2026-05"
+            tmp_path / dataset / "service_area=NYC" / "year_month=2026-05"
             / f"source_collected_at={incomplete_token}"
         )
         incomplete.mkdir()
         (incomplete / "part-00000.parquet").touch()
 
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
     for key in (
         "monthly_taxi_trip_path",
@@ -321,10 +339,13 @@ def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp
 
 def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):
     _write_inputs(tmp_path, "2026-05")
-    (tmp_path / "gas_ev_price/year_month=2026-05/gas_ev_price.parquet").unlink()
+    (
+        tmp_path / "gas_ev_price/service_area=NYC/year_month=2026-05/"
+        "gas_ev_price.parquet"
+    ).unlink()
 
     with pytest.raises(FileNotFoundError, match="eia_fuel_price_silver_pipeline"):
-        dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+        dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
 
 def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp_path):
@@ -396,8 +417,8 @@ def _write_gold(root: Path, year_month: str, service_area: str) -> None:
         "driver_aggregation": pd.DataFrame(
             [{"driver_id": "D1", "year_month": year_month, "monthly_net_profit": 100.0, "monthly_lease_fee": 400.0}]
         ),
-        "driver_car_suggestion": pd.DataFrame(
-            [{"driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
+        "driver_vehicle_profit_simulation": pd.DataFrame(
+            [{"driver_id": "D1", "year_month": year_month, "candidate_vehicle_model_id": "MODEL1", "candidate_stock": 10, "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
         ),
         "monthly_report": pd.DataFrame(
             [{"year_month": year_month, "threshold_profit_increase": 100.0, "is_rerun": False, "recommended_driver_count": 1, "avg_net_profit_increase_per_driver": 120.0}]
@@ -713,7 +734,7 @@ def test_파티션키도_파라미터도_없으면_기본_지역을_쓴다():
 def test_validate_inputs는_대상지역을_함께_반환한다(tmp_path):
     """Spark 잡이 --service_area 로 받아 Gold 자연 키에 넣습니다(#805, #809).
     빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다."""
-    _write_inputs(tmp_path, "2026-05")
+    _write_inputs(tmp_path, "2026-05", "TX")
 
     result = dag_module.validate_inputs_task.function(
         params=_params(tmp_path),
@@ -761,20 +782,17 @@ def test_Gold_입력은_지역_계층_아래도_찾는다(tmp_path):
         assert "service_area=NYC" in resolved[key], key
 
 
-def test_Gold_입력은_지역_경로가_없으면_지역없는_경로로_폴백한다(tmp_path):
-    """아직 옮겨지지 않은 데이터셋도 읽어야 합니다 — 이 폴백이 있어서 데이터셋별
-    머지가 가능합니다."""
-    _write_inputs(tmp_path, "2026-05")
+def test_Gold_입력은_비지역_경로로_폴백하지않는다(tmp_path):
+    legacy = tmp_path / "monthly_taxi_trip/year_month=2026-05"
+    legacy.mkdir(parents=True)
+    (legacy / "part-00000.parquet").touch()
 
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
-
-    assert "service_area=" not in resolved["monthly_taxi_trip_path"]
-    assert "year_month=2026-05" in resolved["monthly_taxi_trip_path"]
+    with pytest.raises(FileNotFoundError, match="service_area=NYC"):
+        dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
 
 def test_Gold_입력은_지역_경로를_먼저_본다(tmp_path):
-    """순서가 뒤집히면 이미 옮긴 데이터셋이 옛 경로의 낡은 데이터를 집어갑니다."""
-    _write_inputs(tmp_path, "2026-05")
+    """지역 경로의 입력을 같은 지역의 Gold 입력으로 확정합니다."""
     _write_scoped_inputs(tmp_path, "2026-05", "NYC")
 
     resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")

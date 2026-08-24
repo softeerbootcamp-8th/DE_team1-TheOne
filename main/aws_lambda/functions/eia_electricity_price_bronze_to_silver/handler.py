@@ -14,7 +14,7 @@ configure_lambda_logging()
 
 
 class EiaElectricityPriceTransformer(Transformer):
-    def __init__(self, year_month: str, markup: float, service_area: str | None = None):
+    def __init__(self, year_month: str, markup: float, service_area: str):
         self._year_month = year_month
         self._markup = markup
         self._service_area = service_area

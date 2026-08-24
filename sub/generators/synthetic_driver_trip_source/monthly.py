@@ -10,6 +10,7 @@ candidates.py의 후보 생성과 source_job.py의 발행(기사 스냅샷·보�
 from __future__ import annotations
 
 import io
+import json
 import shutil
 import uuid
 from dataclasses import dataclass
@@ -21,7 +22,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from sub.config import GenerationConfig
-from sub.generators.synthetic_driver_state import adapters, checkpoint
+from sub.generators.synthetic_driver_state import adapters, checkpoint, traits
+from sub.generators.synthetic_driver_state.events import (
+    EVENT_EXIT,
+    EVENT_JOIN,
+    EVENT_VEHICLE_CHANGE,
+)
 from sub.generators.synthetic_driver_state.lifecycle import synthesize_month
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_master.preference import (
@@ -29,6 +35,11 @@ from sub.spark.jobs.driver_master.preference import (
     write_driver_preferences,
 )
 from shared.common.s3_reader import is_s3_uri, parse_s3_uri, read_parquet_uri
+from shared.common.source_published_layout import (
+    S3_PUBLISHED_RUNTIME_PREFIX,
+    dataset_key,
+    manifest_key,
+)
 from sub.spark.jobs.driver_master.traits import load_bootstrap_pools
 
 CHECKPOINT_DIR_NAME = "driver_state"
@@ -36,7 +47,7 @@ PREFERENCES_FILE = "driver_preferences.parquet"
 CURRENT_DRIVER_VEHICLE_FILE = "current_driver_vehicle.parquet"
 # `S3CheckpointStore` 와 같은 뿌리를 씁니다 — 체크포인트와 그 파생 스냅샷이 흩어지면
 # 어느 달을 지워야 하는지 사람이 두 곳을 봐야 합니다.
-S3_STATE_PREFIX = "source/synthetic_driver_trip_state"
+S3_STATE_PREFIX = S3_PUBLISHED_RUNTIME_PREFIX
 _CURRENT_DRIVER_VEHICLE_DATE_COLUMNS = ("joined_on", "lease_started_on", "lease_ended_on")
 
 
@@ -117,6 +128,104 @@ def _snapshot_root(output_dir: str | Path, *, storage: str, bucket: str | None) 
             raise ValueError("storage=s3 는 bucket 이 필요합니다 (DATA_LAKE_S3_BUCKET)")
         return f"s3://{bucket}/{S3_STATE_PREFIX}"
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")
+
+
+def _published_current(snapshot: pd.DataFrame) -> pd.DataFrame:
+    required = {"driver_id", "taxi_id", "join_date", "exit_date", "vehicle_since"}
+    missing = required - set(snapshot.columns)
+    if missing:
+        raise ValueError(f"published 기사 스냅샷 필수 컬럼이 없습니다: {sorted(missing)}")
+    if snapshot["driver_id"].isna().any() or snapshot["driver_id"].duplicated().any():
+        raise ValueError("published 기사 스냅샷 driver_id는 null 없이 고유해야 합니다")
+    current = pd.DataFrame(
+        {
+            "driver_id": snapshot["driver_id"].astype(str),
+            "taxi_id": snapshot["taxi_id"].astype(str),
+            "traits_pool_month": pd.to_datetime(snapshot["join_date"]).dt.strftime("%Y-%m"),
+            "joined_on": pd.to_datetime(snapshot["join_date"]),
+            "exited_on": pd.to_datetime(snapshot["exit_date"]),
+            "vehicle_since": pd.to_datetime(snapshot["vehicle_since"]),
+        }
+    )
+    if current[["taxi_id", "traits_pool_month", "joined_on", "vehicle_since"]].isna().any().any():
+        raise ValueError("published 기사 스냅샷의 현재 상태 필드에 null이 있습니다")
+    return current.sort_values("driver_id").reset_index(drop=True)
+
+
+def _events_from_published(current: pd.DataFrame) -> pd.DataFrame:
+    rows: list[dict] = []
+    for record in current.to_dict("records"):
+        common = {"driver_id": record["driver_id"]}
+        rows.append(
+            common
+            | {
+                "event_type": EVENT_JOIN,
+                "event_ts": record["joined_on"],
+                "taxi_id": record["taxi_id"],
+                "traits_pool_month": record["traits_pool_month"],
+            }
+        )
+        if pd.Timestamp(record["vehicle_since"]) > pd.Timestamp(record["joined_on"]):
+            rows.append(
+                common
+                | {
+                    "event_type": EVENT_VEHICLE_CHANGE,
+                    "event_ts": record["vehicle_since"],
+                    "taxi_id": record["taxi_id"],
+                    "traits_pool_month": None,
+                }
+            )
+        if pd.notna(record["exited_on"]):
+            rows.append(
+                common
+                | {
+                    "event_type": EVENT_EXIT,
+                    "event_ts": record["exited_on"],
+                    "taxi_id": None,
+                    "traits_pool_month": None,
+                }
+            )
+    return pd.DataFrame(rows)
+
+
+def _resolve_previous_published(
+    run: RunContext, *, bucket: str
+) -> tuple[pd.DataFrame | None, pd.DataFrame | None, pd.DataFrame | None, str | None, str | None]:
+    """S3 운영에서는 전월 published 릴리스만 상태 정본으로 사용합니다."""
+    bootstrap_month = run.config.bootstrap.snapshot_date.strftime("%Y-%m")
+    if run.target_month <= bootstrap_month:
+        return None, None, None, None, None
+
+    from shared.common.s3_reader import get_object_bytes
+    import botocore.exceptions
+
+    prev_month = checkpoint.previous_month(run.target_month)
+    try:
+        manifest = json.loads(
+            get_object_bytes(bucket, manifest_key(prev_month)).decode("utf-8")
+        )
+    except botocore.exceptions.ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+            raise checkpoint.CheckpointLineageError(
+                f"{run.target_month} 는 첫 달(config bootstrap.snapshot_date={bootstrap_month})이 "
+                f"아닌데 전월({prev_month}) published manifest가 없습니다: "
+                f"s3://{bucket}/{manifest_key(prev_month)}"
+            ) from exc
+        raise
+    if manifest.get("config_hash") != run.config_hash:
+        raise checkpoint.CheckpointLineageError(
+            f"{prev_month} published 릴리스의 config_hash({manifest.get('config_hash')!r})가 "
+            f"요청({run.config_hash!r})과 다릅니다. {prev_month}부터 같은 설정으로 다시 생성하세요."
+        )
+    entry = manifest.get("datasets", {}).get("driver_vehicle_monthly_snapshot", {})
+    snapshot_key = entry.get("key") or dataset_key(
+        "driver_vehicle_monthly_snapshot", prev_month
+    )
+    snapshot = read_parquet_uri(f"s3://{bucket}/{snapshot_key}")
+    current = _published_current(snapshot)
+    events = _events_from_published(current)
+    noise = traits.replay_noise_state(current, through_month=prev_month, config=run.config)
+    return current, events, noise, prev_month, manifest.get("run_id")
 
 
 def _exists(uri: str) -> bool:
@@ -202,7 +311,7 @@ def prepare_monthly_state(
     target = _data_month_partition(snapshot_root, snapshot_date)
     # 완결 신호는 **두 파일이 모두** 있는지입니다. S3 에는 rename 이 없어 디렉터리
     # 존재만 보면 반쯤 올라간 파티션을 완결된 것으로 오인합니다.
-    if _exists(_join(target, PREFERENCES_FILE)) and _exists(
+    if storage == "local" and _exists(_join(target, PREFERENCES_FILE)) and _exists(
         _join(target, CURRENT_DRIVER_VEHICLE_FILE)
     ):
         return _validate_state(target, checkpoint_dir, storage=storage, bucket=bucket)
@@ -210,11 +319,16 @@ def prepare_monthly_state(
     target_month = snapshot_date.strftime("%Y-%m")
     run = RunContext.create(target_month, config)
 
-    prev_current, prev_events, prev_noise, prev_month, prev_run_id = (
-        checkpoint.resolve_previous_checkpoint(
-            checkpoint_dir, run, storage=storage, bucket=bucket
+    if storage == "s3":
+        if not bucket:
+            raise ValueError("storage=s3 는 bucket 이 필요합니다 (DATA_LAKE_S3_BUCKET)")
+        prev_current, prev_events, prev_noise, prev_month, prev_run_id = (
+            _resolve_previous_published(run, bucket=bucket)
         )
-    )
+    else:
+        prev_current, prev_events, prev_noise, prev_month, prev_run_id = (
+            checkpoint.resolve_previous_checkpoint(checkpoint_dir, run)
+        )
     # s3:// 도 받습니다. EMR 워커는 컨테이너 로컬 디스크를 못 봅니다.
     vehicle_pool = adapters.vehicle_pool_from_silver(
         read_parquet_uri(str(vehicle_master_path))
@@ -239,19 +353,18 @@ def prepare_monthly_state(
         if prev_events is not None
         else result.events
     )
-    checkpoint.write_checkpoint(
-        checkpoint_dir,
-        run,
-        events=result.events,
-        events_all=events_all,
-        current=result.current,
-        noise=result.noise_state,
-        previous_month_value=prev_month,
-        previous_run_id=prev_run_id,
-        clip_rate=result.clip_rate,
-        storage=storage,
-        bucket=bucket,
-    )
+    if storage == "local":
+        checkpoint.write_checkpoint(
+            checkpoint_dir,
+            run,
+            events=result.events,
+            events_all=events_all,
+            current=result.current,
+            noise=result.noise_state,
+            previous_month_value=prev_month,
+            previous_run_id=prev_run_id,
+            clip_rate=result.clip_rate,
+        )
 
     preferences = adapters.to_driver_preferences(result.profiles)
     current_driver_vehicle = adapters.to_current_driver_vehicle(result.current, vehicle_pool)
@@ -259,10 +372,10 @@ def prepare_monthly_state(
     if is_s3_uri(target):
         return _publish_to_s3(
             target,
-            checkpoint_dir,
             preferences=preferences,
             current_driver_vehicle=current_driver_vehicle,
             bucket=bucket,
+            clip_rate=result.clip_rate,
         )
 
     output_root.mkdir(parents=True, exist_ok=True)
@@ -283,11 +396,11 @@ def prepare_monthly_state(
 
 def _publish_to_s3(
     target: str,
-    checkpoint_dir: str | Path,
     *,
     preferences: pd.DataFrame,
     current_driver_vehicle: pd.DataFrame,
     bucket: str | None,
+    clip_rate: float,
 ) -> MonthlyStatePaths:
     """staging→rename 대신 순서로 원자성을 흉내냅니다.
 
@@ -299,4 +412,10 @@ def _publish_to_s3(
         _join(target, CURRENT_DRIVER_VEHICLE_FILE),
         _current_driver_vehicle_bytes(current_driver_vehicle),
     )
-    return _validate_state(target, checkpoint_dir, storage="s3", bucket=bucket)
+    preferences_path = _join(target, PREFERENCES_FILE)
+    current_driver_vehicle_path = _join(target, CURRENT_DRIVER_VEHICLE_FILE)
+    if not _exists(preferences_path) or not _exists(current_driver_vehicle_path):
+        raise FileNotFoundError(f"S3 런타임 상태 공개가 완료되지 않았습니다: {target}")
+    return MonthlyStatePaths(
+        target, preferences_path, current_driver_vehicle_path, clip_rate
+    )

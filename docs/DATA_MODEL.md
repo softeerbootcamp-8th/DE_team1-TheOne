@@ -203,11 +203,11 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 | 데이터셋 | 한 행 | 파티션 | 규모 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
 | `driver_aggregation` | 기사 × 월 | `year_month` | 2,000행/월 | [gold/driver_aggregation.py](../schema/gold/driver_aggregation.py) |
-| `driver_car_suggestion` | 기사 × 월 | `year_month` | 2,000행/월 | [gold/driver_car_suggestion.py](../schema/gold/driver_car_suggestion.py) |
+| `driver_vehicle_profit_simulation` | 기사 × 후보 차량 모델 × 월 | `year_month` | 기사 수 × 차량 모델 수/월 | [schema/gold](../schema/gold/__init__.py) |
 | `monthly_report` | 월 | `year_month` | 1행/월 | [gold/monthly_report.py](../schema/gold/monthly_report.py) |
 
-세 테이블 모두 `(driver_id, year_month)` 또는 `year_month` 를 PK로 갖고,
-`driver_aggregation` 과 `driver_car_suggestion` 은 **1:1 대응**합니다.
+세 물리 테이블은 월, 기사×월, 기사×후보 차량 모델×월을 각각 자연 키로 갖습니다.
+최종 추천 객체는 이 Gold 적재 범위에서 생성하거나 변경하지 않습니다.
 
 ### 4.1 `driver_aggregation` — 기사 월간 집계
 
@@ -221,11 +221,12 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 `current_make_key`/`current_model_key` 를 함께 싣는 이유: `taxi_id` 만으로는 사람이 무슨 차인지 알 수 없어
 콜 리스트에서 *"지금 〈현재 차량〉 타시는데 〈추천 차량〉 으로"* 를 못 씁니다.
 
-### 4.2 `driver_car_suggestion` — 추천
+### 4.2 `driver_vehicle_profit_simulation` — 후보 차량 수익 시뮬레이션
 
 | 컬럼 | 내용 |
 | --- | --- |
-| `recommended_make_key` / `model_key` / `model_year` | 추천 차량 (연식은 스펙 트림 범위 중 최신) |
+| `candidate_vehicle_model_id` / `model_year` | 평가한 후보 차량 (연식은 스펙 트림 범위 중 최신) |
+| `candidate_stock` | 해당 월 후보 차량 재고 스냅샷 |
 | `recommendation_reason` | `연비` / `차량등급` / `더 저렴한 렌트료` 중 해당 항목을 `, ` 로 나열. 셋 다 아니면 `현재 차량 유지` |
 | `expected_net_profit_increase` | 기사 예상 순수익 증가액 |
 | `expected_revenue_increase` | 회사 렌탈 객단가 증가액 |

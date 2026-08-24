@@ -15,6 +15,7 @@ from moto import mock_aws
 
 from shared.common.s3_reader import read_parquet_uri
 from sub.spark.jobs.driver_master.traits import (
+    BOOTSTRAP_COLUMNS,
     _latest_partition_file,
     load_bootstrap_pools,
 )
@@ -120,3 +121,80 @@ def test_S3_에_대상_월이_없으면_경로를_담아_실패한다():
             sample_per_month=10,
             seed=42,
         )
+
+
+# --- 컬럼 프로젝션 (#894) ---------------------------------------------------
+#
+# HVFHV 원천은 25개 컬럼인데 부트스트랩 풀은 3개만 씁니다. 전부 읽으면 문자열 8개가
+# pandas object dtype 으로 폭증해 드라이버가 OOM(ExitCode 137)으로 죽었습니다.
+# 실측: 2026-02 실제 데이터 209만 행에서 최대 RSS 1,274 MiB → 280 MiB.
+#
+# 프로젝션은 **결과를 바꾸지 않아야** 합니다. 유효성 필터가 보는 컬럼이 그 3개뿐이라
+# 필터 결과와 행 순서가 같고, 표본 추출은 seed 고정 rng 의 위치 인덱스라 동일합니다.
+
+
+def _hvfhv_like_frame(rows: int) -> pd.DataFrame:
+    """원천과 같은 모양 — 쓰는 3개 + 안 쓰는 컬럼(문자열 포함)."""
+    return pd.DataFrame(
+        {
+            "hvfhs_license_num": [f"HV{i % 4:04d}" for i in range(rows)],
+            "dispatching_base_num": [f"B{i % 7:05d}" for i in range(rows)],
+            "trip_miles": [3.0 + i * 0.1 for i in range(rows)],
+            "request_datetime": pd.date_range("2026-02-01", periods=rows, freq="s"),
+            "trip_time": [900 + i for i in range(rows)],
+            "base_passenger_fare": [10.0 + i for i in range(rows)],
+            "driver_pay": [20.0 + i for i in range(rows)],
+            "wav_match_flag": ["N" if i % 2 else "Y" for i in range(rows)],
+        }
+    )
+
+
+def test_프로젝션은_요청한_컬럼만_읽는다(tmp_path):
+    frame = _hvfhv_like_frame(20)
+    path = tmp_path / "part-0.parquet"
+    frame.to_parquet(path, index=False)
+
+    loaded = read_parquet_uri(str(path), columns=BOOTSTRAP_COLUMNS)
+
+    assert list(loaded.columns) == BOOTSTRAP_COLUMNS
+
+
+def test_프로젝션_결과가_전량_로드_후_자른_것과_같다(tmp_path):
+    """이 단정이 깨지면 프로젝션이 값을 바꾼 것입니다 — 성능보다 이게 우선입니다."""
+    frame = _hvfhv_like_frame(50)
+    path = tmp_path / "part-0.parquet"
+    frame.to_parquet(path, index=False)
+
+    projected = read_parquet_uri(str(path), columns=BOOTSTRAP_COLUMNS)
+    sliced = read_parquet_uri(str(path))[BOOTSTRAP_COLUMNS]
+
+    pd.testing.assert_frame_equal(projected, sliced)
+    assert projected.dtypes.equals(sliced.dtypes)
+
+
+def test_columns_를_주지_않으면_기존처럼_전부_읽는다(tmp_path):
+    """호출처 9곳 중 8곳은 프로젝션 없이 그대로 씁니다."""
+    frame = _hvfhv_like_frame(10)
+    path = tmp_path / "part-0.parquet"
+    frame.to_parquet(path, index=False)
+
+    pd.testing.assert_frame_equal(read_parquet_uri(str(path)), frame)
+
+
+@mock_aws
+def test_부트스트랩_풀은_안_쓰는_컬럼이_없어도_같은_값을_낸다():
+    """`load_bootstrap_pools` 가 3개만 읽어도 풀이 달라지지 않아야 합니다."""
+    client = boto3.client("s3", region_name=REGION)
+    _make_bucket(client)
+    full = _hvfhv_like_frame(500)
+    _put_parquet(client, "bronze/hvfhv/year_month=2026-02/part-0.parquet", full)
+    _put_parquet(
+        client, "bronze/hvfhv/year_month=2026-03/part-0.parquet", full[BOOTSTRAP_COLUMNS]
+    )
+
+    kwargs = dict(bronze_dir=f"s3://{BUCKET}/bronze/hvfhv", sample_per_month=100, seed=7)
+    wide = load_bootstrap_pools(months=["2026-02"], **kwargs)
+    narrow = load_bootstrap_pools(months=["2026-03"], **kwargs)
+
+    for key in ("trip_miles", "trip_time_min"):
+        assert wide[key].tolist() == narrow[key].tolist()

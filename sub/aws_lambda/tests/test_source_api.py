@@ -55,6 +55,14 @@ def release_root(tmp_path):
             "sha256": hashlib.sha256(body).hexdigest(),
         }
     _write_manifest(release, manifest_datasets)
+    tx_release = tmp_path / "service_area=TX" / f"year_month={YEAR_MONTH}"
+    tx_release.mkdir(parents=True)
+    tx_body = b"PAR1-TX"
+    (tx_release / "monthly_taxi_trip.parquet").write_bytes(tx_body)
+    _write_manifest(tx_release, {"monthly_taxi_trip": {
+        "file": "monthly_taxi_trip.parquet",
+        "sha256": hashlib.sha256(tx_body).hexdigest(),
+    }})
     # 릴리스 **밖**의 파일 — 경로 탈출이 성공하면 이게 새어 나갑니다.
     (tmp_path.parent / "SECRET.txt").write_text("top secret")
     return tmp_path
@@ -136,6 +144,27 @@ def test_latest_는_실제_월_URL_로_리다이렉트한다(api):
     assert status == 200
     assert final.endswith(f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip")
     assert body == BODIES["monthly_taxi_trip"]
+
+
+def test_service_area는_latest_리다이렉트와_로컬_조회에_유지된다(api, release_root):
+    status, actual, final = get(
+        api,
+        "/v1/data/latest/datasets/monthly_taxi_trip?service_area=TX",
+    )
+
+    assert (status, actual) == (200, b"PAR1-TX")
+    assert final.endswith(
+        f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip?service_area=TX"
+    )
+
+
+def test_잘못된_service_area는_거부한다(api):
+    status, _, _ = get(
+        api,
+        f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip?service_area=tx",
+    )
+
+    assert status == 400
 
 
 def test_릴리스가_하나도_없으면_latest_는_404(tmp_path):
@@ -370,12 +399,23 @@ def test_S3저장소는_monthly_taxi_trip_키도_동일하게_읽는다(s3_clien
         Key=_s3_key("monthly_taxi_trip", YEAR_MONTH),
         Body=body,
     )
+    tx_body = b"PAR1-trip-TX"
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"source/published/TX/monthly_taxi_trip/year_month={YEAR_MONTH}/data.parquet",
+        Body=tx_body,
+    )
     storage = S3DatasetStorage(S3_BUCKET)
 
     stream, content_length = storage.open("monthly_taxi_trip", YEAR_MONTH)
     try:
         assert content_length == len(body)
         assert stream.read() == body
+    finally:
+        stream.close()
+    stream, _ = storage.open("monthly_taxi_trip", YEAR_MONTH, service_area="TX")
+    try:
+        assert stream.read() == tx_body
     finally:
         stream.close()
 

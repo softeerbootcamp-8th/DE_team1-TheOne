@@ -110,7 +110,7 @@ def validate_bronze_task(result: dict, **context) -> dict:
 def _validate_bronze_result(
     result: dict,
     base_dir: str | Path,
-    service_area: str | None = None,
+    service_area: str,
 ) -> tuple[Path | S3Location, list[str]]:
     path, _ = validate_monthly_parquet_bronze(
         result,

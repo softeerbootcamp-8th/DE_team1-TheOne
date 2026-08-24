@@ -12,6 +12,8 @@ class LeaseVehicleInventoryExtractor(MonthlyParquetAPIExtractor):
         api_base_url: str,
         year_month: str | None = None,
         *,
+        service_area: str | None = None,
         timeout: int = 180,
     ):
-        super().__init__(api_base_url, DATASET, year_month, timeout=timeout)
+        super().__init__(api_base_url, DATASET, year_month, service_area=service_area,
+                         timeout=timeout)

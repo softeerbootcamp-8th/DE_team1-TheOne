@@ -24,18 +24,18 @@ FILE_NAME = f"{DATASET}.parquet"
 
 
 def silver_file(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str, year_month: str, service_area: str
 ) -> Path:
     dataset_root = Path(base_dir) / DATASET
     area = service_area_segment(service_area)
     return (
-        (dataset_root / area if area else dataset_root)
+        (dataset_root / area)
         / f"{PARTITION_KEY}={year_month}"
         / FILE_NAME
     )
 
 
-def silver_key(year_month: str, service_area: str | None = None) -> str:
+def silver_key(year_month: str, service_area: str) -> str:
     return join_segments(
         "silver",
         DATASET,
@@ -45,6 +45,21 @@ def silver_key(year_month: str, service_area: str | None = None) -> str:
     )
 
 
+def staged_silver_file(
+    base_dir: str, year_month: str, service_area: str
+) -> Path:
+    """검증 전 씁니다. `silver_file`과 격리된 디렉터리라 검증 실패해도 최종
+    경로는 이전 상태 그대로 남습니다(#757)."""
+    final = silver_file(base_dir, year_month, service_area)
+    return final.parent / ".staging" / final.name
+
+
+def staged_silver_key(year_month: str, service_area: str) -> str:
+    final = silver_key(year_month, service_area)
+    parent, name = final.rsplit("/", 1)
+    return f"{parent}/.staging/{name}"
+
+
 class EiaElectricityPriceSilverLoader(Loader):
     """대상 월 한 달치를 고정 경로의 로컬 Parquet 하나로 저장합니다."""
 
@@ -52,7 +67,7 @@ class EiaElectricityPriceSilverLoader(Loader):
         self,
         base_dir: str,
         year_month: str,
-        service_area: str | None = None,
+        service_area: str,
     ):
         self._base_dir = base_dir
         self._year_month = year_month
@@ -63,7 +78,7 @@ class EiaElectricityPriceSilverLoader(Loader):
             raise ValueError("적재할 충전 단가 Silver 데이터가 없습니다.")
 
         table = pa.Table.from_pylist(data, schema=CLEAN_EV_CHARGING_PRICE_SCHEMA)
-        path = silver_file(self._base_dir, self._year_month, self._service_area)
+        path = staged_silver_file(self._base_dir, self._year_month, self._service_area)
         path.parent.mkdir(parents=True, exist_ok=True)
         atomic_write(
             path,
@@ -83,8 +98,8 @@ class EiaElectricityPriceS3SilverLoader(Loader):
     def __init__(
         self,
         year_month: str,
+        service_area: str,
         bucket: str | None = None,
-        service_area: str | None = None,
     ):
         self._year_month = year_month
         self._bucket = bucket
@@ -99,7 +114,7 @@ class EiaElectricityPriceS3SilverLoader(Loader):
         pq.write_table(table, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month, self._service_area),
+            key=staged_silver_key(self._year_month, self._service_area),
             bucket=self._bucket,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=table.num_rows)
@@ -118,7 +133,7 @@ def build_silver_loader(
     base_dir: str,
     bucket: str | None,
     year_month: str,
-    service_area: str | None = None,
+    service_area: str,
 ) -> Loader:
     if storage == "local":
         return EiaElectricityPriceSilverLoader(
@@ -129,7 +144,7 @@ def build_silver_loader(
     if storage == "s3":
         return EiaElectricityPriceS3SilverLoader(
             year_month,
+            service_area,
             bucket=bucket,
-            service_area=service_area,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

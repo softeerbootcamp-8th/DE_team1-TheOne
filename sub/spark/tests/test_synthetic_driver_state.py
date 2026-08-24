@@ -17,7 +17,7 @@ import pytest
 from conftest import TEST_CONFIG_DATA
 
 from sub.config import build_config
-from sub.generators.synthetic_driver_state import adapters, checkpoint, events
+from sub.generators.synthetic_driver_state import adapters, checkpoint, events, traits
 from sub.generators.synthetic_driver_state.lifecycle import synthesize_month
 from sub.run_context import RunContext
 from sub.spark.jobs.driver_assignment.candidates import REQUIRED as CANDIDATES_REQUIRED
@@ -188,6 +188,29 @@ def test_임의_과거_월_체크포인트부터_재개할_수_있다(tmp_path):
     # 월들이 올바른 역사를 봅니다.
     pd.testing.assert_frame_equal(events.fold_events(events_all), second.current)
     assert len(events_all) == len(first.events) + len(second.events)
+
+
+def test_published_현재상태로_재생한_노이즈는_전월_체크포인트와_같다():
+    """published에는 노이즈를 중복 저장하지 않아도 가입 월부터 정확히 재생됩니다."""
+    config, master = _config(50), _vehicle_master()
+    first = synthesize_month(
+        target_month="2024-01", config=config, vehicle_master=master, trip_pool=POOL,
+        previous_current=None, previous_events=None, previous_noise=None,
+    )
+    second = synthesize_month(
+        target_month="2024-02", config=config, vehicle_master=master, trip_pool=POOL,
+        previous_current=first.current, previous_events=first.events,
+        previous_noise=first.noise_state,
+    )
+
+    replayed = traits.replay_noise_state(
+        second.current, through_month="2024-02", config=config
+    )
+
+    pd.testing.assert_frame_equal(
+        replayed.sort_values("driver_id").reset_index(drop=True),
+        second.noise_state.sort_values("driver_id").reset_index(drop=True),
+    )
 
 
 # ── 2. 기존 Spark 경로용 뷰 변환 (#606, #609) ──────────────────────────────

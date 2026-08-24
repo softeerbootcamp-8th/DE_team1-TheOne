@@ -14,9 +14,10 @@ DAG 파일이 아니라 여기 있는 이유 — `sub` 의 DAG 파일은 `@dag` 
 import os
 from datetime import timedelta
 
-from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 
+# provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
+from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
 from sub.airflow.scripts.synthetic_driver_trip_source.tasks import ROOT
 
 JOB_ENV = os.getenv("SPARK_JOB_ENV", "local")
@@ -34,9 +35,15 @@ EMR_ENTRY_POINT = "/home/hadoop/sub/spark/jobs/driver_assignment/source_job.py"
 # 캐시를 제거했으므로 executor는 기존 성공 형상인 2 cores / 6 GB heap을 사용하고,
 # Python·Arrow용 overhead만 2 GB로 명시합니다. dynamic allocation 상한으로 한 Job이
 # 사용하는 executor 비용도 제한합니다.
+#
+# 드라이버만 heap 과 overhead 비율이 executor 와 반대입니다 (#894). `source_job.py`
+# 는 SparkSession 을 만들기 **전에** `prepare_monthly_state` 로 전월 상태 승계와
+# 부트스트랩 풀 로드를 pandas 로 끝냅니다. 그 시점에는 JVM 힙이 놀고, 일하는 것은
+# overhead 쪽 파이썬 프로세스입니다. 6g/2g 로는 그 파이썬이 굶어 ExitCode 137 로
+# 죽었습니다 — 컨테이너 총량 8g 를 그대로 두고 배분만 뒤집어 과금은 같습니다.
 EMR_SPARK_SUBMIT_PARAMETERS = (
-    "--conf spark.driver.cores=2 --conf spark.driver.memory=6g "
-    "--conf spark.driver.memoryOverhead=2g "
+    "--conf spark.driver.cores=2 --conf spark.driver.memory=3g "
+    "--conf spark.driver.memoryOverhead=5g "
     "--conf spark.executor.cores=2 --conf spark.executor.memory=6g "
     "--conf spark.executor.memoryOverhead=2g "
     "--conf spark.dynamicAllocation.minExecutors=1 "

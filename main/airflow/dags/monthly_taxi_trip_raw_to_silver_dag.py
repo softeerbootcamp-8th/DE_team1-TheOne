@@ -4,10 +4,11 @@ import os
 from datetime import datetime, timedelta
 
 from airflow.models import Variable
-from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
 
+# provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
+from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
@@ -135,6 +136,7 @@ def _local_bronze_to_silver() -> BashOperator:
             f"--output_path {DEFAULT_SILVER_DIR} "
             "--output_version \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
             "['silver_staging_path'] }}\" "
+            "--service_area {{ params.service_area }} "
             "--error_threshold {{ params.error_threshold }}"
         ),
         env={
@@ -174,6 +176,8 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
                     f"{{{{ {xcom}['locations'][0] }}}}",
                     "--output_version",
                     f"{{{{ {xcom}['silver_staging_path'] }}}}",
+                    "--service_area",
+                    "{{ params.service_area }}",
                     "--error_threshold",
                     "{{ params.error_threshold }}",
                 ],

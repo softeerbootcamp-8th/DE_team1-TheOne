@@ -26,7 +26,7 @@ import xlwt
 
 from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.loader import (
     EiaGasPriceSilverLoader,
-    silver_file,
+    staged_silver_file,
 )
 from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.transformer import (
     build_daily_prices,
@@ -116,9 +116,11 @@ def test_주간_계열_시트가_없으면_실패한다():
 def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
     rows = build_daily_prices("2025-05", _xls(WEEKLY), COLLECTED)
 
-    result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05").write(rows)
+    result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(rows)
 
-    assert result.location == str(silver_file(str(tmp_path), "2025-05"))
+    assert result.location == str(
+        staged_silver_file(str(tmp_path), "2025-05", "NYC")
+    )
     assert result.row_count == 31
     table = pq.ParquetFile(result.location).read()
     assert table.schema.names == SCHEMA.names
@@ -126,7 +128,7 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
 
 def test_빈_결과는_적재를_거부한다(tmp_path):
     with pytest.raises(ValueError, match="적재할"):
-        EiaGasPriceSilverLoader(str(tmp_path), "2025-05").write([])
+        EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write([])
 
 
 # --- 원본 신선도 (#544) -------------------------------------------------------
@@ -189,21 +191,23 @@ from main.aws_lambda.common import eia_fuel_price_layout as layout  # noqa: E402
 def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
     """electricity(#558)에서 검증한 dataset 파라미터화 규칙이 gas 에도 그대로 성립하는지 고정합니다."""
     keys = [
-        layout.gas_bronze_key(date(2025, 5, 10)),
-        layout.gas_bronze_key(COLLECTED),
+        layout.gas_bronze_key(date(2025, 5, 10), "NYC"),
+        layout.gas_bronze_key(COLLECTED, "NYC"),
     ]
 
     collected_date, key = layout.newest_bronze_s3_key(
-        keys, layout.GAS_DATASET, layout.GAS_FILE_NAME
+        keys, layout.GAS_DATASET, layout.GAS_FILE_NAME, "NYC"
     )
 
     assert collected_date == COLLECTED
-    assert key == layout.gas_bronze_key(COLLECTED)
+    assert key == layout.gas_bronze_key(COLLECTED, "NYC")
 
 
 def test_S3_키_목록이_비면_실패한다():
     with pytest.raises(FileNotFoundError, match="EIA Bronze S3 파티션이 없습니다"):
-        layout.newest_bronze_s3_key([], layout.GAS_DATASET, layout.GAS_FILE_NAME)
+        layout.newest_bronze_s3_key(
+            [], layout.GAS_DATASET, layout.GAS_FILE_NAME, "NYC"
+        )
 
 
 # --- 지역(service_area) 격리 (#843) -----------------------------------------

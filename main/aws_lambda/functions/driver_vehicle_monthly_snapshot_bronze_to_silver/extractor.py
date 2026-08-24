@@ -9,8 +9,8 @@ from pipeline_core.extractor import Extractor
 
 from main.aws_lambda.common.monthly_dataset import (
     bronze_collection_token,
-    candidate_roots,
     join_segments,
+    service_area_root,
     service_area_segment,
 )
 from shared.common.s3_reader import get_object_bytes, list_keys
@@ -46,7 +46,7 @@ class DriverVehicleMonthlySnapshotS3BronzeExtractor(Extractor):
     """월 파티션의 최신 수집분 원본을 S3 에서 읽습니다."""
 
     def __init__(
-        self, bucket: str, year_month: str, service_area: str | None = None
+        self, bucket: str, year_month: str, service_area: str
     ):
         self._bucket = bucket
         self._year_month = year_month
@@ -69,7 +69,7 @@ class DriverVehicleMonthlySnapshotS3BronzeExtractor(Extractor):
         return table
 
 
-def _bronze_s3_prefix(year_month: str, service_area: str | None = None) -> str:
+def _bronze_s3_prefix(year_month: str, service_area: str) -> str:
     """지역 계층을 넣을 위치는 shared.common 이 정의합니다(#851)."""
     return (
         join_segments(
@@ -91,21 +91,23 @@ def _newest_key(keys: list[str], prefix: str) -> str:
 
 
 def _newest_bronze_path(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str, year_month: str, service_area: str
 ) -> Path:
-    """지역 경로를 먼저 보고, 없으면 지역 없는 경로를 봅니다(#851)."""
-    attempted = []
-    for root in candidate_roots(Path(base_dir) / DATASET, service_area):
-        partition = root / f"year_month={year_month}"
-        attempted.append(partition)
-        candidates = [
-            *partition.glob("*.parquet"),
-            *partition.glob("collected_at=*/data.parquet"),
-        ]
-        candidates = [path for path in candidates if bronze_collection_token(path)]
-        if candidates:
-            return max(candidates, key=bronze_collection_token)
-    raise FileNotFoundError(f"기사 차량 스냅샷 Bronze 파티션이 없습니다: {attempted}")
+    """지역별 월 파티션에서 최신 Bronze 경로를 찾습니다."""
+    partition = (
+        service_area_root(Path(base_dir) / DATASET, service_area)
+        / f"year_month={year_month}"
+    )
+    candidates = [
+        *partition.glob("*.parquet"),
+        *partition.glob("collected_at=*/data.parquet"),
+    ]
+    candidates = [path for path in candidates if bronze_collection_token(path)]
+    if candidates:
+        return max(candidates, key=bronze_collection_token)
+    raise FileNotFoundError(
+        f"기사 차량 스냅샷 Bronze 파티션이 없습니다: {partition}"
+    )
 
 
 def build_bronze_extractor(
@@ -113,7 +115,7 @@ def build_bronze_extractor(
     base_dir: str,
     bucket: str | None,
     year_month: str,
-    service_area: str | None = None,
+    service_area: str,
 ) -> Extractor:
     if storage == "local":
         return DriverVehicleMonthlySnapshotBronzeExtractor(

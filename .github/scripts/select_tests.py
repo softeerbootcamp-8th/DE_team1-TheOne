@@ -185,6 +185,10 @@ def select_tests(changed_files: list[str]) -> Selection:
 
         if path.startswith(("docs/",)) or path in {"README.md", "architecture.png"}:
             continue
+        # monitoring/** 는 ci.yml 의 경량 전용 job 이 설정·배포 계약을 검증합니다.
+        # 여기서 일반 Python fallback까지 태우면 같은 테스트와 제품 전체를 함께 실행합니다.
+        if path.startswith("monitoring/"):
+            continue
         if path.startswith((".claude/hooks/", ".githooks/")):
             selection.add(".claude/hooks", "test_review_gate.py")
             continue

@@ -1,0 +1,15 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowEventBridgePublish",
+      "Effect": "Allow",
+      "Principal": {"Service": "events.amazonaws.com"},
+      "Action": "sns:Publish",
+      "Resource": "${TOPIC_ARN}",
+      "Condition": {
+        "StringEquals": {"AWS:SourceAccount": "${AWS_ACCOUNT_ID}"}
+      }
+    }
+  ]
+}
