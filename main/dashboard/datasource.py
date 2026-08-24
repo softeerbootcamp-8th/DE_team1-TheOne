@@ -15,10 +15,11 @@ from pathlib import Path
 import pandas as pd
 import psycopg2
 
-from schema.gold import DriverMonthlyProfit
+from schema.gold import DriverCarSuggestion, DriverMonthlyProfit
 
 _TABLE_MODELS = {
     "driver_aggregation": DriverMonthlyProfit,
+    "driver_car_suggestion": DriverCarSuggestion,
 }
 
 

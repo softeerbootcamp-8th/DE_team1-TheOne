@@ -24,11 +24,11 @@ from datasource import (
     _latest_version_query,
     build_data_source,
 )
-from schema.gold import DriverMonthlyProfit
+from schema.gold import DriverCarSuggestion, DriverMonthlyProfit
 
 
-def test_RDS_소스는_현재_driver_aggregation만_노출한다():
-    assert set(_TABLE_MODELS) == {"driver_aggregation"}
+def test_RDS_소스는_현재_Gold_2종만_노출한다():
+    assert set(_TABLE_MODELS) == {"driver_aggregation", "driver_car_suggestion"}
 
 
 def test_로컬_소스는_모든_파티션을_이어붙인다(tmp_path):
@@ -166,6 +166,45 @@ def test_RDS_소스는_같은_버전_안의_여러_행을_모두_읽는다(monke
     frame = RdsDataSource("dsn").load("driver_aggregation")
 
     assert sorted(frame["driver_id"]) == ["D1", "D2"]
+
+
+def _driver_car_suggestion_row(driver_id: str, version: int, **overrides) -> dict:
+    row = {
+        "version": version,
+        "driver_id": driver_id,
+        "year_month": "2026-05",
+        "service_area": "NYC",
+        "comfort_eligible": False,
+        "extra_comfort_eligible": False,
+        "vehicle_model_id": "V1",
+        "manufacturer": "KIA",
+        "model_name": "K5",
+        "model_year": 2023,
+        "recommendation_reason": "연비",
+        "fuel_efficiency": 30.0,
+        "recommended_monthly_lease_fee": 200.0,
+        "expected_monthly_fuel_cost": 40.0,
+        "expected_monthly_net_profit": 800.0,
+        "expected_net_profit_increase": 100.0,
+        "expected_revenue_increase": 20.0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_RDS_소스는_driver_car_suggestion을_읽는다(monkeypatch):
+    columns = [field.name for field in fields(DriverCarSuggestion)]
+    conn = _sqlite_conn_with(
+        "driver_car_suggestion",
+        columns,
+        [_driver_car_suggestion_row("D1", 1, expected_net_profit_increase=999)],
+    )
+    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
+
+    frame = RdsDataSource("dsn").load("driver_car_suggestion")
+
+    assert set(frame.columns) == set(columns)
+    assert frame.loc[0, "expected_net_profit_increase"] == 999
 
 
 def test_알수없는_dataset이름은_RDS에서_ValueError(monkeypatch):

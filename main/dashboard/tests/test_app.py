@@ -8,9 +8,12 @@
 from pathlib import Path
 
 import pandas as pd
+from streamlit.testing.v1 import AppTest
 
-from app import recommendation_scope
+from app import DEFAULT_THRESHOLD, recommendation_scope
 from datasource import LocalCsvDataSource
+
+APP_PATH = str(Path(__file__).resolve().parent.parent / "app.py")
 
 
 def _write_partition(
@@ -64,34 +67,26 @@ def _aggregation(
 def test_월별_Gold_파티션을_모두_읽는다(tmp_path):
     _write_partition(
         tmp_path,
-        "monthly_report",
+        "driver_car_suggestion",
         "NYC",
         "2026-01",
-        [
-            {
-                "service_area": "NYC",
-                "year_month": "2026-01",
-                "recommended_driver_count": 1,
-            }
-        ],
+        [_suggestion("D1", 700.0, 20.0)],
     )
     _write_partition(
         tmp_path,
-        "monthly_report",
+        "driver_car_suggestion",
         "TX",
         "2026-02",
-        [
-            {
-                "service_area": "TX",
-                "year_month": "2026-02",
-                "recommended_driver_count": 2,
-            }
-        ],
+        [{**_suggestion("D2", 700.0, 20.0, "TX"), "year_month": "2026-02"}],
     )
 
-    frame = LocalCsvDataSource(tmp_path).load("monthly_report")
+    frame = LocalCsvDataSource(tmp_path).load("driver_car_suggestion")
 
     assert sorted(frame["year_month"]) == ["2026-01", "2026-02"]
+
+
+def test_기본_하한값은_600달러다():
+    assert DEFAULT_THRESHOLD == 600.0
 
 
 def test_리포트_추천_기준을_통과한_기사만_표시한다():
@@ -150,3 +145,30 @@ def test_선택한_지역의_같은_기사만_현재차량과_결합한다():
 
     assert len(scope) == 1
     assert scope.iloc[0]["service_area"] == "NYC"
+
+
+def test_render_전체_흐름이_gold_2종만으로_에러없이_동작한다(tmp_path, monkeypatch):
+    """monthly_report 없이도 렌더가 끝까지 돈다 — 회귀 대상: #949."""
+    monkeypatch.setenv("GOLD_DIR", str(tmp_path))
+    monkeypatch.delenv("DASHBOARD_DATA_SOURCE", raising=False)
+
+    _write_partition(
+        tmp_path,
+        "driver_car_suggestion",
+        "NYC",
+        "2026-01",
+        [_suggestion("D1", 700.0, 20.0)],
+    )
+    _write_partition(
+        tmp_path,
+        "driver_aggregation",
+        "NYC",
+        "2026-01",
+        [_aggregation("D1")],
+    )
+
+    at = AppTest.from_file(APP_PATH)
+    at.run()
+
+    assert not at.exception
+    assert not at.error
