@@ -119,7 +119,7 @@ WHERE ApplicationId = '...' GROUP BY WorkerType
 ```
 Spark_Executor  ─────  executor 워커가 실제로 쓴 양
 Spark_Driver    ─────  driver 워커가 실제로 쓴 양
-용량 상한       ─────  maximumCapacity (32 GB / 8 vCPU)
+용량 상한       ─────  maximumCapacity (48 GB / 12 vCPU / 2000 GB disk)
 ```
 
 - **상한선에 붙으면** 자원이 모자란 것 — `maximumCapacity` 를 올려야 합니다
