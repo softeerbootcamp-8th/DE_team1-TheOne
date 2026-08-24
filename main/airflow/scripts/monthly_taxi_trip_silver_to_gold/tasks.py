@@ -22,6 +22,7 @@ from main.airflow.common.assets import (
     service_area_root,
 )
 from main.airflow.common.monthly_bronze import latest_local_silver_version
+from shared.common.s3_reader import list_keys
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,12 @@ REQUIRED_COLUMNS = {
         "year_month", "vehicle_model_id", "manufacturer", "model_name", "stock",
     },
 }
+PROD_INPUT_DATASETS = (
+    "monthly_taxi_trip",
+    "driver_vehicle_monthly_snapshot",
+    "lease_vehicle_inventory",
+    "gas_ev_price",
+)
 
 
 def available_year_months(
@@ -231,6 +238,30 @@ def resolve_input_paths(
     return resolved
 
 
+def validate_prod_input_partitions(
+    bucket: str, year_month: str, service_area: str
+) -> None:
+    """운영 S3에 같은 지역·월의 완료된 Silver 4종이 있는지 확인합니다."""
+    missing = []
+    for dataset in PROD_INPUT_DATASETS:
+        prefix = (
+            f"silver/{dataset}/service_area={service_area}/"
+            f"year_month={year_month}/"
+        )
+        keys = set(list_keys(bucket, prefix))
+        if not any(
+            key.endswith(".parquet")
+            and f"{key.rsplit('/', 1)[0]}/_SUCCESS" in keys
+            for key in keys
+        ):
+            missing.append(dataset)
+    if missing:
+        raise FileNotFoundError(
+            f"Silver 완료본이 없습니다: s3://{bucket}, "
+            f"service_area={service_area}, year_month={year_month}, datasets={missing}"
+        )
+
+
 def resolve_stale_sla_days(params: dict) -> int:
     """SLA 기준일. Param이 비어 있으면 Variable(재배포 없이 조정), 없으면 기본값.
 
@@ -341,26 +372,29 @@ def validate_inputs_task(**context) -> dict:
         partition_key,
     )
     logger.info("Gold 대상: service_area=%s year_month=%s", service_area, year_month)
-    if job_env == "prod":
-        resolved = {
-            "service_area": service_area,
-            "year_month": year_month,
-            "year": year_month.split("-")[0],
-            "month": str(int(year_month.split("-")[1])),
-        }
-    else:
-        try:
+    try:
+        if job_env == "prod":
+            validate_prod_input_partitions(
+                os.environ["DATA_LAKE_S3_BUCKET"], year_month, service_area
+            )
+            resolved = {
+                "service_area": service_area,
+                "year_month": year_month,
+                "year": year_month.split("-")[0],
+                "month": str(int(year_month.split("-")[1])),
+            }
+        else:
             resolved = {
                 **resolve_input_paths(year_month, params, service_area),
                 "service_area": service_area,
             }
-        except FileNotFoundError as exc:
-            if partition_key:
-                _notify_slack(slack_skip_alert_callback, {**context, "exception": exc})
-                raise AirflowSkipException(
-                    f"Silver 4종 준비 대기: year_month={year_month}; {exc}"
-                ) from exc
-            raise
+    except FileNotFoundError as exc:
+        if partition_key:
+            _notify_slack(slack_skip_alert_callback, {**context, "exception": exc})
+            raise AirflowSkipException(
+                f"Silver 4종 준비 대기: year_month={year_month}; {exc}"
+            ) from exc
+        raise
 
     assets.publish_month_partition(
         context.get("outlet_events"),
