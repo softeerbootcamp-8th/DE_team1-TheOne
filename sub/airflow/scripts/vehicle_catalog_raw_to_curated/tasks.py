@@ -9,6 +9,7 @@ from datetime import date, datetime, timedelta, timezone
 from airflow.sdk import task
 
 from sub.airflow.common import assets
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
@@ -254,11 +255,16 @@ def run_gx_silver_validation(
 def source_to_raw_task(**context) -> dict:
     """렌탈 업체 사이트를 수집해 Raw 에 적재합니다."""
     params = context.get("params", {})
-    result = lambda_handler_for("vehicle_catalog_source_to_raw", package="sub.aws_lambda.functions")(
+    result = invoke_lambda(
+        "vehicle_catalog_source_to_raw",
+        package="sub.aws_lambda.functions",
         event={
-            "base_dir": params.get("raw_dir") or DEFAULT_RAW_DIR,
             "collected_date": params.get("collected_date"),
-        }
+        },
+        # `base_dir` 는 로컬 실행에만 넘깁니다. 원격 Lambda 는 자기 RAW_DIR 을
+        # 써야 합니다 — 이벤트가 env 를 이기는 구조라, 여기서 보내면 Lambda 가
+        # 없는 경로에 쓰려다 실패합니다.
+        local_event={"base_dir": params.get("raw_dir") or DEFAULT_RAW_DIR},
     )
     logger.info("Source -> Raw 완료: %s", result)
     return result
