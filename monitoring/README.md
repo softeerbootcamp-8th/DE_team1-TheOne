@@ -8,12 +8,40 @@
 
 `AWS/EMRServerless` 는 EMR 이 직접 발행하는 지표라 에이전트도 추가 권한도 필요 없습니다.
 
-## EC2 호스트 자원은 여기 없습니다
+## EC2 호스트 자원은 Prometheus + Grafana 가 봅니다
 
-CPU·메모리·디스크는 **Prometheus + Grafana** 가 담당합니다. CloudWatch Agent 로
-메모리·디스크를 보내려면 인스턴스 role 에 `cloudwatch:PutMetricData` 가 필요한데 이
-계정에서는 IAM 변경이 불가합니다. `node_exporter` 는 호스트 안에서 자기 자신을 읽어
-HTTP 로 노출하므로 AWS 권한이 개입하지 않습니다.
+CPU·메모리·디스크는 `theone-monitoring` 인스턴스의 Prometheus 가 각 호스트의
+`node_exporter`(:9100)를 긁어 Grafana 로 보여줍니다. 설정은 [`stack/`](stack/) 에 있고
+`Deploy monitoring` 의 `stack` job 이 SSM 으로 배포합니다.
+
+| 항목 | 값 |
+|---|---|
+| 인스턴스 | `theone-monitoring` / `i-0233a9b38d817105c` / `10.0.10.240` / t4g.small AL2023 arm64 |
+| 감시 대상 | airflow(10.0.10.28), source-server(10.0.10.81), dashboard-server(10.0.10.8), gateway(10.0.0.113) |
+| 보존 | 15일 |
+| 접속 | `ssh -N -L 3000:localhost:3000 monitoring` → http://localhost:3000 |
+
+`node_exporter` 설치 방식이 호스트마다 다릅니다 — Docker 가 있는 3대는 컨테이너로,
+`theone-gateway` 는 Docker 가 없어 바이너리 + systemd 유닛으로 띄웁니다. 그 인스턴스는
+NAT 라우팅을 담당하므로 `net.ipv4.ip_forward` 를 건드리지 않는 범위에서만 설치했습니다.
+
+### 왜 CloudWatch Agent 가 아닌가
+
+예전 주석은 "인스턴스 role 에 `cloudwatch:PutMetricData` 를 붙일 IAM 변경이 불가"
+라고 적었지만 **그렇지 않습니다** — MFA 세션이면 `iam:CreateRole`·`PutRolePolicy` 가
+통하고, 실제로 이 작업에서 역할을 만들었습니다(#898).
+
+실제 이유는 **인스턴스 1대를 감수하고 얻는 것을 택한 것**입니다.
+
+| | CloudWatch Agent | Prometheus + Grafana |
+|---|---|---|
+| 새 인스턴스 | 0개 | **1대 (상시 과금)** |
+| 대시보드 자유도 | CloudWatch 위젯 | PromQL·기성 대시보드(1860 등) |
+| 컨테이너 지표 확장 | 별도 작업 | cAdvisor 추가로 가능 |
+| 지표 비용 | 커스텀 지표 단가 | 없음 |
+
+`node_exporter` 는 호스트 안에서 자기 자신을 읽어 HTTP 로 노출하므로 AWS 권한이
+개입하지 않습니다. 그 성질은 어느 쪽을 택하든 유효합니다.
 
 ## 자동 배포
 
