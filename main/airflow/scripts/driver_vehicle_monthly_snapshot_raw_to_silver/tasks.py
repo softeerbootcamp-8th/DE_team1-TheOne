@@ -147,5 +147,6 @@ def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> No
     )
     if silver_result["locations"] != [expected_part]:
         raise ValueError("기사 차량 스냅샷 Silver staging 경로가 Bronze와 다릅니다")
-    validate_silver_result(silver_result, raw_result["row_count"])
+    # Silver 는 퇴사 기사를 제외하므로 Bronze 와 행 수가 다를 수 있습니다.
+    validate_silver_result(silver_result, silver_result["row_count"])
     commit_staged_silver(staging_path, version_path, layout="single_data")
