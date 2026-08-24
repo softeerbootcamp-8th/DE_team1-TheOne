@@ -95,6 +95,14 @@ services:
       # 하나만 켜면 생산자는 S3 에 쓰고 소비자는 로컬을 읽어 FileNotFoundError 가 납니다.
       RAW_STORAGE: s3
       BRONZE_STORAGE: s3
+      # 수집 Lambda 를 Airflow 프로세스 안에서 돌리지 않고 AWS 에 원격 호출합니다.
+      # 수집은 외부 사이트를 크롤링하고 파일을 만들어서, 프로세스를 공유하면 한
+      # 수집이 메모리를 먹을 때 다른 DAG 이 같이 죽습니다.
+      #
+      # ★ 인스턴스 role(theone-airflow-role)에 lambda:InvokeFunction 이 필요합니다.
+      #   없으면 태스크가 AccessDenied 로 실패합니다 — 조용히 로컬로 되돌아가지
+      #   않습니다. 되돌아가면 격리한 줄 알았는데 아닌 상태가 되어서입니다.
+      LAMBDA_INVOKE: remote
       SPARK_JOB_ENV: prod
       DATA_LAKE_S3_BUCKET: de-theone
       EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:?~/airflow/.env 의 EMR_APPLICATION_ID가 필요합니다}

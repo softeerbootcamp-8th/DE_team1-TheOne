@@ -20,7 +20,10 @@ def _handler_names():
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
-                and node.func.id == "lambda_handler_for"
+                # `source_to_raw` 는 원격 호출기를 거칩니다. 두 경로 모두 첫 인자가
+                # 함수 이름이라 같은 방식으로 셉니다 — 한쪽만 보면 원격으로 옮긴
+                # 함수가 이 계약에서 조용히 빠집니다.
+                and node.func.id in {"lambda_handler_for", "invoke_lambda"}
                 and node.args
                 and isinstance(node.args[0], ast.Constant)
             ):
