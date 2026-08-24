@@ -6,7 +6,7 @@ import os
 import re
 from datetime import datetime
 from pathlib import Path, PurePosixPath
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
 from airflow.sdk import Variable, task
@@ -91,13 +91,22 @@ def _requested_year_month(year, month) -> str | None:
     return value
 
 
-def _validate_dataset_url(api_base_url: str, url: str, dataset: str) -> str:
+def _validate_dataset_url(
+    api_base_url: str, url: str, dataset: str, service_area: str
+) -> str:
     base, target = urlsplit(api_base_url), urlsplit(url)
     if (target.scheme, target.netloc) != (base.scheme, base.netloc):
         raise ValueError("데이터셋 응답 URL은 API와 같은 host여야 합니다")
     match = DATASET_URL_PATTERN.fullmatch(target.path.rstrip("/"))
     if not match or match.group(2) != dataset:
         raise ValueError(f"데이터셋 응답 URL이 올바르지 않습니다: {url}")
+    areas = parse_qs(target.query).get("service_area")
+    if service_area == "NYC":
+        valid_area = areas in (None, ["NYC"])
+    else:
+        valid_area = areas == [service_area]
+    if not valid_area:
+        raise ValueError(f"데이터셋 응답 URL의 service_area가 다릅니다: {url}")
     return match.group(1)
 
 
@@ -105,6 +114,7 @@ def _target_url(
     api_base_url: str,
     dataset: str,
     requested_month: str | None,
+    service_area: str,
     *,
     timeout: int,
 ) -> tuple[str, str]:
@@ -119,7 +129,12 @@ def _target_url(
         f"{api_base_url.rstrip('/')}/",
         f"v1/data/latest/datasets/{dataset}",
     )
-    response = requests.head(latest_url, timeout=timeout, allow_redirects=False)
+    response = requests.head(
+        latest_url,
+        params={"service_area": service_area},
+        timeout=timeout,
+        allow_redirects=False,
+    )
     response.raise_for_status()
     location = response.headers.get("Location")
     if response.status_code not in (301, 302, 303, 307, 308) or not location:
@@ -127,13 +142,16 @@ def _target_url(
             f"latest 응답에 데이터셋 월 redirect가 없습니다: {latest_url}"
         )
     target_url = urljoin(response.url, location)
-    return target_url, _validate_dataset_url(api_base_url, target_url, dataset)
+    return target_url, _validate_dataset_url(
+        api_base_url, target_url, dataset, service_area
+    )
 
 
 def inspect_source(
     api_base_url: str,
     dataset: str,
     *,
+    service_area: str = "NYC",
     year=None,
     month=None,
     previous: dict | None = None,
@@ -146,6 +164,7 @@ def inspect_source(
         api_base_url,
         dataset,
         requested_month,
+        service_area,
         timeout=timeout,
     )
 
@@ -161,8 +180,14 @@ def inspect_source(
         if previous.get("last_modified"):
             headers["If-Modified-Since"] = previous["last_modified"]
 
+    target_params = (
+        None
+        if parse_qs(urlsplit(target_url).query).get("service_area")
+        else {"service_area": service_area}
+    )
     response = requests.head(
         target_url,
+        params=target_params,
         headers=headers,
         timeout=timeout,
         allow_redirects=False,
@@ -191,6 +216,7 @@ def inspect_source(
         "changed": response.status_code == 200,
         "version": version,
         "api_base_url": api_base_url,
+        "service_area": service_area,
     }
 
 
@@ -209,6 +235,7 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
     result = inspect_source(
         params["api_base_url"],
         dataset,
+        service_area=service_area,
         year=params.get("year"),
         month=params.get("month"),
         previous=previous,
@@ -216,7 +243,6 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
     )
     # mark_processed_task 는 context 없이 result 만 받으므로 지역을 여기서 실어
     # 보냅니다 — 상태를 읽은 키와 쓰는 키가 어긋나면 안 됩니다.
-    result["service_area"] = service_area
     bronze_exists = _bronze_partition_exists(
         dataset, result["year_month"], service_area
     )

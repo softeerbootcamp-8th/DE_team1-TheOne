@@ -29,7 +29,12 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         service_area=event.get("service_area"),
     )
     result = Pipeline(
-        MonthlyTaxiTripExtractor(api_base_url, requested_year_month(event)), loader
+        MonthlyTaxiTripExtractor(
+            api_base_url,
+            requested_year_month(event),
+            service_area=event.get("service_area"),
+        ),
+        loader,
     ).run()
     payload = loader.payload
     return {

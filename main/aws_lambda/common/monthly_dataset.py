@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -144,18 +144,24 @@ class MonthlyParquetAPIExtractor(Extractor):
         dataset: str,
         year_month: str | None,
         *,
+        service_area: str | None = None,
         timeout: int = 180,
     ):
         self._api_base_url = api_base_url.rstrip("/")
         self._dataset = dataset
         self._year_month = year_month
+        self._service_area = service_area
+        service_area_segment(service_area)
         self._timeout = timeout
 
     def extract(self) -> dict:
         year_month = self._year_month or "latest"
         endpoint = f"v1/data/{year_month}/datasets/{self._dataset}"
+        params = {"service_area": self._service_area} if self._service_area else None
         response = requests.get(
-            urljoin(f"{self._api_base_url}/", endpoint), timeout=self._timeout
+            urljoin(f"{self._api_base_url}/", endpoint),
+            params=params,
+            timeout=self._timeout,
         )
         response.raise_for_status()
         collected_at = (
@@ -178,6 +184,13 @@ class MonthlyParquetAPIExtractor(Extractor):
         match = DATASET_URL_PATTERN.fullmatch(target.path.rstrip("/"))
         if not match or match.group(2) != self._dataset:
             raise ValueError(f"데이터셋 응답 URL이 올바르지 않습니다: {response_url}")
+        if self._service_area:
+            areas = parse_qs(target.query).get("service_area")
+            if areas != [self._service_area]:
+                raise ValueError(
+                    "데이터셋 응답 URL의 service_area가 요청과 다릅니다: "
+                    f"{response_url}"
+                )
         year_month = match.group(1)
         try:
             datetime.strptime(year_month, "%Y-%m")

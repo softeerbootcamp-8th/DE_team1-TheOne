@@ -29,7 +29,11 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         service_area=event.get("service_area"),
     )
     result = Pipeline(
-        LeaseVehicleInventoryExtractor(api_base_url, requested_year_month(event)),
+        LeaseVehicleInventoryExtractor(
+            api_base_url,
+            requested_year_month(event),
+            service_area=event.get("service_area"),
+        ),
         loader,
     ).run()
     payload = loader.payload

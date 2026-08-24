@@ -61,6 +61,7 @@ def _inspection_result(dataset: str = "monthly_taxi_trip") -> dict:
         "changed": False,
         "version": "same",
         "api_base_url": API_BASE_URL,
+        "service_area": "NYC",
     }
 
 
@@ -90,10 +91,18 @@ def test_이전_validator를_조건부_HEAD에_보내고_304를_미변경으로_
     dataset = "monthly_taxi_trip"
     responses = iter(
         [
-            _latest_response(dataset),
+            _response(
+                307,
+                f"{API_BASE_URL}/v1/data/latest/datasets/{dataset}?service_area=TX",
+                {
+                    "Location": (
+                        f"/v1/data/{YEAR_MONTH}/datasets/{dataset}?service_area=TX"
+                    )
+                },
+            ),
             _response(
                 304,
-                f"{API_BASE_URL}/v1/data/{YEAR_MONTH}/datasets/{dataset}",
+                f"{API_BASE_URL}/v1/data/{YEAR_MONTH}/datasets/{dataset}?service_area=TX",
                 {"ETag": ETAG, "Last-Modified": LAST_MODIFIED},
             ),
         ]
@@ -109,6 +118,7 @@ def test_이전_validator를_조건부_HEAD에_보내고_304를_미변경으로_
     result = task_module.inspect_source(
         API_BASE_URL,
         dataset,
+        service_area="TX",
         previous={
             "api_base_url": API_BASE_URL,
             "year_month": YEAR_MONTH,
@@ -121,6 +131,8 @@ def test_이전_validator를_조건부_HEAD에_보내고_304를_미변경으로_
         "If-None-Match": ETAG,
         "If-Modified-Since": LAST_MODIFIED,
     }
+    assert calls[0][1]["params"] == {"service_area": "TX"}
+    assert calls[1][0].endswith("?service_area=TX")
     assert result["changed"] is False
     assert result["year_month"] == YEAR_MONTH
     assert result["version"]
@@ -156,6 +168,7 @@ def test_조건부_HEAD의_200응답은_변경으로_판정한다(monkeypatch):
         "changed": True,
         "version": result["version"],
         "api_base_url": API_BASE_URL,
+        "service_area": "NYC",
     }
 
 
@@ -365,11 +378,13 @@ def test_수동_연월은_정규화한_URL과_trigger값으로_반환한다(monk
     result = task_module.inspect_source(
         API_BASE_URL,
         dataset,
+        service_area="TX",
         year="2026",
         month="8",
     )
 
     assert calls[0][0] == f"{API_BASE_URL}/v1/data/2026-08/datasets/{dataset}"
+    assert calls[0][1]["params"] == {"service_area": "TX"}
     assert result["year_month"] == "2026-08"
     assert (result["year"], result["month"]) == ("2026", "08")
 
