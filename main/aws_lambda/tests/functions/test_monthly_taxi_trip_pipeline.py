@@ -129,13 +129,20 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
 def test_service_area를_데이터셋과_월사이의_Bronze경로에_저장한다(
     tmp_path, monkeypatch
 ):
-    _api(monkeypatch)
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response(url=f"{DATASET_URL}?service_area=TX")
+
+    monkeypatch.setattr(monthly_dataset.requests, "get", get)
     _clock(monkeypatch, FIRST_COLLECTED_AT)
     event = {**_event(tmp_path), "service_area": "TX"}
 
     result = lambda_handler(event)
 
     path = Path(result["locations"][0])
+    assert calls[0][1]["params"] == {"service_area": "TX"}
     assert path.parent.parent.parent.name == "service_area=TX"
     assert path.parent.parent.parent.parent.name == "monthly_taxi_trip"
 

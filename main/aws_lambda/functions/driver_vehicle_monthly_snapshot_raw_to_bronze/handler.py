@@ -26,7 +26,11 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         storage, base_dir, bucket=bucket, service_area=event["service_area"]
     )
     result = Pipeline(
-        DriverVehicleMonthlySnapshotExtractor(api_base_url, requested_year_month(event)),
+        DriverVehicleMonthlySnapshotExtractor(
+            api_base_url,
+            requested_year_month(event),
+            service_area=event.get("service_area"),
+        ),
         loader,
     ).run()
     payload = loader.payload

@@ -12,7 +12,9 @@
 | GET | `/health` | `{"status": "ok"}` |
 
 - `year_month`은 `YYYY-MM` 형식만 허용합니다 (`2026-1`, `202601` 등은 404).
-- 트레일링 슬래시·쿼리스트링은 무시합니다.
+- `service_area` 쿼리는 대문자 지역 코드입니다. 생략하면 기존 NYC로 처리합니다.
+- `latest` 리다이렉트는 요청한 `service_area`를 유지합니다.
+- 트레일링 슬래시와 그 외 쿼리스트링은 무시합니다.
 - HEAD는 헤더만 주고 본문은 안 내려줍니다 (`Content-Length`는 정확히 채워짐).
 
 ### dataset 목록
@@ -48,8 +50,8 @@ Content-Disposition: attachment; filename="<dataset>.parquet"
 
 | 값 | 동작 |
 |---|---|
-| `local` (기본값) | `SOURCE_API_LOCAL_ROOT` 아래 `year_month=YYYY-MM/manifest.json` 레이아웃을 읽음. 생성 DAG(`synthetic_driver_trip_source`)가 만드는 그대로의 형식 |
-| `prod` | S3의 `source/published/NYC/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 직접 읽음. manifest 없음 |
+| `local` (기본값) | NYC는 기존 `year_month=YYYY-MM/manifest.json`, 그 외 지역은 `service_area=<지역>/year_month=YYYY-MM/manifest.json`을 읽음 |
+| `prod` | S3의 `source/published/<service_area>/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 직접 읽음. manifest 없음 |
 
 dataset 이름은 한 벌뿐입니다 — 공개 API 경로, local manifest의 키, S3 폴더명이 모두 같습니다.
 예전에는 발행 쪽만 `hvfhv_taxi_trips`를 써서 local은 번역표로 가리고 prod는 발행한 폴더와
