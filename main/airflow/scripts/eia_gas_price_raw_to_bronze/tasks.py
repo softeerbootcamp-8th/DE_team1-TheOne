@@ -11,7 +11,7 @@ from datetime import timezone
 
 from airflow.sdk import task
 
-from shared.airflow.common.lambda_runtime import lambda_handler_for
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     layout_tail,
@@ -39,12 +39,14 @@ def raw_to_bronze_task(**context) -> dict:
         .replace("+00:00", "Z")
     )
     event = {
-        "base_dir": params["bronze_dir"],
         "service_area": params["service_area"],
         "collected_at": collected_at,
     }
-    result = lambda_handler_for("eia_gas_price_raw_to_bronze")(
-        event=event
+    result = invoke_lambda(
+        "eia_gas_price_raw_to_bronze",
+        package="main.aws_lambda.functions",
+        event=event,
+        local_event={"base_dir": params["bronze_dir"]},
     )
     logger.info("Raw -> Bronze 완료: %s", result)
     return result
