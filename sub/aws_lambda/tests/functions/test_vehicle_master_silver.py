@@ -179,7 +179,9 @@ def build_sources(
     uber: list[dict] = UBER,
     lyft: list[dict] = LYFT,
     catalog_date: str = "2026-08-12",
-    # 제원은 월 1회 수집이라 주간 원천보다 오래된 파티션에 있습니다.
+    # 원천이 한동안 멈춰 훨씬 오래된 파티션만 남은 경우. Extractor 는 기준일
+    # 이하의 최신 파티션을 쓰므로 조립 자체는 성공합니다 — 낡음 판정은 조립이
+    # 아니라 Airflow 검증 태스크(MAX_SOURCE_AGE_DAYS)가 합니다.
     specs_date: str = "2025-10-01",
     uber_date: str = "2026-08-11",
     lyft_date: str = "2026-08-12",
