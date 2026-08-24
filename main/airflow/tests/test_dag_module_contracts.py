@@ -91,18 +91,6 @@ def test_모든_task는_장애유형에_맞는_retry_정책을_쓴다(dag_id, co
     for task_id in contract["validation"]:
         assert dag.get_task(task_id).retries == 0
         
-def test_차량_교체_추천_기준선_기본값은_서비스_조건인_600이다():
-    """콜 리스트에 오르는 기준입니다. 낮추면 성사 못 할 기사까지 담당자에게 넘어가고,
-    올리면 제안할 수 있었던 기사가 빠집니다. 값을 바꾸려면 이 테스트를 함께 고치면서
-    docs/METRICS.md 의 근거도 같이 바꾸라는 뜻으로 못박습니다 (#492)."""
-    dag = getattr(
-        importlib.import_module("dags.monthly_taxi_trip_silver_to_gold_dag"),
-        "monthly_taxi_trip_silver_to_gold_dag",
-    )
-
-    assert dag.params["threshold_profit_increase"] == 600.0
-
-
 def test_EIA_전력_충전단가_markup_기본값은_Variable_미설정시_2다():
     """#743 — Param 기본값을 Variable(eia_electricity_markup)에서 가져오도록 바꿨다.
     Variable을 설정하지 않은 상태(테스트 DB는 매번 비어 있음)에서는 이전 리터럴
@@ -141,24 +129,6 @@ def _reload_with_fresh_params(module_path: str, probe_name: str):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-def test_차량_교체_추천_기준선은_Variable_설정시_그값을_따른다():
-    """#743 — 키 이름이 잘못돼도 Variable.get이 조용히 기본값만 계속 반환해
-    "미설정 시 회귀 없음" 테스트만으로는 못 잡는다. Variable을 실제로 설정해
-    그 값이 그대로 반영되는지까지 확인한다."""
-    from airflow.models import Variable
-
-    Variable.set("gold_profit_threshold", "777.0")
-    try:
-        module = _reload_with_fresh_params(
-            "dags.monthly_taxi_trip_silver_to_gold_dag", "_gold_dag_variable_probe"
-        )
-        assert module.monthly_taxi_trip_silver_to_gold_dag.params[
-            "threshold_profit_increase"
-        ] == 777.0
-    finally:
-        Variable.delete("gold_profit_threshold")
 
 
 def test_EIA_전력_충전단가_markup은_Variable_설정시_그값을_따른다():

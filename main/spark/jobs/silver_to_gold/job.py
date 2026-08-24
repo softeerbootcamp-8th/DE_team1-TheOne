@@ -2,16 +2,16 @@
 
 input: monthly_taxi_trip, driver_vehicle_monthly_snapshot, lease_vehicle_inventory,
        fuel_price (Silver)
-output: driver_aggregation, driver_vehicle_profit_simulation, monthly_report (Gold)
+output: driver_aggregation, driver_vehicle_profit_simulation, lease_vehicle_inventory (Gold)
 
 사용 예 (로컬):
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
-      --year 2026 --month 1 --threshold_profit_increase 600
+      --year 2026 --month 1 --service_area NYC
 
 사용 예 (S3, --env prod):
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
       --env prod --bucket de-theone \
-      --year 2026 --month 1 --threshold_profit_increase 600 --output_dir ../data/gold
+      --year 2026 --month 1 --service_area NYC --output_dir ../data/gold
 
 `--*_path` 4개를 직접 주면 `--env` 기본 경로 대신 그 값을 그대로 씁니다.
 """
@@ -35,10 +35,9 @@ from main.spark.jobs.service_area_path import (
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
-    build_monthly_report,
+    build_gold_lease_vehicle_inventory,
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
-    validate_gold_business_invariants,
     validate_vehicle_profit_simulation,
 )
 from shared.common.s3_reader import list_keys
@@ -265,18 +264,6 @@ def main(args_list: list[str] | None = None) -> None:
     # driver_id 가 지역 간 유니크하지 않으므로(#805) Gold 자연 키의 일부입니다.
     parser.add_argument("--service_area", required=True)
     parser.add_argument("--month", type=int, required=True)
-    parser.add_argument(
-        "--threshold_profit_increase",
-        type=float,
-        required=True,
-        help="차량 교체 추천 기준 순수익 증가액 (USD)",
-    )
-    parser.add_argument(
-        "--is_rerun",
-        default=False,
-        type=lambda value: str(value).lower() == "true",
-        help="대상월 Gold가 이미 완료된 뒤의 재트리거인지 (Airflow validate_inputs가 판정)",
-    )
     parser.add_argument("--output_dir", default="data/gold")
     parser.add_argument(
         "--gold_dsn", default=os.getenv("GOLD_DATABASE_URL"),
@@ -324,7 +311,6 @@ def main(args_list: list[str] | None = None) -> None:
     enriched: DataFrame | None = None
     driver_metrics: DataFrame | None = None
     simulation: DataFrame | None = None
-    allocated_recommendation: DataFrame | None = None
     try:
         enriched = enrich_trips_with_fuel_cost(
             monthly_taxi_trip,
@@ -337,34 +323,21 @@ def main(args_list: list[str] | None = None) -> None:
             enriched, year_month, args.service_area
         ).persist()
         driver_profit = build_driver_monthly_profit(driver_metrics)
-        simulation, allocated_recommendation = (
-            build_monthly_vehicle_recommendation(driver_metrics, inventory)
-        )
+        simulation = build_monthly_vehicle_recommendation(driver_metrics, inventory)
         simulation = simulation.persist()
-        allocated_recommendation = allocated_recommendation.persist()
         validate_vehicle_profit_simulation(
             driver_profit,
             simulation,
             inventory,
         )
-        validate_gold_business_invariants(
-            driver_profit,
-            allocated_recommendation,
-            driver_snapshot,
-            inventory,
-        )
-        report = build_monthly_report(
-            allocated_recommendation,
-            year_month,
-            args.service_area,
-            args.threshold_profit_increase,
-            args.is_rerun,
+        gold_inventory = build_gold_lease_vehicle_inventory(
+            inventory, year_month, args.service_area
         )
 
         outputs: dict[str, DataFrame] = {
             "driver_aggregation": driver_profit,
             "driver_vehicle_profit_simulation": simulation,
-            "monthly_report": report,
+            "lease_vehicle_inventory": gold_inventory,
         }
         # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
         # 계산 중 실패가 기존 산출물을 남기지 않습니다.
@@ -391,8 +364,6 @@ def main(args_list: list[str] | None = None) -> None:
             driver_metrics.unpersist()
         if simulation is not None:
             simulation.unpersist()
-        if allocated_recommendation is not None:
-            allocated_recommendation.unpersist()
 
 
 if __name__ == "__main__":

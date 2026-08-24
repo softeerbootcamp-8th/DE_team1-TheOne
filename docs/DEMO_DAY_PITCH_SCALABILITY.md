@@ -270,11 +270,8 @@ Docs는 정적 리포트, 히스토리가 아님). 원본을 매번 다시 스�
 | driver_vehicle_monthly_snapshot, lease_vehicle_inventory | `row_count` |
 | eia_gas_price, eia_electricity_price | 달력 완전성 비율 |
 
-**Gold 계층** — 이미 매달 누적되는 `monthly_report` 테이블이 있으므로 새 저장소가
-필요 없다. `recommended_driver_count`, `avg_net_profit_increase_per_driver`,
-`avg_revenue_increase_per_driver`, `total_revenue_increase` 4개 지표 전부를
-그 테이블에서 바로 읽는다. 한 달에 재트리거(#741)로 `version`이 여러 개 쌓일 수
-있으므로 **그 달의 최신 version만** 이상탐지 대상으로 쓴다.
+**Gold 계층** — Silver→Gold는 추천 KPI를 계산하지 않고 수익 시뮬레이션과 재고 원본을
+분리해 적재한다. 추천 KPI 이상 탐지는 최종 추천을 계산하는 소비 계층의 책임으로 둔다.
 
 **판정 규칙 (Bronze/Silver·Gold 공통)**:
 
@@ -290,8 +287,8 @@ Docs는 정적 리포트, 히스토리가 아님). 원본을 매번 다시 스�
 > 사람이 매달 모든 지표를 다 훑어볼 수 없어지기 때문에, 각 데이터셋이 이미
 > 만들어내는 품질 지표를 매달 가벼운 파일에 쌓아두고, 최근 최대 12개월(데이터가
 > 쌓이는 대로 자동으로 늘어남) 평균에서 크게 벗어나면 경고만 보내는 설계를
-> 준비했습니다. Gold 결과도 같은 방식으로, 이미 있는 monthly_report 테이블을
-> 그대로 활용해서 별도 저장소 없이 감시합니다."
+> 준비했습니다. Gold는 추천 계산 전의 수익 시뮬레이션과 재고를 분리해 제공하고,
+> 최종 추천 KPI 감시는 이를 계산하는 소비 계층에서 맡도록 경계를 정했습니다."
 
 ### 예상 질문 & 답변
 
@@ -366,9 +363,9 @@ C3(Gold의 비동기 다중소스 트리거)를 지역 축까지 확장하면 �
    한 단계 추가. 같은 지역 안에서는 기존 `year_month=*` glob 로직이 그대로
    동작한다. **단 EIA 3종은 파티션 축이 달라 이 규칙이 그대로 안 먹힌다** —
    아래 별도 절 참고.
-3. **Gold 스키마**: `MonthlyReport`/`DriverMonthlyProfit`/
-   `MonthlyVehicleRecommendation`에 `service_area` 컬럼 추가, PK를
-   `(service_area, year_month, version[, driver_id])`로 확장.
+3. **Gold 스키마**: `DriverMonthlyProfit`/`DriverVehicleProfitSimulation`/
+   `LeaseVehicleInventory`에 `service_area` 컬럼을 두고, PK를
+   `(service_area, year_month, version[, driver_id|vehicle_model_id])`로 구성.
 4. **지역별 설정 레지스트리**: `main/airflow/common/service_areas.py` 신설 제안 —
    지역 코드 → {EIA 가스/전력 시리즈 URL, EIA 파일명, 택시존 스키마 참조} 매핑.
    지금은 `NYC` 하나만 등록. 새 지역을 추가한다는 건 "이 레지스트리에 항목을
@@ -665,8 +662,7 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
   /`commit_staged_silver`가 monthly_taxi_trip에 실제로 적용돼 있다(#742).
 - B/D/E의 데이터셋별 분류·지표 표는 이번 세션에서 실제 코드(스키마 정의,
   변환 로직)를 추적해서 만든 것이며, 임의로 지어낸 게 아니다.
-- Gold `monthly_report`는 이미 월별로 누적되는 테이블이고 `version`/`is_rerun`
-  컬럼이 있어 재트리거 시 최신 버전만 고르는 게 가능하다.
+- Gold는 추천 KPI를 계산하지 않고 월별 수익 시뮬레이션과 재고를 버전별로 누적한다.
 - F가 근거로 삼은 `#674`의 4가지 NYC 종속 지점(EIA 시리즈 하드코딩, 파티션
   지역 축 없음, Timetable의 지역 트리거 표현 불가, 택시존 스키마 종속)은
   이슈에 이미 문서화돼 있던 사실이다.

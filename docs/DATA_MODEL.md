@@ -204,9 +204,9 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 | --- | --- | --- | --- | --- |
 | `driver_aggregation` | 기사 × 월 | `year_month` | 2,000행/월 | [gold/driver_aggregation.py](../schema/gold/driver_aggregation.py) |
 | `driver_vehicle_profit_simulation` | 기사 × 후보 차량 모델 × 월 | `year_month` | 기사 수 × 차량 모델 수/월 | [schema/gold](../schema/gold/__init__.py) |
-| `monthly_report` | 월 | `year_month` | 1행/월 | [gold/monthly_report.py](../schema/gold/monthly_report.py) |
+| `lease_vehicle_inventory` | 차량 모델 × 월 | `year_month` | Silver 재고 모델 수/월 | [schema/gold](../schema/gold/__init__.py) |
 
-세 물리 테이블은 월, 기사×월, 기사×후보 차량 모델×월을 각각 자연 키로 갖습니다.
+세 물리 테이블은 기사×월, 기사×후보 차량 모델×월, 차량 모델×월을 각각 자연 키로 갖습니다.
 최종 추천 객체는 이 Gold 적재 범위에서 생성하거나 변경하지 않습니다.
 
 ### 4.1 `driver_aggregation` — 기사 월간 집계
@@ -226,29 +226,17 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 | 컬럼 | 내용 |
 | --- | --- |
 | `candidate_vehicle_model_id` / `model_year` | 평가한 후보 차량 (연식은 스펙 트림 범위 중 최신) |
-| `candidate_stock` | 해당 월 후보 차량 재고 스냅샷 |
 | `recommendation_reason` | `연비` / `차량등급` / `더 저렴한 렌트료` 중 해당 항목을 `, ` 로 나열. 셋 다 아니면 `현재 차량 유지` |
 | `expected_net_profit_increase` | 기사 예상 순수익 증가액 |
 | `expected_revenue_increase` | 회사 렌탈 객단가 증가액 |
 
 `recommendation_reason` 이 없으면 CSM이 *"이 차 왜 추천됐어요?"* 에 답을 못 합니다.
 
-### 4.3 `monthly_report` — 월 1행 요약 + 계보
+### 4.3 `lease_vehicle_inventory` — 월별 리스 차량 재고
 
-| 컬럼 | 내용 |
-| --- | --- |
-| `threshold_profit_increase` | 그 실행에 쓴 추천 기준선 (USD) |
-| `recommended_driver_count` | 기준선 통과 & 매출 증가 ≥ 0 인 기사 수 |
-| `avg_net_profit_increase_per_driver` | 추천 대상자 평균 순수익 증가액 |
-| `avg_revenue_increase_per_driver` | 추천 대상자 평균 객단가 증가액 |
-| **`total_revenue_increase`** | **핵심 지표** — 총 렌탈 매출 증가분 |
-| `vehicle_master_collected_date` | 쓴 차량 마스터의 수집 시점 |
-| `gas_ev_price_month` | 쓴 연료비의 대상 월 |
-
-**계보 두 컬럼을 싣는 이유**: 위 숫자들은 입력이 조금만 달라도 바뀝니다.
-어느 시점 카탈로그와 어느 달 연료비를 썼는지 남기지 않으면, 두 벌의 Gold를 놓고 무엇이 달랐는지 되짚을 수 없습니다.
-차량 마스터는 대상 월 이하 파티션이 없으면 **이후 수집분으로 물러서는데**,
-그 사실이 로그에만 남아 있으면 결과만 보고는 알 수 없습니다. 월 1행이라 컬럼을 늘려도 비용이 없습니다.
+Silver `lease_vehicle_inventory`의 업무 컬럼과 행을 그대로 보존하고 Gold 공통 키
+(`version`, `service_area`, `year_month`)만 추가합니다. `stock`은 수익 시뮬레이션이나
+추천 선택에 사용하지 않으며 소비 계층이 필요할 때 별도로 조인합니다.
 
 `assignment_version` 은 **없습니다**(#471). 기사-운행 매칭이 원천 API로 옮겨가면서
 Silver는 `taxi_id` + 리스 기간으로 결정적으로 조인만 하므로, 같은 입력이면 같은 결과입니다 — 구분할 버전이 생기지 않습니다.

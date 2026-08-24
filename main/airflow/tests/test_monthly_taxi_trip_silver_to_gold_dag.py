@@ -488,10 +488,10 @@ def _write_gold(root: Path, year_month: str, service_area: str) -> None:
             [{"driver_id": "D1", "year_month": year_month, "monthly_net_profit": 100.0, "monthly_lease_fee": 400.0}]
         ),
         "driver_vehicle_profit_simulation": pd.DataFrame(
-            [{"driver_id": "D1", "year_month": year_month, "candidate_vehicle_model_id": "MODEL1", "candidate_stock": 10, "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
+            [{"driver_id": "D1", "year_month": year_month, "candidate_vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
         ),
-        "monthly_report": pd.DataFrame(
-            [{"year_month": year_month, "threshold_profit_increase": 100.0, "is_rerun": False, "recommended_driver_count": 1, "avg_net_profit_increase_per_driver": 120.0}]
+        "lease_vehicle_inventory": pd.DataFrame(
+            [{"year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "stock": 10}]
         ),
     }
     for dataset, frame in frames.items():
@@ -527,14 +527,14 @@ def test_Gold검증은_다른지역_산출물을_대신_보지_않는다(tmp_pat
 )
 def test_Gold_산출물이_계약을_어기면_실패한다(tmp_path, violation, expected):
     _write_gold(tmp_path, "2026-05", "NYC")
-    target = tmp_path / "monthly_report/service_area=NYC/year_month=2026-05/monthly_report.csv"
+    target = tmp_path / "lease_vehicle_inventory/service_area=NYC/year_month=2026-05/lease_vehicle_inventory.csv"
 
     if violation == "missing":
         target.unlink()
     elif violation == "empty":
         pd.read_csv(target).iloc[0:0].to_csv(target, index=False)
     elif violation == "column":
-        pd.read_csv(target).drop(columns="recommended_driver_count").to_csv(target, index=False)
+        pd.read_csv(target).drop(columns="stock").to_csv(target, index=False)
     else:
         frame = pd.read_csv(target)
         frame["year_month"] = "2026-04"
@@ -683,101 +683,6 @@ def test_SLA이내면_staleness_Slack알림을_보내지_않는다(tmp_path, mon
     )
 
     assert calls == []
-
-
-# --- 최초완료/재트리거 판정 ----------------------------------------------------
-
-
-def test_로컬은_기존_monthly_report가_없으면_최초완료다(tmp_path):
-    assert dag_module.resolve_is_rerun(
-        "local", "2026-05", _params(tmp_path)
-    ) is False
-
-
-def test_로컬은_기존_monthly_report가_있으면_재트리거다(tmp_path):
-    params = _params(tmp_path)
-    path = Path(params["output_dir"]) / "monthly_report" / "year_month=2026-05" / "monthly_report.csv"
-    path.parent.mkdir(parents=True)
-    path.touch()
-
-    assert dag_module.resolve_is_rerun("local", "2026-05", params) is True
-
-
-def test_운영은_GOLD_DATABASE_URL이_없으면_최초완료로_간주한다(monkeypatch):
-    monkeypatch.delenv("GOLD_DATABASE_URL", raising=False)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
-
-
-def test_운영은_Postgres_조회_실패시에도_최초완료로_내려간다(monkeypatch):
-    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://unreachable")
-
-    def raising_connect(dsn):
-        raise RuntimeError("연결 실패")
-
-    monkeypatch.setattr(dag_module.psycopg2, "connect", raising_connect)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
-
-
-class _FakeCursor:
-    def __init__(self, row):
-        self.row = row
-        self.executed = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        return False
-
-    def execute(self, sql, parameters):
-        self.executed = (sql, parameters)
-
-    def fetchone(self):
-        return self.row
-
-
-class _FakeConnection:
-    def __init__(self, row):
-        self.cursor_obj = _FakeCursor(row)
-        self.closed = False
-
-    def cursor(self):
-        return self.cursor_obj
-
-    def close(self):
-        self.closed = True
-
-
-def test_운영은_기존_행이_있으면_재트리거다(monkeypatch):
-    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://gold")
-    fake_conn = _FakeConnection(row=(1,))
-    monkeypatch.setattr(dag_module.psycopg2, "connect", lambda dsn: fake_conn)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is True
-    assert fake_conn.cursor_obj.executed[1] == ("2026-05",)
-    assert fake_conn.closed is True
-
-
-def test_운영은_기존_행이_없으면_최초완료다(monkeypatch):
-    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://gold")
-    fake_conn = _FakeConnection(row=None)
-    monkeypatch.setattr(dag_module.psycopg2, "connect", lambda dsn: fake_conn)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
-
-
-def test_정상실행_결과에_최초완료_재트리거_판정이_실린다(tmp_path):
-    _write_inputs(tmp_path, "2026-05")
-
-    resolved = dag_module.validate_inputs_task.function(
-        params=_params(tmp_path),
-        logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
-    )
-
-    assert resolved["is_rerun"] is False
 
 
 def test_대상지역은_파티션키가_파라미터를_덮어쓴다():

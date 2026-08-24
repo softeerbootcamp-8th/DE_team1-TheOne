@@ -3,7 +3,6 @@
 import os
 from datetime import datetime, timedelta
 
-from airflow.models import Variable
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
@@ -57,14 +56,11 @@ def _required_prod_env(name: str) -> str:
 
 
 def _local_build_gold() -> BashOperator:
-    is_rerun = "task_instance.xcom_pull(task_ids='validate_inputs')['is_rerun']"
     common_tail = (
         "--year {{ task_instance.xcom_pull(task_ids='validate_inputs')['year'] }} "
         + "--month {{ task_instance.xcom_pull(task_ids='validate_inputs')['month'] }} "
         + "--service_area "
-        + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['service_area'] }} "
-        + "--threshold_profit_increase {{ params.threshold_profit_increase }} "
-        + f"--is_rerun {{{{ 'true' if {is_rerun} else 'false' }}}}"
+        + "{{ task_instance.xcom_pull(task_ids='validate_inputs')['service_area'] }}"
     )
     return BashOperator(
         task_id="build_gold",
@@ -118,8 +114,6 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     "--year", f"{{{{ {xcom}['year'] }}}}",
                     "--month", f"{{{{ {xcom}['month'] }}}}",
                     "--service_area", f"{{{{ {xcom}['service_area'] }}}}",
-                    "--threshold_profit_increase", "{{ params.threshold_profit_increase }}",
-                    "--is_rerun", f"{{{{ 'true' if {xcom}['is_rerun'] else 'false' }}}}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }
@@ -164,23 +158,6 @@ def _build_gold_operator():
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
-        # 차량 교체 추천으로 집계할 최소 순수익 증가액(USD). Spark 잡이 required 로
-        # 받는 값이라 기본값을 여기서 정합니다.
-        #
-        # 600 은 서비스 조건입니다 — "차를 바꿔서 월 $600 은 더 벌어야 기사가 움직인다"
-        # 는 전제로 콜 리스트를 만듭니다. 낮추면 대상자가 늘지만 성사율이 떨어지고,
-        # 높이면 반대입니다. 운영 기준이 바뀌면 코드가 아니라 이 파라미터로 조정하세요.
-        # (근거: docs/METRICS.md - 4. 추천 기준선)
-        #
-        # 기본값을 Variable(gold_profit_threshold)에서 가져옵니다 — DAG 파싱
-        # 시점(스케줄러/DAG 프로세서)에서 실행되는 코드라 airflow.sdk가 아니라
-        # DB에 직접 접근하는 airflow.models.Variable을 씁니다(#743). 재배포 없이
-        # Airflow UI에서 값을 바꿀 수 있게 하려는 목적이라, 실행마다 override할
-        # 필요가 없다면 이 방식이 맞습니다.
-        "threshold_profit_increase": Param(
-            float(Variable.get("gold_profit_threshold", default_var=600.0)),
-            type="number",
-        ),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
         # 비우면 Variable(gold_stale_sla_days) 또는 기본값을 씁니다 — 절대 날짜가
         # 아니라 상대 기준을 쓰는 이유는 tasks.resolve_stale_sla_days 참고.
