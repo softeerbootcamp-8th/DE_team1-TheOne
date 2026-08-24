@@ -323,7 +323,7 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
         enable_s3=args.enable_s3,
     )
     spark.sparkContext.setLogLevel("WARN")
-    spark.sparkContext.hadoopConfiguration.set(
+    spark.sparkContext._jsc.hadoopConfiguration().set(
         "mapreduce.fileoutputcommitter.marksuccessfuljobs", "false"
     )
 

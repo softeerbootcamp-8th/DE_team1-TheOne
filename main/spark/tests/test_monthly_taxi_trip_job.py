@@ -423,8 +423,12 @@ def test_main은_Spark_자동_SUCCESS_생성을_비활성화한다(tmp_path, mon
         def set(self, key, value):
             settings.append((key, value))
 
+    class FakeJavaSparkContext:
+        def hadoopConfiguration(self):
+            return FakeHadoopConfiguration()
+
     class FakeSparkContext:
-        hadoopConfiguration = FakeHadoopConfiguration()
+        _jsc = FakeJavaSparkContext()
 
         def setLogLevel(self, level):
             pass
