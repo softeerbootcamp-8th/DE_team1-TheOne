@@ -1,8 +1,8 @@
 """보유 차량 Raw→Bronze→Silver DAG 계약.
 
 1. 기사 계약 DAG와 분리되고 감시 DAG가 호출하는 네 단계 월별 DAG
-2. 수집·정제 Lambda 에 파라미터 전달
-3. 필수 컬럼 누락 시 원천부터 한 번 재수집
+2. 운영 DAG는 수집·정제 Lambda를 AWS 동기 호출하고 로컬 함수는 기존 계약 유지
+3. 필수 컬럼 누락 시 Airflow 프로세스에서 재수집하지 않고 실패
 4. Bronze 행 수·스키마·재고 품질로 Silver 확인
 5. S3 Silver 경로를 로컬 Path로 접지 않고 검증
 6. service_area를 Bronze 수집·정제와 Silver 경로에 전달
@@ -118,7 +118,7 @@ def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한
         "lambda_handler_for",
         lambda name: handlers.append(name) or handler,
     )
-    DAG.get_task("raw_to_bronze").python_callable(
+    task_module.raw_to_bronze_task.function(
         params={
             "api_base_url": "http://source",
             "base_dir": "/bronze",
@@ -150,7 +150,7 @@ def test_정제task는_서비스지역과_적재위치를_정제핸들러에_전
         "lambda_handler_for",
         lambda name: handlers.append(name) or handler,
     )
-    DAG.get_task("bronze_to_silver").python_callable(
+    task_module.bronze_to_silver_task.function(
         {
             "locations": [f"/bronze/{FILE_NAME}"],
             "year_month": "2026-08",
@@ -166,45 +166,25 @@ def test_정제task는_서비스지역과_적재위치를_정제핸들러에_전
     }
 
 
-def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한다(monkeypatch):
-    results = iter(
-        [
-            (Path("broken.parquet"), ["stock"]),
-            (Path("corrected.parquet"), []),
-        ]
-    )
-    recollected = _raw_result()
+def test_보유차량필수컬럼이_누락되면_원천을_직접_재수집하지_않는다(monkeypatch):
     calls = []
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir, service_area: next(results),
+        lambda result, base_dir, service_area: (Path("broken.parquet"), ["stock"]),
     )
     monkeypatch.setattr(
         task_module,
         "_collect_bronze",
-        lambda params: calls.append(params) or recollected,
+        lambda params: calls.append(params),
     )
 
-    original = _raw_result()
-    validated = DAG.get_task("validate_bronze").python_callable(
-        original,
-        params={
-            "base_dir": "/bronze",
-            "silver_dir": "/silver",
-            "api_base_url": "http://source",
-            "service_area": "NYC",
-        },
-    )
+    with pytest.raises(ValueError, match="필수 컬럼 누락"):
+        DAG.get_task("validate_bronze").python_callable(
+            _raw_result(), params={"base_dir": "/bronze"}
+        )
 
-    assert {key: validated[key] for key in recollected} == recollected
-    assert validated["silver_version_path"].endswith(SOURCE_VERSION)
-    assert calls == [{
-        "base_dir": "/bronze",
-        "silver_dir": "/silver",
-        "api_base_url": "http://source",
-        "service_area": "NYC",
-    }]
+    assert calls == []
 
 
 def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_path, monkeypatch):

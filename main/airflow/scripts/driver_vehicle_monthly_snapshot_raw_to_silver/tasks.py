@@ -84,10 +84,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
     service_area = resolve_service_area(params)
     _, missing = _validate_bronze_result(result, base_dir, service_area)
     if missing:
-        logger.warning("기사 차량 스냅샷 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
-        result = _collect_bronze(params)
-        _, missing = _validate_bronze_result(result, base_dir, service_area)
-    if missing:
         raise ValueError(f"기사 차량 스냅샷 Bronze 필수 컬럼 누락: {missing}")
     bronze_path = parse_handler_result(result, expected_locations=1).locations[0]
     publish_success_marker(bronze_path.parent)

@@ -281,14 +281,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
         else MONTHLY_TAXI_TRIP_ERROR_THRESHOLD
     )
     summary = _bronze_quality_result(result, params, list(SCHEMA.names))
-    missing = summary.at[0, "missing_required_columns"]
-    if missing:
-        logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
-        result = _collect_bronze(params)
-        summary = _bronze_quality_result(
-            result, params, list(SCHEMA.names)
-        )
-
     import great_expectations as gx
 
     expectations = [

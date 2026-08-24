@@ -330,11 +330,10 @@ def test_Bronze_경로가_base_dir_layout과_다르면_막는다(tmp_path):
         validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
-def test_필수컬럼이_전부빠지면_재수집후에도_막는다(tmp_path, monkeypatch):
+def test_필수컬럼이_전부빠지면_막는다(tmp_path):
     broken_schema = pa.schema([("hvfhs_license_num", pa.string())])
     path = write_bronze(tmp_path, schema=broken_schema)
     result = result_for(path)
-    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
     with pytest.raises(
         ValueError,
         match=r"expect_column_values_to_be_in_set\[missing_required_columns\]",
@@ -342,16 +341,13 @@ def test_필수컬럼이_전부빠지면_재수집후에도_막는다(tmp_path, 
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
-def test_Spark_필수_컬럼이_재수집후에도_없으면_GX가_실패한다(
-    tmp_path, monkeypatch
-):
+def test_Spark_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
     missing = "pickup_datetime"
     schema = pa.schema(
         field for field in task_module.SCHEMA if field.name != missing
     )
     path = write_bronze(tmp_path, schema=schema)
     result = result_for(path)
-    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
 
     with pytest.raises(
         ValueError,
@@ -360,7 +356,7 @@ def test_Spark_필수_컬럼이_재수집후에도_없으면_GX가_실패한다(
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
-def test_Spark_필수_컬럼이_누락되면_원천부터_다시_수집한다(
+def test_Spark_필수_컬럼이_누락되면_원천을_직접_재수집하지_않는다(
     tmp_path, monkeypatch
 ):
     schema = pa.schema(
@@ -370,31 +366,12 @@ def test_Spark_필수_컬럼이_누락되면_원천부터_다시_수집한다(
     )
     path = write_bronze(tmp_path, schema=schema)
     calls = []
-    refreshed_results = []
+    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: calls.append(params))
 
-    def recollect(params):
-        calls.append(params)
-        corrected_path = write_bronze(tmp_path)
-        refreshed_results.append(result_for(corrected_path))
-        return refreshed_results[-1]
+    with pytest.raises(ValueError, match="missing_required_columns"):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
-    monkeypatch.setattr(task_module, "_collect_bronze", recollect)
-
-    refreshed = validate_bronze(
-        result_for(path), params=bronze_params(tmp_path)
-    )
-
-    assert len(calls) == 1
-    # 재수집 결과를 그대로 넘깁니다. `silver_partitions_before` 는 #165 감시용으로
-    # validate_bronze 가 덧붙이는 값이라 비교에서 뺍니다 (#532).
-    generated = {
-        "silver_version_path",
-        "silver_partitions_before",
-    }
-    assert {k: v for k, v in refreshed.items() if k not in generated} == {
-        k: v for k, v in refreshed_results[0].items() if k not in generated
-    }
-    assert "silver_partitions_before" in refreshed
+    assert calls == []
 
 
 def test_행_수가_0이면_막는다(tmp_path):
@@ -844,7 +821,7 @@ def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않
     raw_task = DAG.get_task("raw_to_bronze")
     validation_task = DAG.get_task("validate_bronze")
     callbacks = []
-    monkeypatch.setattr(raw_task, "python_callable", lambda **_: result)
+    monkeypatch.setattr(raw_task, "execute", lambda context: result)
     monkeypatch.setattr(
         validation_task,
         "on_failure_callback",
