@@ -248,6 +248,16 @@
   - 결과: `theone-airflow-role`에 `s3:DeleteObject`를 추가해 해결했습니다.
 </details>
 
+### 기타
+> 위 분류에 속하지 않는 트러블슈팅
+
+<details>
+<summary><a href="/docs/troubleshooting/etc/DASHBOARD_QUERY_SLOW.md">대시보드 조회가 서브쿼리 인덱스 미스로 30초까지 느려짐</a></summary>
+
+- PK가 `(service_area, year_month, version, ...)`로 바뀌며 상관 서브쿼리 조건(`year_month`만)이 선두 컬럼과 어긋나 인덱스를 못 타고 O(n²)에 가깝게 느려졌습니다.
+  - 결과: 서브쿼리 조건에 `service_area`를 추가해 PK 선두 컬럼과 일치시켜 인덱스를 다시 타도록 했습니다.
+</details>
+
 ### [의사결정 문서](./docs/decision_making/README.md)
 > 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
 
