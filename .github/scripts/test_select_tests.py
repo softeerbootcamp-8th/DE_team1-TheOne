@@ -16,6 +16,11 @@
 14. Skill 검사기 변경은 해당 자체 검사만 선택
 15. GitHub CI 스크립트는 파일별 전용 테스트만 선택
 16. 모니터링 경로는 모니터링 전용 CI가 소유하므로 제품 테스트를 선택하지 않음
+17. spark 모듈 변경은 그 모듈에 닿는 테스트만 — 전체(222건, 5분)를 돌리지 않음
+18. 전이 의존도 따라감 (A 를 고치면 A 를 쓰는 B 의 테스트도)
+19. conftest·__init__ 변경은 전체 (수집 자체에 영향)
+20. 닿는 테스트가 없으면 전체 — 매핑 누락으로 아무것도 안 도는 쪽을 막음
+21. 선별 결과는 실재하는 파일만
 """
 
 import importlib.util
@@ -327,3 +332,74 @@ def test_모든_파이프라인이_전용_테스트를_하나는_고른다():
                 name for name in chosen if Path(name).name not in globals_
             }
             assert dedicated, f"{project}/{pipeline} 이 전용 테스트를 고르지 않습니다"
+
+
+# --- spark import 그래프 선별 (17~21) ---------------------------------------
+SPARK_PROJECT = "sub/spark"
+SPARK_ROOT = Path(select_tests.ROOT) / SPARK_PROJECT
+
+
+def _selected(paths):
+    selection = select_tests.select_tests(paths)
+    return selection.full, selection.tests
+
+
+def test_spark_모듈_변경은_전체를_돌리지_않는다():
+    """파일 하나에 222건(약 5분)이 돌던 것을 좁힙니다."""
+    full, tests = _selected(["sub/spark/jobs/travel_times/transformer.py"])
+
+    assert SPARK_PROJECT not in full, "전체를 돌리고 있습니다"
+    chosen = tests[SPARK_PROJECT]
+    assert "tests/test_travel_times.py" in chosen
+    total = len(list(SPARK_ROOT.glob("tests/test_*.py")))
+    assert len(chosen) < total, f"{len(chosen)}/{total} — 좁혀지지 않았습니다"
+
+
+def test_전이_의존을_따라간다():
+    """`travel_times` 를 쓰는 `source_job` 의 테스트도 함께 골라야 합니다.
+
+    직접 import 만 보면 중간 모듈을 고쳤을 때 상위 테스트가 안 돕니다.
+    """
+    _, tests = _selected(["sub/spark/jobs/travel_times/transformer.py"])
+
+    assert "tests/test_synthetic_driver_trip_source.py" in tests[SPARK_PROJECT]
+
+
+def test_conftest_변경은_전체다():
+    """fixture·상수가 바뀌면 어느 테스트가 영향받는지 import 로 알 수 없습니다."""
+    full, _ = _selected(["sub/spark/tests/conftest.py"])
+
+    assert SPARK_PROJECT in full
+
+
+def test_패키지_초기화_변경은_전체다():
+    full, _ = _selected(["sub/spark/jobs/__init__.py"])
+
+    assert SPARK_PROJECT in full
+
+
+def test_닿는_테스트가_없으면_전체를_돌린다():
+    """매핑 누락으로 **아무것도 안 도는** 쪽이 가장 나쁩니다 (#538).
+
+    새 모듈을 넣고 테스트를 아직 안 썼을 때가 이 경우입니다.
+    """
+    orphan = "sub/spark/jobs/driver_master/__brand_new__.py"
+    full, tests = _selected([orphan])
+
+    assert SPARK_PROJECT in full or tests.get(SPARK_PROJECT)
+
+
+def test_선별된_테스트는_실재하는_파일이다():
+    """없는 경로를 pytest 에 넘기면 그 잡이 통째로 실패합니다."""
+    for changed in (
+        "sub/spark/jobs/travel_times/transformer.py",
+        "sub/spark/jobs/driver_assignment/allocator.py",
+        "sub/spark/jobs/driver_master/traits.py",
+        "main/spark/jobs/silver_to_gold/job.py",
+    ):
+        selection = select_tests.select_tests([changed])
+        for project, chosen in selection.tests.items():
+            for relative in chosen:
+                assert (Path(select_tests.ROOT) / project / relative).is_file(), (
+                    f"{changed} -> {project}/{relative} 가 없습니다"
+                )

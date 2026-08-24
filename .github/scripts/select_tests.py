@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import argparse
+import ast
+import functools
 import json
 import os
 import subprocess
@@ -63,6 +65,105 @@ AIRFLOW_OVERRIDES = {
         },
     },
 }
+
+
+# spark 프로젝트는 파일 하나만 고쳐도 테스트 전체(222건, 약 5분)가 돌았습니다.
+# airflow 처럼 손으로 매핑하면 잘못 적었을 때 **테스트가 아예 안 도는** 쪽으로 틀립니다
+# (#538 이 그 사례). 그래서 매핑을 적지 않고 import 관계에서 뽑습니다.
+#
+# 안전 방향을 한쪽으로 고정합니다 — 애매하면 전체를 돌립니다.
+#   conftest.py / __init__.py 변경        전체 (수집 자체에 영향)
+#   닿는 테스트가 하나도 없는 모듈          전체 (매핑 누락일 수 있음)
+IMPORT_GRAPH_PROJECTS = {"main/spark", "sub/spark"}
+FIRST_PARTY_ROOTS = ("main", "sub", "shared", "schema", "libs", "config")
+ALWAYS_FULL_FILES = {"conftest.py", "__init__.py"}
+
+
+def _module_of(path: str) -> str | None:
+    """저장소 경로를 모듈 이름으로. `sub/spark/jobs/x/y.py` -> `sub.spark.jobs.x.y`"""
+    if not path.endswith(".py"):
+        return None
+    parts = Path(path).with_suffix("").parts
+    if not parts or parts[0] not in FIRST_PARTY_ROOTS:
+        return None
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts) if parts else None
+
+
+def _imports_of(file: Path) -> set[str]:
+    """그 파일이 import 하는 저장소 안 모듈.
+
+    함수 안 import 도 셉니다. 여기서는 과하게 고르는 쪽이 안전합니다 — 빠뜨리면
+    테스트가 안 돌고, 더 고르면 조금 느려질 뿐입니다.
+    """
+    try:
+        tree = ast.parse(file.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError, OSError):
+        return set()
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            found.add(node.module)
+        elif isinstance(node, ast.Import):
+            found |= {alias.name for alias in node.names}
+    return {name for name in found if name.split(".")[0] in FIRST_PARTY_ROOTS}
+
+
+@functools.lru_cache(maxsize=None)
+def _import_graph(project: str) -> tuple[dict[str, frozenset[str]], tuple[str, ...]]:
+    """프로젝트 안 모듈별 import 목록과 테스트 모듈 목록.
+
+    PR 하나가 파일 여러 개를 건드리므로 프로젝트당 한 번만 훑습니다.
+    """
+    root = ROOT / project
+    files = [
+        f
+        for f in root.rglob("*.py")
+        if ".venv" not in f.parts and "__pycache__" not in f.parts
+    ]
+    graph: dict[str, frozenset[str]] = {}
+    tests: list[str] = []
+    for file in files:
+        module = _module_of(str(file.relative_to(ROOT)))
+        if module is None:
+            continue
+        graph[module] = frozenset(_imports_of(file))
+        if file.name.startswith("test_"):
+            tests.append(module)
+    return graph, tuple(sorted(tests))
+
+
+def _tests_reaching(project: str, changed_module: str) -> set[str] | None:
+    """`changed_module` 에 전이적으로 닿는 그 프로젝트의 테스트 파일.
+
+    닿는 것이 없으면 `None` 을 돌려 호출부가 전체를 돌리게 합니다.
+    """
+    imports, test_modules = _import_graph(project)
+
+    # changed_module 에 닿는 모듈을 역방향으로 넓힙니다.
+    reaching = {changed_module}
+    while True:
+        grown = {
+            module
+            for module, targets in imports.items()
+            if module not in reaching
+            and any(
+                target == r or target.startswith(r + ".") or r.startswith(target + ".")
+                for target in targets
+                for r in reaching
+            )
+        }
+        if not grown:
+            break
+        reaching |= grown
+
+    tests = {
+        f"tests/{module.rsplit('.', 1)[-1]}.py"
+        for module in test_modules
+        if module in reaching
+    }
+    return tests or None
 
 
 @dataclass
@@ -249,7 +350,19 @@ def select_tests(changed_files: list[str]) -> Selection:
             (project for prefix, project in runtime_projects.items() if path.startswith(f"{prefix}/")),
             None,
         )
-        if matched:
+        if matched in IMPORT_GRAPH_PROJECTS:
+            module = _module_of(path)
+            tests = None
+            if module and Path(path).name not in ALWAYS_FULL_FILES:
+                if Path(path).name.startswith("test_"):
+                    tests = {f"tests/{Path(path).name}"} if (ROOT / path).is_file() else None
+                else:
+                    tests = _tests_reaching(matched, module)
+            if tests:
+                selection.add(matched, *tests)
+            else:
+                selection.add_full(matched)
+        elif matched:
             selection.add_full(matched)
         elif path.endswith(".py"):
             selection.add_full(*ALL_PROJECTS)
