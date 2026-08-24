@@ -78,9 +78,32 @@ NAT 라우팅을 담당하므로 `net.ipv4.ip_forward` 를 건드리지 않는 �
 | `alert-topic-policy.json` | EventBridge 가 Topic 에 발행하도록 허용하는 정책 |
 | `emr-failure-event-pattern.json` | `FAILED`/`CANCELLED` 만 걸러내는 이벤트 패턴 |
 
-`WorkerType` 값은 **`Spark_Executor` / `Spark_Driver`** 입니다. `SPARK_EXECUTORS` 처럼
-대문자·복수형으로 쓰면 `SEARCH()` 가 아무것도 매칭하지 못하고 **에러 없이 빈 위젯**이
-그려집니다. 실측으로 확인한 값이고 테스트가 고정합니다.
+### 위젯을 추가할 때 — `SEARCH()` 는 차원 조합을 고정해야 합니다
+
+`SEARCH()` 의 차원 조건은 **부분 일치**입니다. `ApplicationId="..."` 만 걸면 그 차원을
+포함한 *모든* 조합이 잡히는데, EMR Serverless 는 `Worker*` 지표를 **`JobId` 별로**
+발행합니다. 작업이 쌓일수록 위젯의 시계열이 계속 늘고, 500개를 넘는 순간 CloudWatch 가
+**"허용된 최대 지표 수를 초과함"** 을 띄우고 그리기를 멈춥니다. 그 직전에는
+`StatusCode 'Paginated'` 경고와 함께 일부 데이터만 그려집니다.
+
+실제로 memory·CPU 위젯이 각각 510개까지 늘어 깨졌습니다. 앞의 중괄호가 차원 조합
+자체를 고정해 이걸 막습니다.
+
+```
+SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName="MemoryAllocated" ...')
+        └─ 이 조합인 지표만. JobId 차원 지표는 애초에 후보에 들어오지 않습니다
+```
+
+`Worker*Used` 계열은 **앱 수준에 아예 없습니다.** 작업 하나하나의 워커 사용률은
+EMR Serverless 콘솔의 job run 상세에서 봅니다. 대시보드는 앱 수준 지표만 씁니다.
+
+| 보고 싶은 것 | 앱 수준 지표 |
+|---|---|
+| 용량 상한에 붙었나 | `MemoryAllocated` / `MaxMemoryAllowed`, `CPUAllocated` / `MaxCPUAllowed` |
+| 워커가 몇 개 떠 있나 | `RunningWorkerCount`, `PendingCreationWorkerCount` |
+| 작업 상태 | `RunningJobs`, `PendingJobs`, `FailedJobs`, `SuccessJobs` |
+
+테스트가 스키마 고정과 지표명을 모두 잡습니다.
 
 ## 최초 1회 준비
 
