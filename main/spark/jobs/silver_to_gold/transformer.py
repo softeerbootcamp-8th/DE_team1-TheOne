@@ -723,7 +723,13 @@ def build_monthly_vehicle_recommendation(
             "expected_revenue_increase",
         ).select(*_columns(DriverCarSuggestion))
 
+    # 회사 매출에 기여 못 하는 차량 교체는 추천에서 제외한다(#955). 현재 차량은
+    # 정의상 매출 증가가 0이라 이 조건에서 예외로 둬 최후의 보루로 남긴다.
     assignable = candidates.filter(
-        (F.col("_candidate_stock") > 0) | F.col("_is_current")
+        F.col("_is_current")
+        | (
+            (F.col("_candidate_stock") > 0)
+            & (F.col("expected_revenue_increase") > 0)
+        )
     )
     return recommendation_output(_allocate_candidates_by_stock(assignable))
