@@ -15,6 +15,7 @@
 13. 경과일 계산에 실패해도(now가 None이거나 뺄셈이 안 되는 값) 예외 없이 None
 14. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
 15. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
+16. 운영 수동 실행도 S3 Silver 4종 완료본이 실제로 있어야 통과
 """
 
 import importlib
@@ -440,6 +441,62 @@ def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
         dag_module.validate_inputs_task.function(
             params=_params(tmp_path, year="2026", month="5"),
             logical_date=_logical_date(2026, 5),
+            dag_run=type("DagRun", (), {"partition_key": None})(),
+        )
+
+
+def test_운영_수동실행은_S3에_대상월이_없으면_실패한다(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+    monkeypatch.setattr(dag_module, "list_keys", lambda bucket, prefix: [], raising=False)
+
+    with pytest.raises(FileNotFoundError, match="2098-02"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path, year="2098", month="2"),
+            logical_date=_logical_date(2098, 2),
+            dag_run=type("DagRun", (), {"partition_key": None})(),
+        )
+
+
+def test_운영_수동실행은_S3_Silver_4종_완료본이_있으면_통과한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    def completed_keys(bucket, prefix):
+        if "gas_ev_price" in prefix:
+            return [f"{prefix}gas_ev_price.parquet", f"{prefix}_SUCCESS"]
+        version = f"{prefix}source_collected_at=20260824T123456123456Z/"
+        return [f"{version}data.parquet", f"{version}_SUCCESS"]
+
+    monkeypatch.setattr(dag_module, "list_keys", completed_keys, raising=False)
+
+    result = dag_module.validate_inputs_task.function(
+        params=_params(tmp_path, year="2098", month="2"),
+        logical_date=_logical_date(2098, 2),
+        dag_run=type("DagRun", (), {"partition_key": None})(),
+    )
+
+    assert result["year_month"] == "2098-02"
+
+
+def test_운영_수동실행은_S3_데이터만_있고_SUCCESS가_없으면_실패한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+    monkeypatch.setattr(
+        dag_module,
+        "list_keys",
+        lambda bucket, prefix: [f"{prefix}gas_ev_price.parquet"],
+        raising=False,
+    )
+
+    with pytest.raises(FileNotFoundError, match="완료본"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path, year="2098", month="2"),
+            logical_date=_logical_date(2098, 2),
             dag_run=type("DagRun", (), {"partition_key": None})(),
         )
 
