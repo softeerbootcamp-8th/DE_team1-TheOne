@@ -1,4 +1,4 @@
-"""Gold 3종(driver_aggregation, driver_vehicle_profit_simulation, monthly_report)을 RDS
+"""Gold 3종(driver_aggregation, driver_vehicle_profit_simulation, lease_vehicle_inventory)을 RDS
 PostgreSQL에 원자적으로, 버전을 붙여 적재합니다.
 
 같은 year_month에 이미 데이터가 있으면 그 버전 + 1로, 없으면 버전 1로 3개
@@ -13,17 +13,21 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 
-from schema.gold import DriverMonthlyProfit, DriverVehicleProfitSimulation, MonthlyReport
+from schema.gold import DriverMonthlyProfit, DriverVehicleProfitSimulation, LeaseVehicleInventory
 
 logger = logging.getLogger(__name__)
 
-_MONTHLY_REPORT = "monthly_report"
+_LEASE_VEHICLE_INVENTORY = "lease_vehicle_inventory"
 _DRIVER_AGGREGATION = "driver_aggregation"
 _DRIVER_VEHICLE_PROFIT_SIMULATION = "driver_vehicle_profit_simulation"
-TABLES = (_MONTHLY_REPORT, _DRIVER_AGGREGATION, _DRIVER_VEHICLE_PROFIT_SIMULATION)
+TABLES = (
+    _LEASE_VEHICLE_INVENTORY,
+    _DRIVER_AGGREGATION,
+    _DRIVER_VEHICLE_PROFIT_SIMULATION,
+)
 
 _TABLE_MODELS = {
-    _MONTHLY_REPORT: MonthlyReport,
+    _LEASE_VEHICLE_INVENTORY: LeaseVehicleInventory,
     _DRIVER_AGGREGATION: DriverMonthlyProfit,
     _DRIVER_VEHICLE_PROFIT_SIMULATION: DriverVehicleProfitSimulation,
 }
@@ -36,7 +40,12 @@ _TABLE_MODELS = {
 #   PK 만 고치면 버전이 지역 간 공유 카운터로 남고,
 #   검증만 고치면 다른 지역 행을 세어 매번 롤백합니다.
 _PRIMARY_KEYS = {
-    _MONTHLY_REPORT: ("service_area", "year_month", "version"),
+    _LEASE_VEHICLE_INVENTORY: (
+        "service_area",
+        "year_month",
+        "version",
+        "vehicle_model_id",
+    ),
     _DRIVER_AGGREGATION: ("service_area", "year_month", "version", "driver_id"),
     _DRIVER_VEHICLE_PROFIT_SIMULATION: (
         "service_area",
@@ -68,98 +77,17 @@ def _create_table_sql(table: str) -> str:
     )
 
 
-def _create_suggestion_view_sql() -> str:
-    """후보 팩트에 기사 선호 순위와 모델별 재고 한도를 적용한 최종 1행 뷰."""
-    return """
-CREATE OR REPLACE VIEW vw_driver_car_suggestion AS
-WITH candidate_base AS (
-    SELECT
-        simulation.*,
-        simulation.candidate_vehicle_model_id = aggregation.vehicle_model_id
-            AS is_current
-    FROM driver_vehicle_profit_simulation AS simulation
-    JOIN driver_aggregation AS aggregation
-      ON aggregation.service_area = simulation.service_area
-     AND aggregation.year_month = simulation.year_month
-     AND aggregation.version = simulation.version
-     AND aggregation.driver_id = simulation.driver_id
-),
-stock_ranked AS (
-    SELECT
-        candidate_base.*,
-        SUM(CASE WHEN is_current THEN 1 ELSE 0 END) OVER (
-            PARTITION BY service_area, year_month, version,
-                         candidate_vehicle_model_id
-        ) AS occupied_stock,
-        ROW_NUMBER() OVER (
-            PARTITION BY service_area, year_month, version,
-                         candidate_vehicle_model_id, is_current
-            ORDER BY expected_net_profit_increase DESC,
-                     expected_revenue_increase DESC,
-                     driver_id ASC
-        ) AS stock_rank
-    FROM candidate_base
-),
-feasible_candidates AS (
-    SELECT *
-    FROM stock_ranked
-    WHERE is_current
-       OR stock_rank <= candidate_stock - occupied_stock
-),
-driver_ranked AS (
-    SELECT
-        feasible_candidates.*,
-        ROW_NUMBER() OVER (
-            PARTITION BY service_area, year_month, version, driver_id
-            ORDER BY expected_monthly_net_profit DESC,
-                     is_current DESC,
-                     model_year DESC,
-                     candidate_vehicle_model_id ASC
-        ) AS driver_rank
-    FROM feasible_candidates
-)
-SELECT
-    version,
-    driver_id,
-    year_month,
-    service_area,
-    comfort_eligible,
-    extra_comfort_eligible,
-    candidate_vehicle_model_id AS vehicle_model_id,
-    manufacturer,
-    model_name,
-    model_year,
-    recommendation_reason,
-    fuel_efficiency,
-    recommended_monthly_lease_fee,
-    expected_monthly_fuel_cost,
-    expected_monthly_net_profit,
-    expected_net_profit_increase,
-    expected_revenue_increase
-FROM driver_ranked
-WHERE driver_rank = 1
-""".strip()
-
-
-def _create_compatibility_view_sql() -> str:
-    """기존 조회자는 수정하지 않고 canonical 뷰로 연결합니다."""
-    return """
-CREATE OR REPLACE VIEW driver_car_suggestion AS
-SELECT * FROM vw_driver_car_suggestion
-""".strip()
-
-
 def _next_version(cursor, service_area: str, year_month: str) -> int:
-    """`monthly_report`에서 이 (지역, year_month)의 기존 버전을 top(1)로 확인해 +1.
+    """`lease_vehicle_inventory`에서 지역·월의 기존 버전을 확인해 +1.
 
     3개 테이블은 항상 같은 버전으로 함께 적재되므로(이 모듈이 그렇게 보장합니다),
-    monthly_report 한 행만 봐도 이 달의 현재 버전을 알 수 있습니다.
+    재고 테이블 한 곳만 봐도 이 달의 현재 버전을 알 수 있습니다.
 
     지역으로 안 좁히면 버전이 지역 간 공유 카운터가 됩니다 — NYC 가 v1 을 쓴 뒤
     TX 의 **첫** 적재가 v2 로 기록되어 지역별 버전 이력이 무의미해집니다.
     """
     cursor.execute(
-        f"SELECT version FROM {_MONTHLY_REPORT} "
+        f"SELECT version FROM {_LEASE_VEHICLE_INVENTORY} "
         "WHERE service_area = %s AND year_month = %s "
         "ORDER BY version DESC LIMIT 1",
         (service_area, year_month),
@@ -207,9 +135,10 @@ def _validate_written_rows(
 
 
 def _validate_frame_grains(frames: dict[str, pd.DataFrame]) -> None:
-    """DB 연결 전에 기사 N × 후보 차량 M 적재 계약을 확인합니다."""
+    """DB 연결 전에 기사 N × 후보 차량 M과 재고 모델 그레인을 확인합니다."""
     aggregation = frames[_DRIVER_AGGREGATION]
     simulation = frames[_DRIVER_VEHICLE_PROFIT_SIMULATION]
+    inventory = frames[_LEASE_VEHICLE_INVENTORY]
     driver_count = aggregation["driver_id"].nunique()
     model_count = simulation["candidate_vehicle_model_id"].nunique()
     candidate_keys = simulation[["driver_id", "candidate_vehicle_model_id"]]
@@ -220,6 +149,9 @@ def _validate_frame_grains(frames: dict[str, pd.DataFrame]) -> None:
         or set(simulation["driver_id"]) != set(aggregation["driver_id"])
         or len(simulation) != expected_rows
         or len(candidate_keys.drop_duplicates()) != expected_rows
+        or len(inventory) != inventory["vehicle_model_id"].nunique()
+        or set(inventory["vehicle_model_id"])
+        != set(simulation["candidate_vehicle_model_id"])
     ):
         raise ValueError(
             "Gold 시뮬레이션 그레인 불일치: "

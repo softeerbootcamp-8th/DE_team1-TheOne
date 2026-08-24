@@ -49,7 +49,6 @@ DAG_PARAMS = {
         {
             "year",
             "month",
-            "threshold_profit_increase",
             "monthly_taxi_trip_path",
             "driver_vehicle_monthly_snapshot_path",
             "lease_vehicle_inventory_path",

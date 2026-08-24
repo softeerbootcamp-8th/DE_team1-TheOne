@@ -47,3 +47,7 @@
 
 ### 8/23 ([상세 정리 문서 링크](/docs/decision_making/0823.md))
 1. EMR Serverless 이미지 배포 : Job 제출 시점에 이미지 digest 해석
+
+### 8/24 ([상세 정리 문서 링크](/docs/decision_making/0824.md))
+1. 지역별 Airflow DagRun 동시 실행 상한 : `max_active_runs=3`
+2. Gold 세 번째 물리 테이블 : `monthly_report` 대신 `lease_vehicle_inventory` 적재

@@ -1,6 +1,6 @@
 # Gold DB 스키마 변경 런북
 
-Gold 3종(`monthly_report`, `driver_aggregation`, `driver_vehicle_profit_simulation`)은 RDS
+Gold 3종(`lease_vehicle_inventory`, `driver_aggregation`, `driver_vehicle_profit_simulation`)은 RDS
 PostgreSQL에 적재됩니다. 이 문서는 **그 테이블의 스키마를 바꿀 때** 무엇을 해야 하는지를
 적습니다.
 
@@ -51,8 +51,11 @@ nullable로 넣고 배포 후 `SET NOT NULL`을 따로 거는 2단계로 나눕�
 ```bash
 # DSN 은 Airflow Variable/환경변수 GOLD_DATABASE_URL 과 같은 값입니다.
 psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
-  -f main/spark/jobs/silver_to_gold/migrations/2026-08-23_add_service_area.sql
+  -f main/spark/jobs/silver_to_gold/migrations/2026-08-24_replace_monthly_report_with_inventory.sql
 ```
+
+이 스크립트는 더 이상 발행하지 않는 `monthly_report`와 추천 뷰를 삭제합니다. 새 코드
+배포 직전에 실행하고, 보존이 필요한 기존 리포트는 실행 전에 별도로 백업합니다.
 
 `ON_ERROR_STOP=1`을 빼면 중간 문장이 실패해도 계속 진행해 **일부만 반영된 상태**가
 됩니다. 스크립트 자체는 `BEGIN`/`COMMIT`으로 묶여 있지만, 이 플래그가 없으면 psql이
@@ -61,7 +64,7 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 실행 후 확인:
 
 ```sql
-\d monthly_report
+\d lease_vehicle_inventory
 \d driver_aggregation
 \d driver_vehicle_profit_simulation
 ```
@@ -75,6 +78,7 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 | 날짜 | 스크립트 | 내용 | 관련 |
 |---|---|---|---|
 | 2026-08-23 | `2026-08-23_add_service_area.sql` | 3종에 `service_area` 추가, PK를 `(service_area, ...)`로 확장. 기존 행은 `'NYC'` 백필 | #809, #674, #805 |
+| 2026-08-24 | `2026-08-24_replace_monthly_report_with_inventory.sql` | 추천 뷰·`monthly_report`·`candidate_stock`을 제거하고 Gold 재고 테이블 생성 | #915 |
 
 ### 추천 후보 확장 주의사항
 

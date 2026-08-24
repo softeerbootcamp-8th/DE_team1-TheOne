@@ -98,9 +98,6 @@ class DriverVehicleProfitSimulation:
     candidate_vehicle_model_id: str
     """평가한 후보 차량 모델 ID"""
 
-    candidate_stock: int
-    """후보 차량 모델의 해당 월 재고 스냅샷"""
-
     manufacturer: str
     """추천 차량 제조사"""
 
@@ -132,35 +129,13 @@ class DriverVehicleProfitSimulation:
     """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverMonthlyProfit.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
 
 
-"""월간 리포트 계산에 사용하는 기사별 차량 추천 Spark 중간 결과."""
-@dataclass(frozen=True)
-class MonthlyVehicleRecommendation:
-    version: int
-    driver_id: str
-    year_month: str
-    service_area: str
-    comfort_eligible: bool
-    extra_comfort_eligible: bool
-    vehicle_model_id: str
-    manufacturer: str
-    model_name: str
-    model_year: int
-    recommendation_reason: str
-    fuel_efficiency: float
-    recommended_monthly_lease_fee: float
-    expected_monthly_fuel_cost: float
-    expected_monthly_net_profit: float
-    expected_net_profit_increase: float
-    expected_revenue_increase: float
-
-
 """
-[월간 리포트]
-input: schema/gold.py - MonthlyVehicleRecommendation
-output: schema/gold.py - MonthlyReport
+[리스 업체 보유 차량]
+input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA
+output: schema/gold.py - LeaseVehicleInventory
 """
 @dataclass(frozen=True)
-class MonthlyReport:
+class LeaseVehicleInventory:
     version: int
     """ 골드 데이터 버전 """
     
@@ -174,21 +149,14 @@ class MonthlyReport:
     빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
     """
 
-    threshold_profit_increase: float
-    """차량 교체 추천 기준선 (USD)"""
-
-    is_rerun: bool
-    """이 실행이 최초 완료가 아니라, 이미 완료된 대상월이 다시 계산된 재트리거인지"""
-
-    recommended_driver_count: int
-    """재고를 반영한 기사별 최종 추천 중 expected_net_profit_increase >=
-    threshold_profit_increase, expected_revenue_increase >= 0 인 기사 수"""
-
-    avg_net_profit_increase_per_driver: float
-    """추천된 기사들의 평균 순수익 증가액 (USD)"""
-
-    avg_revenue_increase_per_driver: float
-    """추천된 기사들의 평균 매출 증가액 (USD)"""
-
-    total_revenue_increase: float
-    """추천된 기사들의 매출 증가액 합계 (USD)"""
+    vehicle_model_id: str
+    manufacturer: str
+    model_name: str
+    model_year: int
+    fuel_type: str
+    fuel_efficiency: float
+    comfort_eligible: bool
+    extra_comfort_eligible: bool
+    weekly_lease_fee: float
+    image_url: str
+    stock: int

@@ -286,7 +286,6 @@ def test_main은_service_area를_모든_기본입력_조회에_그대로_넘긴�
                 "--year", "2026",
                 "--month", "5",
                 "--service_area", "TX",
-                "--threshold_profit_increase", "10",
             ]
         )
 
