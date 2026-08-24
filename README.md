@@ -155,6 +155,12 @@
 
 
 ### AWS 인프라 설계
+![AWS 인프라 아키텍처](docs/images/aws_infra_architecture.png)
+- Lambda는 원천 소스 API 서버와 상호작용하는 것만 VPC 내부에 위치, 나머지는 IAM 최소 권한으로 보안 확보
+- 게이트웨이 서버(nginx)가 public subnet에서 private subnet의 차량 추천 대시보드(8501)로 리버스 프록시
+- 모니터링 대시보드는 내부 전용으로 운영, 외부망에 노출하지 않음
+
+상세: [docs/AWS_INFRA.md](/docs/AWS_INFRA.md)
 
 ### [의사결정 문서]([./docs/decision_making/README.md])
 > 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
