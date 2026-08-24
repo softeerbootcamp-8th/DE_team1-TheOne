@@ -7,6 +7,7 @@ from pathlib import Path
 
 from airflow.sdk import task
 
+from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     S3Location,
@@ -57,6 +58,25 @@ def validate_silver_result(result: dict, expected_rows: int) -> None:
     _silver_transformer().transform(table)
 
 
+@task(task_id="raw_to_bronze")
+def raw_to_bronze_task(**context) -> dict:
+    params = context.get("params", {})
+    return _collect_bronze(params)
+
+
+def _collect_bronze(params: dict) -> dict:
+    event = {
+        "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
+        "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
+        "year": params.get("year"),
+        "month": params.get("month"),
+    }
+    if params.get("service_area") is not None:
+        event["service_area"] = params["service_area"]
+    logger.info("보유 차량 데이터 Raw→Bronze 수집 시작: %s", event)
+    return lambda_handler_for("lease_vehicle_inventory_raw_to_bronze")(event=event)
+
+
 @task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> dict:
     params = context.get("params", {})
@@ -91,6 +111,22 @@ def _validate_bronze_result(
     )
     missing = sorted(set(SCHEMA.names) - set(read_parquet(path).schema.names))
     return path, missing
+
+
+@task(task_id="bronze_to_silver")
+def bronze_to_silver_task(result: dict, **context) -> dict:
+    params = context.get("params", {})
+    bronze_location = parse_location(result["locations"][0])
+    event = {
+        "year_month": result["year_month"],
+        "silver_output_path": result["silver_version_path"],
+    }
+    if params.get("service_area") is not None:
+        event["service_area"] = params["service_area"]
+    if isinstance(bronze_location, S3Location):
+        event.update(storage="s3", bucket=bronze_location.bucket)
+    logger.info("보유 차량 데이터 Bronze→Silver 정제 시작: %s", event)
+    return lambda_handler_for("lease_vehicle_inventory_bronze_to_silver")(event=event)
 
 
 @task(task_id="validate_silver")

@@ -1,7 +1,7 @@
 """보유 차량 Raw→Bronze→Silver DAG 계약.
 
 1. 기사 계약 DAG와 분리되고 감시 DAG가 호출하는 네 단계 월별 DAG
-2. 수집·정제 Lambda 를 AWS 동기 호출하고 payload 전달
+2. 운영 DAG는 수집·정제 Lambda를 AWS 동기 호출하고 로컬 함수는 기존 계약 유지
 3. 필수 컬럼 누락 시 Airflow 프로세스에서 재수집하지 않고 실패
 4. Bronze 행 수·스키마·재고 품질로 Silver 확인
 5. S3 Silver 경로를 로컬 Path로 접지 않고 검증
@@ -105,14 +105,86 @@ def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
     ]
 
 
-def test_수집과_정제task는_AWS_Lambda_payload를_사용한다():
-    raw = DAG.get_task("raw_to_bronze")
-    silver = DAG.get_task("bronze_to_silver")
+def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한다(monkeypatch):
+    called = {}
+    handlers = []
 
-    assert raw.function_name == "lease_vehicle_inventory_raw_to_bronze"
-    assert silver.function_name == "lease_vehicle_inventory_bronze_to_silver"
-    assert "params.api_base_url" in raw.payload
-    assert "silver_version_path" in silver.payload
+    def handler(*, event):
+        called.update(event)
+        return {"year_month": "2026-08"}
+
+    monkeypatch.setattr(
+        task_module,
+        "lambda_handler_for",
+        lambda name: handlers.append(name) or handler,
+    )
+    task_module.raw_to_bronze_task.function(
+        params={
+            "api_base_url": "http://source",
+            "base_dir": "/bronze",
+            "year": "2026",
+            "month": "8",
+            "service_area": "TX",
+        }
+    )
+    assert handlers == ["lease_vehicle_inventory_raw_to_bronze"]
+    assert called == {
+        "api_base_url": "http://source",
+        "base_dir": "/bronze",
+        "year": "2026",
+        "month": "8",
+        "service_area": "TX",
+    }
+
+
+def test_정제task는_서비스지역과_적재위치를_정제핸들러에_전달한다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {"row_count": 1, "locations": ["/silver/x.parquet"], "year_month": "2026-08"}
+
+    monkeypatch.setattr(
+        task_module,
+        "lambda_handler_for",
+        lambda name: handlers.append(name) or handler,
+    )
+    task_module.bronze_to_silver_task.function(
+        {
+            "locations": [f"/bronze/{FILE_NAME}"],
+            "year_month": "2026-08",
+            "silver_version_path": f"/silver/year_month=2026-08/{SOURCE_VERSION}",
+        },
+        params={"silver_dir": "/silver", "service_area": "TX"},
+    )
+    assert handlers == ["lease_vehicle_inventory_bronze_to_silver"]
+    assert called == {
+        "year_month": "2026-08",
+        "service_area": "TX",
+        "silver_output_path": f"/silver/year_month=2026-08/{SOURCE_VERSION}",
+    }
+
+
+def test_보유차량필수컬럼이_누락되면_원천을_직접_재수집하지_않는다(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        task_module,
+        "_validate_bronze_result",
+        lambda result, base_dir, service_area: (Path("broken.parquet"), ["stock"]),
+    )
+    monkeypatch.setattr(
+        task_module,
+        "_collect_bronze",
+        lambda params: calls.append(params),
+    )
+
+    with pytest.raises(ValueError, match="필수 컬럼 누락"):
+        DAG.get_task("validate_bronze").python_callable(
+            _raw_result(), params={"base_dir": "/bronze"}
+        )
+
+    assert calls == []
 
 
 def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_path, monkeypatch):

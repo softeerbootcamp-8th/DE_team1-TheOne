@@ -1,7 +1,7 @@
 """월별 택시 운행 데이터 Raw→Bronze→Silver DAG 계약.
 
 1. 감시 DAG만 스케줄을 갖고 이 DAG는 요청받은 월의 네 단계를 처리
-2. 데이터 제공 주소와 선택적 연월을 AWS Lambda payload로 전달
+2. 운영 DAG는 AWS Lambda payload를 사용하고 로컬 함수는 기존 event 계약 유지
 3. Spark 명령은 검증된 월만 정제
 4. 로컬은 Bash Spark, 운영은 공용 EMR Serverless에 같은 Spark job을 제출
 5. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
@@ -13,6 +13,7 @@ from datetime import timedelta
 import pytest
 
 from dags import monthly_taxi_trip_raw_to_silver_dag as dag_module
+from main.airflow.scripts.monthly_taxi_trip_raw_to_silver import tasks as task_module
 
 
 DAG = dag_module.monthly_taxi_trip_dag
@@ -49,12 +50,32 @@ def test_기본_서비스지역은_NYC다():
     assert DAG.params["service_area"] == "NYC"
 
 
-def test_수집task는_HVFHV_Lambda에_필요한_payload를_전달한다():
-    raw = DAG.get_task("raw_to_bronze")
+def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_전달한다(monkeypatch):
+    called = {}
 
-    assert raw.function_name == "monthly_taxi_trip_raw_to_bronze"
-    for key in ("api_base_url", "base_dir", "year", "month", "service_area"):
-        assert f'"{key}"' in raw.payload
+    def handler(*, event):
+        called.update(event)
+        return {"year_month": "2026-08"}
+
+    monkeypatch.setattr(task_module, "lambda_handler_for", lambda name: handler)
+    raw = task_module.raw_to_bronze_task.function
+    raw(
+        params={
+            "api_base_url": "http://source",
+            "base_dir": "/bronze",
+            "year": "2026",
+            "month": "8",
+            "service_area": "TX",
+        }
+    )
+
+    assert called == {
+        "api_base_url": "http://source",
+        "base_dir": "/bronze",
+        "year": "2026",
+        "month": "8",
+        "service_area": "TX",
+    }
 
 
 def test_Spark명령은_수집결과의_정확한_HVFHV파일을_사용한다():

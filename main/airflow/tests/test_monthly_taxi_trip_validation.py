@@ -356,6 +356,24 @@ def test_Spark_필수_컬럼이_없으면_GX가_실패한다(tmp_path):
         validate_bronze(result, params=bronze_params(tmp_path))
 
 
+def test_Spark_필수_컬럼이_누락되면_원천을_직접_재수집하지_않는다(
+    tmp_path, monkeypatch
+):
+    schema = pa.schema(
+        field
+        for field in task_module.SCHEMA
+        if field.name != "pickup_datetime"
+    )
+    path = write_bronze(tmp_path, schema=schema)
+    calls = []
+    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: calls.append(params))
+
+    with pytest.raises(ValueError, match="missing_required_columns"):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+
+    assert calls == []
+
+
 def test_행_수가_0이면_막는다(tmp_path):
     path = write_bronze(tmp_path, rows=0)
     result = result_for(path)
