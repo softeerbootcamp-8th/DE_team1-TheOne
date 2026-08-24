@@ -21,6 +21,8 @@
 #   Variables AWS_ROLE_ARN_AIRFLOW / ECR_REPOSITORY_AIRFLOW / AIRFLOW_INSTANCE_ID
 #             EMR_APPLICATION_ID / EMR_EXECUTION_ROLE_ARN
 #   Secrets   GOLD_DATABASE_URL (RDS 마스터 비밀번호 포함 DSN 평문, Secrets Manager 안 씀)
+#             AIRFLOW_FERNET_KEY  Connection 암호화 키. 바뀌면 기존 값을 못 읽습니다
+#             SLACK_WEBHOOK_URL   알림 웹훅. 로테이션하면 이 Secret 만 갈면 됩니다
 #   EC2       ~/airflow/.env (compose 가 자동으로 읽음), /root/.docker/config.json
 #             (SSM 명령은 root 로 실행돼 ubuntu 의 credential helper 설정을 못 봅니다)
 # =============================================================================
@@ -118,6 +120,7 @@ jobs:
           EMR_EXECUTION_ROLE_ARN: ${{ vars.EMR_EXECUTION_ROLE_ARN }}
           GOLD_DATABASE_URL: ${{ secrets.GOLD_DATABASE_URL }}
           AIRFLOW_FERNET_KEY: ${{ secrets.AIRFLOW_FERNET_KEY }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           # compose 파일도 함께 밀어 저장소와 EC2 가 어긋나지 않게 합니다.
@@ -134,6 +137,7 @@ jobs:
             f"echo EMR_EXECUTION_ROLE_ARN={os.environ['EMR_EXECUTION_ROLE_ARN']} >> .env",
             f"echo GOLD_DATABASE_URL={os.environ['GOLD_DATABASE_URL']} >> .env",
             f"echo AIRFLOW_FERNET_KEY={os.environ['AIRFLOW_FERNET_KEY']} >> .env",
+            f"echo SLACK_WEBHOOK_URL={os.environ['SLACK_WEBHOOK_URL']} >> .env",
             "chown ubuntu:ubuntu docker-compose.ec2.yml .env",
             # 커밋 SHA 이미지가 바뀌면 Compose가 자동 재생성합니다. 같은 SHA의 워크플로를
             # 재실행할 때까지 강제 재생성하면 실행 중인 task만 불필요하게 끊깁니다.

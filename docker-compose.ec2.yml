@@ -70,6 +70,22 @@ services:
       #     2) 인스턴스에 공인 IP 없음
       #     ALB 를 붙이거나 공인 IP 를 주는 순간 이 설정은 인증 없는 공개가 됩니다.
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      # Slack 알림 커넥션을 DB 가 아니라 환경변수로 넣습니다.
+      #
+      # 왜 `airflow connections add` 가 아닌가 — 그 방식은 값이 Postgres 볼륨에만
+      # 남습니다. 볼륨이 날아가거나 인스턴스를 교체하면 조용히 사라지고, 파이프라인은
+      # 정상으로 보이면서 알림만 안 옵니다. 알림이 죽은 채로 초록불인 상태가 가장
+      # 나쁩니다 (#546 과 같은 실패 양상).
+      #
+      # 환경변수는 CD 가 배포마다 다시 써주므로 상태가 없습니다. Fernet 도 무관하고
+      # (암호화할 DB 행이 없음) 중복 등록 걱정도 없습니다.
+      # 조회 순서는 EnvironmentVariablesBackend -> MetastoreBackend 라 이 값이 이깁니다.
+      # 태스크 런타임(execution API)도 같은 `get_connection_from_secrets` 를 씁니다.
+      #
+      # URL 전체를 password 에 둡니다 — provider 가 `://` 를 보면 그대로 사용합니다
+      # (`slack_webhook.py` 의 `_get_conn_params`). host 에 두면 암호화 대상이 아닌
+      # 필드에 토큰이 남습니다.
+      AIRFLOW_CONN_SLACK_WEBHOOK: '{"conn_type": "slackwebhook", "password": "${SLACK_WEBHOOK_URL:?~/airflow/.env 의 SLACK_WEBHOOK_URL이 필요합니다}"}'
       # 없으면 Lambda 핸들러 계열 산출물이 S3 가 아니라 컨테이너 디스크에 쌓입니다
       # (핸들러의 기본값이 local). 그 디스크는 배포마다 지워집니다.
       #
