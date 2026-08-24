@@ -53,8 +53,8 @@ COPY sub/config.py sub/run_context.py sub/seeds.py /home/hadoop/sub/
 # 생성 파라미터의 값 소유자. sub/config.py 의 DEFAULT_CONFIG_PATH 가 여기를 가리킵니다.
 COPY config/ /home/hadoop/config/
 
-# bronze_to_silver 가 S3 파티션 목록 조회에만 shared/common 의 list_keys 를 재사용합니다
-# (전용 파일 하나만 — env.py 는 spark 에 없는 dotenv 의존성을 끌고 옵니다).
-COPY shared/common/__init__.py /home/hadoop/shared/common/__init__.py
-COPY shared/common/s3_reader.py /home/hadoop/shared/common/s3_reader.py
-COPY shared/common/source_published_layout.py /home/hadoop/shared/common/source_published_layout.py
+# shared/common 은 디렉터리째 넣습니다. 예전에는 쓰는 파일만 골라 COPY 했는데,
+# 새 모듈이 생기면 잡이 import 하는데 이미지에는 없어 런타임에 ModuleNotFoundError 로
+# 죽었습니다 (success_marker). 빌드도 CI 도 통과해서 잡을 돌려야만 보입니다.
+# 전부 표준 라이브러리·boto3 만 쓰고 합쳐서 10KB 도 안 되므로 고를 이유가 없습니다.
+COPY shared/common/ /home/hadoop/shared/common/
