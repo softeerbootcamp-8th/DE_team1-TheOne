@@ -1,9 +1,10 @@
 <div align="center">
-<h1> 서비스 이름</h1>
-<h4><b>택시 차량 리스 업체를 위한 <span style="color:yellow;">운행 데이터 기반 차량 교체 추천</span> 대시보드</b></h4>
 
-<p>OO는 운행 데이터를 기반으로 차량 교체를 제안할 고객을 확인할 수 있는 대시보드입니다.<br/>
-이때, 추천 대상은 <b>상위 등급 차량 교체시 고객의 순수익이 월 $600 이상 증가</b>하는 고객입니다.</p>
+![](logo.png)
+<h4><b>택시 차량 리스 업체를 위한 <span style="color:#0c549f;">운행 데이터 기반 차량 교체 추천</span> 대시보드</b></h4>
+
+<p>NEXTMOVE는 <span style="color:#0c549f;font-weight:bold;">운행 데이터를 기반으로 차량 교체를 제안할 고객을 확인</span>할 수 있는 대시보드입니다.<br/>
+이때, 추천 대상은 <span style="color:#0c549f;font-weight:bold;">상위 등급 차량 교체시 고객의 순수익이 월 $600 이상 증가</span>하는 고객입니다.</p>
 
 <a href="https://43-200-202-72.sslip.io/"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a> <a href="docs/TEAM_RULES.md"><img src="https://img.shields.io/badge/팀규칙_바로가기-000000?style=for-the-badge&logoColor=white" alt="팀 규칙 바로가기" /></a>
 </div>
