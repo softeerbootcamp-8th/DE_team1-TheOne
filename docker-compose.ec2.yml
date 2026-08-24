@@ -109,6 +109,31 @@ services:
       EMR_EXECUTION_ROLE_ARN: ${EMR_EXECUTION_ROLE_ARN:?~/airflow/.env 의 EMR_EXECUTION_ROLE_ARN이 필요합니다}
       GOLD_DATABASE_URL: ${GOLD_DATABASE_URL:?~/airflow/.env 의 GOLD_DATABASE_URL이 필요합니다}
       AWS_DEFAULT_REGION: ap-northeast-2
+      # 태스크 로그를 S3 에 원격 보존합니다. 로컬 compose 에는 넣지 않습니다 —
+      # 개발 중에는 AWS 자격증명 없이 뜨는 쪽이 중요합니다.
+      #
+      # 왜 named volume 만으로 부족한가 — 볼륨은 배포·컨테이너 재생성에는 살아남지만
+      # 인스턴스나 EBS 를 교체하면 실행 이력이 통째로 사라집니다. 게다가 UI 가
+      # 127.0.0.1 바인딩이라(아래 ports 절) 로그를 보려면 매번 SSH 터널이 필요해서
+      # 장애 알림의 로그 링크를 온콜이 그 자리에서 열지 못합니다.
+      #
+      # ★ remote_log_conn_id 를 두지 않습니다. 빈 값이면 S3Hook 이 커넥션 조회를
+      #   건너뛰고 boto 기본 체인(= 인스턴스 role)을 씁니다
+      #   (`providers/amazon/aws/hooks/base_aws.py` 의 `if self.aws_conn_id:`).
+      #   위 RAW_STORAGE=s3 가 이미 같은 경로로 쓰고 있어 커넥션을 새로 만들 이유가
+      #   없습니다. 대신 role 에 logs/airflow/* 의 PutObject 와 **GetObject** 가
+      #   필요합니다 — Get 이 빠지면 완료된 태스크 로그가 UI 에서 통째로 안 보입니다.
+      #
+      # ★ delete_local_logs 도 두지 않습니다. 업로드가 성공하면 핸들러가 로컬 파일을
+      #   빈 문자열로 덮어쓰므로(`providers/amazon/aws/log/s3_task_handler.py`)
+      #   디스크는 이미 안 찹니다. True 가 추가로 지우는 건 빈 파일과 디렉터리뿐입니다.
+      AIRFLOW__LOGGING__REMOTE_LOGGING: "true"
+      # 데이터 계층(source/ bronze/ silver/)과 같은 층에 logs/ 를 둡니다. 그 아래
+      # airflow/ 한 단계는 나중에 EMR·Lambda 로그를 같은 접두사로 모을 자리입니다.
+      AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: s3://de-theone/logs/airflow
+      # put_object 에 ServerSideEncryption=AES256 을 붙입니다. 버킷 기본 암호화와
+      # 별개로 객체마다 명시되므로 버킷 기본값이 바뀌어도 로그는 암호화된 채 올라갑니다.
+      AIRFLOW__LOGGING__ENCRYPT_S3_LOGS: "true"
     volumes:
       # 이미지에 이미 있는 경로라 named volume 이 소유권을 물려받습니다. 이미지에 없는
       # 경로에 볼륨을 붙이면 마운트 지점이 root 소유로 생겨 uid 50000 이 쓰지 못합니다.

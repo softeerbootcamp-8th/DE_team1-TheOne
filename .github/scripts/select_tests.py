@@ -309,6 +309,12 @@ def select_tests(changed_files: list[str]) -> Selection:
         if path in {"Makefile", ".github/workflows/ci.yml"}:
             selection.add_full(*ALL_PROJECTS)
             continue
+        # compose 는 Airflow 런타임 설정(원격 로깅·스토리지 스위치)의 소유자인데
+        # 저장소 루트의 `.yml` 이라 아래 어느 규칙에도 안 걸립니다. 매핑이 없으면
+        # 설정을 바꿔도 테스트가 하나도 안 돌아 조용히 통과합니다 (#538 과 같은 양상).
+        if path in {"docker-compose.yml", "docker-compose.ec2.yml"}:
+            selection.add("main/airflow", "tests/test_compose_remote_logging.py")
+            continue
         if path.startswith("shared/airflow/"):
             selection.add_full("main/airflow", "sub/airflow")
             continue
