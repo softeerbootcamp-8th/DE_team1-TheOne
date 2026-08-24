@@ -44,7 +44,7 @@ def test_현재보유차량을_차감하고_재고0은_skip한다(spark):
     inventory = spark.createDataFrame(
         [
             ("A", "MAKE", "A", 2024, "GAS", 30.0, False, False, 50.0, 2),
-            ("B", "MAKE", "B", 2024, "GAS", 60.0, False, False, 50.0, 2),
+            ("B", "MAKE", "B", 2024, "GAS", 60.0, False, False, 55.0, 2),
             ("C", "MAKE", "C", 2025, "EV", 1000.0, True, True, 0.0, 0),
         ],
         [
@@ -60,6 +60,42 @@ def test_현재보유차량을_차감하고_재고0은_skip한다(spark):
     assert assigned == {"D1": "B", "D2": "A", "D3": "B"}
     assert len(assigned) == 3
     assert "candidate_vehicle_model_id" not in recommendation.columns
+
+
+def test_매출_기여가_없는_차량은_순수익이_더_높아도_추천에서_제외한다(spark):
+    """이슈 #955 — 회사 매출(리스료)이 늘지 않는 교체는 순수익이 더 좋아도 추천 안 함."""
+    driver_metrics = spark.createDataFrame(
+        [
+            ("D1", "2026-01", "NYC", False, False, "T1", "A", "MAKE", "A", 2024, 30.0, 1000.0, 1000.0, 0.0, 100.0, 200.0, 700.0, 3000.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+        ],
+        [
+            "driver_id", "year_month", "service_area", "comfort_eligible",
+            "extra_comfort_eligible", "taxi_id", "vehicle_model_id", "manufacturer",
+            "model_name", "model_year", "fuel_efficiency", "monthly_mileage",
+            "monthly_driver_pay", "monthly_tips", "monthly_fuel_cost",
+            "monthly_lease_fee", "monthly_net_profit", "_gas_price_miles", "_ev_price_miles",
+            "_monthly_driver_pay_if_comfort", "_monthly_driver_pay_if_extra_comfort",
+            "_monthly_driver_pay_if_both", "_lease_weeks_in_month",
+        ],
+    )
+    inventory = spark.createDataFrame(
+        [
+            # B는 연비가 좋아 순수익은 A보다 높지만(700 -> 750), 리스료가 A와
+            # 동일해 회사 매출 증가는 0이라 추천에서 제외되어야 한다.
+            ("A", "MAKE", "A", 2024, "GAS", 30.0, False, False, 50.0, 2),
+            ("B", "MAKE", "B", 2024, "GAS", 60.0, False, False, 50.0, 2),
+        ],
+        [
+            "vehicle_model_id", "manufacturer", "model_name", "model_year",
+            "fuel_type", "fuel_efficiency", "comfort_eligible",
+            "extra_comfort_eligible", "weekly_lease_fee", "stock",
+        ],
+    )
+
+    recommendation = build_monthly_vehicle_recommendation(driver_metrics, inventory)
+    assigned = {row.driver_id: row.vehicle_model_id for row in recommendation.collect()}
+
+    assert assigned == {"D1": "A"}
 
 
 def test_현재보유량이_전체재고를_넘으면_실패한다(spark):
