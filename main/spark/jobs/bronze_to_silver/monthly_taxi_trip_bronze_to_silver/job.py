@@ -6,8 +6,16 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlsplit
 
+import boto3
+
 from main.spark.jobs.service_area_path import service_area_prefix, service_area_root
 from shared.common.s3_reader import list_keys
+from shared.common.success_marker import (
+    data_key_is_complete,
+    data_path_is_complete,
+    marker_key,
+    marker_path,
+)
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
 from pipeline_core.loader import Loader, WriteResult
@@ -88,7 +96,7 @@ def resolve_path(path_str: str) -> str:
 
 
 class SilverVersionDirectoryLoader(Loader):
-    """검증 전 버전 디렉터리에 Spark part 파일을 그대로 씁니다."""
+    """최종 버전 디렉터리에 Spark part 파일을 그대로 씁니다."""
 
     def __init__(self, path: str):
         self._path = path
@@ -96,6 +104,14 @@ class SilverVersionDirectoryLoader(Loader):
     def write(self, data) -> WriteResult:
         payload = _silver_file_payload(data)
         row_count = data.count()
+        if is_s3_path(self._path):
+            parsed = urlsplit(self._path)
+            boto3.client("s3").delete_object(
+                Bucket=parsed.netloc,
+                Key=marker_key(parsed.path.lstrip("/")),
+            )
+        else:
+            marker_path(self._path).unlink(missing_ok=True)
         payload.write.mode("overwrite").parquet(self._path)
         return WriteResult(location=self._path, row_count=row_count)
 
@@ -137,15 +153,12 @@ def latest_partition_file(
     if not parquet_files:
         return None
     versioned = [
-        (path, bronze_collection_token(path)) for path in parquet_files
+        (path, bronze_collection_token(path))
+        for path in parquet_files
+        if data_path_is_complete(path)
     ]
     versioned = [(path, token) for path, token in versioned if token]
-    selected = (
-        max(versioned, key=lambda item: item[1])[0]
-        if versioned
-        else parquet_files[-1]
-    )
-    return str(selected)
+    return str(max(versioned, key=lambda item: item[1])[0]) if versioned else None
 
 
 def latest_partition_files(
@@ -169,6 +182,24 @@ def latest_partition_files(
     return selected
 
 
+def require_complete_input_file(input_path: str) -> str:
+    """명시한 Bronze 파일도 같은 디렉터리의 `_SUCCESS`가 있어야 읽습니다."""
+    if is_s3_path(input_path):
+        parsed = urlsplit(input_path)
+        key = parsed.path.lstrip("/")
+        parent_prefix = f"{key.rsplit('/', 1)[0]}/"
+        keys = set(list_keys(parsed.netloc, parent_prefix))
+        if key in keys and data_key_is_complete(key, keys):
+            return input_path
+    else:
+        path = Path(input_path)
+        if data_path_is_complete(path):
+            return input_path
+    raise FileNotFoundError(
+        f"Bronze 입력 파일이 없거나 _SUCCESS가 없습니다: {input_path}"
+    )
+
+
 def _latest_s3_partition_file(
     input_path: str, year_month: str, service_area: str
 ) -> Optional[str]:
@@ -178,22 +209,23 @@ def _latest_s3_partition_file(
     base_key = parsed.path.lstrip("/").rstrip("/")
     area_prefix = service_area_prefix(base_key, service_area=service_area)
     partition_prefix = f"{area_prefix}/year_month={year_month}/"
+    keys = list_keys(bucket, partition_prefix)
+    key_set = set(keys)
     parquet_keys = sorted(
-        key for key in list_keys(bucket, partition_prefix)
+        key for key in keys
         if key.endswith(".parquet")
     )
     if not parquet_keys:
         return None
     versioned = [
-        (key, bronze_collection_token(Path(key))) for key in parquet_keys
+        (key, bronze_collection_token(Path(key)))
+        for key in parquet_keys
+        if data_key_is_complete(key, key_set)
     ]
     versioned = [(key, token) for key, token in versioned if token]
-    selected = (
-        max(versioned, key=lambda item: item[1])[0]
-        if versioned
-        else parquet_keys[-1]
-    )
-    return f"{scheme}://{bucket}/{selected}"
+    if not versioned:
+        return None
+    return f"{scheme}://{bucket}/{max(versioned, key=lambda item: item[1])[0]}"
 
 
 def main(args_list: Optional[list[str]] = None) -> PipelineResult:
@@ -248,11 +280,11 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     if output_version:
         version_path = Path(urlsplit(output_version).path)
         if (
-            version_path.parent.name != ".staging"
+            not version_path.parent.name.startswith("year_month=")
             or not SOURCE_COLLECTED_AT_PATTERN.fullmatch(version_path.name)
         ):
             raise ValueError(
-                "--output_version은 .staging/source_collected_at=<UTC> 디렉터리여야 합니다"
+                "--output_version은 year_month/source_collected_at=<UTC> 최종 디렉터리여야 합니다"
             )
 
     if bool(args.start_year_month) != bool(args.end_year_month):
@@ -282,7 +314,7 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
             raise FileNotFoundError(f"Bronze 월 파티션이 없거나 비어 있습니다: {input_path}")
         logger.info("선택된 월별 최신 Bronze 파일 %d개: %s", len(target_input_path), target_input_path)
     else:
-        target_input_path = input_path
+        target_input_path = require_complete_input_file(input_path)
 
     spark = get_or_create_spark_session(
         "monthly_taxi_trip_bronze_to_silver",
@@ -291,6 +323,9 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
         enable_s3=args.enable_s3,
     )
     spark.sparkContext.setLogLevel("WARN")
+    spark.sparkContext._jsc.hadoopConfiguration().set(
+        "mapreduce.fileoutputcommitter.marksuccessfuljobs", "false"
+    )
 
     extractor = SparkParquetExtractor(spark, target_input_path)
     loader = (

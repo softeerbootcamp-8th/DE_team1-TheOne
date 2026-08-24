@@ -94,6 +94,12 @@ def test_S3_loader는_동일한_최신원본을_재사용한다(s3_client):
     )
 
     first = loader.write(_payload(content))
+    first_key = first.location.split(f"s3://{S3_BUCKET}/", 1)[1]
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{first_key.rsplit('/', 1)[0]}/_SUCCESS",
+        Body=b"",
+    )
     second = loader.write(_payload(content, SECOND_COLLECTED_AT))
 
     assert second.location == first.location
@@ -106,7 +112,7 @@ def test_S3_loader는_동일한_최신원본을_재사용한다(s3_client):
             f"year_month={YEAR_MONTH}/"
         ),
     )
-    assert response["KeyCount"] == 1
+    assert response["KeyCount"] == 2
 
 
 def test_S3_loader는_기존_flat파일도_동일원본이면_재사용한다(s3_client):
@@ -114,6 +120,7 @@ def test_S3_loader는_기존_flat파일도_동일원본이면_재사용한다(s3
     prefix = f"bronze/{DATASET}/service_area={SERVICE_AREA}/year_month={YEAR_MONTH}/"
     legacy_key = f"{prefix}20260820T101530123456Z.parquet"
     s3_client.put_object(Bucket=S3_BUCKET, Key=legacy_key, Body=content)
+    s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}_SUCCESS", Body=b"")
     loader = S3MonthlyParquetBronzeLoader(
         DATASET, DATASET, SERVICE_AREA, bucket=S3_BUCKET
     )
@@ -123,7 +130,7 @@ def test_S3_loader는_기존_flat파일도_동일원본이면_재사용한다(s3
     assert result.location == f"s3://{S3_BUCKET}/{legacy_key}"
     assert loader.payload["collected_at"] == FIRST_COLLECTED_AT
     assert loader.source_changed is False
-    assert s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)["KeyCount"] == 1
+    assert s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)["KeyCount"] == 2
 
 
 def test_local_loader는_collected_at_디렉터리에_data파일을_쓴다(tmp_path):
@@ -150,6 +157,7 @@ def test_local_loader는_기존_flat파일도_동일원본이면_재사용한다
     partition.mkdir(parents=True)
     legacy = partition / "20260820T101530123456Z.parquet"
     legacy.write_bytes(content)
+    (partition / "_SUCCESS").touch()
     loader = MonthlyParquetBronzeLoader(tmp_path, DATASET, DATASET, SERVICE_AREA)
 
     result = loader.write(_payload(content, SECOND_COLLECTED_AT))

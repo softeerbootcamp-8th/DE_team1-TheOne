@@ -20,6 +20,7 @@ from main.airflow.common.monthly_bronze import (
 )
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.common.s3_reader import list_keys
+from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 
 
 logger = logging.getLogger(__name__)
@@ -75,7 +76,8 @@ def _latest_bronze_collection_token(
             (
                 token
                 for path in candidates
-                if path.is_file() and (token := bronze_collection_token(path))
+                if data_path_is_complete(path)
+                and (token := bronze_collection_token(path))
             ),
             default=None,
         )
@@ -85,11 +87,14 @@ def _latest_bronze_collection_token(
             f"bronze/{dataset_dir}/service_area={service_area}/"
             f"year_month={year_month}/"
         )
+        keys = list_keys(bucket, prefix)
+        key_set = set(keys)
         return max(
             (
                 token
-                for key in list_keys(bucket, prefix)
-                if (token := bronze_collection_token(PurePosixPath(key)))
+                for key in keys
+                if data_key_is_complete(key, key_set)
+                and (token := bronze_collection_token(PurePosixPath(key)))
             ),
             default=None,
         )
@@ -129,9 +134,7 @@ def _silver_version_exists(
         has_data = "data.parquet" in names or any(
             SILVER_PART_PATTERN.fullmatch(name) for name in names
         )
-        return ("_SUCCESS" in names and has_data) or (
-            f"{partition_prefix}{collection_token}.parquet" in keys
-        )
+        return "_SUCCESS" in names and has_data
     raise ValueError(f"알 수 없는 BRONZE_STORAGE: {storage!r} (local 또는 s3)")
 
 

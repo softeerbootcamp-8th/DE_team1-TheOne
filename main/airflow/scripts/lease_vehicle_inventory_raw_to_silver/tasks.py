@@ -13,12 +13,11 @@ from shared.airflow.common.validation import (
     S3Location,
     parse_handler_result,
     parse_location,
+    publish_success_marker,
     read_parquet,
 )
 from main.airflow.common.monthly_bronze import (
-    commit_staged_silver,
     silver_version_path,
-    staged_silver_version_path,
     validate_monthly_parquet_bronze,
 )
 from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
@@ -90,12 +89,9 @@ def validate_bronze_task(result: dict, **context) -> dict:
         _, missing = _validate_bronze_result(result, base_dir, service_area)
     if missing:
         raise ValueError(f"보유 차량 Bronze 필수 컬럼 누락: {missing}")
+    bronze_path = parse_handler_result(result, expected_locations=1).locations[0]
+    publish_success_marker(bronze_path.parent)
     version_path = silver_version_path(
-        params.get("silver_dir") or DEFAULT_SILVER_DIR,
-        result,
-        service_area=service_area,
-    )
-    staging_path = staged_silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
         result,
         service_area=service_area,
@@ -103,7 +99,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
     return {
         **result,
         "silver_version_path": str(version_path),
-        "silver_staging_path": str(staging_path),
     }
 
 
@@ -128,7 +123,7 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
     bronze_location = parse_location(result["locations"][0])
     event = {
         "year_month": result["year_month"],
-        "silver_output_path": result["silver_staging_path"],
+        "silver_output_path": result["silver_version_path"],
     }
     if params.get("service_area") is not None:
         event["service_area"] = params["service_area"]
@@ -140,14 +135,13 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
 
 @task(task_id="validate_silver")
 def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> None:
-    staging_path = parse_location(raw_result["silver_staging_path"])
     version_path = parse_location(raw_result["silver_version_path"])
     expected_part = (
-        f"{staging_path}/data.parquet"
-        if isinstance(staging_path, S3Location)
-        else str(staging_path / "data.parquet")
+        f"{version_path}/data.parquet"
+        if isinstance(version_path, S3Location)
+        else str(version_path / "data.parquet")
     )
     if silver_result["locations"] != [expected_part]:
-        raise ValueError("보유 차량 Silver staging 경로가 Bronze와 다릅니다")
+        raise ValueError("보유 차량 Silver 경로가 Bronze와 다릅니다")
     validate_silver_result(silver_result, raw_result["row_count"])
-    commit_staged_silver(staging_path, version_path, layout="single_data")
+    publish_success_marker(version_path)

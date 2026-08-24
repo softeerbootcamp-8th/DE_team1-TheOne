@@ -26,7 +26,7 @@ import xlwt
 
 from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.loader import (
     EiaGasPriceSilverLoader,
-    staged_silver_file,
+    silver_file,
 )
 from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.transformer import (
     build_daily_prices,
@@ -119,7 +119,7 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
     result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(rows)
 
     assert result.location == str(
-        staged_silver_file(str(tmp_path), "2025-05", "NYC")
+        silver_file(str(tmp_path), "2025-05", "NYC")
     )
     assert result.row_count == 31
     table = pq.ParquetFile(result.location).read()
@@ -194,6 +194,7 @@ def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
         layout.gas_bronze_key(date(2025, 5, 10), "NYC"),
         layout.gas_bronze_key(COLLECTED, "NYC"),
     ]
+    keys.extend(f"{key.rsplit('/', 1)[0]}/_SUCCESS" for key in list(keys))
 
     collected_date, key = layout.newest_bronze_s3_key(
         keys, layout.GAS_DATASET, layout.GAS_FILE_NAME, "NYC"
@@ -221,6 +222,7 @@ def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
     path = layout.gas_bronze_file(str(tmp_path), COLLECTED, "TX")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_xls(WEEKLY))
+    (path.parent / "_SUCCESS").touch()
 
     result = EiaGasPriceBronzeExtractor(str(tmp_path), "2025-05", "TX").extract()
 

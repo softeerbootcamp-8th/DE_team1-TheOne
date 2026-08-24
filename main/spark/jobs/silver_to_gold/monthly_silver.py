@@ -4,7 +4,6 @@ import re
 from pathlib import Path
 
 
-TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 SOURCE_COLLECTED_AT_PATTERN = re.compile(r"^source_collected_at=(\d{8}T\d{12}Z)$")
 SILVER_PART_PATTERN = re.compile(r"^part-.+\.parquet$")
 SILVER_SUCCESS_FILE = "_SUCCESS"
@@ -15,11 +14,7 @@ def _is_silver_data_file(file_name: str) -> bool:
 
 
 def latest_local_silver_version(partition: Path) -> Path | None:
-    candidates: list[tuple[str, Path]] = [
-        (path.stem, path)
-        for path in partition.glob("*.parquet")
-        if path.is_file() and TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
-    ]
+    candidates: list[tuple[str, Path]] = []
     for version_dir in partition.glob("source_collected_at=*"):
         match = SOURCE_COLLECTED_AT_PATTERN.fullmatch(version_dir.name)
         if (
@@ -44,9 +39,6 @@ def latest_s3_silver_version(keys: list[str], partition_prefix: str) -> str | No
     for key in keys:
         relative = key.removeprefix(prefix)
         if relative == key:
-            continue
-        if "/" not in relative and TIMESTAMP_FILE_PATTERN.fullmatch(relative):
-            candidates.append((Path(relative).stem, key))
             continue
         components = relative.split("/")
         if len(components) != 2:

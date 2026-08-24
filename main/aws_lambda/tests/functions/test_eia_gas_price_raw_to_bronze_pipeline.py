@@ -54,6 +54,7 @@ def test_같은_지역에서_재수집해도_내용이_같으면_새_파티션�
     first = EiaGasPriceBronzeLoader(str(tmp_path), COLLECTED, "NYC").write(
         {"body": b"same-body"}
     )
+    (layout.gas_bronze_file(str(tmp_path), COLLECTED, "NYC").parent / "_SUCCESS").touch()
 
     second = EiaGasPriceBronzeLoader(str(tmp_path), LATER, "NYC").write(
         {"body": b"same-body"}

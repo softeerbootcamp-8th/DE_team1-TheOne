@@ -78,9 +78,49 @@ NAT 라우팅을 담당하므로 `net.ipv4.ip_forward` 를 건드리지 않는 �
 | `alert-topic-policy.json` | EventBridge 가 Topic 에 발행하도록 허용하는 정책 |
 | `emr-failure-event-pattern.json` | `FAILED`/`CANCELLED` 만 걸러내는 이벤트 패턴 |
 
-`WorkerType` 값은 **`Spark_Executor` / `Spark_Driver`** 입니다. `SPARK_EXECUTORS` 처럼
-대문자·복수형으로 쓰면 `SEARCH()` 가 아무것도 매칭하지 못하고 **에러 없이 빈 위젯**이
-그려집니다. 실측으로 확인한 값이고 테스트가 고정합니다.
+### 위젯을 추가할 때 — `SEARCH()` 는 차원 조합을 고정해야 합니다
+
+`SEARCH()` 의 차원 조건은 **부분 일치**입니다. `ApplicationId="..."` 만 걸면 그 차원을
+포함한 *모든* 조합이 잡히는데, EMR Serverless 는 `Worker*` 지표를 **`JobId` 별로**
+발행합니다. 작업이 쌓일수록 위젯의 시계열이 계속 늘고, 500개를 넘는 순간 CloudWatch 가
+**"허용된 최대 지표 수를 초과함"** 을 띄우고 그리기를 멈춥니다. 그 직전에는
+`StatusCode 'Paginated'` 경고와 함께 일부 데이터만 그려집니다.
+
+실제로 memory·CPU 위젯이 각각 510개까지 늘어 깨졌습니다. 앞의 중괄호가 차원 조합
+자체를 고정해 이걸 막습니다.
+
+```
+SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName="MemoryAllocated" ...')
+        └─ 이 조합인 지표만. JobId 차원 지표는 애초에 후보에 들어오지 않습니다
+```
+
+### 워커 사용량은 Metrics Insights 로 봅니다
+
+`Worker*Used`(실제 사용량)는 **앱 수준에 아예 없고 `JobId` 별로만** 발행됩니다. 그렇다고
+포기할 필요는 없습니다 — Metrics Insights 는 **서버에서 집계**해 `GROUP BY` 결과만
+돌려주므로, 스캔한 지표가 위젯 개수에 잡히지 않습니다.
+
+```sql
+SELECT SUM(WorkerMemoryUsed) FROM "AWS/EMRServerless"
+WHERE ApplicationId = '...' GROUP BY WorkerType
+```
+
+작업이 2000개든 2만개든 위젯에는 `Spark_Driver`·`Spark_Executor` 두 줄만 돌아옵니다.
+
+**위젯 하나에 Metrics Insights 쿼리는 1개까지입니다.** `GetMetricData` 가 호출당 1개만
+받고, 위젯 하나가 한 번의 호출로 그려지기 때문입니다. 그래서 `used / allocated` 비율을
+한 위젯에 담을 수 없어 used·allocated 를 나란한 두 위젯으로 둡니다. 두 개를 넣으면
+배포는 통과하고 위젯만 깨지므로 테스트가 막습니다.
+
+| 보고 싶은 것 | 방법 |
+|---|---|
+| 워커가 실제로 얼마나 쓰나 | Metrics Insights — `WorkerMemoryUsed`, `WorkerCpuUsed` |
+| 얼마나 할당됐나 | Metrics Insights — `WorkerMemoryAllocated`, `WorkerCpuAllocated` |
+| 애플리케이션 용량 상한에 붙었나 | 앱 수준 — `MemoryAllocated`/`MaxMemoryAllowed`, `CPUAllocated`/`MaxCPUAllowed` |
+| 워커가 몇 개 떠 있나 | 앱 수준 — `RunningWorkerCount`, `PendingCreationWorkerCount` |
+| 작업 상태 | 앱 수준 — `RunningJobs`, `PendingJobs`, `FailedJobs`, `SuccessJobs` |
+
+테스트가 스키마 고정, 지표명, Metrics Insights 경유 여부, 위젯당 쿼리 수를 모두 잡습니다.
 
 ## 최초 1회 준비
 

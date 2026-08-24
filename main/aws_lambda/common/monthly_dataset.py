@@ -13,10 +13,11 @@ import requests
 from pipeline_core.extractor import Extractor
 from pipeline_core.loader import Loader, WriteResult
 
-from shared.aws_lambda.common.atomic_write import atomic_write
+from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
 from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
 from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 BRONZE_DATA_FILE_NAME = "data.parquet"
 COLLECTED_AT_DIR_PATTERN = re.compile(r"^collected_at=(\d{8}T\d{12}Z)$")
 TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
@@ -224,6 +225,7 @@ class MonthlyParquetBronzeLoader(Loader):
             return WriteResult(str(latest), parquet.metadata.num_rows)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        invalidate_success_marker(self.path.parent)
         atomic_write(self.path, lambda temporary: temporary.write_bytes(content))
         return WriteResult(str(self.path), parquet.metadata.num_rows)
 
@@ -234,7 +236,11 @@ class MonthlyParquetBronzeLoader(Loader):
             *partition_dir.glob("collected_at=*/data.parquet"),
         )
         return max(
-            (path for path in candidates if bronze_collection_token(path)),
+            (
+                path
+                for path in candidates
+                if bronze_collection_token(path) and data_path_is_complete(path)
+            ),
             key=bronze_collection_token,
             default=None,
         )
@@ -300,7 +306,11 @@ class S3MonthlyParquetBronzeLoader(Loader):
             )
 
         key = f"{prefix}{_collected_at_dir_name(payload)}/{BRONZE_DATA_FILE_NAME}"
-        return S3Loader(key=key, bucket=self._bucket).write(
+        return S3Loader(
+            key=key,
+            bucket=self._bucket,
+            invalidate_parent_success=True,
+        ).write(
             S3Object(body=content, row_count=parquet.metadata.num_rows)
         )
 
@@ -316,9 +326,12 @@ class S3MonthlyParquetBronzeLoader(Loader):
         )
 
     def _latest_key(self, prefix: str) -> str | None:
+        keys = list_keys(self._bucket, prefix)
+        key_set = set(keys)
         candidates = (
             (key, bronze_collection_token(PurePosixPath(key)))
-            for key in list_keys(self._bucket, prefix)
+            for key in keys
+            if data_key_is_complete(key, key_set)
         )
         return max(
             ((key, token) for key, token in candidates if token),

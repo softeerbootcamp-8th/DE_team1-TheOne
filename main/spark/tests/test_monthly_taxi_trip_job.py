@@ -10,8 +10,8 @@
 8. start/end 중 하나만 주면 ValueError
 9. `is_s3_path`/`resolve_path`/`latest_partition_file`은 s3://·s3a:// 경로도 처리 (이슈 #646)
 10. `--env local|prod`로 기본 입출력 경로를 고름, `prod`인데 버킷이 없으면 ValueError
-11. Silver 버전은 source_collected_at staging 디렉터리에 part 파일로 적재
-12. Spark writer는 coalesce 없이 로컬·S3에 같은 디렉터리 계약으로 기록
+11. Silver 버전은 최종 source_collected_at 디렉터리에 part 파일로 적재
+12. Spark writer는 쓰기 전 기존 `_SUCCESS`를 지우고 자동 marker를 남기지 않음
 """
 
 from datetime import datetime
@@ -74,7 +74,10 @@ def _write_partition(spark, bronze_dir: Path, year_month: str, rows: list[dict])
     partition_dir = (
         bronze_dir / f"service_area={SERVICE_AREA}" / f"year_month={year_month}"
     )
-    spark.createDataFrame(rows).write.mode("overwrite").parquet(str(partition_dir))
+    version = partition_dir / "collected_at=20260820T112205654321Z"
+    version.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(rows), version / "data.parquet")
+    (version / "_SUCCESS").touch()
 
 
 def _main(args: list[str]):
@@ -112,6 +115,7 @@ def test_latest_partition_file은_최신_수집시각_파일을_반환한다(tmp
     latest = partition / "20240820T112205654321Z.parquet"
     older.touch()
     latest.touch()
+    (partition / "_SUCCESS").touch()
 
     result = job.latest_partition_file(str(tmp_path), "2024-01", SERVICE_AREA)
 
@@ -125,6 +129,8 @@ def test_latest_partition_file은_신구구조중_최신수집본을_반환한�
     latest = partition / "collected_at=20240820T112205654321Z" / "data.parquet"
     latest.parent.mkdir()
     latest.touch()
+    (partition / "_SUCCESS").touch()
+    (latest.parent / "_SUCCESS").touch()
 
     assert job.latest_partition_file(str(tmp_path), "2024-01", SERVICE_AREA) == str(latest)
 
@@ -140,6 +146,8 @@ def test_latest_partition_files는_각_월의_최신파일만_고른다(tmp_path
     february_latest = february / "20240821T112205654321Z.parquet"
     january_latest.touch()
     february_latest.touch()
+    (january / "_SUCCESS").touch()
+    (february / "_SUCCESS").touch()
 
     assert job.latest_partition_files(str(tmp_path), SERVICE_AREA) == [
         str(january_latest),
@@ -190,6 +198,19 @@ def test_resolve_path는_S3_경로를_그대로_둔다():
     assert job.resolve_path("s3://de-theone/bronze/monthly_taxi_trip") == "s3://de-theone/bronze/monthly_taxi_trip"
 
 
+def test_명시한_Bronze_파일도_SUCCESS가_없으면_읽지_않는다(tmp_path):
+    bronze = tmp_path / "collected_at=x/data.parquet"
+    bronze.parent.mkdir()
+    bronze.touch()
+
+    with pytest.raises(FileNotFoundError, match="_SUCCESS"):
+        job.require_complete_input_file(str(bronze))
+
+    (bronze.parent / "_SUCCESS").touch()
+
+    assert job.require_complete_input_file(str(bronze)) == str(bronze)
+
+
 def test_latest_partition_file은_S3에_파티션이_없으면_None(s3_client):
     assert job.latest_partition_file(
         f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01", SERVICE_AREA
@@ -198,15 +219,17 @@ def test_latest_partition_file은_S3에_파티션이_없으면_None(s3_client):
 
 def test_latest_partition_file은_S3에서_최신_파일_경로를_반환한다(s3_client):
     prefix = "bronze/monthly_taxi_trip/service_area=NYC/year_month=2024-01"
-    s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/part-0.parquet", Body=b"x")
-    s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/part-1.parquet", Body=b"x")
+    older = f"{prefix}/20240820T101530123456Z.parquet"
+    latest = f"{prefix}/20240820T112205654321Z.parquet"
+    s3_client.put_object(Bucket=S3_BUCKET, Key=older, Body=b"x")
+    s3_client.put_object(Bucket=S3_BUCKET, Key=latest, Body=b"x")
     s3_client.put_object(Bucket=S3_BUCKET, Key=f"{prefix}/_SUCCESS", Body=b"")
 
     result = job.latest_partition_file(
         f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01", SERVICE_AREA
     )
 
-    assert result == f"s3://{S3_BUCKET}/{prefix}/part-1.parquet"
+    assert result == f"s3://{S3_BUCKET}/{latest}"
 
 
 def test_latest_partition_file은_S3_신구구조중_최신수집본을_반환한다(s3_client):
@@ -216,6 +239,16 @@ def test_latest_partition_file은_S3_신구구조중_최신수집본을_반환�
     )
     latest = f"{prefix}/collected_at=20240820T112205654321Z/data.parquet"
     s3_client.put_object(Bucket=S3_BUCKET, Key=latest, Body=b"x")
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{prefix}/_SUCCESS",
+        Body=b"",
+    )
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{prefix}/collected_at=20240820T112205654321Z/_SUCCESS",
+        Body=b"",
+    )
 
     result = job.latest_partition_file(
         f"s3://{S3_BUCKET}/bronze/monthly_taxi_trip", "2024-01", SERVICE_AREA
@@ -325,24 +358,26 @@ def test_수집버전은_source_collected_at_디렉터리에_part파일로_적�
     bronze = tmp_path / "bronze/year_month=2024-03/data.parquet"
     bronze.parent.mkdir(parents=True)
     pq.write_table(pa.Table.from_pylist([_row()]), bronze)
-    staged = (
-        tmp_path / "silver/year_month=2024-03/.staging/"
+    (bronze.parent / "_SUCCESS").touch()
+    final = (
+        tmp_path / "silver/year_month=2024-03/"
         "source_collected_at=20260821T123456123456Z"
     )
 
     _main([
         "--input_path", str(bronze),
         "--output_path", str(tmp_path / "silver"),
-        "--output_version", str(staged),
+        "--output_version", str(final),
         "--error_threshold", "1.0",
     ])
 
-    assert spark.read.parquet(str(staged)).count() == 1
-    assert list(staged.glob("part-*.parquet"))
+    assert spark.read.parquet(str(final)).count() == 1
+    assert list(final.glob("part-*.parquet"))
+    assert not (final / "_SUCCESS").exists()
 
 
-def test_output_version은_검증전_source_collected_at_경로만_허용한다(tmp_path):
-    with pytest.raises(ValueError, match=".staging/source_collected_at"):
+def test_output_version은_최종_source_collected_at_경로만_허용한다(tmp_path):
+    with pytest.raises(ValueError, match="year_month/source_collected_at"):
         _main(
             [
                 "--input_path",
@@ -353,8 +388,10 @@ def test_output_version은_검증전_source_collected_at_경로만_허용한다(
         )
 
 
-def test_버전_loader는_coalesce없이_staging디렉터리에_쓴다(tmp_path):
-    staged = tmp_path / ".staging/source_collected_at=x"
+def test_버전_loader는_기존_SUCCESS를_지우고_최종디렉터리에_쓴다(tmp_path):
+    final = tmp_path / "year_month=2026-08/source_collected_at=x"
+    final.mkdir(parents=True)
+    (final / "_SUCCESS").touch()
     calls = []
 
     class FakeWriter:
@@ -371,18 +408,68 @@ def test_버전_loader는_coalesce없이_staging디렉터리에_쓴다(tmp_path)
         def count(self):
             return 7
 
-    result = job.SilverVersionDirectoryLoader(str(staged)).write(FakeDataFrame())
+    result = job.SilverVersionDirectoryLoader(str(final)).write(FakeDataFrame())
 
-    assert calls == [("mode", "overwrite"), ("parquet", str(staged))]
-    assert result.location == str(staged)
+    assert calls == [("mode", "overwrite"), ("parquet", str(final))]
+    assert result.location == str(final)
     assert result.row_count == 7
+    assert not (final / "_SUCCESS").exists()
 
 
-def test_버전_staging쓰기실패는_기존공개버전을_건드리지않는다(tmp_path):
-    final = tmp_path / "source_collected_at=x"
-    final.mkdir()
+def test_main은_Spark_자동_SUCCESS_생성을_비활성화한다(tmp_path, monkeypatch):
+    settings = []
+
+    class FakeHadoopConfiguration:
+        def set(self, key, value):
+            settings.append((key, value))
+
+    class FakeJavaSparkContext:
+        def hadoopConfiguration(self):
+            return FakeHadoopConfiguration()
+
+    class FakeSparkContext:
+        _jsc = FakeJavaSparkContext()
+
+        def setLogLevel(self, level):
+            pass
+
+    class FakeSpark:
+        sparkContext = FakeSparkContext()
+
+    class FakePipeline:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self):
+            return "done"
+
+    monkeypatch.setattr(job, "get_or_create_spark_session", lambda *args, **kwargs: FakeSpark())
+    monkeypatch.setattr(job, "SparkParquetExtractor", lambda *args, **kwargs: object())
+    monkeypatch.setattr(job, "MonthlyTaxiTripCleanTransformer", lambda **kwargs: object())
+    monkeypatch.setattr(job, "Pipeline", FakePipeline)
+    bronze = tmp_path / "bronze.parquet"
+    bronze.touch()
+    (tmp_path / "_SUCCESS").touch()
+
+    result = _main(
+        [
+            "--input_path",
+            str(bronze),
+            "--output_path",
+            str(tmp_path / "silver"),
+        ]
+    )
+
+    assert result == "done"
+    assert settings == [
+        ("mapreduce.fileoutputcommitter.marksuccessfuljobs", "false")
+    ]
+
+
+def test_버전_쓰기실패해도_기존_SUCCESS는_즉시_무효화된다(tmp_path):
+    final = tmp_path / "year_month=2026-08/source_collected_at=x"
+    final.mkdir(parents=True)
     (final / "_SUCCESS").touch()
-    staged = tmp_path / ".staging/source_collected_at=x"
 
     class FailingWriter:
         def mode(self, value):
@@ -398,13 +485,14 @@ def test_버전_staging쓰기실패는_기존공개버전을_건드리지않는�
             return 7
 
     with pytest.raises(OSError, match="Spark 쓰기 실패"):
-        job.SilverVersionDirectoryLoader(str(staged)).write(FakeDataFrame())
+        job.SilverVersionDirectoryLoader(str(final)).write(FakeDataFrame())
 
-    assert (final / "_SUCCESS").is_file()
+    assert not (final / "_SUCCESS").exists()
 
 
-def test_S3_버전은_staging디렉터리에_Spark_part를_그대로_남긴다(s3_client):
-    staged_key = "silver/monthly_taxi_trip/year_month=2026-08/.staging/source_collected_at=x"
+def test_S3_버전은_기존_SUCCESS를_지우고_최종_prefix에_part를_남긴다(s3_client):
+    final_key = "silver/monthly_taxi_trip/year_month=2026-08/source_collected_at=x"
+    s3_client.put_object(Bucket=S3_BUCKET, Key=f"{final_key}/_SUCCESS", Body=b"")
 
     class FakeWriter:
         def mode(self, value):
@@ -418,11 +506,6 @@ def test_S3_버전은_staging디렉터리에_Spark_part를_그대로_남긴다(s
                 Key=f"{prefix}part-00000.parquet",
                 Body=b"silver",
             )
-            s3_client.put_object(
-                Bucket=S3_BUCKET,
-                Key=f"{prefix}_SUCCESS",
-                Body=b"",
-            )
 
     class FakeDataFrame:
         write = FakeWriter()
@@ -431,12 +514,12 @@ def test_S3_버전은_staging디렉터리에_Spark_part를_그대로_남긴다(s
             return 7
 
     result = job.SilverVersionDirectoryLoader(
-        f"s3://{S3_BUCKET}/{staged_key}"
+        f"s3://{S3_BUCKET}/{final_key}"
     ).write(FakeDataFrame())
     keys = job.list_keys(S3_BUCKET, "silver/monthly_taxi_trip/")
 
-    assert keys == [f"{staged_key}/_SUCCESS", f"{staged_key}/part-00000.parquet"]
-    assert result.location == f"s3://{S3_BUCKET}/{staged_key}"
+    assert keys == [f"{final_key}/part-00000.parquet"]
+    assert result.location == f"s3://{S3_BUCKET}/{final_key}"
     assert result.row_count == 7
 
 

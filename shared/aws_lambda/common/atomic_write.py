@@ -4,6 +4,8 @@ from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
+from shared.common.success_marker import marker_path
+
 
 def atomic_write(path: Path, writer: Callable[[Path], object]) -> None:
     temporary = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
@@ -12,3 +14,7 @@ def atomic_write(path: Path, writer: Callable[[Path], object]) -> None:
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def invalidate_success_marker(directory: Path) -> None:
+    marker_path(directory).unlink(missing_ok=True)

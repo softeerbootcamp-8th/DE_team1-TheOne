@@ -92,7 +92,7 @@ def test_연도와_월중_하나만_지정하면_실패한다(params):
 
 
 def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):
-    path = task_module.staged_silver_file(str(tmp_path), "2024-03", "NYC")
+    path = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
     _write(path, _march())
 
     task_module.validate_silver(
@@ -103,7 +103,7 @@ def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):
 
 @pytest.mark.parametrize("violation", ["missing_day", "duplicate_day", "schema"])
 def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, violation):
-    path = task_module.staged_silver_file(str(tmp_path), "2024-03", "NYC")
+    path = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
     if violation == "missing_day":
         _write(path, _march(30))
     elif violation == "duplicate_day":
@@ -122,7 +122,7 @@ def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, 
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
-    path = task_module.staged_silver_file(str(tmp_path), "2024-03", "NYC")
+    path = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
     with pytest.raises(FileNotFoundError, match="휘발유 단가 Silver"):
         task_module.validate_silver(
             {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]},
@@ -145,7 +145,7 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
             "row_count": 31,
             "locations": [
                 "s3://data-lake/silver/eia_gas_price/service_area=NYC/"
-                "year_month=2024-03/.staging/eia_gas_price.parquet"
+                "year_month=2024-03/eia_gas_price.parquet"
             ],
         },
         "NYC",
@@ -154,7 +154,7 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     assert isinstance(seen[0], S3Location)
 
 
-# --- stage-then-commit (#757) -------------------------------------------------
+# --- validate-then-publish (#912) --------------------------------------------
 
 
 def _fake_task_instance(result: dict):
@@ -163,16 +163,11 @@ def _fake_task_instance(result: dict):
     )()
 
 
-def test_검증_실패시_기존_최종_Silver가_그대로_남는다(tmp_path):
-    """이슈 핵심 — commit이 검증보다 먼저(또는 검증 실패에도) 일어나면 검증 안 된
-    데이터가 최종 경로를 덮어씁니다(#757)."""
+def test_검증_실패시_SUCCESS를_공개하지_않는다(tmp_path):
     final = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
-    _write(final, _march())
-
-    staged = task_module.staged_silver_file(str(tmp_path), "2024-03", "NYC")
-    _write(staged, _march(30))
+    _write(final, _march(30))
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 30, "locations": [str(staged)]}
+        {"year_month": "2024-03", "row_count": 30, "locations": [str(final)]}
     )
 
     with pytest.raises(ValueError, match="31일이어야"):
@@ -181,15 +176,15 @@ def test_검증_실패시_기존_최종_Silver가_그대로_남는다(tmp_path):
             params={"service_area": "NYC", "silver_dir": str(tmp_path)},
         )
 
-    assert pq.ParquetFile(final).read().num_rows == 31
-    assert staged.is_file()
+    assert final.is_file()
+    assert not (final.parent / "_SUCCESS").exists()
 
 
-def test_검증_통과시_최종_경로로_승격된다(tmp_path):
-    staged = task_module.staged_silver_file(str(tmp_path), "2024-03", "NYC")
-    _write(staged, _march())
+def test_검증_통과시_최종_경로에_SUCCESS를_공개한다(tmp_path):
+    final = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
+    _write(final, _march())
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 31, "locations": [str(staged)]}
+        {"year_month": "2024-03", "row_count": 31, "locations": [str(final)]}
     )
 
     task_module.validate_silver_task.function(
@@ -197,7 +192,6 @@ def test_검증_통과시_최종_경로로_승격된다(tmp_path):
         params={"service_area": "NYC", "silver_dir": str(tmp_path)},
     )
 
-    final = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
     assert final.is_file()
-    assert not staged.exists()
+    assert (final.parent / "_SUCCESS").is_file()
     assert pq.ParquetFile(final).read().num_rows == 31
