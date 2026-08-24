@@ -14,6 +14,8 @@
 12. 자격 목록에 중복 행이면 실패
 13. 같은 날 재실행하면 덮어씀
 14. Loader 가 layout 경로에 SCHEMA 대로 쓰고 city 는 컬럼에 없음
+15. 적재 파티션이 실행일이 아니라 **읽은 원천의 최신 수집일**
+16. as_of 를 응답에 따로 실어 낡음 판정 기준을 남김
 """
 
 from datetime import date
@@ -400,7 +402,11 @@ def test_layout_이_정한_경로에_스키마대로_쓴다(tmp_path):
     result = run(tmp_path)
 
     path = Path(result["locations"][0])
-    assert path == layout.curated_file(str(tmp_path), date.fromisoformat(AS_OF), CITY)
+    # 파티션은 as_of 가 아니라 읽은 원천 중 최신 수집일입니다 (아래 테스트 참고).
+    newest_source = max(result["source_collected_dates"].values())
+    assert path == layout.curated_file(
+        str(tmp_path), date.fromisoformat(newest_source), CITY
+    )
     table = pq.ParquetFile(path).read()
     assert table.schema == SCHEMA
     # city 와 collected_date 는 파티션 키라 컬럼으로 두지 않습니다.
@@ -444,3 +450,55 @@ def test_자격이_없어_비는_컬럼은_계약에_넣지_않는다(tmp_path):
     table = pq.ParquetFile(run(tmp_path)["locations"][0]).read()
 
     assert table["platform"].null_count > 0
+
+
+def test_적재_파티션은_실행일이_아니라_원천의_최신_수집일이다(tmp_path):
+    """Asset 트리거로 도는데 실행일을 쓰면 같은 달 데이터가 두 파티션에 나뉩니다.
+
+    상류가 1일에 낸 데이터를 재시도 때문에 2일에 조립하면 `collected_date=2일` 로
+    적재됩니다. 하류가 연월로 찾을 때 어느 쪽이 맞는지 알 수 없습니다.
+    """
+    build_sources(tmp_path)
+
+    # 원천은 최신이 2026-08-12 인데 하루 뒤에 조립하는 상황
+    result = run(tmp_path, as_of="2026-08-13")
+
+    assert result["collected_date"] == "2026-08-12"
+    assert result["collected_date"] == max(result["source_collected_dates"].values())
+    assert result["as_of"] == "2026-08-13"
+
+
+def test_하루_늦게_조립해도_같은_파티션에_들어간다(tmp_path):
+    """실행일을 쓰면 두 파티션으로 갈라집니다."""
+    build_sources(tmp_path)
+
+    same_day = run(tmp_path, as_of="2026-08-12")
+    next_day = run(tmp_path, as_of="2026-08-13")
+
+    assert same_day["locations"] == next_day["locations"]
+    assert same_day["collected_date"] == next_day["collected_date"] == "2026-08-12"
+
+
+def test_원천_날짜만_확정하는_조회는_파케이를_읽지_않는다(tmp_path):
+    """핸들러가 Loader 를 만들기 전에 출력 파티션을 정해야 해서 필요합니다.
+
+    캐시하지 않으면 `extract()` 가 파티션 목록 조회를 데이터셋마다 한 번 더 합니다.
+    """
+    from sub.aws_lambda.functions.vehicle_master_curated_to_curated.extractor import (
+        build_extractor,
+    )
+
+    build_sources(tmp_path)
+    extractor = build_extractor("local", str(tmp_path), AS_OF)
+
+    dates = extractor.resolve_source_dates()
+
+    assert dates == {
+        "vehicle_catalog": "2026-08-12",
+        "fueleconomy_vehicle_specs": "2025-10-01",
+        "uber_eligible_vehicles": "2026-08-11",
+        "lyft_eligible_vehicles": "2026-08-12",
+    }
+    # 두 번 불러도 같은 값이고, extract 결과와도 일치합니다.
+    assert extractor.resolve_source_dates() == dates
+    assert extractor.extract().source_collected_dates == dates

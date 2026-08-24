@@ -10,6 +10,7 @@
  8. 원천이 45일 넘게 낡으면 실패
  9. 월 중 수동 실행(원천이 한 달 가까이 된 상태)은 통과
 10. source_collected_dates 가 없으면 실패
+11. 낡음 판정 기준이 `as_of` — 적재 파티션(`collected_date`)으로 재면 가드가 무력화
 
 핸들러는 부르지 않습니다. 검증 태스크에 결과 dict 를 직접 넘겨 파일만 실제로 씁니다.
 """
@@ -65,10 +66,11 @@ def write_master(
     schema=None,
     city: str = CITY,
     blank: str | None = None,
+    collected_date: str = COLLECTED_DATE,
 ) -> Path:
     """`blank` 를 주면 그 컬럼만 전 행 NULL 로 씁니다 (#567 재현)."""
     schema = loader.SCHEMA if schema is None else schema
-    path = layout.curated_file(str(silver_dir), date.fromisoformat(COLLECTED_DATE), city)
+    path = layout.curated_file(str(silver_dir), date.fromisoformat(collected_date), city)
     path.parent.mkdir(parents=True, exist_ok=True)
     records = [
         {
@@ -81,11 +83,19 @@ def write_master(
     return path
 
 
-def result_for(paths: list[Path], row_count: int, sources: dict | None = None) -> dict:
+def result_for(
+    paths: list[Path],
+    row_count: int,
+    sources: dict | None = None,
+    collected_date: str = COLLECTED_DATE,
+) -> dict:
     return {
         "row_count": row_count,
         "locations": [str(path) for path in paths],
-        "collected_date": COLLECTED_DATE,
+        # 적재 파티션. 핸들러가 읽은 원천의 최신 수집일로 정합니다.
+        "collected_date": collected_date,
+        # 읽기 상한. 낡음 판정은 이 값을 기준으로 합니다.
+        "as_of": COLLECTED_DATE,
         "source_collected_dates": FRESH_SOURCES if sources is None else sources,
     }
 
@@ -208,3 +218,18 @@ def test_자격이_없어_비는_컬럼은_통과시킨다(tmp_path):
     path = write_master(tmp_path, rows=2, blank="platform")
 
     validate_silver(result_for([path], 2), **params_for(tmp_path))
+
+
+def test_낡음_판정은_적재_파티션이_아니라_as_of_기준이다(tmp_path):
+    """`collected_date` 는 원천 날짜에서 나온 값입니다.
+
+    그걸 기준으로 나이를 재면 원천이 전부 반 년 낡아도 서로 같은 날짜라
+    나이가 0 으로 나오고 가드가 통째로 무력해집니다. 실패하지 않으니 지난해
+    렌트료로 추천이 나가는 것을 아무도 모릅니다.
+    """
+    stale = {key: "2026-01-05" for key in FRESH_SOURCES}
+    path = write_master(tmp_path, rows=2, collected_date="2026-01-05")
+    result = result_for([path], 2, stale, collected_date="2026-01-05")
+
+    with pytest.raises(ValueError, match="한도 45일"):
+        validate_silver(result, **params_for(tmp_path))
