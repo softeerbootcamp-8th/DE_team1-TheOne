@@ -1,0 +1,14 @@
+# 모든 알림을 Slack 한 곳으로 보냅니다. 받는 사람이 한 팀이라 라우팅을 나눌 이유가
+# 없고, 나누면 어느 경로로 갔는지 추적해야 합니다.
+#
+# `group_by` 에 instance_name 을 넣어 호스트별로 묶습니다 — 4대가 동시에 임계를
+# 넘으면 한 메시지에 4줄로 오는 게 아니라 호스트별로 4건이 옵니다. 어느 호스트인지가
+# 조치의 단위라서입니다.
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: slack
+    group_by: [alertname, instance_name]
+    # 같은 알림이 계속 켜져 있으면 4시간마다 한 번만 다시 알립니다.
+    repeat_interval: 4h

@@ -168,24 +168,36 @@ jobs:
         id: ssm
         env:
           INSTANCE: ${{ vars.MONITORING_INSTANCE_ID }}
+          # Airflow 알림과 같은 웹훅입니다. 채널을 하나로 두려는 것이고, 로테이션할 때
+          # 고칠 곳도 이 Secret 하나입니다.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           # 셸 따옴표로 JSON 을 조립하면 깨지기 쉬워 파일로 만들어 넘깁니다.
           python3 - <<'PY' > /tmp/params.json
-          import base64, json, pathlib
+          import base64, json, os, pathlib
           root = pathlib.Path("monitoring/stack")
           files = {
               "prometheus.yml": root / "prometheus.yml",
               "docker-compose.yml": root / "docker-compose.yml",
               "grafana/provisioning/datasources/prometheus.yml":
                   root / "grafana/provisioning/datasources/prometheus.yml",
+              "grafana/provisioning/alerting/contact-points.yaml":
+                  root / "grafana/provisioning/alerting/contact-points.yaml",
+              "grafana/provisioning/alerting/policies.yaml":
+                  root / "grafana/provisioning/alerting/policies.yaml",
+              "grafana/provisioning/alerting/rules.yaml":
+                  root / "grafana/provisioning/alerting/rules.yaml",
           }
           cmds = ["set -eu", "cd /home/ec2-user/monitoring",
-                  "mkdir -p grafana/provisioning/datasources"]
+                  "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting"]
           for dest, src in files.items():
               blob = base64.b64encode(src.read_bytes()).decode()
               cmds.append(f"echo {blob} | base64 -d > {dest}")
           cmds += [
+              # 웹훅은 저장소 파일이 아니라 여기서만 씁니다. compose 가 같은 디렉터리의
+              # .env 를 자동으로 읽습니다.
+              f"echo SLACK_WEBHOOK_URL={os.environ['SLACK_WEBHOOK_URL']} > .env",
               "chown -R ec2-user:ec2-user /home/ec2-user/monitoring",
               "docker compose up -d --remove-orphans",
               # 설정만 바뀐 경우 컨테이너가 그대로라 Prometheus 가 다시 읽게 신호를 줍니다.

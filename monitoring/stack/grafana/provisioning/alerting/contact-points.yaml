@@ -1,0 +1,20 @@
+# Slack 알림 수신처.
+#
+# 웹훅 URL 은 파일에 두지 않습니다. compose 가 `SLACK_WEBHOOK_URL` 을 컨테이너
+# 환경변수로 넘기고, Grafana 가 `$__env{}` 로 읽습니다. Airflow 가 쓰는 것과 같은
+# GitHub Secret 이라 채널도 같습니다.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: slack
+    receivers:
+      - uid: theone-slack
+        type: slack
+        settings:
+          url: $__env{SLACK_WEBHOOK_URL}
+          title: '{{ if eq .Status "firing" }}🔥{{ else }}✅{{ end }} {{ .CommonLabels.alertname }}'
+          text: |
+            {{ range .Alerts }}*{{ .Labels.instance_name }}* — {{ .Annotations.summary }}
+            상태 `{{ .Status }}` · 심각도 `{{ .Labels.severity }}`
+            {{ end }}
