@@ -1,8 +1,8 @@
 """기사 차량 월별 스냅샷 Raw→Bronze→Silver DAG 계약.
 
 1. HVFHV와 분리되고 감시 DAG가 호출하는 네 단계 월별 DAG
-2. 수집·정제 Lambda 에 파라미터 전달
-3. 필수 컬럼 누락 시 원천부터 한 번 재수집
+2. 수집·정제 Lambda 를 AWS 동기 호출하고 payload 전달
+3. 필수 컬럼 누락 시 Airflow 프로세스에서 재수집하지 않고 실패
 4. Bronze 행 수·스키마·driver_id 중복 규칙으로 Silver 확인
 5. S3 Silver 경로를 로컬 Path로 접지 않고 검증
 6. service_area가 수집·정제 Lambda와 Bronze·Silver 경로에 반영됨
@@ -93,108 +93,14 @@ def test_기본_API_주소는_내부_제공서버를_사용한다():
     assert DAG.params["api_base_url"] == "http://10.0.10.81:8091"
 
 
-def test_수집task는_제공주소를_수집핸들러에_전달한다(monkeypatch):
-    called = {}
-    handlers = []
+def test_수집과_정제task는_AWS_Lambda_payload를_사용한다():
+    raw = DAG.get_task("raw_to_bronze")
+    silver = DAG.get_task("bronze_to_silver")
 
-    def handler(*, event):
-        called.update(event)
-        return {"year_month": "2026-08"}
-
-    monkeypatch.setattr(
-        task_module,
-        "lambda_handler_for",
-        lambda name: handlers.append(name) or handler,
-    )
-    DAG.get_task("raw_to_bronze").python_callable(
-        params={
-            "api_base_url": "http://source",
-            "base_dir": "/bronze",
-            "year": "2026",
-            "month": "8",
-            "service_area": "TX",
-        }
-    )
-    assert handlers == ["driver_vehicle_monthly_snapshot_raw_to_bronze"]
-    assert called == {
-        "api_base_url": "http://source",
-        "base_dir": "/bronze",
-        "year": "2026",
-        "month": "8",
-        "service_area": "TX",
-    }
-
-
-def test_정제task는_Bronze경로와_적재위치를_정제핸들러에_전달한다(monkeypatch):
-    called = {}
-    handlers = []
-
-    def handler(*, event):
-        called.update(event)
-        return {
-            "row_count": 1,
-            "locations": ["/silver/x.parquet"],
-            "year_month": "2026-08",
-        }
-
-    monkeypatch.setattr(
-        task_module,
-        "lambda_handler_for",
-        lambda name: handlers.append(name) or handler,
-    )
-    DAG.get_task("bronze_to_silver").python_callable(
-        {
-            "locations": [f"/bronze/{FILE_NAME}"],
-            "year_month": "2026-08",
-            "silver_version_path": f"/silver/year_month=2026-08/{SOURCE_VERSION}",
-        },
-        params={"silver_dir": "/silver", "service_area": "TX"},
-    )
-    assert handlers == ["driver_vehicle_monthly_snapshot_bronze_to_silver"]
-    assert called == {
-        "year_month": "2026-08",
-        "silver_output_path": f"/silver/year_month=2026-08/{SOURCE_VERSION}",
-        "service_area": "TX",
-    }
-
-
-def test_필수컬럼이_누락되면_원천부터_다시_수집한다(monkeypatch):
-    results = iter(
-        [
-            (Path("broken.parquet"), ["driver_id"]),
-            (Path("corrected.parquet"), []),
-        ]
-    )
-    recollected = _raw_result()
-    calls = []
-    monkeypatch.setattr(
-        task_module,
-        "_validate_bronze_result",
-        lambda result, base_dir, service_area: next(results),
-    )
-    monkeypatch.setattr(
-        task_module,
-        "_collect_bronze",
-        lambda params: calls.append(params) or recollected,
-    )
-
-    original = _raw_result()
-    validated = DAG.get_task("validate_bronze").python_callable(
-        original,
-        params={
-            "base_dir": "/bronze",
-            "silver_dir": "/silver",
-            "api_base_url": "http://source",
-        },
-    )
-
-    assert {key: validated[key] for key in recollected} == recollected
-    assert validated["silver_version_path"].endswith(SOURCE_VERSION)
-    assert calls == [{
-        "base_dir": "/bronze",
-        "silver_dir": "/silver",
-        "api_base_url": "http://source",
-    }]
+    assert raw.function_name == "driver_vehicle_monthly_snapshot_raw_to_bronze"
+    assert silver.function_name == "driver_vehicle_monthly_snapshot_bronze_to_silver"
+    assert "params.api_base_url" in raw.payload
+    assert "silver_version_path" in silver.payload
 
 
 def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_path, monkeypatch):
