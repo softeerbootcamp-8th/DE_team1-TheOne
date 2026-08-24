@@ -85,8 +85,8 @@ def test_월별_Gold_파티션을_모두_읽는다(tmp_path):
     assert sorted(frame["year_month"]) == ["2026-01", "2026-02"]
 
 
-def test_기본_하한값은_600달러다():
-    assert DEFAULT_THRESHOLD == 600.0
+def test_기본_하한값은_500달러다():
+    assert DEFAULT_THRESHOLD == 500.0
 
 
 def test_리포트_추천_기준을_통과한_기사만_표시한다():

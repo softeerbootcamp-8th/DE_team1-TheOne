@@ -20,7 +20,7 @@ _DATA_SOURCE = build_data_source()
 
 # 기사 예상 월 순수익 증가 하한 기본값 (USD). Gold monthly_report 제거(#915) 이후
 # 더 이상 Gold가 계산해주지 않아 대시보드 상수로 둔다.
-DEFAULT_THRESHOLD = 600.0
+DEFAULT_THRESHOLD = 500.0
 
 SUGGESTION_COLUMNS = {
     "driver_id": "기사 ID",
