@@ -156,6 +156,44 @@
 
 ### AWS 인프라 설계
 
+### 트러블슈팅
+> AWS 인프라 운영 중 겪은 장애
+
+<details>
+<summary><a href="/docs/troubleshooting/aws/CFN_INSTANCE_ID_PARAM_TYPE.md">[AWS] CloudFormation 배포가 exit 255 로만 죽음</a></summary>
+
+- 인스턴스 ID 파라미터 타입이 `AWS::EC2::Instance::Id`라 배포 role에 없는 `ec2:DescribeInstances` 호출이 거부됐습니다.
+  - 결과: `Type: String` + `AllowedPattern`으로 교체해 해결했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/troubleshooting/aws/GITHUB_OIDC_WRONG_ROLE.md">[AWS] GitHub Actions OIDC가 "Not authorized"로 계속 실패함</a></summary>
+
+- GitHub 레포 Variable이 EC2용 IAM role을 가리키고 있어 OIDC assume이 거부됐습니다.
+  - 결과: GitHub Actions 배포 전용 role ARN으로 교체해 해결했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/troubleshooting/aws/LETSENCRYPT_AMAZONAWS_DOMAIN.md">[AWS] Let's Encrypt가 AWS 기본 제공 도메인엔 인증서를 안 줌</a></summary>
+
+- `*.amazonaws.com` 공유 도메인은 정책상 인증서 발급이 차단되어 있었습니다.
+  - 결과: 무료 와일드카드 DNS `sslip.io`로 전환해 해결했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/troubleshooting/aws/RDS_PRIVATE_SUBNET.md">[AWS] RDS 생성 마법사에 서브넷(VPC) 선택 화면이 안 나옴</a></summary>
+
+- 표준 PostgreSQL 생성 흐름에서는 서브넷 그룹을 고르는 화면 자체가 빠져 있었습니다.
+  - 결과: 서브넷 그룹을 CLI로 먼저 만들고 지정해 인스턴스를 생성했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/troubleshooting/aws/S3_DELETE_PERMISSION_DAG.md">[AWS] S3 DeleteObject 권한 누락</a></summary>
+
+- Airflow DAG가 직접 `DeleteObject`를 호출하는 주체라는 걸 놓쳐 권한이 빠져 있었습니다.
+  - 결과: `theone-airflow-role`에 `s3:DeleteObject`를 추가해 해결했습니다.
+</details>
+
 ### [의사결정 문서]([./docs/decision_making/README.md])
 > 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
 
