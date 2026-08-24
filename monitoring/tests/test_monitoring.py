@@ -53,19 +53,61 @@ def _dashboard():
     return json.loads(rendered)
 
 
-def test_dashboard_shows_job_states_worker_usage_and_capacity():
+def test_dashboard_shows_job_states_utilization_and_workers():
     titles = {
         widget["properties"].get("title") for widget in _dashboard()["widgets"]
     }
     assert {
         "EMR Serverless job states",
-        "EMR worker memory used (GB)",
-        "EMR worker memory allocated (GB)",
-        "EMR worker CPU used (vCPU)",
-        "EMR worker CPU allocated (vCPU)",
-        "EMR application capacity used (%)",
+        "EMR memory — used vs allocated (%)",
+        "EMR CPU — used vs allocated (%)",
         "EMR worker count",
     }.issubset(titles)
+
+
+def test_utilization_widgets_put_used_and_allocated_on_one_axis():
+    """따로 그리면 두 그래프를 눈으로 나눠 읽어야 합니다.
+
+    분모를 앱 용량 상한(`Max*Allowed`)으로 통일하면 사용량과 할당량이 같은 축에 올라가
+    한 위젯에 담깁니다. 두 선의 간격이 과잉 할당, `Allocated` 가 100% 면 상한에 막힌
+    것 — 눈금 하나로 판정됩니다.
+
+    앱 수준 `MemoryAllocated`/`CPUAllocated` 를 분모로 쓰면 안 됩니다. 작업 전환 순간
+    0~2 로 떨어져 비율이 179% 까지 튑니다(실측).
+    """
+    for title, expressions in _widget_expressions():
+        if "used vs allocated" not in title:
+            continue
+        joined = " ".join(expressions)
+        assert "MaxMemoryAllowed" in joined or "MaxCPUAllowed" in joined, (
+            f"{title}: 분모가 용량 상한이 아닙니다"
+        )
+        ratios = [e for e in expressions if e.startswith("IF(m>0,100*")]
+        assert len(ratios) == 2, f"{title}: used·allocated 두 선이 있어야 합니다"
+
+
+def test_metrics_insights_widgets_aggregate_per_minute():
+    """Metrics Insights 의 SUM 은 기간 안의 모든 샘플을 더합니다.
+
+    지표가 1분 간격이라 period 를 300 으로 두면 샘플 5개가 합쳐져 값이 5배가 됩니다
+    (실측: executor 메모리 23.8GB 가 118.9GB 로 표시). 그래프는 멀쩡해 보이고 숫자만
+    틀리는, 알아채기 어려운 실패라 고정합니다.
+    """
+    for widget in _dashboard()["widgets"]:
+        if widget["type"] != "metric":
+            continue
+        expressions = [
+            item.get("expression", "")
+            for row in widget["properties"]["metrics"]
+            for item in row
+            if isinstance(item, dict)
+        ]
+        if not any(e.startswith("SELECT ") for e in expressions):
+            continue
+        period = widget["properties"].get("period")
+        assert period == 60, (
+            f"{widget['properties']['title']}: period 가 {period} 입니다 — 60 이어야 합니다"
+        )
 
 
 def _search_expressions():
