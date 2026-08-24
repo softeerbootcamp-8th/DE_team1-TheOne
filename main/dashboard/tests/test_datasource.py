@@ -2,7 +2,7 @@
 
 1. 로컬 CSV 파티션을 모두 이어붙인다
 2. 로컬 파티션이 하나도 없으면 빈 데이터프레임
-3. RDS 쿼리 컬럼은 현재 Gold 3종 schema.gold 필드에서 자동 생성된다
+3. RDS 쿼리 컬럼은 노출된 Gold 데이터셋의 schema.gold 필드에서 자동 생성된다
 4. RDS는 service_area·year_month별 최신 version 행만 읽는다
 5. RDS는 같은 (year_month, version) 안의 여러 행(기사별)을 전부 읽는다
 6. 알 수 없는 dataset 이름은 RdsDataSource에서 즉시 ValueError
@@ -24,15 +24,11 @@ from datasource import (
     _latest_version_query,
     build_data_source,
 )
-from schema.gold import DriverMonthlyProfit, LeaseVehicleInventory
+from schema.gold import DriverCarSuggestion, DriverMonthlyProfit
 
 
-def test_RDS_소스는_현재_Gold_3종만_노출한다():
-    assert set(_TABLE_MODELS) == {
-        "driver_aggregation",
-        "driver_vehicle_profit_simulation",
-        "lease_vehicle_inventory",
-    }
+def test_RDS_소스는_현재_Gold_2종만_노출한다():
+    assert set(_TABLE_MODELS) == {"driver_aggregation", "driver_car_suggestion"}
 
 
 def test_로컬_소스는_모든_파티션을_이어붙인다(tmp_path):
@@ -87,72 +83,6 @@ def _sqlite_conn_with(table: str, columns: list[str], rows: list[dict]) -> sqlit
     return conn
 
 
-def _lease_vehicle_inventory_row(
-    year_month: str, version: int, **overrides
-) -> dict:
-    row = {
-        "version": version,
-        "year_month": year_month,
-        "service_area": "NYC",
-        "vehicle_model_id": "MODEL1",
-        "manufacturer": "KIA",
-        "model_name": "FORTE",
-        "model_year": 2026,
-        "fuel_type": "GAS",
-        "fuel_efficiency": 30.0,
-        "comfort_eligible": True,
-        "extra_comfort_eligible": False,
-        "weekly_lease_fee": 500.0,
-        "image_url": "https://example.com/model1.png",
-        "stock": 10,
-    }
-    row.update(overrides)
-    return row
-
-
-def test_RDS_소스는_컬럼을_스키마에서_자동생성한다(monkeypatch):
-    columns = [field.name for field in fields(LeaseVehicleInventory)]
-    conn = _sqlite_conn_with(
-        "lease_vehicle_inventory",
-        columns,
-        [_lease_vehicle_inventory_row("2026-05", 1, stock=999)],
-    )
-    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
-
-    frame = RdsDataSource("dsn").load("lease_vehicle_inventory")
-
-    assert set(frame.columns) == set(columns)
-    assert frame.loc[0, "stock"] == 999
-
-
-def test_RDS_소스는_지역과_year_month별_최신_버전만_읽는다(monkeypatch):
-    columns = [field.name for field in fields(LeaseVehicleInventory)]
-    conn = _sqlite_conn_with(
-        "lease_vehicle_inventory",
-        columns,
-        [
-            _lease_vehicle_inventory_row("2026-05", 1, stock=100),
-            _lease_vehicle_inventory_row("2026-05", 2, stock=200),
-            _lease_vehicle_inventory_row(
-                "2026-05", 1, service_area="TX", stock=400
-            ),
-            _lease_vehicle_inventory_row("2026-06", 1, stock=300),
-        ],
-    )
-    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
-
-    frame = RdsDataSource("dsn").load("lease_vehicle_inventory")
-
-    assert len(frame) == 3
-    by_area_month = frame.set_index(["service_area", "year_month"])
-    assert (
-        by_area_month.loc[("NYC", "2026-05"), "stock"] == 200
-    )
-    assert (
-        by_area_month.loc[("TX", "2026-05"), "stock"] == 400
-    )
-
-
 def _driver_aggregation_row(driver_id: str, version: int, **overrides) -> dict:
     row = {
         "version": version,
@@ -178,6 +108,47 @@ def _driver_aggregation_row(driver_id: str, version: int, **overrides) -> dict:
     return row
 
 
+def test_RDS_소스는_컬럼을_스키마에서_자동생성한다(monkeypatch):
+    columns = [field.name for field in fields(DriverMonthlyProfit)]
+    conn = _sqlite_conn_with(
+        "driver_aggregation",
+        columns,
+        [_driver_aggregation_row("D1", 1, monthly_net_profit=999)],
+    )
+    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
+
+    frame = RdsDataSource("dsn").load("driver_aggregation")
+
+    assert set(frame.columns) == set(columns)
+    assert frame.loc[0, "monthly_net_profit"] == 999
+
+
+def test_RDS_소스는_지역과_year_month별_최신_버전만_읽는다(monkeypatch):
+    columns = [field.name for field in fields(DriverMonthlyProfit)]
+    conn = _sqlite_conn_with(
+        "driver_aggregation",
+        columns,
+        [
+            _driver_aggregation_row("D1", 1, monthly_net_profit=100),
+            _driver_aggregation_row("D1", 2, monthly_net_profit=200),
+            _driver_aggregation_row(
+                "D1", 1, service_area="TX", monthly_net_profit=400
+            ),
+            _driver_aggregation_row(
+                "D1", 1, year_month="2026-06", monthly_net_profit=300
+            ),
+        ],
+    )
+    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
+
+    frame = RdsDataSource("dsn").load("driver_aggregation")
+
+    assert len(frame) == 3
+    by_area_month = frame.set_index(["service_area", "year_month"])
+    assert by_area_month.loc[("NYC", "2026-05"), "monthly_net_profit"] == 200
+    assert by_area_month.loc[("TX", "2026-05"), "monthly_net_profit"] == 400
+
+
 def test_RDS_소스는_같은_버전_안의_여러_행을_모두_읽는다(monkeypatch):
     columns = [field.name for field in fields(DriverMonthlyProfit)]
     conn = _sqlite_conn_with(
@@ -195,6 +166,45 @@ def test_RDS_소스는_같은_버전_안의_여러_행을_모두_읽는다(monke
     frame = RdsDataSource("dsn").load("driver_aggregation")
 
     assert sorted(frame["driver_id"]) == ["D1", "D2"]
+
+
+def _driver_car_suggestion_row(driver_id: str, version: int, **overrides) -> dict:
+    row = {
+        "version": version,
+        "driver_id": driver_id,
+        "year_month": "2026-05",
+        "service_area": "NYC",
+        "comfort_eligible": False,
+        "extra_comfort_eligible": False,
+        "vehicle_model_id": "V1",
+        "manufacturer": "KIA",
+        "model_name": "K5",
+        "model_year": 2023,
+        "recommendation_reason": "연비",
+        "fuel_efficiency": 30.0,
+        "recommended_monthly_lease_fee": 200.0,
+        "expected_monthly_fuel_cost": 40.0,
+        "expected_monthly_net_profit": 800.0,
+        "expected_net_profit_increase": 100.0,
+        "expected_revenue_increase": 20.0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_RDS_소스는_driver_car_suggestion을_읽는다(monkeypatch):
+    columns = [field.name for field in fields(DriverCarSuggestion)]
+    conn = _sqlite_conn_with(
+        "driver_car_suggestion",
+        columns,
+        [_driver_car_suggestion_row("D1", 1, expected_net_profit_increase=999)],
+    )
+    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
+
+    frame = RdsDataSource("dsn").load("driver_car_suggestion")
+
+    assert set(frame.columns) == set(columns)
+    assert frame.loc[0, "expected_net_profit_increase"] == 999
 
 
 def test_알수없는_dataset이름은_RDS에서_ValueError(monkeypatch):

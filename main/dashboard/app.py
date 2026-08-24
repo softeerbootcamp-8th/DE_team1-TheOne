@@ -1,8 +1,8 @@
 """기사별 월간 차량 추천 대시보드.
 
-Gold 3종(`driver_car_suggestion`, `driver_aggregation`, `monthly_report`)을 읽는다.
+Gold 2종(`driver_car_suggestion`, `driver_aggregation`)을 읽는다.
 `DASHBOARD_DATA_SOURCE` 환경변수로 로컬 CSV(기본)/RDS를 전환한다 — `datasource.py` 참고.
-세 데이터셋 모두 `service_area`, `year_month` 그레인 — Gold job 산출물.
+두 데이터셋 모두 `service_area`, `year_month` 그레인 — Gold job 산출물.
 
 화면 구성은 위에서 아래로 한 줄기다.
     필터 한 줄 → 히어로(회사 총 매출 증가) → 지표 타일 → 분포·차종 → 선정 게이트 → 리스트 → 기사 상세
@@ -17,6 +17,10 @@ import theme
 from datasource import build_data_source
 
 _DATA_SOURCE = build_data_source()
+
+# 기사 예상 월 순수익 증가 하한 기본값 (USD). Gold monthly_report 제거(#915) 이후
+# 더 이상 Gold가 계산해주지 않아 대시보드 상수로 둔다.
+DEFAULT_THRESHOLD = 600.0
 
 SUGGESTION_COLUMNS = {
     "driver_id": "기사 ID",
@@ -174,11 +178,10 @@ def render() -> None:
     mode = theme.mode()
     theme.inject_css(mode)
 
-    report = load("monthly_report")
     suggestion = load("driver_car_suggestion")
     aggregation = load("driver_aggregation")
 
-    if report.empty or suggestion.empty or aggregation.empty:
+    if suggestion.empty or aggregation.empty:
         st.error(
             "data/gold 가 비어 있습니다. "
             "main/spark/jobs/silver_to_gold/job.py 를 먼저 실행하세요."
@@ -190,26 +193,21 @@ def render() -> None:
 
     # ── 필터 한 줄: 아래 모든 카드·차트·표가 이 값으로 스코프된다 ──
     f1, f2, f3 = st.columns([1, 1, 2], vertical_alignment="bottom")
-    service_area = f1.selectbox("지역", sorted(report["service_area"].unique()))
-    area_report = report[report["service_area"] == service_area]
-    periods = sorted(area_report["year_month"].unique(), reverse=True)
+    service_area = f1.selectbox("지역", sorted(suggestion["service_area"].unique()))
+    area_suggestion = suggestion[suggestion["service_area"] == service_area]
+    periods = sorted(area_suggestion["year_month"].unique(), reverse=True)
     period = f2.selectbox("월", periods)
 
-    report_row = area_report[area_report["year_month"] == period].iloc[0]
-    gold_threshold = float(report_row["threshold_profit_increase"])
-    month_suggestion = suggestion[
-        (suggestion["service_area"] == service_area)
-        & (suggestion["year_month"] == period)
-    ]
+    month_suggestion = area_suggestion[area_suggestion["year_month"] == period]
 
     threshold = f3.slider(
         "기사 예상 월 순수익 증가 하한 ($)",
         min_value=0.0,
         max_value=float(month_suggestion["expected_net_profit_increase"].max()),
-        value=gold_threshold,
+        value=DEFAULT_THRESHOLD,
         step=50.0,
         format="$%d",
-        help=rf"Gold 월간 리포트 기준값은 \${gold_threshold:,.0f} 입니다.",
+        help=rf"기본 하한은 \${DEFAULT_THRESHOLD:,.0f} 입니다.",
     )
 
     scope = recommendation_scope(
@@ -219,10 +217,15 @@ def render() -> None:
     with head_slot:
         _head(period, len(month_suggestion))
 
-    if threshold != gold_threshold:
+    if threshold != DEFAULT_THRESHOLD:
+        default_count = len(
+            recommendation_scope(
+                suggestion, aggregation, service_area, period, DEFAULT_THRESHOLD
+            )
+        )
         st.caption(
-            rf"Gold 리포트 기준(\${gold_threshold:,.0f}, "
-            f"{int(report_row['recommended_driver_count']):,}명) 대신 "
+            rf"기본 하한(\${DEFAULT_THRESHOLD:,.0f}, "
+            f"{default_count:,}명) 대신 "
             rf"하한 \${threshold:,.0f} 로 다시 계산한 값입니다."
         )
 
@@ -231,7 +234,7 @@ def render() -> None:
           len(month_suggestion))
 
     # 지난 달 대비 델타 — 같은 하한을 적용해 비교 기준을 맞춘다.
-    previous = _previous_period(list(area_report["year_month"].unique()), period)
+    previous = _previous_period(list(area_suggestion["year_month"].unique()), period)
     prev_agg = (
         _aggregates(
             recommendation_scope(

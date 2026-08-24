@@ -9,7 +9,7 @@ from pyspark.sql import functions as F
 
 from schema.gold import (
     DriverMonthlyProfit,
-    MonthlyVehicleRecommendation,
+    DriverCarSuggestion,
 )
 from schema.silver import (
     CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA,
@@ -721,7 +721,7 @@ def build_monthly_vehicle_recommendation(
             "expected_monthly_net_profit",
             "expected_net_profit_increase",
             "expected_revenue_increase",
-        ).select(*_columns(MonthlyVehicleRecommendation))
+        ).select(*_columns(DriverCarSuggestion))
 
     assignable = candidates.filter(
         (F.col("_candidate_stock") > 0) | F.col("_is_current")

@@ -12,7 +12,7 @@ import pytest
 import pandas as pd
 
 from main.spark.jobs.silver_to_gold import postgres_loader
-from schema.gold import MonthlyVehicleRecommendation
+from schema.gold import DriverCarSuggestion
 
 
 class _CountCursor:
@@ -114,7 +114,7 @@ def test_최종추천_PK는_기사당_한행이다():
 
 
 def test_최종추천은_내부후보와_재고컬럼을_내보내지_않는다():
-    columns = {field.name for field in fields(MonthlyVehicleRecommendation)}
+    columns = {field.name for field in fields(DriverCarSuggestion)}
 
     assert "candidate_vehicle_model_id" not in columns
     assert "stock" not in columns
