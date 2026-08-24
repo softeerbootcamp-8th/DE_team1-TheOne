@@ -35,9 +35,16 @@ from airflow.sdk import Asset
 
 FUEL_PRICE_SILVER = Asset("silver://gas_ev_price")
 API_SILVER_REFRESH_READY = Asset("silver://api_refresh_ready")
+GOLD_INPUTS_READY = Asset("silver://gold_inputs_ready")
 
 # API 3종은 감시 DAG가 변경된 Silver 실행을 모두 기다린 뒤 READY를 한 번만 냅니다.
-GOLD_INPUTS = API_SILVER_REFRESH_READY | FUEL_PRICE_SILVER
+# 같은 파티션의 두 입력이 처음 모이면 Gold를 실행합니다. Gold 입력 검증이 성공하면
+# GOLD_INPUTS_READY를 같은 키로 발행해 준비 상태를 남기므로, 그다음부터는 두 입력 중
+# 하나만 갱신돼도 같은 파티션을 다시 실행합니다.
+GOLD_INPUTS = (
+    (API_SILVER_REFRESH_READY & FUEL_PRICE_SILVER)
+    | (GOLD_INPUTS_READY & (API_SILVER_REFRESH_READY | FUEL_PRICE_SILVER))
+)
 
 # 지금 서비스하는 지역은 뉴욕 하나입니다. 지역이 늘면 지역별 설정(EIA 시리즈 URL,
 # 택시존 스키마 등)을 담을 레지스트리가 필요한데, 항목이 하나뿐인 레지스트리는

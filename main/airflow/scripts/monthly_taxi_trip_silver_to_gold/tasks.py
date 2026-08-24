@@ -15,6 +15,7 @@ from shared.airflow.common.slack_failure_callback import (
     slack_skip_alert_callback,
     slack_stale_alert_callback,
 )
+from main.airflow.common import assets
 from main.airflow.common.assets import (
     gold_csv_path,
     parse_partition_key,
@@ -350,7 +351,7 @@ def validate_gold_outputs(
         logger.info("Gold 검증 통과: %s rows=%d", dataset, len(frame))
 
 
-@task(task_id="validate_inputs")
+@task(task_id="validate_inputs", outlets=[assets.GOLD_INPUTS_READY])
 def validate_inputs_task(**context) -> dict:
     params = context["params"]
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
@@ -383,26 +384,35 @@ def validate_inputs_task(**context) -> dict:
     )
     logger.info("Gold 대상: service_area=%s year_month=%s", service_area, year_month)
     if job_env == "prod":
-        return {
+        resolved = {
             "service_area": service_area,
             "year_month": year_month,
             "year": year_month.split("-")[0],
             "month": str(int(year_month.split("-")[1])),
             "is_rerun": resolve_is_rerun(job_env, year_month, params),
         }
-    try:
-        return {
-            **resolve_input_paths(year_month, params, service_area),
-            "service_area": service_area,
-            "is_rerun": resolve_is_rerun(job_env, year_month, params),
-        }
-    except FileNotFoundError as exc:
-        if partition_key:
-            _notify_slack(slack_skip_alert_callback, {**context, "exception": exc})
-            raise AirflowSkipException(
-                f"Silver 4종 준비 대기: year_month={year_month}; {exc}"
-            ) from exc
-        raise
+    else:
+        try:
+            resolved = {
+                **resolve_input_paths(year_month, params, service_area),
+                "service_area": service_area,
+                "is_rerun": resolve_is_rerun(job_env, year_month, params),
+            }
+        except FileNotFoundError as exc:
+            if partition_key:
+                _notify_slack(slack_skip_alert_callback, {**context, "exception": exc})
+                raise AirflowSkipException(
+                    f"Silver 4종 준비 대기: year_month={year_month}; {exc}"
+                ) from exc
+            raise
+
+    assets.publish_month_partition(
+        context.get("outlet_events"),
+        assets.GOLD_INPUTS_READY,
+        year_month,
+        service_area,
+    )
+    return resolved
 
 
 @task(task_id="validate_gold")

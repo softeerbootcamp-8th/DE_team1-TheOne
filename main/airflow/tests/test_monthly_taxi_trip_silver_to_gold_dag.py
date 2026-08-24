@@ -1,6 +1,6 @@
-"""Silver → Gold DAG의 2개 실행 Asset 계약과 산출물 검증 시나리오.
+"""Silver → Gold DAG의 파티션별 실행 Asset 계약과 산출물 검증 시나리오.
 
-1. Gold 스케줄은 API 3종 완료 READY와 Fuel Silver의 OR Asset
+1. Gold는 같은 키의 API READY와 Fuel이 처음 모이면 실행, 이후 하나만 갱신돼도 재실행
 2. API Silver 3종은 개별 Asset을 발행하지 않고 Fuel만 검증 후 발행
 3. Asset 으로 실행된 Gold 는 해당 파티션 키를 대상 월로 사용
 4. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
@@ -23,6 +23,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from airflow.assets.evaluation import AssetEvaluator
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
@@ -124,15 +125,58 @@ def _write_completed_version(
     return version
 
 
-def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된다():
+def _gold_condition_satisfied(*asset_names: str) -> bool:
+    timetable = GOLD_DAG.timetable
+    keys = {
+        asset.name: unique_key
+        for unique_key, asset in timetable.asset_condition.iter_assets()
+    }
+    return AssetEvaluator(None).run(
+        timetable.asset_condition,
+        {keys[name]: True for name in asset_names},
+    )
+
+
+@pytest.mark.parametrize(
+    ("asset_names", "expected"),
+    [
+        ((assets.API_SILVER_REFRESH_READY.name,), False),
+        ((assets.FUEL_PRICE_SILVER.name,), False),
+        (
+            (
+                assets.API_SILVER_REFRESH_READY.name,
+                assets.FUEL_PRICE_SILVER.name,
+            ),
+            True,
+        ),
+        (
+            (
+                assets.GOLD_INPUTS_READY.name,
+                assets.API_SILVER_REFRESH_READY.name,
+            ),
+            True,
+        ),
+        (
+            (
+                assets.GOLD_INPUTS_READY.name,
+                assets.FUEL_PRICE_SILVER.name,
+            ),
+            True,
+        ),
+        ((assets.GOLD_INPUTS_READY.name,), False),
+    ],
+)
+def test_Gold_DAG은_최초엔_두입력_이후엔_하나의_갱신으로_실행된다(
+    asset_names,
+    expected,
+):
+    assert _gold_condition_satisfied(*asset_names) is expected
+
+
+def test_Gold_DAG은_지역과_월이_같은_파티션만_결합한다():
     timetable = GOLD_DAG.timetable
 
     assert isinstance(timetable, PartitionedAssetTimetable)
-    assert type(timetable.asset_condition).__name__ == "SerializedAssetAny"
-    assert {item.name for item in timetable.asset_condition.objects} == {
-        assets.API_SILVER_REFRESH_READY.name,
-        assets.FUEL_PRICE_SILVER.name,
-    }
     assert isinstance(timetable.default_partition_mapper, IdentityMapper)
     # 복합 키(#674)를 그대로 통과시켜야 합니다. IdentityMapper 는 항등이라 코드를
     # 손댈 필요가 없다는 게 이 설계의 핵심 근거인데, 항등이라서 이 단정만으로는
@@ -141,7 +185,9 @@ def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된
     mapper = timetable.default_partition_mapper
     assert mapper.to_downstream("NYC:2026-05") == "NYC:2026-05"
     assert mapper.to_downstream("TX:2026-05") == "TX:2026-05"
+    assert mapper.to_downstream("NYC:2026-06") == "NYC:2026-06"
     assert mapper.to_downstream("NYC:2026-05") != mapper.to_downstream("TX:2026-05")
+    assert mapper.to_downstream("NYC:2026-05") != mapper.to_downstream("NYC:2026-06")
 
 
 @pytest.mark.parametrize(
@@ -391,6 +437,30 @@ def test_정상실행에서는_Slack_skip_알림을_호출하지_않는다(tmp_p
     )
 
     assert calls == []
+
+
+def test_Gold_입력검증은_같은_지역월의_READY_파티션을_남긴다(tmp_path):
+    class Recorder:
+        def __init__(self):
+            self.keys = set()
+
+        def add_partitions(self, key):
+            self.keys.add(key)
+
+    _write_inputs(tmp_path, "2026-05")
+    recorder = Recorder()
+
+    dag_module.validate_inputs_task.function(
+        params=_params(tmp_path),
+        logical_date=_logical_date(2026, 5),
+        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
+        outlet_events={assets.GOLD_INPUTS_READY: recorder},
+    )
+
+    assert [outlet.name for outlet in GOLD_DAG.get_task("validate_inputs").outlets] == [
+        assets.GOLD_INPUTS_READY.name
+    ]
+    assert recorder.keys == {"NYC:2026-05"}
 
 
 def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
