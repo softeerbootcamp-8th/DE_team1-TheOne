@@ -25,6 +25,7 @@ Lyft DAG 와 event 계약이 같습니다(#228 에서 `base_dir` 로 통일). �
 
 import pytest
 
+from shared.airflow.common import lambda_invoke
 from dags import uber_eligible_vehicles_raw_to_curated_dag as dag_module
 from sub.airflow.scripts.uber_eligible_vehicles_raw_to_curated import tasks as task_module
 
@@ -53,6 +54,10 @@ def events(monkeypatch):
         return handler
 
     monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
+    # `source_to_raw` 는 `invoke_lambda` 를 거칩니다. 그 함수는 자기 모듈의
+    # `lambda_handler_for` 를 쓰므로 위 패치가 닿지 않습니다 — 여기도 바꿔야
+    # 핸들러가 실제로 돌지 않습니다 (외부 페이지 수집·파일 쓰기).
+    monkeypatch.setattr(lambda_invoke, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 

@@ -9,10 +9,8 @@
 7. 운영 compose 가 원격 모드를 켬
 """
 
-import importlib
 import io
 import json
-import os
 from pathlib import Path
 
 import pytest
