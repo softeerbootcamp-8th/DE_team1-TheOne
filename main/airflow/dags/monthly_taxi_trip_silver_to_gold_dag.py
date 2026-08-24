@@ -42,7 +42,8 @@ EMR_ENTRY_POINT = "/home/hadoop/main/spark/jobs/silver_to_gold/job.py"
 EMR_SPARK_SUBMIT_PARAMETERS = (
     "--conf spark.driver.cores=2 --conf spark.driver.memory=6g "
     "--conf spark.executor.cores=2 --conf spark.executor.memory=6g "
-    "--conf spark.sql.shuffle.partitions=32 "
+    "--conf spark.dynamicAllocation.minExecutors=1 --conf spark.dynamicAllocation.initialExecutors=5 --conf spark.dynamicAllocation.maxExecutors=5 "
+    "--conf spark.sql.shuffle.partitions=40 "
     "--conf spark.emr-serverless.driverEnv.PYTHONPATH=/home/hadoop "
     "--conf spark.executorEnv.PYTHONPATH=/home/hadoop"
 )
