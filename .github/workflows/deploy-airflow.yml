@@ -35,6 +35,7 @@ on:
     paths:
       # `.github/scripts/check_image_filters.py` 가 Dockerfile COPY 와 대조합니다.
       - 'main/__init__.py'
+      - 'main/common/**'
       - 'main/airflow/**'
       - 'main/aws_lambda/__init__.py'
       - 'main/aws_lambda/common/**'

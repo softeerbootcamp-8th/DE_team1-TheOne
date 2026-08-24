@@ -20,7 +20,7 @@ from main.aws_lambda.common.monthly_dataset import (
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
-from shared.common.eia_fuel_version import source_collected_at_token
+from main.common.eia_fuel_version import source_collected_at_token
 from shared.common.s3_reader import get_object_bytes, list_keys
 from shared.common.success_marker import data_key_is_complete, marker_path
 

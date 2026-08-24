@@ -13,7 +13,7 @@ import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
 from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
-from shared.common.eia_fuel_version import FUEL_FILE_NAME, fuel_input_version
+from main.common.eia_fuel_version import FUEL_FILE_NAME, fuel_input_version
 
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA
 

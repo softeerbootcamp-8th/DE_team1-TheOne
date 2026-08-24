@@ -38,6 +38,7 @@ USER hadoop
 # 같은 이유), 이미지도 나누지 않고 하나로 둡니다.
 COPY schema/ /home/hadoop/schema/
 COPY main/__init__.py /home/hadoop/main/__init__.py
+COPY main/common/ /home/hadoop/main/common/
 COPY main/spark/__init__.py /home/hadoop/main/spark/__init__.py
 COPY main/spark/jobs/ /home/hadoop/main/spark/jobs/
 COPY shared/__init__.py /home/hadoop/shared/__init__.py
