@@ -67,12 +67,12 @@ class DriverMonthlyProfit:
 
 
 """
-[기사·후보 차량 모델별 교체 시 예상 수익 시뮬레이션]
+[재고를 반영한 기사별 차량 추천]
 input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA / schema/gold.py - DriverMonthlyProfit
-output: schema/gold.py - DriverVehicleProfitSimulation
+output: schema/gold.py - MonthlyVehicleRecommendation
 """
 @dataclass(frozen=True)
-class DriverVehicleProfitSimulation:
+class MonthlyVehicleRecommendation:
     version: int
     """ 골드 데이터 버전 """
     
@@ -95,8 +95,8 @@ class DriverVehicleProfitSimulation:
     extra_comfort_eligible: bool
     """Extra Comfort 등급 대상 여부"""
 
-    candidate_vehicle_model_id: str
-    """평가한 후보 차량 모델 ID"""
+    vehicle_model_id: str
+    """배정한 차량 모델 ID"""
 
     manufacturer: str
     """추천 차량 제조사"""
@@ -129,26 +129,34 @@ class DriverVehicleProfitSimulation:
     """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverMonthlyProfit.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
 
 
-"""
-[리스 업체 보유 차량]
-input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA
-output: schema/gold.py - LeaseVehicleInventory
-"""
+"""대시보드 호환용 과거 시뮬레이션 스키마. #927 이후 Gold Job은 적재하지 않습니다."""
+@dataclass(frozen=True)
+class DriverVehicleProfitSimulation:
+    version: int
+    driver_id: str
+    year_month: str
+    service_area: str
+    comfort_eligible: bool
+    extra_comfort_eligible: bool
+    candidate_vehicle_model_id: str
+    manufacturer: str
+    model_name: str
+    model_year: int
+    recommendation_reason: str
+    fuel_efficiency: float
+    recommended_monthly_lease_fee: float
+    expected_monthly_fuel_cost: float
+    expected_monthly_net_profit: float
+    expected_net_profit_increase: float
+    expected_revenue_increase: float
+
+
+"""대시보드 호환용 과거 Gold 재고 스키마. #927 이후 Gold Job은 적재하지 않습니다."""
 @dataclass(frozen=True)
 class LeaseVehicleInventory:
     version: int
-    """ 골드 데이터 버전 """
-    
     year_month: str
-    """집계 대상 월 (YYYY-MM). PK"""
-
     service_area: str
-    """서비스 지역 코드 (예: NYC). AWS 리전이 아니라 운행 데이터의 지역 축입니다.
-
-    driver_id 가 지역 간 유니크하지 않으므로(#805) 이 컬럼이 자연 키의 일부입니다 —
-    빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
-    """
-
     vehicle_model_id: str
     manufacturer: str
     model_name: str

@@ -42,8 +42,7 @@ DEFAULT_PATHS = {
 }
 DATASETS = (
     "driver_aggregation",
-    "driver_vehicle_profit_simulation",
-    "lease_vehicle_inventory",
+    "driver_car_suggestion",
 )
 # 산출물마다 "이건 반드시 있어야 한다" 는 컬럼. 전체 스키마는 schema/gold/*.py 가
 # 소유하고, 여기서는 조인 키와 판단에 쓰이는 값만 봅니다.
@@ -51,13 +50,10 @@ REQUIRED_COLUMNS = {
     "driver_aggregation": {
         "driver_id", "year_month", "monthly_net_profit", "monthly_lease_fee",
     },
-    "driver_vehicle_profit_simulation": {
-        "driver_id", "year_month", "candidate_vehicle_model_id",
+    "driver_car_suggestion": {
+        "driver_id", "year_month", "vehicle_model_id",
         "manufacturer", "model_name",
         "expected_net_profit_increase", "recommendation_reason",
-    },
-    "lease_vehicle_inventory": {
-        "year_month", "vehicle_model_id", "manufacturer", "model_name", "stock",
     },
 }
 
@@ -273,7 +269,7 @@ def _notify_slack(callback, context: dict) -> None:
 def validate_gold_outputs(
     output_dir: str, year_month: str, service_area: str
 ) -> None:
-    """산출물 3종의 존재·행 수·필수 컬럼을 확인합니다.
+    """산출물 2종의 존재·행 수·필수 컬럼을 확인합니다.
 
     경로는 Spark 쓰기 쪽(`_csv_path`)과 같은 공용 함수로 만듭니다.
     """

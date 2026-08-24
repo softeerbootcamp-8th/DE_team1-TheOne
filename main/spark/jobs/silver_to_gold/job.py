@@ -1,8 +1,8 @@
-"""원천 Silver 4종을 직접 읽어 Gold 3종을 만듭니다.
+"""원천 Silver 4종을 직접 읽어 Gold 2종을 만듭니다.
 
 input: monthly_taxi_trip, driver_vehicle_monthly_snapshot, lease_vehicle_inventory,
        fuel_price (Silver)
-output: driver_aggregation, driver_vehicle_profit_simulation, lease_vehicle_inventory (Gold)
+output: driver_aggregation, driver_car_suggestion (Gold)
 
 사용 예 (로컬):
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
@@ -35,10 +35,9 @@ from main.spark.jobs.service_area_path import (
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
-    build_gold_lease_vehicle_inventory,
     build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
-    validate_vehicle_profit_simulation,
+    validate_gold_business_invariants,
 )
 from shared.common.s3_reader import list_keys
 from shared.common.success_marker import data_key_is_complete, marker_path
@@ -190,13 +189,13 @@ def _write_all_csv(
     year_month: str,
     service_area: str,
 ) -> dict[str, Path]:
-    """3종을 임시 파일에 모두 쓴 뒤 한꺼번에 교체합니다.
+    """2종을 임시 파일에 모두 쓴 뒤 한꺼번에 교체합니다.
 
     예전에는 최종 경로에 바로, 그것도 `toPandas()` 와 섞어 순차로 썼습니다. 두 번째에서
     죽으면 첫 산출물은 이번 값, 세 번째는 **직전 실행 값**이 남았고 대시보드는 그 섞인
     상태를 그대로 읽었습니다 (#589).
 
-    파일 하나의 원자성이 아니라 **3종의 일관성**이 목적이라 교체를 끝으로 모읍니다.
+    파일 하나의 원자성이 아니라 **2종의 일관성**이 목적이라 교체를 끝으로 모읍니다.
     `replace` 세 번 사이의 창은 남지만, 무거운 계산과 쓰기가 모두 끝난 뒤라 실패
     가능성이 사실상 사라집니다.
     """
@@ -221,7 +220,7 @@ def _write_all_csv(
 
 
 def main(args_list: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="원천 Silver 4종 → Gold 3종 산출")
+    parser = argparse.ArgumentParser(description="원천 Silver 4종 → Gold 2종 산출")
     parser.add_argument(
         "--env", choices=["local", "prod"], default=os.getenv("SPARK_JOB_ENV", "local"),
         help="local이면 로컬 폴더, prod면 S3에서 읽음 (기본 SPARK_JOB_ENV 환경변수, 없으면 local)",
@@ -266,7 +265,7 @@ def main(args_list: list[str] | None = None) -> None:
     parser.add_argument("--output_dir", default="data/gold")
     parser.add_argument(
         "--gold_dsn", default=os.getenv("GOLD_DATABASE_URL"),
-        help="--env prod일 때 Gold 3종을 적재할 PostgreSQL DSN (기본 GOLD_DATABASE_URL 환경변수)",
+        help="--env prod일 때 Gold 2종을 적재할 PostgreSQL DSN (기본 GOLD_DATABASE_URL 환경변수)",
     )
     args = parser.parse_args(args_list)
 
@@ -309,7 +308,7 @@ def main(args_list: list[str] | None = None) -> None:
 
     enriched: DataFrame | None = None
     driver_metrics: DataFrame | None = None
-    simulation: DataFrame | None = None
+    recommendation: DataFrame | None = None
     try:
         enriched = enrich_trips_with_fuel_cost(
             monthly_taxi_trip,
@@ -322,21 +321,19 @@ def main(args_list: list[str] | None = None) -> None:
             enriched, year_month, args.service_area
         ).persist()
         driver_profit = build_driver_monthly_profit(driver_metrics)
-        simulation = build_monthly_vehicle_recommendation(driver_metrics, inventory)
-        simulation = simulation.persist()
-        validate_vehicle_profit_simulation(
+        recommendation = build_monthly_vehicle_recommendation(
+            driver_metrics, inventory
+        ).persist()
+        validate_gold_business_invariants(
             driver_profit,
-            simulation,
+            recommendation,
+            driver_snapshot,
             inventory,
-        )
-        gold_inventory = build_gold_lease_vehicle_inventory(
-            inventory, year_month, args.service_area
         )
 
         outputs: dict[str, DataFrame] = {
             "driver_aggregation": driver_profit,
-            "driver_vehicle_profit_simulation": simulation,
-            "lease_vehicle_inventory": gold_inventory,
+            "driver_car_suggestion": recommendation,
         }
         # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
         # 계산 중 실패가 기존 산출물을 남기지 않습니다.
@@ -361,8 +358,8 @@ def main(args_list: list[str] | None = None) -> None:
             enriched.unpersist()
         if driver_metrics is not None:
             driver_metrics.unpersist()
-        if simulation is not None:
-            simulation.unpersist()
+        if recommendation is not None:
+            recommendation.unpersist()
 
 
 if __name__ == "__main__":
