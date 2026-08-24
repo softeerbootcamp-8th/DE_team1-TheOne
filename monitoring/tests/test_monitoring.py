@@ -9,9 +9,29 @@ ROOT = Path(__file__).parents[2]
 MONITORING = ROOT / "monitoring"
 WORKFLOW = ROOT / ".github/workflows/deploy-monitoring.yml"
 
-# CloudWatch 가 실제로 발행하는 값. 대문자·복수형(SPARK_EXECUTORS)으로 쓰면 SEARCH 가
-# 아무것도 매칭하지 못하고 위젯이 조용히 빈 채로 그려집니다 (#890).
-WORKER_TYPES = {"Spark_Executor", "Spark_Driver"}
+# SEARCH 는 차원을 "부분 일치"로 봅니다. 이름만 걸면 그 이름을 가진 모든 차원 조합이
+# 잡히는데, EMR Serverless 는 Worker* 지표를 JobId 별로 발행합니다. 그래서 작업이
+# 쌓일수록 위젯이 무한히 커지고, 500개를 넘으면 CloudWatch 가 "허용된 최대 지표 수를
+# 초과함" 을 띄우고 그리기를 포기합니다. 중괄호로 차원 조합 자체를 고정해야 막힙니다.
+APP_SCHEMA = "{AWS/EMRServerless,ApplicationId,ApplicationName}"
+
+# 위 스키마로 실제 발행되는 지표명 (`aws cloudwatch list-metrics` 로 확인).
+# 여기 없는 이름을 쓰면 위젯이 조용히 비거나(#890) JobId 차원으로 새어 폭증합니다.
+APP_LEVEL_METRICS = {
+    "CPUAllocated", "CancelledJobs", "CancellingJobs", "FailedJobs", "FailedSessions",
+    "IdleWorkerCount", "MaxCPUAllowed", "MaxMemoryAllowed", "MaxStorageAllowed",
+    "MemoryAllocated", "PendingCreationWorkerCount", "PendingJobs", "RunningJobs",
+    "RunningWorkerCount", "ScheduledJobs", "StartedSessions", "StartingSessions",
+    "StorageAllocated", "SubmittedJobs", "SubmittedSessions", "SuccessJobs",
+    "TerminatedSessions", "TerminatingSessions", "TotalWorkerCount",
+}
+
+# JobId 차원으로만 발행되어 대시보드에 두면 작업 수만큼 시계열이 늘어나는 지표.
+PER_JOB_METRICS = {
+    "WorkerCpuAllocated", "WorkerCpuUsed", "WorkerMemoryAllocated", "WorkerMemoryUsed",
+    "WorkerEphemeralStorageAllocated", "WorkerEphemeralStorageUsed",
+    "WorkerStorageReadBytes", "WorkerStorageWriteBytes",
+}
 
 PLACEHOLDERS = {"AWS_REGION", "EMR_APPLICATION_ID", "TOPIC_ARN", "AWS_ACCOUNT_ID"}
 
@@ -33,21 +53,91 @@ def _dashboard():
     return json.loads(rendered)
 
 
-def test_dashboard_shows_emr_job_states_and_worker_usage():
+def test_dashboard_shows_job_states_worker_usage_and_capacity():
     titles = {
         widget["properties"].get("title") for widget in _dashboard()["widgets"]
     }
     assert {
         "EMR Serverless job states",
-        "EMR worker memory usage (%)",
-        "EMR worker CPU usage (%)",
+        "EMR worker memory used (GB)",
+        "EMR worker memory allocated (GB)",
+        "EMR worker CPU used (vCPU)",
+        "EMR worker CPU allocated (vCPU)",
+        "EMR application capacity used (%)",
+        "EMR worker count",
     }.issubset(titles)
 
 
-def test_dashboard_uses_the_worker_type_values_cloudwatch_publishes():
-    body = (MONITORING / "dashboard.json").read_text()
-    found = set(re.findall(r'WorkerType=\\"([^\\]+)\\"', body))
-    assert found == WORKER_TYPES, f"실제 발행 값과 다릅니다: {found}"
+def _search_expressions():
+    for widget in _dashboard()["widgets"]:
+        if widget["type"] != "metric":
+            continue
+        for row in widget["properties"]["metrics"]:
+            for item in row:
+                expression = item.get("expression", "") if isinstance(item, dict) else ""
+                if "SEARCH(" in expression:
+                    yield expression
+
+
+def test_every_search_pins_the_dimension_schema():
+    """차원 이름만 걸면 SEARCH 가 JobId 차원 지표까지 함께 잡습니다.
+
+    Worker* 지표는 작업마다 새 시계열이 생기므로, 이렇게 두면 위젯이 계속 커지다가
+    500개를 넘는 순간 "허용된 최대 지표 수를 초과함" 으로 그리기를 멈춥니다. 실제로
+    memory·CPU 위젯이 각각 510개까지 늘어 깨졌습니다. 중괄호 스키마 고정이 유일한
+    구조적 방어라서, 새 위젯이 이걸 빠뜨리지 못하게 막습니다.
+    """
+    expressions = list(_search_expressions())
+    assert expressions, "SEARCH 가 하나도 없습니다"
+    for expression in expressions:
+        assert f"SEARCH('{APP_SCHEMA} " in expression, f"스키마 미고정: {expression}"
+
+
+def _widget_expressions():
+    for widget in _dashboard()["widgets"]:
+        if widget["type"] != "metric":
+            continue
+        expressions = [
+            item.get("expression", "")
+            for row in widget["properties"]["metrics"]
+            for item in row
+            if isinstance(item, dict)
+        ]
+        yield widget["properties"]["title"], expressions
+
+
+def test_per_job_metrics_are_only_read_through_metrics_insights():
+    """작업별 지표를 SEARCH 로 끌어오면 작업 수만큼 시계열이 늘어 한도를 넘습니다.
+
+    Metrics Insights 는 서버에서 집계해 GROUP BY 결과만 돌려주므로 스캔한 지표가
+    위젯 개수에 잡히지 않습니다. Worker*Used 는 앱 수준에 아예 없어서 사용량을 보려면
+    이 경로뿐입니다. 그래서 '쓰지 마라' 가 아니라 '이 경로로만 써라' 로 고정합니다.
+    """
+    for title, expressions in _widget_expressions():
+        for expression in expressions:
+            used = {m for m in PER_JOB_METRICS if m in expression}
+            if not used:
+                continue
+            assert expression.startswith("SELECT "), (
+                f"{title}: {used} 를 SEARCH 로 읽고 있습니다 — Metrics Insights 를 쓰세요"
+            )
+
+
+def test_each_widget_has_at_most_one_metrics_insights_query():
+    """GetMetricData 는 호출당 Metrics Insights 쿼리를 1개만 받습니다. 위젯 하나가
+
+    한 번의 호출로 그려지므로, 두 개를 넣으면 배포는 통과하고 위젯만 깨집니다.
+    used/allocated 비율을 한 위젯에 못 담는 이유가 이것입니다.
+    """
+    for title, expressions in _widget_expressions():
+        count = sum(1 for e in expressions if e.startswith("SELECT "))
+        assert count <= 1, f"{title}: Metrics Insights 쿼리가 {count}개입니다"
+
+
+def test_dashboard_metric_names_are_published_at_app_level():
+    found = set(re.findall(r'MetricName=\\"([^\\"]+)\\"', json.dumps(_dashboard())))
+    assert found, "MetricName 을 하나도 찾지 못했습니다"
+    assert found <= APP_LEVEL_METRICS, f"앱 수준에 없는 지표: {found - APP_LEVEL_METRICS}"
 
 
 def test_dashboard_carries_no_ec2_host_metrics():

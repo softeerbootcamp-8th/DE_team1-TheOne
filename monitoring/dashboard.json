@@ -3,51 +3,259 @@
   "periodOverride": "inherit",
   "widgets": [
     {
-      "type": "text", "x": 0, "y": 0, "width": 24, "height": 2,
+      "type": "text",
+      "x": 0,
+      "y": 0,
+      "width": 24,
+      "height": 2,
       "properties": {
-        "markdown": "# TheOne EMR Serverless\n작업 실행 상태와 Driver/Executor 자원 사용률. EC2 호스트 자원은 Grafana 에서 봅니다."
+        "markdown": "# TheOne EMR Serverless\n워커 사용량은 **Metrics Insights** 로 서버에서 집계합니다 — `SEARCH()` 로 작업별 지표를 끌어오면 작업이 쌓일수록 위젯이 커지다 한도(500개)를 넘어 그리기를 멈춥니다. EC2 호스트 자원은 Grafana 에서 봅니다."
       }
     },
     {
-      "type": "metric", "x": 0, "y": 2, "width": 24, "height": 4,
+      "type": "metric",
+      "x": 0,
+      "y": 2,
+      "width": 24,
+      "height": 4,
       "properties": {
-        "title": "EMR Serverless job states", "view": "singleValue",
-        "region": "${AWS_REGION}", "period": 60, "stat": "Sum",
+        "title": "EMR Serverless job states",
+        "view": "singleValue",
+        "region": "${AWS_REGION}",
+        "period": 60,
+        "stat": "Sum",
         "metrics": [
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"RunningJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))", "label": "Running", "id": "running"}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"PendingJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))", "label": "Pending", "id": "pending"}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"FailedJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))", "label": "Failed", "id": "failed"}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"SuccessJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))", "label": "Success", "id": "success"}]
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"RunningJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))",
+              "label": "Running",
+              "id": "running"
+            }
+          ],
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"PendingJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))",
+              "label": "Pending",
+              "id": "pending"
+            }
+          ],
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"FailedJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))",
+              "label": "Failed",
+              "id": "failed"
+            }
+          ],
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"SuccessJobs\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Sum'))",
+              "label": "Success",
+              "id": "success"
+            }
+          ]
         ]
       }
     },
     {
-      "type": "metric", "x": 0, "y": 6, "width": 12, "height": 6,
+      "type": "metric",
+      "x": 0,
+      "y": 6,
+      "width": 12,
+      "height": 6,
       "properties": {
-        "title": "EMR worker memory usage (%)", "region": "${AWS_REGION}",
-        "period": 60, "yAxis": {"left": {"min": 0, "max": 100}},
+        "title": "EMR worker memory used (GB)",
+        "region": "${AWS_REGION}",
+        "period": 300,
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "label": "GB",
+            "showUnits": false
+          }
+        },
         "metrics": [
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerMemoryAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Executor\"', 'Sum'))", "id": "ema", "visible": false}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerMemoryUsed\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Executor\"', 'Sum'))", "id": "emu", "visible": false}],
-          [{"expression": "IF(ema>0,100*emu/ema,0)", "label": "Executor", "id": "emp"}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerMemoryAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Driver\"', 'Sum'))", "id": "dma", "visible": false}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerMemoryUsed\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Driver\"', 'Sum'))", "id": "dmu", "visible": false}],
-          [{"expression": "IF(dma>0,100*dmu/dma,0)", "label": "Driver", "id": "dmp"}]
+          [
+            {
+              "expression": "SELECT SUM(WorkerMemoryUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "q"
+            }
+          ]
         ]
       }
     },
     {
-      "type": "metric", "x": 12, "y": 6, "width": 12, "height": 6,
+      "type": "metric",
+      "x": 12,
+      "y": 6,
+      "width": 12,
+      "height": 6,
       "properties": {
-        "title": "EMR worker CPU usage (%)", "region": "${AWS_REGION}",
-        "period": 60, "yAxis": {"left": {"min": 0, "max": 100}},
+        "title": "EMR worker memory allocated (GB)",
+        "region": "${AWS_REGION}",
+        "period": 300,
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "label": "GB",
+            "showUnits": false
+          }
+        },
         "metrics": [
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerCpuAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Executor\"', 'Sum'))", "id": "eca", "visible": false}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerCpuUsed\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Executor\"', 'Sum'))", "id": "ecu", "visible": false}],
-          [{"expression": "IF(eca>0,100*ecu/eca,0)", "label": "Executor", "id": "ecp"}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerCpuAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Driver\"', 'Sum'))", "id": "dca", "visible": false}],
-          [{"expression": "SUM(SEARCH('Namespace=\"AWS/EMRServerless\" MetricName=\"WorkerCpuUsed\" ApplicationId=\"${EMR_APPLICATION_ID}\" WorkerType=\"Spark_Driver\"', 'Sum'))", "id": "dcu", "visible": false}],
-          [{"expression": "IF(dca>0,100*dcu/dca,0)", "label": "Driver", "id": "dcp"}]
+          [
+            {
+              "expression": "SELECT SUM(WorkerMemoryAllocated) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "q"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "EMR worker CPU used (vCPU)",
+        "region": "${AWS_REGION}",
+        "period": 300,
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "label": "vCPU",
+            "showUnits": false
+          }
+        },
+        "metrics": [
+          [
+            {
+              "expression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "q"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 12,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "EMR worker CPU allocated (vCPU)",
+        "region": "${AWS_REGION}",
+        "period": 300,
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "label": "vCPU",
+            "showUnits": false
+          }
+        },
+        "metrics": [
+          [
+            {
+              "expression": "SELECT SUM(WorkerCpuAllocated) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+              "id": "q"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 0,
+      "y": 18,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "EMR application capacity used (%)",
+        "region": "${AWS_REGION}",
+        "period": 300,
+        "yAxis": {
+          "left": {
+            "min": 0,
+            "max": 100
+          }
+        },
+        "metrics": [
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"MemoryAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
+              "id": "mem",
+              "visible": false
+            }
+          ],
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"MaxMemoryAllowed\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
+              "id": "memmax",
+              "visible": false
+            }
+          ],
+          [
+            {
+              "expression": "IF(memmax>0,100*mem/memmax,0)",
+              "label": "Memory",
+              "id": "memp"
+            }
+          ],
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"CPUAllocated\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
+              "id": "cpu",
+              "visible": false
+            }
+          ],
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"MaxCPUAllowed\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
+              "id": "cpumax",
+              "visible": false
+            }
+          ],
+          [
+            {
+              "expression": "IF(cpumax>0,100*cpu/cpumax,0)",
+              "label": "CPU",
+              "id": "cpup"
+            }
+          ]
+        ]
+      }
+    },
+    {
+      "type": "metric",
+      "x": 12,
+      "y": 18,
+      "width": 12,
+      "height": 6,
+      "properties": {
+        "title": "EMR worker count",
+        "region": "${AWS_REGION}",
+        "period": 300,
+        "yAxis": {
+          "left": {
+            "min": 0
+          }
+        },
+        "metrics": [
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"RunningWorkerCount\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
+              "label": "Running",
+              "id": "wrun"
+            }
+          ],
+          [
+            {
+              "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"PendingCreationWorkerCount\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
+              "label": "Pending creation",
+              "id": "wpend"
+            }
+          ]
         ]
       }
     }
