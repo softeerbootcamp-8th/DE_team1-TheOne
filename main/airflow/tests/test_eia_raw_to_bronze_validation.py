@@ -13,8 +13,6 @@
 """
 
 import importlib
-from datetime import date
-
 import pytest
 
 from main.airflow.scripts.eia_electricity_price_raw_to_bronze import tasks as electricity_tasks
@@ -26,6 +24,7 @@ def _layout():
 
 
 BIG_ENOUGH = b"x" * (_layout().ELECTRICITY_MIN_BYTES + 1)
+COLLECTED_AT = "2026-08-17T12:34:56.123456Z"
 
 
 DATASETS = [
@@ -43,7 +42,12 @@ DATASETS = [
 def test_원본이_규칙과_다른_경로면_실패한다(tmp_path, tasks, bronze_file, _min_attr, service_area):
     stray = tmp_path / "stray.xls"
     stray.write_bytes(BIG_ENOUGH)
-    result = {"row_count": 1, "locations": [str(stray)], "collected_date": "2026-08-17"}
+    result = {
+        "row_count": 1,
+        "locations": [str(stray)],
+        "collected_at": COLLECTED_AT,
+        "collected_date": "2026-08-17",
+    }
 
     with pytest.raises(ValueError, match="적재 경로가 예상과 다릅니다"):
         tasks.validate_bronze_task.function(
@@ -54,11 +58,16 @@ def test_원본이_규칙과_다른_경로면_실패한다(tmp_path, tasks, bron
 @pytest.mark.parametrize(("tasks", "bronze_file", "min_attr", "service_area"), DATASETS)
 def test_원본이_하한보다_작으면_실패한다(tmp_path, tasks, bronze_file, min_attr, service_area):
     layout = _layout()
-    path = getattr(layout, bronze_file)(str(tmp_path), date(2026, 8, 17), service_area)
+    path = getattr(layout, bronze_file)(str(tmp_path), COLLECTED_AT, service_area)
     path.parent.mkdir(parents=True, exist_ok=True)
     # 하한보다 1바이트 작게 — 각 데이터셋의 하한이 실제로 적용되는지 봅니다.
     path.write_bytes(b"x" * (getattr(layout, min_attr) - 1))
-    result = {"row_count": 1, "locations": [str(path)], "collected_date": "2026-08-17"}
+    result = {
+        "row_count": 1,
+        "locations": [str(path)],
+        "collected_at": COLLECTED_AT,
+        "collected_date": "2026-08-17",
+    }
 
     with pytest.raises(ValueError, match="EIA 원본이 너무 작습니다"):
         tasks.validate_bronze_task.function(
@@ -83,11 +92,18 @@ def test_service_area가_있으면_데이터셋_이름이_달라도_경로_검�
     layout = _layout()
     wrong = (
         tmp_path / "not_the_real_dataset" / "service_area=NYC"
-        / "collected_date=2026-08-17" / getattr(layout, file_name_attr)
+        / "year_month=2026-08"
+        / "collected_at=20260817T123456123456Z"
+        / getattr(layout, file_name_attr)
     )
     wrong.parent.mkdir(parents=True, exist_ok=True)
     wrong.write_bytes(BIG_ENOUGH)
-    result = {"row_count": 1, "locations": [str(wrong)], "collected_date": "2026-08-17"}
+    result = {
+        "row_count": 1,
+        "locations": [str(wrong)],
+        "collected_at": COLLECTED_AT,
+        "collected_date": "2026-08-17",
+    }
 
     with pytest.raises(ValueError, match="적재 경로가 예상과 다릅니다"):
         tasks.validate_bronze_task.function(

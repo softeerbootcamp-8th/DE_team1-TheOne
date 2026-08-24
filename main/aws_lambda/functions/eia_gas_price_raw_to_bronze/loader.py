@@ -1,8 +1,6 @@
-"""EIA 원본 파일을 수집일 파티션에 그대로 적재합니다."""
+"""EIA 원본 파일을 월·수집 시각 버전에 그대로 적재합니다."""
 
 import logging
-from datetime import date
-
 from pipeline_core.loader import Loader, WriteResult
 
 from main.aws_lambda.common import eia_fuel_price_layout as layout
@@ -18,17 +16,17 @@ class EiaGasPriceBronzeLoader(Loader):
     def __init__(
         self,
         base_dir: str,
-        collected_date: date,
+        collected_at: str,
         service_area: str,
     ):
         self._base_dir = base_dir
-        self._collected_date = collected_date
+        self._collected_at = collected_at
         self._service_area = service_area
 
     def write(self, data: dict) -> WriteResult:
         body = data["body"]
         path = layout.gas_bronze_file(
-            self._base_dir, self._collected_date, self._service_area
+            self._base_dir, self._collected_at, self._service_area
         )
         duplicate = layout.is_duplicate_of_newest(
             self._base_dir,
@@ -57,17 +55,17 @@ class EiaGasPriceS3BronzeLoader(Loader):
 
     def __init__(
         self,
-        collected_date: date,
+        collected_at: str,
         service_area: str,
         bucket: str | None = None,
     ):
-        self._collected_date = collected_date
+        self._collected_at = collected_at
         self._bucket = bucket
         self._service_area = service_area
 
     def write(self, data: dict) -> WriteResult:
         body = data["body"]
-        key = layout.gas_bronze_key(self._collected_date, self._service_area)
+        key = layout.gas_bronze_key(self._collected_at, self._service_area)
 
         result = S3Loader(
             key=key,
@@ -83,15 +81,15 @@ class EiaGasPriceS3BronzeLoader(Loader):
 def build_bronze_loader(
     storage: str,
     base_dir: str,
-    collected_date: date,
+    collected_at: str,
     service_area: str,
     bucket: str | None = None,
 ) -> Loader:
     if storage == "local":
-        return EiaGasPriceBronzeLoader(base_dir, collected_date, service_area)
+        return EiaGasPriceBronzeLoader(base_dir, collected_at, service_area)
     if storage == "s3":
         return EiaGasPriceS3BronzeLoader(
-            collected_date,
+            collected_at,
             service_area,
             bucket=bucket,
         )

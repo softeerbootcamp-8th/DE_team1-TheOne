@@ -11,6 +11,7 @@ Bronze 원본 검증은 여기 없습니다 — `test_eia_raw_to_bronze_validati
 5. 잠정값(`Preliminary`)은 실패시키지 않고 통과 — 정상 산출물이지만 재생성 시 값이 바뀜
 6. gas·electricity 둘 다 같은 service_area 경로에서만 찾음
 7. 비지역 예전 경로의 CLEAN은 대상 지역 데이터로 사용하지 않음
+8. 통합 Silver 검증과 공개는 `input_version=<상류조합>/ny_fuel.parquet` 경로를 사용
 
 Lambda 핸들러는 부르지 않습니다 — 파일을 직접 놓고 검증 함수만 확인합니다.
 """
@@ -40,6 +41,9 @@ from schema.silver import (
 
 DAG = dag_module.eia_fuel_price_silver_dag
 COLLECTED = date(2026, 8, 17)
+GAS_SOURCE_TOKEN = "20260810T123456123456Z"
+EV_SOURCE_TOKEN = "20260817T123456123456Z"
+INPUT_VERSION = f"input_version=gas-{GAS_SOURCE_TOKEN}__ev-{EV_SOURCE_TOKEN}"
 
 
 def _write_clean(
@@ -55,7 +59,9 @@ def _write_clean(
              "bronze_collected_date": COLLECTED}
             for d in range(1, days + 1)
         ]
-        path = clean_silver_file(str(silver), "eia_gas_price", year_month, service_area)
+        path = clean_silver_file(
+            str(silver), "eia_gas_price", year_month, GAS_SOURCE_TOKEN, service_area
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=GAS_SCHEMA), path)
         (path.parent / "_SUCCESS").touch()
@@ -66,7 +72,11 @@ def _write_clean(
             for d in range(1, days + 1)
         ]
         path = clean_silver_file(
-            str(silver), "eia_electricity_price", year_month, service_area
+            str(silver),
+            "eia_electricity_price",
+            year_month,
+            EV_SOURCE_TOKEN,
+            service_area,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
         pq.write_table(pa.Table.from_pylist(rows, schema=EV_SCHEMA), path)
@@ -76,7 +86,7 @@ def _write_clean(
 def _write_silver(silver, year_month, rows, source=EIA, schema=SCHEMA,
                   collected=COLLECTED, status=FINAL, service_area="NYC"):
     path = silver_tasks.integrated_silver_file(
-        str(silver), year_month, service_area
+        str(silver), year_month, INPUT_VERSION, service_area
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     year, month = (int(part) for part in year_month.split("-"))
@@ -89,7 +99,14 @@ def _write_silver(silver, year_month, rows, source=EIA, schema=SCHEMA,
     if schema is not SCHEMA:
         records = [{k: v for k, v in r.items() if k in schema.names} for r in records]
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
-    return {"year_month": year_month, "row_count": rows, "locations": [str(path)]}
+    return {
+        "year_month": year_month,
+        "input_version": INPUT_VERSION,
+        "gas_source_collected_at": GAS_SOURCE_TOKEN,
+        "ev_source_collected_at": EV_SOURCE_TOKEN,
+        "row_count": rows,
+        "locations": [str(path)],
+    }
 
 
 @pytest.fixture(autouse=True)
@@ -134,7 +151,9 @@ def test_비지역_electricity_CLEAN으로는_대상지역_누락을_대신하�
         {"date": date(year, month, d), "gas_price": 3.0, "bronze_collected_date": COLLECTED}
         for d in range(1, days + 1)
     ]
-    gas_path = clean_silver_file(str(tmp_path), "eia_gas_price", "2025-05", "NYC")
+    gas_path = clean_silver_file(
+        str(tmp_path), "eia_gas_price", "2025-05", GAS_SOURCE_TOKEN, "NYC"
+    )
     gas_path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(gas_rows, schema=GAS_SCHEMA), gas_path)
     (gas_path.parent / "_SUCCESS").touch()
@@ -180,38 +199,31 @@ def test_CLEAN_이_하나라도_없으면_어느_DAG를_돌릴지_알려준다(t
         silver_tasks.require_clean_silver(str(tmp_path), "2025-05", "NYC")
 
 
-def test_S3_CLEAN_두_객체를_고정된_월_키로_확인한다(monkeypatch):
-    seen = []
+def test_S3_CLEAN_두_객체를_최신_원천버전으로_확인한다(monkeypatch):
     monkeypatch.setenv("BRONZE_STORAGE", "s3")
     monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "data-lake")
-    monkeypatch.setattr(
-        silver_tasks,
-        "require_file",
-        lambda location: seen.append(location) or location,
-    )
-    monkeypatch.setattr(
-        silver_tasks,
-        "require_success_marker",
-        lambda directory: None,
-    )
+    def fake_list_keys(bucket, prefix):
+        token = GAS_SOURCE_TOKEN if "eia_gas_price" in prefix else EV_SOURCE_TOKEN
+        dataset = "eia_gas_price" if "eia_gas_price" in prefix else "eia_electricity_price"
+        version = f"{prefix}source_collected_at={token}/"
+        return [f"{version}{dataset}.parquet", f"{version}_SUCCESS"]
+
+    monkeypatch.setattr(silver_tasks, "list_keys", fake_list_keys)
 
     found = silver_tasks.require_clean_silver("unused", "2025-05", "NYC")
 
-    assert all(isinstance(location, silver_tasks.S3Location) for location in seen)
     assert set(found.values()) == {
-        "s3://data-lake/silver/eia_gas_price/service_area=NYC/year_month=2025-05/eia_gas_price.parquet",
-        "s3://data-lake/silver/eia_electricity_price/service_area=NYC/year_month=2025-05/eia_electricity_price.parquet",
+        "s3://data-lake/silver/eia_gas_price/service_area=NYC/year_month=2025-05/"
+        f"source_collected_at={GAS_SOURCE_TOKEN}/eia_gas_price.parquet",
+        "s3://data-lake/silver/eia_electricity_price/service_area=NYC/year_month=2025-05/"
+        f"source_collected_at={EV_SOURCE_TOKEN}/eia_electricity_price.parquet",
     }
 
 
 def test_S3_CLEAN_누락도_선행_DAG를_알려준다(monkeypatch):
     monkeypatch.setenv("BRONZE_STORAGE", "s3")
     monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "data-lake")
-    monkeypatch.setattr(
-        silver_tasks,
-        "require_file",
-        lambda location: (_ for _ in ()).throw(FileNotFoundError(str(location))),
-    )
+    monkeypatch.setattr(silver_tasks, "list_keys", lambda bucket, prefix: [])
 
     with pytest.raises(FileNotFoundError, match="eia_gas_price_raw_to_silver_pipeline"):
         silver_tasks.require_clean_silver("unused", "2025-05", "NYC")
@@ -265,11 +277,16 @@ def test_다른_출처가_만든_산출물은_EIA_검증에서_실패한다(tmp_
 
 def test_산출물이_없으면_실패한다(tmp_path):
     path = silver_tasks.integrated_silver_file(
-        str(tmp_path), "2024-03", "NYC"
+        str(tmp_path), "2024-03", INPUT_VERSION, "NYC"
     )
     with pytest.raises(FileNotFoundError):
         silver_tasks.validate_silver(
-            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]},
+            {
+                "year_month": "2024-03",
+                "input_version": INPUT_VERSION,
+                "row_count": 31,
+                "locations": [str(path)],
+            },
             "NYC",
         )
 
@@ -305,10 +322,11 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
     silver_tasks.validate_silver(
         {
             "year_month": "2024-03",
+            "input_version": INPUT_VERSION,
             "row_count": 31,
             "locations": [
                 "s3://data-lake/silver/gas_ev_price/service_area=NYC/"
-                "year_month=2024-03/gas_ev_price.parquet"
+                f"year_month=2024-03/{INPUT_VERSION}/ny_fuel.parquet"
             ],
         },
         "NYC",
@@ -351,10 +369,17 @@ class _FakeOutletEvents(dict):
 
 
 def test_검증_실패시_SUCCESS와_asset을_공개하지_않는다(tmp_path):
-    final = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03", "NYC")
+    final = silver_tasks.integrated_silver_file(
+        str(tmp_path), "2024-03", INPUT_VERSION, "NYC"
+    )
     _write_at(final, 30)
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 30, "locations": [str(final)]}
+        {
+            "year_month": "2024-03",
+            "input_version": INPUT_VERSION,
+            "row_count": 30,
+            "locations": [str(final)],
+        }
     )
     outlet_events = _FakeOutletEvents()
 
@@ -371,10 +396,17 @@ def test_검증_실패시_SUCCESS와_asset을_공개하지_않는다(tmp_path):
 
 
 def test_검증_통과시_SUCCESS와_asset이_발행된다(tmp_path):
-    final = silver_tasks.integrated_silver_file(str(tmp_path), "2024-03", "NYC")
+    final = silver_tasks.integrated_silver_file(
+        str(tmp_path), "2024-03", INPUT_VERSION, "NYC"
+    )
     _write_at(final, 31)
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 31, "locations": [str(final)]}
+        {
+            "year_month": "2024-03",
+            "input_version": INPUT_VERSION,
+            "row_count": 31,
+            "locations": [str(final)],
+        }
     )
     outlet_events = _FakeOutletEvents()
 

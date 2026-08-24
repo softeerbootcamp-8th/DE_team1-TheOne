@@ -19,6 +19,7 @@ from shared.airflow.common.validation import S3Location
 
 
 DAG = dag_module.eia_electricity_price_raw_to_silver_dag
+SOURCE_COLLECTED_AT = "2026-08-17T12:34:56.123456Z"
 
 
 def _write(path, rows, schema=SCHEMA):
@@ -93,18 +94,22 @@ def test_연도와_월중_하나만_지정하면_실패한다(params):
 
 
 def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):
-    path = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
+    path = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     _write(path, _march())
 
     task_module.validate_silver(
-        {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]},
+        {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(path)]},
         "NYC",
     )
 
 
 @pytest.mark.parametrize("violation", ["missing_day", "duplicate_day", "schema"])
 def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, violation):
-    path = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
+    path = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     if violation == "missing_day":
         _write(path, _march(30))
     elif violation == "duplicate_day":
@@ -117,16 +122,18 @@ def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, 
 
     with pytest.raises(ValueError):
         task_module.validate_silver(
-            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]},
+            {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(path)]},
             "NYC",
         )
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
-    path = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
+    path = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     with pytest.raises(FileNotFoundError, match="충전 단가 Silver"):
         task_module.validate_silver(
-            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]},
+            {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(path)]},
             "NYC",
         )
 
@@ -146,8 +153,10 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
             "row_count": 31,
             "locations": [
                 "s3://data-lake/silver/eia_electricity_price/service_area=NYC/"
-                "year_month=2024-03/eia_electricity_price.parquet"
+                "year_month=2024-03/source_collected_at=20260817T123456123456Z/"
+                "eia_electricity_price.parquet"
             ],
+            "source_collected_at": SOURCE_COLLECTED_AT,
         },
         "NYC",
     )
@@ -165,10 +174,12 @@ def _fake_task_instance(result: dict):
 
 
 def test_검증_실패시_SUCCESS를_공개하지_않는다(tmp_path):
-    final = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
+    final = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     _write(final, _march(30))
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 30, "locations": [str(final)]}
+        {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 30, "locations": [str(final)]}
     )
 
     with pytest.raises(ValueError, match="31일이어야"):
@@ -182,10 +193,12 @@ def test_검증_실패시_SUCCESS를_공개하지_않는다(tmp_path):
 
 
 def test_검증_통과시_최종_경로에_SUCCESS를_공개한다(tmp_path):
-    final = task_module.silver_file(str(tmp_path), "2024-03", "NYC")
+    final = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     _write(final, _march())
     task_instance = _fake_task_instance(
-        {"year_month": "2024-03", "row_count": 31, "locations": [str(final)]}
+        {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(final)]}
     )
 
     task_module.validate_silver_task.function(

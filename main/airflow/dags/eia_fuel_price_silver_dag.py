@@ -1,6 +1,6 @@
 """휘발유·전력 CLEAN Silver 두 개를 대상 월의 통합 연료비 Silver 로 붙입니다.
 
-산출물은 `gas_ev_price/year_month=YYYY-MM/gas_ev_price.parquet` — Gold 가 읽는
+산출물은 `gas_ev_price/year_month=YYYY-MM/input_version=<상류조합>/ny_fuel.parquet` — Gold 가 읽는
 자리입니다. 출처는 `price_source` 로 남깁니다.
 
 Bronze 원본을 직접 읽지 않습니다 — 정제(주간·월간 원본을 일별로 펼치는 일)는 각 원천의

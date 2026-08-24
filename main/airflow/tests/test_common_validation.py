@@ -329,14 +329,17 @@ def test_지역_계층이_있으면_세그먼트를_하나_늘려_데이터셋�
     """지역 계층(#674)이 들어가면 tail 이 밀려 **데이터셋명이 빠집니다.** 비교하는 두
     경로가 같은 빌더로 만들어지니 통과는 하지만 검사가 조용히 약해집니다(#851)."""
     scoped = (
-        "/base/eia_gas_price/service_area=NYC/year_month=2026-08/eia_gas_price.parquet"
+        "/base/eia_gas_price/service_area=NYC/year_month=2026-08/"
+        "source_collected_at=20260824T123456123456Z/eia_gas_price.parquet"
     )
 
-    assert layout_tail(scoped) == (
-        "service_area=NYC/year_month=2026-08/eia_gas_price.parquet"
+    assert layout_tail(scoped, segments=4) == (
+        "service_area=NYC/year_month=2026-08/"
+        "source_collected_at=20260824T123456123456Z/eia_gas_price.parquet"
     )
-    assert layout_tail(scoped, service_area="NYC") == (
-        "eia_gas_price/service_area=NYC/year_month=2026-08/eia_gas_price.parquet"
+    assert layout_tail(scoped, segments=4, service_area="NYC") == (
+        "eia_gas_price/service_area=NYC/year_month=2026-08/"
+        "source_collected_at=20260824T123456123456Z/eia_gas_price.parquet"
     )
 
 

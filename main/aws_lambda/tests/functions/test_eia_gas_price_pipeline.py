@@ -36,6 +36,7 @@ from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.transformer import
 from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
 
 COLLECTED = date(2026, 8, 17)
+COLLECTED_AT = "2026-08-17T12:34:56.123456Z"
 WEEKLY = [
     (date(2025, 4, 28), 3.0),
     (date(2025, 5, 5), 3.1),
@@ -116,10 +117,12 @@ def test_주간_계열_시트가_없으면_실패한다():
 def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
     rows = build_daily_prices("2025-05", _xls(WEEKLY), COLLECTED)
 
-    result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(rows)
+    result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(
+        {"rows": rows, "source_collected_at": COLLECTED_AT}
+    )
 
     assert result.location == str(
-        silver_file(str(tmp_path), "2025-05", "NYC")
+        silver_file(str(tmp_path), "2025-05", COLLECTED_AT, "NYC")
     )
     assert result.row_count == 31
     table = pq.ParquetFile(result.location).read()
@@ -128,7 +131,7 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
 
 def test_빈_결과는_적재를_거부한다(tmp_path):
     with pytest.raises(ValueError, match="적재할"):
-        EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write([])
+        EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write({"rows": []})
 
 
 # --- 원본 신선도 (#544) -------------------------------------------------------
@@ -191,17 +194,17 @@ from main.aws_lambda.common import eia_fuel_price_layout as layout  # noqa: E402
 def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
     """electricity(#558)에서 검증한 dataset 파라미터화 규칙이 gas 에도 그대로 성립하는지 고정합니다."""
     keys = [
-        layout.gas_bronze_key(date(2025, 5, 10), "NYC"),
-        layout.gas_bronze_key(COLLECTED, "NYC"),
+        layout.gas_bronze_key("2025-05-10T00:00:00.000000Z", "NYC"),
+        layout.gas_bronze_key(COLLECTED_AT, "NYC"),
     ]
     keys.extend(f"{key.rsplit('/', 1)[0]}/_SUCCESS" for key in list(keys))
 
-    collected_date, key = layout.newest_bronze_s3_key(
+    collected_at, key = layout.newest_bronze_s3_key(
         keys, layout.GAS_DATASET, layout.GAS_FILE_NAME, "NYC"
     )
 
-    assert collected_date == COLLECTED
-    assert key == layout.gas_bronze_key(COLLECTED, "NYC")
+    assert collected_at == COLLECTED_AT
+    assert key == layout.gas_bronze_key(COLLECTED_AT, "NYC")
 
 
 def test_S3_키_목록이_비면_실패한다():
@@ -219,7 +222,7 @@ from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.extractor import (
 
 
 def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
-    path = layout.gas_bronze_file(str(tmp_path), COLLECTED, "TX")
+    path = layout.gas_bronze_file(str(tmp_path), COLLECTED_AT, "TX")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(_xls(WEEKLY))
     (path.parent / "_SUCCESS").touch()
@@ -227,6 +230,7 @@ def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
     result = EiaGasPriceBronzeExtractor(str(tmp_path), "2025-05", "TX").extract()
 
     assert result["bronze_collected_date"] == COLLECTED
+    assert result["source_collected_at"] == COLLECTED_AT
     with pytest.raises(FileNotFoundError):
         EiaGasPriceBronzeExtractor(str(tmp_path), "2025-05", "NYC").extract()
 
@@ -234,8 +238,9 @@ def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
 def test_silver_쓰기_경로에_지역이_반영되고_서로_겹치지_않는다(tmp_path):
     rows = build_daily_prices("2025-05", _xls(WEEKLY), COLLECTED)
 
-    nyc = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(rows)
-    tx = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "TX").write(rows)
+    payload = {"rows": rows, "source_collected_at": COLLECTED_AT}
+    nyc = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(payload)
+    tx = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "TX").write(payload)
 
     assert nyc.location != tx.location
     assert "service_area=NYC" in nyc.location
