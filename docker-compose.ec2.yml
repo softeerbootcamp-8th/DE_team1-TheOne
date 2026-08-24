@@ -46,6 +46,16 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
+      # ★ 이 값을 고정하지 않으면 배포마다 Connection 을 읽을 수 없게 됩니다.
+      #
+      # Connection 의 password·extra 는 Fernet 으로 암호화되어 Postgres 에 저장됩니다.
+      # 키를 지정하지 않으면 컨테이너가 재생성될 때 airflow.cfg 가 새로 만들어지고
+      # 그 안의 fernet_key 도 새 난수가 됩니다. 데이터는 남아 있는데 복호화가 안 되어
+      # UI 가 500 을 냅니다 (#909).
+      #
+      # airflow.cfg 는 볼륨이 아니라 이미지 경로에 있어 컨테이너 수명과 같습니다.
+      # 그래서 파일이 아니라 환경변수로 넘겨야 합니다.
+      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW_FERNET_KEY:?~/airflow/.env 의 AIRFLOW_FERNET_KEY가 필요합니다}
       # ★ 로그인을 없앱니다. 인증된 모든 요청을 admin 으로 취급합니다.
       #
       # 왜 괜찮은가 — SimpleAuthManager 는 비밀번호를 컨테이너 안 평문 파일
