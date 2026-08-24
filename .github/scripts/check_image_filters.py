@@ -9,6 +9,7 @@
 
     COPY 에 있는데 필터에 없음   →  코드가 바뀌어도 배포가 스킵됨 (조용함)
     필터에 있는데 COPY 에 없음   →  안 바뀐 이미지를 굽고 배포함 (DAG 이 끊김)
+    import 하는데 COPY 안 됨     →  잡 실행 시점에 ModuleNotFoundError (조용함)
 
 앞의 것이 특히 나쁩니다 — 초록불인데 반영이 안 됩니다. 실제로 세 번 겪었습니다
 (#653 aws_lambda 필터 6개 누락, #732 config/ 누락, #739 sub/generators 누락).
@@ -20,6 +21,7 @@
 from __future__ import annotations
 
 import argparse
+import ast
 import sys
 from pathlib import Path
 
@@ -89,6 +91,90 @@ def missing(sources: list[str], patterns: list[str]) -> list[str]:
     return sorted({s for s in sources if not any(_covers(p, s) for p in patterns)})
 
 
+# 저장소 안의 최상위 패키지. 이 이름으로 시작하는 import 만 COPY 대상인지 봅니다.
+FIRST_PARTY = {"shared", "main", "sub", "schema", "config"}
+
+
+def runtime_copies(dockerfile: Path) -> list[str]:
+    """이미지의 **실행 경로**로 들어가는 COPY 원본만.
+
+    `/tmp` 로 가는 것은 빌드 단계 재료(pyproject, uv.lock, pip 로 설치하는 libs)라
+    런타임 import 경로에 없습니다. 그걸 포함하면 덮인 것으로 잘못 셉니다.
+    """
+    sources: list[str] = []
+    for line in dockerfile.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("COPY "):
+            continue
+        parts = [p for p in line.split()[1:] if not p.startswith("--")]
+        if len(parts) < 2 or parts[-1].startswith("/tmp"):
+            continue
+        sources += [s.rstrip("/") for s in parts[:-1] if s not in IGNORED_SOURCES]
+    return sources
+
+
+def _module_level_imports(path: Path):
+    """모듈 최상위 import 만.
+
+    함수 안 import 는 그 함수를 부를 때만 필요한 선택적 의존입니다 (예:
+    `generate.py` 가 S3 경로에서만 `s3_loader` 를 씁니다). 최상위 import 만
+    "그 파일을 불러오는 순간 반드시 깨지는 것" 입니다.
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+    except (SyntaxError, UnicodeDecodeError):
+        return
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.level == 0 and node.module:
+                yield node.module
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                yield alias.name
+
+
+def _module_file(root: Path, module: str) -> str | None:
+    """`shared.common.success_marker` -> `shared/common/success_marker.py`."""
+    parts = module.split(".")
+    if parts[0] not in FIRST_PARTY:
+        return None
+    base = root.joinpath(*parts)
+    for candidate in (base.with_suffix(".py"), base / "__init__.py"):
+        if candidate.is_file():
+            return str(candidate.relative_to(root))
+    return None
+
+
+def uncopied_imports(root: Path, sources: list[str]) -> list[str]:
+    """이미지 안 코드가 import 하는데 이미지에 안 들어가는 모듈.
+
+    빌드도 CI 도 통과하고 **잡을 실제로 돌려야** ModuleNotFoundError 로 보입니다.
+    쓰는 파일만 골라 COPY 하다가 새 모듈이 생기면 그대로 재현됩니다.
+    """
+    def is_test(path: Path) -> bool:
+        # 테스트는 이미지에 딸려 들어가지만 거기서 실행되지 않습니다.
+        return path.name.startswith("test_") or "tests" in path.parts
+
+    in_image: list[Path] = []
+    for source in sources:
+        path = root / source
+        if path.is_dir():
+            in_image += sorted(f for f in path.rglob("*.py") if not is_test(f))
+        elif path.suffix == ".py" and not is_test(path):
+            in_image.append(path)
+
+    def covered(target: str) -> bool:
+        return any(target == s or target.startswith(s + "/") for s in sources)
+
+    gaps: set[str] = set()
+    for path in in_image:
+        for module in _module_level_imports(path):
+            target = _module_file(root, module)
+            if target and not covered(target):
+                gaps.add(f"{target}  <- {path.relative_to(root)}")
+    return sorted(gaps)
+
+
 def ci_filter_paths(workflow: Path, name: str) -> list[str]:
     """`dorny/paths-filter` 의 `filters:` 블록에서 한 항목의 경로 목록.
 
@@ -140,6 +226,14 @@ def main() -> int:
                 print(f"       COPY 하는데 저장소에 없음: {path}")
             failures.append(f"{target['dockerfile']} COPY 대상 존재")
 
+        gaps = uncopied_imports(root, runtime_copies(dockerfile))
+        status = "ok  " if not gaps else "FAIL"
+        print(f"{status} {target['dockerfile']} import 대상이 이미지에 있음")
+        if gaps:
+            for gap in gaps:
+                print(f"       import 하는데 COPY 안 됨: {gap}")
+            failures.append(f"{target['dockerfile']} import 대상이 이미지에 있음")
+
         for label, patterns in (
             ("ci.yml", ci_filter_paths(root / ".github/workflows/ci.yml", target["ci_filter"])),
             (target["deploy_workflow"], deploy_paths(root / target["deploy_workflow"])),
@@ -156,6 +250,8 @@ def main() -> int:
         print()
         print("이미지에 들어가는데 필터에 없는 경로가 있습니다. 그 파일을 고치면 이미지가")
         print("바뀌는데 빌드·배포가 스킵됩니다. 필터에 추가하거나 COPY 를 줄이세요.")
+        print("import 인데 COPY 안 된 것이 있으면, 그 잡은 실행 시점에")
+        print("ModuleNotFoundError 로 죽습니다. 파일 단위 COPY 를 디렉터리로 넓히세요.")
         return 1
     return 0
 
