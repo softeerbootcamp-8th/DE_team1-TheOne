@@ -20,8 +20,17 @@ RUN_TYPE_TEXT = (
     "{% elif run_id.startswith('scheduled__') %}정기 실행"
     "{% else %}기타 실행{% endif %}"
 )
+# 줄바꿈을 접어 한 줄로 만듭니다. Slack 의 인라인 코드(백틱 1개)는 줄을 넘지 못해서,
+# 여러 줄 사유를 그대로 실으면 닫는 백틱이 다음 줄로 가고 양쪽 다 짝이 안 맞아
+# 백틱이 글자 그대로 찍힙니다. EMR Serverless 실패 사유가 정확히 이 형태입니다
+# ("Last few exceptions:" 뒤에 예외가 줄 단위로 붙습니다).
+#
+# 인자 없는 `split()` 은 줄바꿈·탭을 포함한 모든 공백으로 쪼개고 연속 공백을 접습니다.
+# 자르기는 접은 뒤에 해야 400자가 실제로 보이는 분량이 됩니다.
+# 사유 안의 백틱도 코드 스팬을 깨므로 작은따옴표로 바꿉니다.
 REASON_TEXT = (
-    f"{{{{ (exception or '(사유 없음)') | string | truncate({REASON_MAX_CHARS}, True) }}}}"
+    "{{ ((exception or '(사유 없음)') | string).split() | join(' ') "
+    f"""| replace('`', "'") | truncate({REASON_MAX_CHARS}, True) }}}}"""
 )
 # 파티션 DAG(Gold)는 이 값으로 어느 파티션이 문제인지 바로 알 수 있습니다. 지역
 # 축이 들어가면(#674) 키가 "{service_area}:{year_month}"가 되어 알림만 보고 어느
