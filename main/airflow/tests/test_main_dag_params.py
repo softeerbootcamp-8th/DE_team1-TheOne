@@ -54,13 +54,19 @@ DAG_PARAMS = {
             "lease_vehicle_inventory_path",
             "fuel_price_path",
             "output_dir",
-            "gold_stale_sla_days",
             "service_area",
         },
     ),
     "source_api_refresh_dag": (
         "source_api_refresh_dag",
-        {"year", "month", "api_base_url", "request_timeout", "service_area"},
+        {
+            "year",
+            "month",
+            "api_base_url",
+            "request_timeout",
+            "service_area",
+            "gold_stale_sla_days",
+        },
     ),
 }
 

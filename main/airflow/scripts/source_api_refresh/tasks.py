@@ -4,7 +4,7 @@ import hashlib
 import logging
 import os
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urljoin, urlsplit
 
@@ -13,12 +13,17 @@ from airflow.sdk import Variable, task
 from airflow.task.trigger_rule import TriggerRule
 
 from main.airflow.common import assets
+from main.airflow.common.gold_staleness import (
+    evaluate_staleness,
+    resolve_stale_sla_days,
+)
 from main.airflow.common.monthly_bronze import (
     SILVER_PART_PATTERN,
     bronze_collection_token,
     latest_local_silver_version,
 )
 from shared.airflow.common.project_paths import PROJECT_ROOT
+from shared.airflow.common.slack_failure_callback import slack_stale_alert_callback
 from shared.common.s3_reader import list_keys
 from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 
@@ -366,3 +371,31 @@ def publish_api_refresh_ready_task(check_task_ids: list[str], **context) -> None
             year_month,
             service_area,
         )
+
+
+@task(task_id="check_gold_staleness")
+def check_gold_staleness_task(**context) -> None:
+    """매일 지역별 Gold 성공 상태를 확인해 Asset 무발행 blind spot을 감시합니다."""
+    service_area = assets.resolve_service_area(context["params"])
+    stale_days = resolve_stale_sla_days(context["params"])
+    now = datetime.now(timezone.utc)
+    days_since, state = evaluate_staleness(service_area, now)
+    if days_since is None or days_since <= stale_days:
+        return
+    logger.warning(
+        "Gold staleness SLA 초과: service_area=%s days=%s threshold=%s",
+        service_area,
+        days_since,
+        stale_days,
+    )
+    try:
+        slack_stale_alert_callback(
+            {
+                **context,
+                "partition_key": state.get("partition_key"),
+                "days_since_success": days_since,
+                "stale_days": stale_days,
+            }
+        )
+    except Exception:
+        logger.warning("Slack staleness 알림 전송에 실패했습니다", exc_info=True)
