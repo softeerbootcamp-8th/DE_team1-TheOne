@@ -133,6 +133,21 @@ Spark_Driver    ─────  driver 워커가 실제로 쓴 양
 합계는 `SUM()` 을 GROUP BY 결과에 걸어 만듭니다. Metrics Insights 쿼리를 더 쓰지
 않으므로 위젯당 1개 제한을 지킵니다.
 
+### 색
+
+`GROUP BY` 결과에는 **색을 지정할 수 없습니다.** CloudWatch 가 기본 팔레트를 순서대로
+줍니다 — 1번 파랑 `#1f77b4`, 2번 주황 `#ff7f0e`. driver·executor 가 이 둘을 가져갑니다.
+
+그래서 합계·상한은 그 두 색을 피해야 합니다. 파랑 계열을 쓰면 driver 선과 겹쳐 보입니다.
+
+| 선 | 색 |
+|---|---|
+| 합계 | 초록 `#2ca02c` |
+| 용량 상한 | 빨강 `#d62728` |
+| Spark_Executor / Spark_Driver | 자동 (파랑·주황) |
+
+테스트가 이 충돌을 막습니다.
+
 상한선은 값을 박지 않고 `MaxMemoryAllowed`/`MaxCPUAllowed` 지표로 그립니다.
 `maximumCapacity` 를 바꾸면 선이 따라옵니다.
 

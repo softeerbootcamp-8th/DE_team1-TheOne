@@ -96,6 +96,37 @@ def test_usage_widgets_show_the_total_of_both_worker_types():
         assert "SUM(u)" in expressions, f"{title}: 합계선이 없습니다"
 
 
+# CloudWatch 가 색을 지정하지 않은 계열에 순서대로 주는 기본 팔레트의 앞부분.
+# GROUP BY 결과에는 색을 지정할 수 없어 여기서 차례로 가져갑니다.
+DEFAULT_PALETTE_HEAD = {"#1f77b4", "#ff7f0e"}
+
+
+def test_total_and_ceiling_avoid_the_auto_assigned_colors():
+    """`GROUP BY` 결과는 색을 지정할 수 없어 기본 팔레트를 순서대로 씁니다.
+
+    driver·executor 가 파랑·주황을 가져가므로, 합계나 상한에 그 색을 주면 선이 겹쳐
+    보여 구분이 안 됩니다. 실제로 합계를 파랑(#1f77b4)으로 뒀다가 driver 와 헷갈렸습니다.
+    """
+    for widget in _dashboard()["widgets"]:
+        if widget["type"] != "metric":
+            continue
+        if "used (" not in widget["properties"].get("title", ""):
+            continue
+        colored = {
+            item["id"]: item.get("color")
+            for row in widget["properties"]["metrics"]
+            for item in row
+            if isinstance(item, dict) and item["id"] in {"tot", "cap"}
+        }
+        assert set(colored) == {"tot", "cap"}, "합계·상한 색을 지정해야 합니다"
+        for name, color in colored.items():
+            assert color, f"{name}: 색이 없으면 팔레트에서 자동 배정돼 겹칩니다"
+            assert color.lower() not in DEFAULT_PALETTE_HEAD, (
+                f"{name}: {color} 는 GROUP BY 계열이 가져가는 색입니다"
+            )
+        assert colored["tot"].lower() != colored["cap"].lower()
+
+
 def test_usage_widgets_draw_the_ceiling_from_a_metric():
     """"20GB 사용" 은 상한을 모르면 해석이 안 됩니다. 상한선이 있어야 남은 여유가 보입니다.
 
