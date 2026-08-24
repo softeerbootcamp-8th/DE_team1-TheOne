@@ -1,11 +1,9 @@
-"""Silver → Gold 수익 시뮬레이션·재고 전달 시나리오. 이슈 #915.
+"""Silver → Gold 재고 배정 시나리오. 이슈 #927.
 
-1. 추천 후보는 실제 기사 수 × 실제 차량 모델 수를 보존
-2. Silver 재고 업무 컬럼과 행은 Gold에서 그대로 보존
+1. 실제 기사·차종 수로 후보를 계산하고 현재 보유 차량을 차감해 배정
+2. 재고 0 후보는 건너뛰고 모든 기사는 한 개의 최종 차량을 받음
 3. 프리미엄 배수는 5개 거리 구간별 실측값을 각 운행에 적용
-4. Standard 운행 구간에 프리미엄 표본이 없으면 명시적으로 실패
-5. 연료비에 대상 월 외 다른 월 데이터가 섞여 있어도 대상 월만 걸러 정상 처리
-6. 연료비에 대상 월 데이터가 전혀 없으면 명확한 에러로 실패
+4. Gold 파일은 집계와 최종 추천 2종만 함께 교체
 """
 
 from calendar import monthrange
@@ -15,10 +13,7 @@ import pytest
 from pyspark.sql import functions as F
 
 from main.spark.jobs.silver_to_gold import transformer as gold_transformer
-from main.spark.jobs.silver_to_gold.transformer import (
-    build_gold_lease_vehicle_inventory,
-    build_monthly_vehicle_recommendation,
-)
+from main.spark.jobs.silver_to_gold.transformer import build_monthly_vehicle_recommendation
 from shared.spark.common.session import get_or_create_spark_session
 
 
@@ -29,26 +24,28 @@ def spark():
     session.stop()
 
 
-def test_추천후보는_실제기사수와_차량모델수의_곱이다(spark):
+def test_현재보유차량을_차감하고_재고0은_skip한다(spark):
     driver_metrics = spark.createDataFrame(
         [
-            ("D1", "2026-01", "NYC", False, False, "A", 1000.0, 10.0, 100.0, 200.0, 710.0, 100.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
-            ("D2", "2026-01", "NYC", False, False, "B", 900.0, 5.0, 90.0, 180.0, 635.0, 90.0, 45.0, 900.0, 900.0, 900.0, 4.0),
+            ("D1", "2026-01", "NYC", False, False, "T1", "A", "MAKE", "A", 2024, 30.0, 1000.0, 1000.0, 0.0, 100.0, 200.0, 700.0, 3000.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+            ("D2", "2026-01", "NYC", False, False, "T2", "A", "MAKE", "A", 2024, 30.0, 1000.0, 1000.0, 0.0, 20.0, 200.0, 780.0, 600.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+            ("D3", "2026-01", "NYC", False, False, "T3", "B", "MAKE", "B", 2024, 60.0, 1000.0, 1000.0, 0.0, 10.0, 200.0, 790.0, 600.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
         ],
         [
             "driver_id", "year_month", "service_area", "comfort_eligible",
-            "extra_comfort_eligible", "vehicle_model_id", "monthly_driver_pay",
-            "monthly_tips", "monthly_fuel_cost", "monthly_lease_fee",
-            "monthly_net_profit", "_gas_price_miles", "_ev_price_miles",
+            "extra_comfort_eligible", "taxi_id", "vehicle_model_id", "manufacturer",
+            "model_name", "model_year", "fuel_efficiency", "monthly_mileage",
+            "monthly_driver_pay", "monthly_tips", "monthly_fuel_cost",
+            "monthly_lease_fee", "monthly_net_profit", "_gas_price_miles", "_ev_price_miles",
             "_monthly_driver_pay_if_comfort", "_monthly_driver_pay_if_extra_comfort",
             "_monthly_driver_pay_if_both", "_lease_weeks_in_month",
         ],
     )
     inventory = spark.createDataFrame(
         [
-            ("A", "MAKE", "A", 2024, "GAS", 30.0, False, False, 50.0, 1),
-            ("B", "MAKE", "B", 2024, "GAS", 25.0, False, False, 45.0, 1),
-            ("C", "MAKE", "C", 2024, "EV", 100.0, True, True, 60.0, 0),
+            ("A", "MAKE", "A", 2024, "GAS", 30.0, False, False, 50.0, 2),
+            ("B", "MAKE", "B", 2024, "GAS", 60.0, False, False, 50.0, 2),
+            ("C", "MAKE", "C", 2025, "EV", 1000.0, True, True, 0.0, 0),
         ],
         [
             "vehicle_model_id", "manufacturer", "model_name", "model_year",
@@ -57,49 +54,26 @@ def test_추천후보는_실제기사수와_차량모델수의_곱이다(spark):
         ],
     )
 
-    candidates = build_monthly_vehicle_recommendation(driver_metrics, inventory)
-    rows = candidates.collect()
+    recommendation = build_monthly_vehicle_recommendation(driver_metrics, inventory)
+    assigned = {row.driver_id: row.vehicle_model_id for row in recommendation.collect()}
 
-    assert len(rows) == 2 * 3
-    assert "candidate_stock" not in candidates.columns
-    assert {(row.driver_id, row.candidate_vehicle_model_id) for row in rows} == {
-        (driver_id, model_id)
-        for driver_id in ("D1", "D2")
-        for model_id in ("A", "B", "C")
-    }
+    assert assigned == {"D1": "B", "D2": "A", "D3": "B"}
+    assert len(assigned) == 3
+    assert "candidate_vehicle_model_id" not in recommendation.columns
 
 
-def test_시뮬레이션검증은_기사차량조합누락을_차단한다(spark):
-    driver_profit = spark.createDataFrame([("D1",), ("D2",)], ["driver_id"])
-    candidates = spark.createDataFrame(
-        [("D1", "A"), ("D1", "B"), ("D2", "A")],
-        ["driver_id", "candidate_vehicle_model_id"],
+def test_현재보유량이_전체재고를_넘으면_실패한다(spark):
+    snapshot = spark.createDataFrame(
+        [("D1", "T1", "A"), ("D2", "T2", "A")],
+        ["driver_id", "taxi_id", "vehicle_model_id"],
     )
-    inventory = spark.createDataFrame([("A",), ("B",)], ["vehicle_model_id"])
+    inventory = spark.createDataFrame([("A", 1)], ["vehicle_model_id", "stock"])
+    fuel_price = spark.createDataFrame(_full_month_fuel_price("2026-02"))
 
-    with pytest.raises(ValueError, match="추천 후보 수 불일치"):
-        gold_transformer.validate_vehicle_profit_simulation(
-            driver_profit, candidates, inventory
+    with pytest.raises(ValueError, match="현재 운행 차량 수가 보유 재고를 초과"):
+        gold_transformer._validate_dimensions(
+            snapshot, inventory, fuel_price, "2026-02"
         )
-
-
-def test_Silver_재고_업무컬럼과_행을_Gold에_그대로_전달한다(spark):
-    silver_rows = [
-        ("A", "MAKE", "MODEL", 2026, "GAS", 30.0, True, False, 500.0, "url", 3),
-        ("B", "MAKE", "EV", 2025, "EV", 100.0, True, True, 600.0, "url2", 0),
-    ]
-    columns = [
-        "vehicle_model_id", "manufacturer", "model_name", "model_year",
-        "fuel_type", "fuel_efficiency", "comfort_eligible",
-        "extra_comfort_eligible", "weekly_lease_fee", "image_url", "stock",
-    ]
-    inventory = spark.createDataFrame(silver_rows, columns)
-
-    gold = build_gold_lease_vehicle_inventory(inventory, "2026-01", "NYC")
-
-    assert [tuple(row[name] for name in columns) for row in gold.collect()] == silver_rows
-    assert {row.year_month for row in gold.collect()} == {"2026-01"}
-    assert {row.service_area for row in gold.collect()} == {"NYC"}
 
 
 def test_운행거리를_다섯개_구간으로_분류한다(spark):
@@ -160,34 +134,25 @@ def test_Standard_운행_거리대에_프리미엄_표본이_없으면_실패한
         gold_transformer._with_tier_revenue_scenarios(enriched)
 
 
-# --- Gold 3종 적재 일관성 (#589) ---------------------------------------------
+# --- Gold 2종 적재 일관성 (#589, #927) ---------------------------------------
 # 예전에는 `toPandas()` 와 CSV 쓰기가 한 루프에 섞여 최종 경로에 바로 썼습니다.
-# 두 번째 산출물에서 죽으면 첫 파일은 이번 값, 세 번째는 직전 실행 값이 남았고,
-# 대시보드는 그 섞인 상태를 그대로 읽었습니다.
+# 두 번째 산출물에서 죽으면 첫 파일만 이번 값으로 남는 문제를 막습니다.
 
 def _frames(mark: str):
     import pandas as pd
 
     return {
         name: pd.DataFrame([{"year_month": "2026-01", "mark": mark}])
-        for name in (
-            "driver_aggregation",
-            "driver_vehicle_profit_simulation",
-            "lease_vehicle_inventory",
-        )
+        for name in ("driver_aggregation", "driver_car_suggestion")
     }
 
 
-def test_세_산출물이_지역경로에서_한꺼번에_교체된다(tmp_path):
+def test_두_산출물이_지역경로에서_한꺼번에_교체된다(tmp_path):
     from main.spark.jobs.silver_to_gold.job import _write_all_csv
 
     written = _write_all_csv(_frames("first"), str(tmp_path), "2026-01", "NYC")
 
-    assert set(written) == {
-        "driver_aggregation",
-        "driver_vehicle_profit_simulation",
-        "lease_vehicle_inventory",
-    }
+    assert set(written) == {"driver_aggregation", "driver_car_suggestion"}
     for path in written.values():
         assert "service_area=NYC" in str(path)
         assert path.read_text().count("first") == 1
@@ -227,12 +192,8 @@ def test_쓰는_도중_실패하면_기존_산출물이_그대로_남는다(tmp_
     with pytest.raises(MemoryError):
         job._write_all_csv(_frames("second"), str(tmp_path), "2026-01", "NYC")
 
-    # 셋 다 직전 실행 값이어야 합니다 — 하나라도 second 면 섞인 것입니다.
-    for dataset in (
-        "driver_aggregation",
-        "driver_vehicle_profit_simulation",
-        "lease_vehicle_inventory",
-    ):
+    # 둘 다 직전 실행 값이어야 합니다 — 하나라도 second 면 섞인 것입니다.
+    for dataset in ("driver_aggregation", "driver_car_suggestion"):
         path = job._csv_path(str(tmp_path), dataset, "2026-01", "NYC")
         assert "second" not in path.read_text(), f"{dataset} 이 새 값으로 바뀌었습니다"
 

@@ -1,4 +1,4 @@
-"""Silver 4종으로 월별 Gold 3종을 만드는 파이프라인입니다."""
+"""Silver 4종으로 월별 Gold 2종을 만드는 파이프라인입니다."""
 
 import os
 from datetime import datetime, timedelta

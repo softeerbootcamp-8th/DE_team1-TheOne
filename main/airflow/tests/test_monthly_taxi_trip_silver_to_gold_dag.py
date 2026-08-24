@@ -7,7 +7,7 @@
 5. Asset 실행은 같은 월 Silver가 덜 준비되면 skip, 수동 실행은 실패
 6. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
 7. Gold 검증 성공 태스크에만 Slack 완료 알림 연결
-8. Gold 3종은 지역 경로만 검증하며 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
+8. Gold 2종은 지역 경로만 검증하며 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 9. API Silver는 최신 collected_at 파일만 선택
 10. Asset skip 시 Slack skip 알림을 직접 호출
 11. SLA 기준일 초과 시 Slack staleness 경고, 기준 이내면 조용히 통과
@@ -516,11 +516,8 @@ def _write_gold(root: Path, year_month: str, service_area: str) -> None:
         "driver_aggregation": pd.DataFrame(
             [{"driver_id": "D1", "year_month": year_month, "monthly_net_profit": 100.0, "monthly_lease_fee": 400.0}]
         ),
-        "driver_vehicle_profit_simulation": pd.DataFrame(
-            [{"driver_id": "D1", "year_month": year_month, "candidate_vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
-        ),
-        "lease_vehicle_inventory": pd.DataFrame(
-            [{"year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "stock": 10}]
+        "driver_car_suggestion": pd.DataFrame(
+            [{"driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
         ),
     }
     for dataset, frame in frames.items():
@@ -532,7 +529,7 @@ def _write_gold(root: Path, year_month: str, service_area: str) -> None:
         frame.to_csv(path, index=False)
 
 
-def test_정상_Gold_3종은_검증을_통과한다(tmp_path):
+def test_정상_Gold_2종은_검증을_통과한다(tmp_path):
     _write_gold(tmp_path, "2026-05", "NYC")
 
     dag_module.validate_gold_outputs(str(tmp_path), "2026-05", "NYC")
@@ -556,14 +553,14 @@ def test_Gold검증은_다른지역_산출물을_대신_보지_않는다(tmp_pat
 )
 def test_Gold_산출물이_계약을_어기면_실패한다(tmp_path, violation, expected):
     _write_gold(tmp_path, "2026-05", "NYC")
-    target = tmp_path / "lease_vehicle_inventory/service_area=NYC/year_month=2026-05/lease_vehicle_inventory.csv"
+    target = tmp_path / "driver_car_suggestion/service_area=NYC/year_month=2026-05/driver_car_suggestion.csv"
 
     if violation == "missing":
         target.unlink()
     elif violation == "empty":
         pd.read_csv(target).iloc[0:0].to_csv(target, index=False)
     elif violation == "column":
-        pd.read_csv(target).drop(columns="stock").to_csv(target, index=False)
+        pd.read_csv(target).drop(columns="vehicle_model_id").to_csv(target, index=False)
     else:
         frame = pd.read_csv(target)
         frame["year_month"] = "2026-04"

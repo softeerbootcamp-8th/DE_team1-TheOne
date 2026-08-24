@@ -204,12 +204,10 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 
 | 데이터셋 | 한 행 | 파티션 | 규모 | 소유 스키마 |
 | --- | --- | --- | --- | --- |
-| `driver_aggregation` | 기사 × 월 | `year_month` | 2,000행/월 | [gold/driver_aggregation.py](../schema/gold/driver_aggregation.py) |
-| `driver_vehicle_profit_simulation` | 기사 × 후보 차량 모델 × 월 | `year_month` | 기사 수 × 차량 모델 수/월 | [schema/gold](../schema/gold/__init__.py) |
-| `lease_vehicle_inventory` | 차량 모델 × 월 | `year_month` | Silver 재고 모델 수/월 | [schema/gold](../schema/gold/__init__.py) |
+| `driver_aggregation` | 기사 × 월 | `year_month` | 기사 수/월 | [gold/driver_aggregation.py](../schema/gold/driver_aggregation.py) |
+| `driver_car_suggestion` | 기사 × 월 | `year_month` | 기사 수/월 | [schema/gold](../schema/gold/__init__.py) |
 
-세 물리 테이블은 기사×월, 기사×후보 차량 모델×월, 차량 모델×월을 각각 자연 키로 갖습니다.
-최종 추천 객체는 이 Gold 적재 범위에서 생성하거나 변경하지 않습니다.
+두 물리 테이블은 모두 기사×월을 자연 키로 갖고 같은 지역·월·버전으로 함께 적재됩니다.
 
 ### 4.1 `driver_aggregation` — 기사 월간 집계
 
@@ -223,22 +221,23 @@ Silver는 운임으로 등급을 다시 추정하지 않으며 아래 license–
 `current_make_key`/`current_model_key` 를 함께 싣는 이유: `taxi_id` 만으로는 사람이 무슨 차인지 알 수 없어
 콜 리스트에서 *"지금 〈현재 차량〉 타시는데 〈추천 차량〉 으로"* 를 못 씁니다.
 
-### 4.2 `driver_vehicle_profit_simulation` — 후보 차량 수익 시뮬레이션
+### 4.2 `driver_car_suggestion` — 재고를 반영한 기사별 차량 추천
+
+Spark는 실제 기사 N명과 Silver 재고 모델 M개의 N×M 후보를 내부에서 계산합니다.
+후보는 물리 테이블로 적재하지 않고 기사별 예상 순수익 순위와 모델별 남은 재고로
+배정한 최종 1행만 저장합니다.
 
 | 컬럼 | 내용 |
 | --- | --- |
-| `candidate_vehicle_model_id` / `model_year` | 평가한 후보 차량 (연식은 스펙 트림 범위 중 최신) |
+| `vehicle_model_id` / `model_year` | 배정한 차량 모델과 연식 |
 | `recommendation_reason` | `연비` / `차량등급` / `더 저렴한 렌트료` 중 해당 항목을 `, ` 로 나열. 셋 다 아니면 `현재 차량 유지` |
 | `expected_net_profit_increase` | 기사 예상 순수익 증가액 |
 | `expected_revenue_increase` | 회사 렌탈 객단가 증가액 |
 
 `recommendation_reason` 이 없으면 CSM이 *"이 차 왜 추천됐어요?"* 에 답을 못 합니다.
 
-### 4.3 `lease_vehicle_inventory` — 월별 리스 차량 재고
-
-Silver `lease_vehicle_inventory`의 업무 컬럼과 행을 그대로 보존하고 Gold 공통 키
-(`version`, `service_area`, `year_month`)만 추가합니다. `stock`은 수익 시뮬레이션이나
-추천 선택에 사용하지 않으며 소비 계층이 필요할 때 별도로 조인합니다.
+배정 가능 재고는 `stock - 현재 운행 차량 점유 수 - 앞선 순위의 신규 배정 수`입니다.
+현재 차량은 유지 후보로 남기고 점유 수가 원본 재고를 넘으면 적재 전에 실패합니다.
 
 `assignment_version` 은 **없습니다**(#471). 기사-운행 매칭이 원천 API로 옮겨가면서
 Silver는 `taxi_id` + 리스 기간으로 결정적으로 조인만 하므로, 같은 입력이면 같은 결과입니다 — 구분할 버전이 생기지 않습니다.

@@ -1,6 +1,6 @@
 # Gold DB 스키마 변경 런북
 
-Gold 3종(`lease_vehicle_inventory`, `driver_aggregation`, `driver_vehicle_profit_simulation`)은 RDS
+Gold 2종(`driver_aggregation`, `driver_car_suggestion`)은 RDS
 PostgreSQL에 적재됩니다. 이 문서는 **그 테이블의 스키마를 바꿀 때** 무엇을 해야 하는지를
 적습니다.
 
@@ -46,7 +46,7 @@ nullable로 넣고 배포 후 `SET NOT NULL`을 따로 거는 2단계로 나눕�
 한 트랜잭션 안에서 nullable 추가 → 백필 → `SET NOT NULL`을 하므로, **배포 직전에
 실행**하는 것을 전제로 합니다.
 
-## 실행 방법
+## 2026-08-24 재고 테이블 전환 스크립트 실행 방법
 
 ```bash
 # DSN 은 Airflow Variable/환경변수 GOLD_DATABASE_URL 과 같은 값입니다.
@@ -64,14 +64,16 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 실행 후 확인:
 
 ```sql
-\d lease_vehicle_inventory
 \d driver_aggregation
-\d driver_vehicle_profit_simulation
+\d driver_car_suggestion
 ```
 
-세 테이블 모두 `service_area` 컬럼이 `not null`이고, PK가
-`(service_area, year_month, version[, driver_id[, candidate_vehicle_model_id]])`인지
-확인합니다. 기존 `driver_car_suggestion` 물리 테이블은 이 적재 범위에서 변경하지 않습니다.
+두 테이블 모두 `service_area` 컬럼이 `not null`이고, PK가
+`(service_area, year_month, version, driver_id)`인지 확인합니다.
+
+#927은 기존 `driver_car_suggestion` 물리 테이블을 그대로 재사용하고, 없는 환경에서는
+적재기가 생성하므로 추가 스키마 마이그레이션이 없습니다. 기존 시뮬레이션·재고 테이블은
+새 Gold 실행부터 갱신하지 않으며 삭제는 별도 데이터 보존 결정 뒤 진행합니다.
 
 ## 이력
 
@@ -79,13 +81,12 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 |---|---|---|---|
 | 2026-08-23 | `2026-08-23_add_service_area.sql` | 3종에 `service_area` 추가, PK를 `(service_area, ...)`로 확장. 기존 행은 `'NYC'` 백필 | #809, #674, #805 |
 | 2026-08-24 | `2026-08-24_replace_monthly_report_with_inventory.sql` | 추천 뷰·`monthly_report`·`candidate_stock`을 제거하고 Gold 재고 테이블 생성 | #915 |
+| 2026-08-24 | 추가 SQL 없음 | 기존 추천 테이블을 다시 적재하고 Gold 출력을 집계·추천 2종으로 축소 | #927 |
 
-### 추천 후보 확장 주의사항
+### 추천 후보 확장 이력
 
-- 새 Gold 실행부터 `driver_vehicle_profit_simulation`은 기사 수 × 차량 모델 수 행을
-  저장하며 별도 추천 여부 컬럼은 두지 않습니다.
-- 적재기가 새 물리 테이블을 생성하므로 별도 전환 마이그레이션은 실행하지 않습니다.
-- 기존 `driver_car_suggestion` 물리 테이블은 그대로 유지합니다.
+- #927부터 기사 수 × 차량 모델 수 후보는 Spark 내부 계산으로만 사용합니다.
+- 현재 차량 점유분과 남은 재고로 배정한 `driver_car_suggestion`만 적재합니다.
 
 ### 2026-08-23 주의사항
 
