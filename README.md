@@ -5,7 +5,7 @@
 <p>OO는 운행 데이터를 기반으로 차량 교체를 제안할 고객을 확인할 수 있는 대시보드입니다.<br/>
 이때, 추천 대상은 <b>상위 등급 차량 교체시 고객의 순수익이 월 $600 이상 증가</b>하는 고객입니다.</p>
 
-<a href="https://43-200-202-72.sslip.io/"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a>
+<a href="https://43-200-202-72.sslip.io/"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a> <a href="docs/TEAM_RULES.md"><img src="https://img.shields.io/badge/팀규칙_바로가기-000000?style=for-the-badge&logoColor=white" alt="팀 규칙 바로가기" /></a>
 </div>
 
 
@@ -78,6 +78,7 @@
 
 > HVFHV 데이터에 택시 ID/기사 ID가 없기에 합성을 진행하는 **가상의 회사 DB**입니다.
 
+
 #### 1. INPUT
 | 출처 | 수집 대상 | 수집 방식 | 수집 주기 | 규모 |
 | --- | --- | --- | --- | --- |
@@ -118,11 +119,46 @@
 
 ## 문서화
 
-> 추가 예정
+### 성능 최적화
+> Spark 성능 최적화
 
-- 의사결정 기록
-  > 팀내 의견 공유를 통해 의사결정한 내용(기술/기획 등) 정리
-  - [링크](./docs/decision_making/README.md)
+<details>
+<summary><a href="/docs/SPARK_PARTITION_ETC_OPTIMIZATION.md">Silver → Gold Shuffle Partition 최적화</a></summary>
+
+- 과도한 Scheduling Overhead가 예상되어 파티션 수 변경 실험을 진행했습니다.
+  - 결과: Spark 기본값 200개 대신 실측 최적값 32개를 적용했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/SPARK_OPTIMIZATION_BROADCAST.md">Silver → Gold Broadcast Join 최적화</a></summary>
+
+- 작은 차량·유가 dimension을 broadcast해 큰 운행 DataFrame의 join shuffle을 줄였습니다.
+  - 결과: broadcast 완전 비활성화 대조군이 14.2% 느렸습니다.
+</details>
+
+<details>
+<summary><a href="/docs/SPARK_OPTIMIZATION_LAZY_CHECKPOINT.md">Silver → Gold Lazy Checkpoint 최적화</a></summary>
+
+- 반복 배정의 lineage 절단은 유지하고 checkpoint 즉시 실행만 지연했습니다.
+  - 결과: Jobs·Stages 8.7% 감소, 실행시간 7.3% 단축을 확인했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/SPARK_OPTIMIZATION_STRATEGIC_CACHING.md">Silver → Gold 전략적 캐싱</a></summary>
+
+- 반복 사용되는 중간 결과만 persist하고 수명주기에 맞춰 unpersist합니다.
+  - 결과: 전체 Silver 입력 추가 캐시는 1.0% 느려 적용하지 않았습니다.
+</details>
+
+### 파이프라인 설계
+
+
+### AWS 인프라 설계
+
+### [의사결정 문서]([./docs/decision_making/README.md])
+> 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
+
+
 
 ## 기술 스택
 
