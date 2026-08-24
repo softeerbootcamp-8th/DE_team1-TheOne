@@ -1,14 +1,14 @@
 """차량 마스터 Curated DAG 의 스케줄 계약과 검증 시나리오.
 
- 1. 스케줄이 (대장 & Uber & Lyft) | 제원 — 제원을 AND 에 넣으면 월 1회로 묶임
+ 1. 스케줄이 원천 4종 AND — 하나라도 이번 달 것이 없으면 조립하지 않음
  2. 상류 4개 DAG 가 그 Asset 을 실제로 발행 (생산자와 소비자가 같은 객체를 봄)
  3. 상류는 적재가 아니라 **검증** 태스크에서 발행
  4. 정상 결과는 통과하고 소비자 없는 vehicle_master Asset 은 발행하지 않음
  5. layout 규칙과 다른 경로면 실패
  6. loader.SCHEMA 와 다른 스키마면 실패
  7. 도시 파일이 0행이면 실패 (합계만 보면 못 잡음)
- 8. 주간 원천이 2주 넘게 낡으면 실패
- 9. 제원은 월 1회라 45일까지 허용
+ 8. 원천이 45일 넘게 낡으면 실패
+ 9. 월 중 수동 실행(원천이 한 달 가까이 된 상태)은 통과
 10. source_collected_dates 가 없으면 실패
 
 핸들러는 부르지 않습니다. 검증 태스크에 결과 dict 를 직접 넘겨 파일만 실제로 씁니다.
@@ -94,20 +94,23 @@ def params_for(silver_dir: Path) -> dict:
     return {"params": {"curated_dir": str(silver_dir)}}
 
 
-def test_스케줄이_주간_3종_AND_와_제원_OR_이다():
-    """[필수] 제원을 AND 에 넣으면 월 1회로 묶여 렌트료가 3주 묵습니다."""
-    condition = DAG.timetable.asset_condition
-    weekly, specs = condition.objects
+def test_스케줄이_원천_4종_AND_이다():
+    """[필수] 하나라도 OR 로 빠지면 그 원천만 갱신돼도 조립이 돌아, 나머지 3개는
+    지난달 값으로 마스터가 만들어집니다.
 
-    assert {asset.name for asset in weekly.objects} == {
+    원천 4개가 모두 매월 1일이라 AND 로 묶어도 신선도 손해가 없습니다. 예전에는
+    3종이 주간이라 제원을 AND 에 넣으면 전체가 월 1회로 묶여 배차 자격이 최대 3주
+    묵었고, 그래서 제원만 OR 로 빼뒀습니다 — 주기를 맞추면서 그 이유가 사라졌습니다.
+    """
+    condition = DAG.timetable.asset_condition
+
+    assert type(condition).__name__ == "AssetAll", "OR 이 남아 있으면 부분 트리거됩니다"
+    assert {asset.name for asset in condition.objects} == {
         assets.VEHICLE_CATALOG_CURATED.name,
         assets.UBER_ELIGIBLE_VEHICLES_CURATED.name,
         assets.LYFT_ELIGIBLE_VEHICLES_CURATED.name,
+        assets.FUELECONOMY_VEHICLE_SPECS_CURATED.name,
     }
-    assert specs.name == assets.FUELECONOMY_VEHICLE_SPECS_CURATED.name
-    # AND 묶음 하나와 제원 하나를 OR 로 잇습니다.
-    assert type(condition).__name__ == "AssetAny"
-    assert type(weekly).__name__ == "AssetAll"
 
 
 @pytest.mark.parametrize(("module_name", "asset"), sorted(UPSTREAM.items()))
@@ -158,21 +161,21 @@ def test_도시_파일이_0행이면_실패한다(tmp_path):
         validate_silver(result_for([filled, empty], 2), **params_for(tmp_path))
 
 
-def test_주간_원천이_2주_넘게_낡으면_실패한다(tmp_path):
+def test_원천이_45일_넘게_낡으면_실패한다(tmp_path):
     path = write_master(tmp_path, rows=2)
-    # 대장 크롤링이 3주 멈춘 상황. Extractor 는 기준일 이하 최신을 쓰므로
-    # 이 가드가 없으면 지난달 렌트료로 조용히 성공합니다.
-    stale = {**FRESH_SOURCES, "vehicle_catalog": "2026-07-20"}
+    # 대장 크롤링이 두 달 멈춘 상황. Extractor 는 기준일 이하 최신을 쓰므로
+    # 이 가드가 없으면 지지난달 렌트료로 조용히 성공합니다.
+    stale = {**FRESH_SOURCES, "vehicle_catalog": "2026-06-20"}
 
-    with pytest.raises(ValueError, match="vehicle_catalog=24일"):
+    with pytest.raises(ValueError, match="vehicle_catalog=54일"):
         validate_silver(result_for([path], 2, stale), **params_for(tmp_path))
 
 
-def test_제원은_월_1회라_45일까지_허용한다(tmp_path):
+def test_월_중_수동_실행은_통과한다(tmp_path):
     path = write_master(tmp_path, rows=2)
-    # 40일 전 = 지난달 1일 수집분. 주간 기준(14일)을 적용하면 매달 대부분의 날에
-    # 실패하게 됩니다.
-    sources = {**FRESH_SOURCES, "fueleconomy_vehicle_specs": "2026-07-04"}
+    # 원천 4개가 모두 지난달 1일 수집분인 상태에서 월 중에 손으로 돌린 경우.
+    # 주간 시절 한도(14일)를 그대로 뒀다면 여기서 막혀 재실행이 불가능합니다.
+    sources = {key: "2026-07-01" for key in FRESH_SOURCES}
 
     validate_silver(result_for([path], 2, sources), **params_for(tmp_path))
 

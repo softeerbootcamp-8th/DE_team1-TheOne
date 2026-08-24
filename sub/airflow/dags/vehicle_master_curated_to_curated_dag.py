@@ -31,12 +31,18 @@ default_args = {
     dag_id="vehicle_master_curated_to_curated_pipeline",
     default_args=default_args,
     description="차량 대장·제원·배차 자격 Curated 를 합쳐 차량 마스터 Curated 생성",
+    # 원천 4개가 모두 이번 달 것으로 갱신됐을 때만 조립합니다.
+    #
+    # 예전에는 제원만 OR 로 빼뒀습니다. 나머지 3종이 주간이라 제원을 AND 에 넣으면
+    # 전체가 월 1회로 묶여 배차 자격이 최대 3주 묵었기 때문입니다. 이제 4개가 모두
+    # 매월 1일이라 그 손해가 없어졌고, OR 로 두면 한 원천만 늦어도 나머지 3개의
+    # 지난달 값으로 마스터가 만들어집니다.
     schedule=(
         assets.VEHICLE_CATALOG_CURATED
         & assets.UBER_ELIGIBLE_VEHICLES_CURATED
         & assets.LYFT_ELIGIBLE_VEHICLES_CURATED
-    )
-    | assets.FUELECONOMY_VEHICLE_SPECS_CURATED,
+        & assets.FUELECONOMY_VEHICLE_SPECS_CURATED
+    ),
     start_date=datetime(2026, 8, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,

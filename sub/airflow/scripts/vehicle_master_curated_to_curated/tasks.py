@@ -18,10 +18,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CURATED_DIR = os.getenv("CURATED_DIR", str(PROJECT_ROOT / "data" / "source" / "curated"))
 
+# 원천 4개가 모두 매월 1일 수집입니다. 한 달 주기에 보름 여유를 둔 값이라,
+# 정기 실행(4개가 갓 갱신된 직후)은 물론 월 중 수동 실행도 통과합니다.
+#
+# 주간이던 시절 3종은 14일이었습니다. 주기를 월간으로 바꾸면서 그대로 두면 정기
+# 실행은 통과하는데 월 중 수동 실행만 조용히 실패합니다 — 재실행하려는 순간
+# 막히는 셈이라 함께 올립니다.
 MAX_SOURCE_AGE_DAYS = {
-    "vehicle_catalog": 14,
-    "uber_eligible_vehicles": 14,
-    "lyft_eligible_vehicles": 14,
+    "vehicle_catalog": 45,
+    "uber_eligible_vehicles": 45,
+    "lyft_eligible_vehicles": 45,
     "fueleconomy_vehicle_specs": 45,
 }
 

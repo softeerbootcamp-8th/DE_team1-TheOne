@@ -39,9 +39,9 @@ SCHEDULES = {
     # 과거 값 개정분을 확보하기 위한 것입니다.
     "driver_master_raw_to_silver_dag": "0 0 10 * *",
     "hvfhv_raw_to_silver_dag": "0 0 10 * *",
-    "vehicle_catalog_raw_to_curated_dag": "0 3 * * 1",
-    "lyft_eligible_vehicles_raw_to_curated_dag": "0 4 * * 1",
-    "uber_eligible_vehicles_raw_to_curated_dag": "0 5 * * 1",
+    "vehicle_catalog_raw_to_curated_dag": "0 3 1 * *",
+    "lyft_eligible_vehicles_raw_to_curated_dag": "0 4 1 * *",
+    "uber_eligible_vehicles_raw_to_curated_dag": "0 5 1 * *",
 }
 
 RETRY_CONTRACTS = {

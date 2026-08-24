@@ -1,4 +1,4 @@
-"""Lyft 배차 가능 차량 Source → Raw → Curated 주간 DAG."""
+"""Lyft 배차 가능 차량 Source → Raw → Curated 월간 DAG."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -34,7 +34,7 @@ default_args = {
     dag_id="lyft_eligible_vehicles_raw_to_curated_pipeline",
     default_args=default_args,
     description="Lyft 배차 가능 차량 목록 Source -> Raw -> Curated 수집 및 정제 파이프라인",
-    schedule="0 4 * * 1",
+    schedule="0 4 1 * *",
     start_date=datetime(2026, 8, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,

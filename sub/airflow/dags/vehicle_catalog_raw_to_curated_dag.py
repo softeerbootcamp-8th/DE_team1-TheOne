@@ -1,4 +1,4 @@
-"""리스 업체 차량 대장 Source → Raw → Curated 주간 DAG."""
+"""리스 업체 차량 대장 Source → Raw → Curated 월간 DAG."""
 
 from datetime import datetime, timedelta
 
@@ -32,7 +32,7 @@ default_args = {
     dag_id="vehicle_catalog_raw_to_curated_pipeline",
     default_args=default_args,
     description="리스 업체 보유 차량 대장 Source -> Raw -> Curated 수집 및 정제 파이프라인",
-    schedule="0 3 * * 1",
+    schedule="0 3 1 * *",
     start_date=datetime(2026, 8, 1),
     catchup=False,
     max_active_runs=1,
