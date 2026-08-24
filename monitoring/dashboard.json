@@ -82,6 +82,14 @@
           ],
           [
             {
+              "expression": "SUM(u)",
+              "label": "합계 (Total)",
+              "id": "tot",
+              "color": "#1f77b4"
+            }
+          ],
+          [
+            {
               "expression": "SUM(SEARCH('{AWS/EMRServerless,ApplicationId,ApplicationName} MetricName=\"MaxMemoryAllowed\" ApplicationId=\"${EMR_APPLICATION_ID}\"', 'Maximum'))",
               "label": "용량 상한 (GB)",
               "id": "cap",
@@ -113,6 +121,14 @@
             {
               "expression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
               "id": "u"
+            }
+          ],
+          [
+            {
+              "expression": "SUM(u)",
+              "label": "합계 (Total)",
+              "id": "tot",
+              "color": "#1f77b4"
             }
           ],
           [

@@ -80,6 +80,22 @@ def test_usage_widgets_split_driver_and_executor():
         )
 
 
+def test_usage_widgets_show_the_total_of_both_worker_types():
+    """driver 와 executor 는 서로 다른 워커 집단이라 자원을 나눠 씁니다.
+
+    상한선은 둘을 합친 애플리케이션 전체 한도라, 개별 선만 있으면 눈으로 더해야
+    남은 여유를 알 수 있습니다. executor 23.80 만 보고 24GB 라고 읽으면 driver 2.07 이
+    빠집니다(실제 25.87).
+
+    `SUM()` 을 GROUP BY 결과에 걸면 Metrics Insights 쿼리를 더 쓰지 않고 합계선이
+    나옵니다 — 위젯당 쿼리 1개 제한을 지키면서.
+    """
+    for title, expressions in _widget_expressions():
+        if "used (" not in title:
+            continue
+        assert "SUM(u)" in expressions, f"{title}: 합계선이 없습니다"
+
+
 def test_usage_widgets_draw_the_ceiling_from_a_metric():
     """"20GB 사용" 은 상한을 모르면 해석이 안 됩니다. 상한선이 있어야 남은 여유가 보입니다.
 

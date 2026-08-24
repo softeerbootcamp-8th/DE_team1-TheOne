@@ -126,6 +126,12 @@ Spark_Driver    ─────  driver 워커가 실제로 쓴 양
 - **상한선과 멀면** 여유가 있는 것
 - **driver·executor 를 나눠 그립니다.** 자원의 대부분은 executor 가 씁니다
   (실측 23.85 GB vs 4.44 GB). 합치면 어느 쪽을 조정할지 안 보입니다
+- **합계선도 함께 그립니다.** 상한선은 둘을 합친 전체 한도라 개별 선만 보면
+  남은 여유를 알 수 없습니다. executor 23.80 만 보고 24GB 로 읽으면 driver 2.07 이
+  빠집니다 (실제 25.87 / 32)
+
+합계는 `SUM()` 을 GROUP BY 결과에 걸어 만듭니다. Metrics Insights 쿼리를 더 쓰지
+않으므로 위젯당 1개 제한을 지킵니다.
 
 상한선은 값을 박지 않고 `MaxMemoryAllowed`/`MaxCPUAllowed` 지표로 그립니다.
 `maximumCapacity` 를 바꾸면 선이 따라옵니다.
