@@ -28,6 +28,11 @@ FILE_NAME = "20260821T123456123456Z.parquet"
 SOURCE_VERSION = "source_collected_at=20260821T123456123456Z"
 
 
+@pytest.fixture(autouse=True)
+def _stub_success_publish(monkeypatch):
+    monkeypatch.setattr(task_module, "publish_success_marker", lambda directory: None)
+
+
 def _raw_result(source_changed: bool = True) -> dict:
     return {
         "locations": [f"/bronze/lease_vehicle_inventory/year_month=2026-08/{FILE_NAME}"],
@@ -150,9 +155,6 @@ def test_정제task는_서비스지역과_적재위치를_정제핸들러에_전
             "locations": [f"/bronze/{FILE_NAME}"],
             "year_month": "2026-08",
             "silver_version_path": f"/silver/year_month=2026-08/{SOURCE_VERSION}",
-            "silver_staging_path": (
-                f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
-            ),
         },
         params={"silver_dir": "/silver", "service_area": "TX"},
     )
@@ -160,9 +162,7 @@ def test_정제task는_서비스지역과_적재위치를_정제핸들러에_전
     assert called == {
         "year_month": "2026-08",
         "service_area": "TX",
-        "silver_output_path": (
-            f"/silver/year_month=2026-08/.staging/{SOURCE_VERSION}"
-        ),
+        "silver_output_path": f"/silver/year_month=2026-08/{SOURCE_VERSION}",
     }
 
 
@@ -199,7 +199,6 @@ def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한�
 
     assert {key: validated[key] for key in recollected} == recollected
     assert validated["silver_version_path"].endswith(SOURCE_VERSION)
-    assert validated["silver_staging_path"].endswith(f".staging/{SOURCE_VERSION}")
     assert calls == [{
         "base_dir": "/bronze",
         "silver_dir": "/silver",
@@ -251,7 +250,6 @@ def test_TX_Bronze검증은_지역별_Silver경로를_만든다(tmp_path, monkey
 
     expected_root = tmp_path / "silver" / "service_area=TX" / "year_month=2026-08"
     assert Path(result["silver_version_path"]).parent == expected_root
-    assert Path(result["silver_staging_path"]).parent.parent == expected_root
     assert seen == ["TX"]
 
 
@@ -264,29 +262,27 @@ def test_Bronze와_행수가_같고_품질이_맞아야_Silver를_통과시킨�
         task_module.validate_silver_result(result, 2)
 
 
-def test_Silver검증후_staging을_최종버전으로_공개한다(tmp_path, monkeypatch):
-    staging = tmp_path / "year_month=2026-08" / ".staging" / SOURCE_VERSION
-    part = staging / "data.parquet"
-    final = staging.parent.parent / SOURCE_VERSION
+def test_Silver검증후_최종버전에_SUCCESS를_공개한다(tmp_path, monkeypatch):
+    final = tmp_path / "year_month=2026-08" / SOURCE_VERSION
+    part = final / "data.parquet"
     part.parent.mkdir(parents=True)
     pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), part)
-    committed = []
+    published = []
     monkeypatch.setattr(
         task_module,
-        "commit_staged_silver",
-        lambda source, target, **options: committed.append((source, target, options)),
+        "publish_success_marker",
+        lambda directory: published.append(directory),
     )
 
     DAG.get_task("validate_silver").python_callable(
         {"locations": [str(part)], "row_count": 1, "year_month": "2026-08"},
         {
             "row_count": 1,
-            "silver_staging_path": str(staging),
             "silver_version_path": str(final),
         },
     )
 
-    assert committed == [(staging, final, {"layout": "single_data"})]
+    assert published == [final]
 
 
 def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):

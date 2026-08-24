@@ -25,6 +25,7 @@ from datetime import date
 from pathlib import Path
 
 from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
+from shared.common.success_marker import data_key_is_complete, marker_path
 
 GAS_DATASET = "eia_gas_price"
 ELECTRICITY_DATASET = "eia_electricity_price"
@@ -131,9 +132,10 @@ def newest_bronze_s3_key(
     continue` 에 걸려 **조용히 빈 목록**이 됩니다.
     """
     prefix = bronze_s3_prefix(dataset, service_area)
+    key_set = set(keys)
     partitions: list[tuple[date, str]] = []
     for key in keys:
-        if not key.endswith(f"/{file_name}"):
+        if not key.endswith(f"/{file_name}") or not data_key_is_complete(key, key_set):
             continue
         marker = key[len(prefix):].split("/", 1)[0]
         try:
@@ -157,7 +159,7 @@ def bronze_partitions(
 
     partitions: list[tuple[date, Path]] = []
     for partition in dataset_dir.glob(f"{BRONZE_PARTITION_KEY}=*"):
-        if not partition.is_dir():
+        if not partition.is_dir() or not marker_path(partition).is_file():
             continue
         try:
             partition_date = date.fromisoformat(

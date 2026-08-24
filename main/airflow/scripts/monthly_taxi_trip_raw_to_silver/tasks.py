@@ -11,12 +11,8 @@ from airflow.sdk import task
 
 from main.airflow.common.monthly_bronze import (
     SILVER_PART_PATTERN,
-    STAGED_FILE_PATTERN,
-    TIMESTAMP_FILE_PATTERN,
-    commit_staged_silver,
     silver_part_paths,
     silver_version_path,
-    staged_silver_version_path,
     validate_monthly_parquet_bronze,
 )
 from shared.airflow.common.lambda_runtime import lambda_handler_for
@@ -29,6 +25,7 @@ from shared.airflow.common.validation import (
     parse_location,
     parse_handler_result,
     parse_year_month,
+    publish_success_marker,
     run_gx_validation,
 )
 from shared.common.s3_reader import list_keys
@@ -235,16 +232,6 @@ def existing_silver_partitions(
     if isinstance(silver_dir, S3Location):
         prefix = f"{silver_dir.key.rstrip('/')}/"
         keys = list_keys(silver_dir.bucket, prefix)
-        legacy = set()
-        for key in keys:
-            parts = key.removeprefix(prefix).split("/")
-            if (
-                len(parts) == 2
-                and parts[0].startswith("year_month=")
-                and key.endswith(".parquet")
-                and not STAGED_FILE_PATTERN.fullmatch(Path(key).name)
-            ):
-                legacy.add(parts[0])
         published = set()
         for marker in keys:
             if "/source_collected_at=" not in marker or not marker.endswith("/_SUCCESS"):
@@ -257,7 +244,7 @@ def existing_silver_partitions(
                 for key in keys
             ):
                 published.add(marker.removeprefix(prefix).split("/", 1)[0])
-        return sorted(legacy | published)
+        return sorted(published)
 
     root = Path(silver_dir)
     if not root.is_dir():
@@ -266,25 +253,13 @@ def existing_silver_partitions(
     for partition in root.glob("year_month=*"):
         if not partition.is_dir():
             continue
-        # 검증 전 staging 파일(#742)은 아직 커밋된 게 아니므로 "존재"로 세지 않습니다.
-        files = [
-            path
-            for path in partition.glob("*.parquet")
-            if not STAGED_FILE_PATTERN.fullmatch(path.name)
-        ]
-        has_legacy = any(
-            not TIMESTAMP_FILE_PATTERN.fullmatch(path.name) for path in files
-        )
-        has_version = any(
-            TIMESTAMP_FILE_PATTERN.fullmatch(path.name) for path in files
-        )
         has_published_version = any(
             (version / "_SUCCESS").is_file()
             and any(version.glob("part-*.parquet"))
             for version in partition.glob("source_collected_at=*")
             if version.is_dir()
         )
-        if has_legacy or has_version or has_published_version:
+        if has_published_version:
             existing.append(partition.name)
     return sorted(existing)
 
@@ -369,13 +344,10 @@ def validate_bronze_task(result: dict, **context) -> dict:
             invalid_ratio=invalid_ratio,
             extra_columns=extra_columns,
         )
+    bronze_path = parse_handler_result(result, expected_locations=1).locations[0]
+    publish_success_marker(bronze_path.parent)
     service_area = params.get("service_area")
     version_path = silver_version_path(
-        DEFAULT_SILVER_DIR,
-        result,
-        service_area=service_area,
-    )
-    staging_path = staged_silver_version_path(
         DEFAULT_SILVER_DIR,
         result,
         service_area=service_area,
@@ -385,9 +357,6 @@ def validate_bronze_task(result: dict, **context) -> dict:
     return {
         **result,
         "silver_version_path": str(version_path),
-        # Spark는 검증 전이라 여기(staging)에만 씁니다 — validate_silver가 통과시켜야
-        # silver_version_path로 옮겨집니다(#742).
-        "silver_staging_path": str(staging_path),
         "silver_partitions_before": existing_silver_partitions(silver_root),
     }
 
@@ -430,13 +399,11 @@ def validate_silver_task(raw_result: dict, **context) -> None:
     bronze_rows = parquet_file(parsed.locations[0]).metadata.num_rows
 
     version_path = parse_location(raw_result["silver_version_path"])
-    staged_path = parse_location(raw_result["silver_staging_path"])
-
     expected_schema = SILVER_SCHEMA
     required_columns = list(SILVER_SCHEMA.names)
-    part_paths = silver_part_paths(staged_path)
+    part_paths = silver_part_paths(version_path)
     if not part_paths:
-        raise ValueError(f"Silver staging part 파일이 없습니다: {staged_path}")
+        raise ValueError(f"Silver part 파일이 없습니다: {version_path}")
     parquet_files = [parquet_file(path) for path in part_paths]
     summary = _silver_quality_summary(parquet_files, required_columns)
     import great_expectations as gx
@@ -478,12 +445,13 @@ def validate_silver_task(raw_result: dict, **context) -> None:
     # 당연히 새로 생기므로 비교 대상이 아닙니다.
     before = set(raw_result.get("silver_partitions_before") or [])
     after = set(existing_silver_partitions(version_path.parent.parent))
-    lost = sorted(before - after)
+    # 재처리 중인 현재 월은 writer가 기존 marker를 먼저 지워 아직
+    # `after`에 보이지 않습니다. 다른 월이 사라진 경우만 #165 재발입니다.
+    current_partition = version_path.parent.name
+    lost = sorted(before - after - {current_partition})
     if lost:
         raise ValueError(
             f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
         )
 
-    # 검증을 모두 통과한 뒤에만 최종 경로로 승격합니다(#742) — 그전까지는
-    # staging 이름이라 다른 태스크의 "최신 버전" 탐색에 걸리지 않습니다.
-    commit_staged_silver(staged_path, version_path, layout="spark_parts")
+    publish_success_marker(version_path)

@@ -11,6 +11,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from shared.common.s3_reader import get_object_bytes, get_object_stream
+from shared.common.success_marker import marker_key, marker_path
 
 
 logger = logging.getLogger(__name__)
@@ -189,27 +190,33 @@ def require_file(path: Path | S3Location) -> Path | S3Location:
     return path
 
 
-def commit_staged_file(staged: Path | S3Location, final: Path | S3Location) -> None:
-    """검증된 단일 파일을 최종 위치로 승격합니다(있으면 덮어씀).
-
-    `main.airflow.common.monthly_bronze.commit_staged_silver`는 버전 디렉터리·
-    `_SUCCESS` 마커가 있는 API 3종 전용입니다. 이 함수는 그런 버전 관리 없이
-    고정 파일명 하나를 그 자리에서 덮어쓰는 데이터셋(EIA 등)을 위한 최소 버전입니다
-    — 검증 실패 시 staged 파일만 남고 final은 이전 상태 그대로 유지됩니다.
-    """
-    if isinstance(final, S3Location):
-        if not isinstance(staged, S3Location):
-            raise TypeError("staged와 final의 위치 종류가 다릅니다")
-        client = boto3.client("s3")
-        client.copy(
-            {"Bucket": staged.bucket, "Key": staged.key}, final.bucket, final.key
+def publish_success_marker(directory: Path | S3Location) -> None:
+    """검증이 끝난 디렉터리를 공개합니다. 데이터 이동은 하지 않습니다."""
+    if isinstance(directory, S3Location):
+        boto3.client("s3").put_object(
+            Bucket=directory.bucket,
+            Key=marker_key(directory.key),
+            Body=b"",
         )
-        client.delete_object(Bucket=staged.bucket, Key=staged.key)
         return
-    if isinstance(staged, S3Location):
-        raise TypeError("staged와 final의 위치 종류가 다릅니다")
-    final.parent.mkdir(parents=True, exist_ok=True)
-    Path(staged).replace(final)
+    Path(directory).mkdir(parents=True, exist_ok=True)
+    marker_path(directory).touch()
+
+
+def require_success_marker(directory: Path | S3Location) -> None:
+    if isinstance(directory, S3Location):
+        key = marker_key(directory.key)
+        try:
+            stream, _ = get_object_stream(directory.bucket, key)
+        except Exception as exc:
+            raise FileNotFoundError(
+                f"완료 marker가 없습니다: s3://{directory.bucket}/{key}"
+            ) from exc
+        stream.close()
+        return
+    marker = marker_path(directory)
+    if not marker.is_file():
+        raise FileNotFoundError(f"완료 marker가 없습니다: {marker}")
 
 
 def parquet_file(path: Path | S3Location) -> pq.ParquetFile:

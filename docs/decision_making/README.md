@@ -51,3 +51,4 @@
 ### 8/24 ([상세 정리 문서 링크](/docs/decision_making/0824.md))
 1. 지역별 Airflow DagRun 동시 실행 상한 : `max_active_runs=3`
 2. Gold 세 번째 물리 테이블 : `monthly_report` 대신 `lease_vehicle_inventory` 적재
+3. Bronze·Silver S3 공개 : 최종 경로 직접 적재 후 검증 성공 시 `_SUCCESS` 기록

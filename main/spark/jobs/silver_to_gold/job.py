@@ -41,6 +41,7 @@ from main.spark.jobs.silver_to_gold.transformer import (
     validate_vehicle_profit_simulation,
 )
 from shared.common.s3_reader import list_keys
+from shared.common.success_marker import data_key_is_complete, marker_path
 from main.spark.jobs.silver_to_gold.monthly_silver import (
     latest_local_silver_version,
     latest_s3_silver_version,
@@ -115,13 +116,6 @@ def latest_partition_file(
         versioned = latest_s3_silver_version(keys, prefix)
         if versioned is not None:
             return f"{scheme}://{bucket}/{versioned}"
-        if any(
-            "/" not in key.removeprefix(prefix)
-            and Path(key).name.startswith("part-")
-            and key.endswith(".parquet")
-            for key in keys
-        ):
-            return f"{scheme}://{bucket}/{prefix}part-*.parquet"
         raise FileNotFoundError(
             f"Silver 파티션이 없습니다: {scheme}://{bucket}/{prefix}"
         )
@@ -132,8 +126,6 @@ def latest_partition_file(
         versioned = latest_local_silver_version(partition_dir)
         if versioned is not None:
             return str(versioned)
-        if sorted(partition_dir.glob("part-*.parquet")):
-            return str(partition_dir / "part-*.parquet")
     raise FileNotFoundError(f"Silver 파티션이 없습니다: {partition_dir}")
 
 
@@ -157,8 +149,11 @@ def latest_fuel_price_path(
         # 계산합니다** — 에러 없이 틀린 값이 나오는 경로라 스코프가 필수입니다.
         area_prefix = service_area_prefix(base_key, service_area=service_area)
         prefix = f"{area_prefix}/"
+        all_keys = list_keys(bucket, prefix)
+        key_set = set(all_keys)
         keys = [
-            key for key in list_keys(bucket, prefix) if key.endswith(".parquet")
+            key for key in all_keys if key.endswith(".parquet")
+            and data_key_is_complete(key, key_set)
         ]
         if keys:
             return f"{scheme}://{bucket}/{max(keys)}"
@@ -167,7 +162,11 @@ def latest_fuel_price_path(
         )
 
     root = service_area_root(fuel_price_dir, service_area)
-    partitions = sorted(p for p in root.glob("year_month=*") if p.is_dir())
+    partitions = sorted(
+        p
+        for p in root.glob("year_month=*")
+        if p.is_dir() and marker_path(p).is_file()
+    )
     if not partitions:
         raise FileNotFoundError(f"연료비 Silver 파티션이 없습니다: {root}")
     parquet_files = sorted(partitions[-1].glob("*.parquet"))

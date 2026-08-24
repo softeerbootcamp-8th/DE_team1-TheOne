@@ -11,7 +11,7 @@ import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
 from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
-from shared.aws_lambda.common.atomic_write import atomic_write
+from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
 from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
 logger = logging.getLogger(__name__)
 DATASET = "driver_vehicle_monthly_snapshot"
@@ -22,12 +22,12 @@ OUTPUT_VERSION_PATTERN = re.compile(
 
 
 def _validate_output_version(path: Path | PurePosixPath) -> None:
-    if path.parent.name != ".staging" or not OUTPUT_VERSION_PATTERN.fullmatch(path.name):
-        raise ValueError("silver_output_path가 Silver staging 버전 경로가 아닙니다")
+    if not path.parent.name.startswith("year_month=") or not OUTPUT_VERSION_PATTERN.fullmatch(path.name):
+        raise ValueError("silver_output_path가 Silver 최종 버전 경로가 아닙니다")
 
 
 class DriverVehicleMonthlySnapshotSilverLoader(Loader):
-    """검증 전 Silver 버전 디렉터리에 단일 data 파일을 원자적으로 씁니다."""
+    """Silver 최종 버전 디렉터리에 단일 data 파일을 원자적으로 씁니다."""
 
     def __init__(
         self,
@@ -42,6 +42,7 @@ class DriverVehicleMonthlySnapshotSilverLoader(Loader):
             raise ValueError("적재할 기사 차량 스냅샷 데이터가 Silver 스키마와 다릅니다")
         path = self._output_dir / DATA_FILE_NAME
         path.parent.mkdir(parents=True, exist_ok=True)
+        invalidate_success_marker(path.parent)
         atomic_write(
             path,
             lambda temporary: pq.write_table(data, temporary, compression="snappy"),
@@ -52,7 +53,7 @@ class DriverVehicleMonthlySnapshotSilverLoader(Loader):
 
 
 class DriverVehicleMonthlySnapshotS3SilverLoader(Loader):
-    """검증 전 S3 Silver 버전 prefix에 단일 data 파일을 씁니다."""
+    """S3 Silver 최종 버전 prefix에 단일 data 파일을 씁니다."""
 
     def __init__(
         self,
@@ -78,6 +79,7 @@ class DriverVehicleMonthlySnapshotS3SilverLoader(Loader):
         result = S3Loader(
             key=self._key,
             bucket=self._bucket,
+            invalidate_parent_success=True,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=data.num_rows)
         )

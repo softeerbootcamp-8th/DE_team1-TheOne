@@ -22,6 +22,7 @@ from main.airflow.common.assets import (
     service_area_root,
 )
 from main.airflow.common.monthly_bronze import latest_local_silver_version
+from shared.common.success_marker import marker_path
 
 logger = logging.getLogger(__name__)
 
@@ -75,10 +76,7 @@ def available_year_months(
         partition.name.removeprefix("year_month=")
         for partition in root.glob("year_month=*")
         if partition.is_dir()
-        and (
-            _latest_version(partition) is not None
-            or any(partition.glob("part-*.parquet"))
-        )
+        and _latest_version(partition) is not None
     }
     return sorted(months)
 
@@ -91,7 +89,6 @@ def _resolve_versioned_input(
     root: str | Path,
     year_month: str,
     *,
-    legacy_file_name: str,
     upstream_dag: str,
     service_area: str,
 ) -> str:
@@ -100,9 +97,6 @@ def _resolve_versioned_input(
     latest = _latest_version(partition)
     if latest is not None:
         return str(latest)
-    legacy = partition / legacy_file_name
-    if legacy.is_file():
-        return str(legacy)
     raise FileNotFoundError(
         f"Silver 버전이 없습니다: {partition}. {upstream_dag} 을 먼저 돌리세요."
     )
@@ -178,10 +172,6 @@ def resolve_input_paths(
     )
     latest = _latest_version(partition)
     monthly_taxi_trip = str(latest) if latest is not None else None
-    if monthly_taxi_trip is None and any(partition.glob("part-*.parquet")):
-        # 구 레이아웃의 Spark part 파일만 읽습니다. 같은 디렉터리의 미완료
-        # collected_at 파일이 섞이지 않도록 디렉터리 자체를 넘기지 않습니다.
-        monthly_taxi_trip = str(partition / "part-*.parquet")
     if monthly_taxi_trip is None:
         raise FileNotFoundError(
             "월별 택시 운행 기록 Silver 버전이 없습니다: "
@@ -190,21 +180,14 @@ def resolve_input_paths(
         )
 
     versioned_files = {
-        "driver_vehicle_monthly_snapshot_path": (
-            "driver_vehicle_monthly_snapshot.parquet",
-            "driver_vehicle_monthly_snapshot_raw_to_silver_pipeline",
-        ),
-        "lease_vehicle_inventory_path": (
-            "lease_vehicle_inventory.parquet",
-            "lease_vehicle_inventory_raw_to_silver_pipeline",
-        ),
+        "driver_vehicle_monthly_snapshot_path": "driver_vehicle_monthly_snapshot_raw_to_silver_pipeline",
+        "lease_vehicle_inventory_path": "lease_vehicle_inventory_raw_to_silver_pipeline",
     }
     resolved_files = {}
-    for key, (file_name, upstream_dag) in versioned_files.items():
+    for key, upstream_dag in versioned_files.items():
         resolved_files[key] = _resolve_versioned_input(
             params[key],
             year_month,
-            legacy_file_name=file_name,
             upstream_dag=upstream_dag,
             service_area=service_area,
         )
@@ -213,7 +196,7 @@ def resolve_input_paths(
         service_area_root(params["fuel_price_path"], service_area)
         / f"year_month={year_month}" / "gas_ev_price.parquet"
     )
-    if not fuel_path.is_file():
+    if not fuel_path.is_file() or not marker_path(fuel_path.parent).is_file():
         raise FileNotFoundError(
             f"Silver 파일이 없습니다: {fuel_path}. "
             "eia_fuel_price_silver_pipeline 을 먼저 돌리세요."

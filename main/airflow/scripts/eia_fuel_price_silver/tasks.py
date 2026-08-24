@@ -25,13 +25,14 @@ from shared.airflow.common.lambda_runtime import lambda_handler_for
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     S3Location,
-    commit_staged_file,
     layout_tail,
     parse_handler_result,
     parse_location,
     parse_year_month,
+    publish_success_marker,
     read_parquet,
     require_file,
+    require_success_marker,
 )
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
 
@@ -87,21 +88,6 @@ def integrated_silver_key(year_month: str, service_area: str) -> str:
     return f"{prefix}/{SILVER_PARTITION_KEY}={year_month}/{INTEGRATED_FILE_NAME}"
 
 
-def staged_integrated_silver_file(
-    base_dir: str, year_month: str, service_area: str
-) -> Path:
-    """검증 전 위치. lambda loader의 `staged_silver_file`과 같은 규칙이어야
-    합니다(#757) — 어긋나면 이 검증이 엉뚱한 자리를 보고도 통과합니다."""
-    final = integrated_silver_file(base_dir, year_month, service_area)
-    return final.parent / ".staging" / final.name
-
-
-def staged_integrated_silver_key(year_month: str, service_area: str) -> str:
-    final = integrated_silver_key(year_month, service_area)
-    parent, name = final.rsplit("/", 1)
-    return f"{parent}/.staging/{name}"
-
-
 def month_day_count(year_month: str) -> int:
     import calendar
 
@@ -144,6 +130,7 @@ def require_clean_silver(
 
         try:
             located = require_file(candidate)
+            require_success_marker(candidate.parent)
         except FileNotFoundError:
             raise FileNotFoundError(
                 f"{dataset} CLEAN Silver 가 없습니다: {candidate} — "
@@ -168,9 +155,7 @@ def validate_silver(result: object, service_area: str) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    # 검증 전이라 아직 staged 위치입니다 — 최종 위치는 검증 통과 후 commit_staged_file
-    # 로만 채워집니다(#757).
-    expected_path = staged_integrated_silver_file("", year_month, service_area)
+    expected_path = integrated_silver_file("", year_month, service_area)
     if layout_tail(path, service_area=service_area) != layout_tail(
         expected_path, service_area=service_area
     ):
@@ -257,20 +242,8 @@ def validate_silver_task(**context) -> None:
     service_area = assets.resolve_service_area(context.get("params", {}))
     validate_silver(result, service_area)
 
-    # 검증을 통과했으니 이제 최종 경로로 승격합니다 — 그 전에는 실패해도 최종
-    # 경로가 이전 상태 그대로 남습니다(#757). Asset 발행은 그 뒤여야 Gold가
-    # 승격 전 산출물을 보지 않습니다.
-    staged = parse_location(result["locations"][0])
-    storage = os.getenv("BRONZE_STORAGE", "local")
-    bucket = os.getenv("DATA_LAKE_S3_BUCKET")
-    final = (
-        S3Location(bucket, integrated_silver_key(year_month, service_area))
-        if storage == "s3"
-        else integrated_silver_file(
-            context["params"]["silver_dir"], year_month, service_area
-        )
-    )
-    commit_staged_file(staged, final)
+    path = parse_location(result["locations"][0])
+    publish_success_marker(path.parent)
 
     assets.publish_month_partition(
         context.get("outlet_events"),

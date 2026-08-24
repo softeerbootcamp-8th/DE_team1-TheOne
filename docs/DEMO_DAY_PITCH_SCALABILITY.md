@@ -197,7 +197,10 @@
 
 ---
 
-## 4. C — Bronze→Silver 검증-후-커밋 (1/6 구현, 5/6 설계)
+## 4. C — Bronze→Silver 검증-후-커밋 (과거 설계)
+
+> 2026-08-24 #912에서 이 staging copy+delete 설계를 폐기했다. 현재는 최종
+> 경로에 직접 쓴 뒤 검증 성공 시에만 `_SUCCESS`로 공개한다.
 
 ### 문제/계기
 
@@ -457,8 +460,8 @@ F를 구현하기 전에 고칠 필요는 없었지만, "리전이 늘어서 터
 있음)가 아니라 **boto3의 managed transfer**다 — 크기가
 `TransferConfig.multipart_threshold`(기본 8MB)를 넘으면 자동으로 멀티스레드
 `UploadPartCopy`로 전환해 S3 최대 객체 크기(5TB)까지 문제없이 처리한다.
-`main/airflow/common/monthly_bronze.py:81`(Silver 검증-후-커밋)의 `client.copy`도
-동일하게 안전하다. 5GB 축 자체는 걱정하지 않아도 된다.
+당시 `main/airflow/common/monthly_bronze.py:81`의 `client.copy`도 동일한 managed
+transfer였다. #912 이후 해당 copy 경로 자체가 제거됐다.
 
 ### 구현 시 함께 고쳐야 하는 지점 — 조용히 틀린 값을 만드는 것
 
@@ -658,8 +661,8 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
 - A의 두 dedup 메커니즘(`source_api_refresh`의 ETag/Last-Modified,
   `is_duplicate_of_newest`의 콘텐츠 해시)은 이미 코드에 있고 5개 raw 수집
   지점 전부를 커버한다.
-- C는 `main/airflow/common/monthly_bronze.py`의 `staged_silver_version_path`
-  /`commit_staged_silver`가 monthly_taxi_trip에 실제로 적용돼 있다(#742).
+- C의 staging 설계는 #742에서 monthly_taxi_trip에 적용됐었고, #912에서
+  최종 경로 직접 쓰기 + `_SUCCESS` 공개 방식으로 대체됐다.
 - B/D/E의 데이터셋별 분류·지표 표는 이번 세션에서 실제 코드(스키마 정의,
   변환 로직)를 추적해서 만든 것이며, 임의로 지어낸 게 아니다.
 - Gold는 추천 KPI를 계산하지 않고 월별 수익 시뮬레이션과 재고를 버전별로 누적한다.

@@ -1,13 +1,8 @@
 """월별 원천 API에서 받은 단일 Bronze 수집본을 검증합니다."""
 
 import re
-import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
-from uuid import uuid4
-
-import boto3
 
 from shared.airflow.common.validation import (
     S3Location,
@@ -28,8 +23,6 @@ TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
 SOURCE_COLLECTED_AT_PATTERN = re.compile(r"^source_collected_at=(\d{8}T\d{12}Z)$")
 SILVER_PART_PATTERN = re.compile(r"^part-.+\.parquet$")
 SILVER_SUCCESS_FILE = "_SUCCESS"
-# 구 단일 파일 staging을 읽기 호환에서 공개 버전으로 세지 않기 위한 패턴입니다.
-STAGED_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.staged\.parquet$")
 
 
 def collected_at_token(value: str) -> str:
@@ -60,11 +53,7 @@ def _is_silver_data_file(file_name: str) -> bool:
 
 
 def latest_local_silver_version(partition: Path) -> Path | None:
-    candidates: list[tuple[str, Path]] = [
-        (path.stem, path)
-        for path in partition.glob("*.parquet")
-        if path.is_file() and TIMESTAMP_FILE_PATTERN.fullmatch(path.name)
-    ]
+    candidates: list[tuple[str, Path]] = []
     for version_dir in partition.glob("source_collected_at=*"):
         match = SOURCE_COLLECTED_AT_PATTERN.fullmatch(version_dir.name)
         if (
@@ -118,19 +107,6 @@ def silver_version_path(
     return local / f"year_month={year_month}" / version_dir
 
 
-def staged_silver_version_path(
-    base_dir: str | Path,
-    result: dict,
-    service_area: str,
-) -> Path | S3Location:
-    """`silver_version_path`와 격리된 검증 전 디렉터리입니다."""
-    final = silver_version_path(base_dir, result, service_area)
-    if isinstance(final, S3Location):
-        parent = final.key.rsplit("/", 1)[0]
-        return S3Location(final.bucket, f"{parent}/.staging/{final.name}")
-    return final.parent / ".staging" / final.name
-
-
 def silver_part_paths(version: Path | S3Location) -> list[Path | S3Location]:
     """버전 디렉터리 바로 아래의 Spark 호환 part 파일만 반환합니다."""
     if isinstance(version, S3Location):
@@ -146,108 +122,6 @@ def silver_part_paths(version: Path | S3Location) -> list[Path | S3Location]:
         for path in Path(version).glob("part-*.parquet")
         if path.is_file() and SILVER_PART_PATTERN.fullmatch(path.name)
     )
-
-
-def _matches_layout(file_name: str, layout: Literal["spark_parts", "single_data"]) -> bool:
-    if layout == "spark_parts":
-        return bool(SILVER_PART_PATTERN.fullmatch(file_name))
-    return file_name == "data.parquet"
-
-
-def silver_data_paths(
-    version: Path | S3Location,
-    layout: Literal["spark_parts", "single_data"],
-) -> list[Path | S3Location]:
-    """버전 디렉터리 바로 아래에서 지정 레이아웃의 Parquet만 반환합니다."""
-    if isinstance(version, S3Location):
-        prefix = f"{version.key.rstrip('/')}/"
-        return [
-            S3Location(version.bucket, key)
-            for key in list_keys(version.bucket, prefix)
-            if _matches_layout(Path(key).name, layout)
-            and "/" not in key.removeprefix(prefix)
-        ]
-    return sorted(
-        path
-        for path in Path(version).glob("*.parquet")
-        if path.is_file() and _matches_layout(path.name, layout)
-    )
-
-
-def commit_staged_silver(
-    staged: Path | S3Location,
-    final: Path | S3Location,
-    *,
-    layout: Literal["spark_parts", "single_data"],
-) -> None:
-    """지정 레이아웃으로 검증된 파일만 옮기고 `_SUCCESS`를 마지막에 씁니다."""
-    if isinstance(final, S3Location):
-        if not isinstance(staged, S3Location):
-            raise TypeError("staged와 final의 위치 종류가 다릅니다")
-        client = boto3.client("s3")
-        staged_prefix = f"{staged.key.rstrip('/')}/"
-        final_prefix = f"{final.key.rstrip('/')}/"
-        staged_keys = list_keys(staged.bucket, staged_prefix)
-        parquet_keys = [
-            key
-            for key in staged_keys
-            if key.endswith(".parquet")
-            and "/" not in key.removeprefix(staged_prefix)
-        ]
-        data_keys = [
-            key for key in parquet_keys if _matches_layout(Path(key).name, layout)
-        ]
-        if (
-            not data_keys
-            or len(data_keys) != len(parquet_keys)
-            or (layout == "single_data" and len(data_keys) != 1)
-        ):
-            raise ValueError(f"Silver staging 파일이 {layout} 계약과 다릅니다: {staged}")
-        final_keys = list_keys(final.bucket, final_prefix)
-        marker = f"{final_prefix}{SILVER_SUCCESS_FILE}"
-        if marker in final_keys:
-            client.delete_object(Bucket=final.bucket, Key=marker)
-        for key in final_keys:
-            if key != marker:
-                client.delete_object(Bucket=final.bucket, Key=key)
-        for source_key in data_keys:
-            target_key = f"{final_prefix}{Path(source_key).name}"
-            client.copy(
-                {"Bucket": staged.bucket, "Key": source_key},
-                final.bucket,
-                target_key,
-            )
-        client.put_object(Bucket=final.bucket, Key=marker, Body=b"")
-        for key in staged_keys:
-            client.delete_object(Bucket=staged.bucket, Key=key)
-        return
-    if isinstance(staged, S3Location):
-        raise TypeError("staged와 final의 위치 종류가 다릅니다")
-    staged_path, final_path = Path(staged), Path(final)
-    parquet_files = sorted(path for path in staged_path.glob("*.parquet") if path.is_file())
-    data_files = silver_data_paths(staged_path, layout)
-    if (
-        not data_files
-        or len(data_files) != len(parquet_files)
-        or (layout == "single_data" and len(data_files) != 1)
-    ):
-        raise ValueError(
-            f"Silver staging 파일이 {layout} 계약과 다릅니다: {staged_path}"
-        )
-    (staged_path / SILVER_SUCCESS_FILE).touch()
-    final_path.parent.mkdir(parents=True, exist_ok=True)
-    backup = final_path.with_name(f".{final_path.name}.backup-{uuid4().hex}")
-    if final_path.exists():
-        final_path.replace(backup)
-    try:
-        staged_path.replace(final_path)
-    except Exception:
-        if backup.exists():
-            backup.replace(final_path)
-        raise
-    finally:
-        shutil.rmtree(backup, ignore_errors=True)
-
 
 def validate_monthly_parquet_bronze(
     result: dict,
