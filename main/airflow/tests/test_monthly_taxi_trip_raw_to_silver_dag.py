@@ -1,8 +1,8 @@
 """월별 택시 운행 데이터 Raw→Bronze→Silver DAG 계약.
 
 1. 감시 DAG만 스케줄을 갖고 이 DAG는 요청받은 월의 네 단계를 처리
-2. 운영 DAG는 AWS Lambda payload를 사용하고 로컬 함수는 기존 event 계약 유지
-3. Spark 명령은 검증된 월만 정제
+2. 데이터 제공 주소와 선택적 연월을 월별 택시 운행 수집 핸들러에 전달
+3. Spark 명령은 검증 또는 재수집된 월만 정제
 4. 로컬은 Bash Spark, 운영은 공용 EMR Serverless에 같은 Spark job을 제출
 5. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
 6. 운영 필수 환경변수가 없으면 DAG 구성이 즉시 실패
@@ -12,8 +12,8 @@ from datetime import timedelta
 
 import pytest
 
+from shared.airflow.common import lambda_invoke
 from dags import monthly_taxi_trip_raw_to_silver_dag as dag_module
-from main.airflow.scripts.monthly_taxi_trip_raw_to_silver import tasks as task_module
 
 
 DAG = dag_module.monthly_taxi_trip_dag
@@ -57,8 +57,8 @@ def test_수집task는_데이터제공주소와_수동월을_HVFHV핸들러에_�
         called.update(event)
         return {"year_month": "2026-08"}
 
-    monkeypatch.setattr(task_module, "lambda_handler_for", lambda name: handler)
-    raw = task_module.raw_to_bronze_task.function
+    monkeypatch.setattr(lambda_invoke, "lambda_handler_for", lambda name, **_: handler)
+    raw = DAG.get_task("raw_to_bronze").python_callable
     raw(
         params={
             "api_base_url": "http://source",

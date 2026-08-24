@@ -15,7 +15,7 @@ from main.airflow.common.monthly_bronze import (
     silver_version_path,
     validate_monthly_parquet_bronze,
 )
-from shared.airflow.common.lambda_runtime import lambda_handler_for
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.slack_quality_warning import send_quality_warning
@@ -201,14 +201,20 @@ def raw_to_bronze_task(**context) -> dict:
 def _collect_bronze(params: dict) -> dict:
     event = {
         "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
-        "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
         "year": params.get("year"),
         "month": params.get("month"),
     }
     if params.get("service_area") is not None:
         event["service_area"] = params["service_area"]
     logger.info("raw_to_bronze 작업 시작: event=%s", event)
-    result = lambda_handler_for("monthly_taxi_trip_raw_to_bronze")(event=event)
+    result = invoke_lambda(
+        "monthly_taxi_trip_raw_to_bronze",
+        package="main.aws_lambda.functions",
+        event=event,
+        local_event={
+            "base_dir": params.get("base_dir") or DEFAULT_BRONZE_DIR,
+        },
+    )
     logger.info("raw_to_bronze 작업 완료: result=%s", result)
     return result
 
@@ -281,6 +287,14 @@ def validate_bronze_task(result: dict, **context) -> dict:
         else MONTHLY_TAXI_TRIP_ERROR_THRESHOLD
     )
     summary = _bronze_quality_result(result, params, list(SCHEMA.names))
+    missing = summary.at[0, "missing_required_columns"]
+    if missing:
+        logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
+        result = _collect_bronze(params)
+        summary = _bronze_quality_result(
+            result, params, list(SCHEMA.names)
+        )
+
     import great_expectations as gx
 
     expectations = [

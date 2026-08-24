@@ -5,10 +5,6 @@ from datetime import datetime, timedelta
 
 from airflow.sdk import Param, dag
 
-from shared.airflow.common.lambda_remote import (
-    JsonLambdaInvokeFunctionOperator,
-    templated_json_payload,
-)
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
@@ -21,6 +17,8 @@ from main.airflow.scripts.driver_vehicle_monthly_snapshot_raw_to_silver.tasks im
     DEFAULT_API_BASE_URL,
     DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
+    bronze_to_silver_task,
+    raw_to_bronze_task,
     validate_bronze_task,
     validate_silver_task,
 )
@@ -34,6 +32,7 @@ default_args = {
     "on_retry_callback": slack_retry_alert_callback,
     "on_failure_callback": slack_failure_callback,
 }
+
 
 @dag(
     dag_id="driver_vehicle_monthly_snapshot_raw_to_silver_pipeline",
@@ -62,35 +61,13 @@ default_args = {
     },
 )
 def driver_vehicle_monthly_snapshot_raw_to_silver_pipeline():
-    raw = JsonLambdaInvokeFunctionOperator(
-        task_id="raw_to_bronze",
-        function_name="driver_vehicle_monthly_snapshot_raw_to_bronze",
-        aws_conn_id="aws_default",
-        invocation_type="RequestResponse",
-        payload=templated_json_payload(
-            api_base_url="params.api_base_url",
-            base_dir="params.base_dir",
-            year="params.year",
-            month="params.month",
-            service_area="params.service_area",
-        ),
+    raw = raw_to_bronze_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
         retry_exponential_backoff=True,
-    ).output
+    )()
     checked = validate_bronze_task.override(retries=0)(raw)
-    silver = JsonLambdaInvokeFunctionOperator(
-        task_id="bronze_to_silver",
-        function_name="driver_vehicle_monthly_snapshot_bronze_to_silver",
-        aws_conn_id="aws_default",
-        invocation_type="RequestResponse",
-        payload=templated_json_payload(
-            year_month="task_instance.xcom_pull(task_ids='validate_bronze')['year_month']",
-            silver_output_path="task_instance.xcom_pull(task_ids='validate_bronze')['silver_version_path']",
-            service_area="params.service_area",
-        ),
-    ).output
-    checked >> silver
+    silver = bronze_to_silver_task(checked)
     validate_silver_task.override(retries=0)(silver, checked)
 
 
