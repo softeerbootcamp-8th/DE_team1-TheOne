@@ -15,6 +15,7 @@ import pytest
 from dags import eia_gas_price_raw_to_silver_dag as dag_module
 from main.airflow.scripts.eia_gas_price_bronze_to_silver import tasks as task_module
 from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
+from shared.airflow.common import lambda_invoke
 from shared.airflow.common.validation import S3Location
 
 
@@ -61,6 +62,65 @@ def test_수집과_변환만_장애유형에_맞게_재시도한다():
 
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
+
+
+def test_수집task는_지역과_수집시각만_람다에_보낸다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {"row_count": 1, "locations": ["/bronze/x.xls"]}
+
+    monkeypatch.setattr(
+        lambda_invoke,
+        "lambda_handler_for",
+        lambda name, **_: handlers.append(name) or handler,
+    )
+    dag_run = type(
+        "DagRun", (), {"start_date": datetime(2026, 8, 17, 12, 34, 56, tzinfo=timezone.utc)}
+    )()
+    DAG.get_task("raw_to_bronze").python_callable(
+        params={"bronze_dir": "/bronze", "service_area": "TX"},
+        dag_run=dag_run,
+    )
+    assert handlers == ["eia_gas_price_raw_to_bronze"]
+    assert called == {
+        "service_area": "TX",
+        "collected_at": "2026-08-17T12:34:56.000000Z",
+        "base_dir": "/bronze",
+    }
+
+
+def test_정제task는_년월과_지역만_람다에_보낸다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {"row_count": 31, "locations": ["/silver/x.parquet"]}
+
+    monkeypatch.setattr(
+        lambda_invoke,
+        "lambda_handler_for",
+        lambda name, **_: handlers.append(name) or handler,
+    )
+    DAG.get_task("bronze_to_silver").python_callable(
+        params={
+            "year": "2024",
+            "month": "3",
+            "bronze_dir": "/bronze",
+            "silver_dir": "/silver",
+            "service_area": "TX",
+        },
+    )
+    assert handlers == ["eia_gas_price_bronze_to_silver"]
+    assert called == {
+        "year_month": "2024-03",
+        "service_area": "TX",
+        "bronze_dir": "/bronze",
+        "silver_dir": "/silver",
+    }
 
 
 @pytest.mark.parametrize(

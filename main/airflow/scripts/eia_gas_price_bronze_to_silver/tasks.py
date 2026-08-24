@@ -18,7 +18,7 @@ from airflow.sdk import task
 from main.airflow.common.assets import join_segments, service_area_segment
 from main.airflow.common.monthly_bronze import collected_at_token
 from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
-from shared.airflow.common.lambda_runtime import lambda_handler_for
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     layout_tail,
@@ -152,12 +152,16 @@ def bronze_to_silver_task(**context) -> dict:
 
     event = {
         "year_month": year_month,
-        "bronze_dir": params["bronze_dir"],
-        "silver_dir": params["silver_dir"],
         "service_area": params["service_area"],
     }
-    result = lambda_handler_for("eia_gas_price_bronze_to_silver")(
-        event=event
+    result = invoke_lambda(
+        "eia_gas_price_bronze_to_silver",
+        package="main.aws_lambda.functions",
+        event=event,
+        local_event={
+            "bronze_dir": params["bronze_dir"],
+            "silver_dir": params["silver_dir"],
+        },
     )
     return {"year_month": year_month, **result}
 

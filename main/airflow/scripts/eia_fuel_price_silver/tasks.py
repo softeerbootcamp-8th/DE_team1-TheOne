@@ -21,7 +21,7 @@ from main.airflow.common import assets
 from main.airflow.common.assets import (
     service_area_prefix, service_area_root, service_area_segment,
 )
-from shared.airflow.common.lambda_runtime import lambda_handler_for
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
     S3Location,
@@ -259,10 +259,14 @@ def combine_silver_task(**context) -> dict:
 
     event = {
         "year_month": year_month,
-        "silver_dir": params["silver_dir"],
         "service_area": params["service_area"],
     }
-    result = lambda_handler_for("eia_fuel_price_silver")(event=event)
+    result = invoke_lambda(
+        "eia_fuel_price_silver",
+        package="main.aws_lambda.functions",
+        event=event,
+        local_event={"silver_dir": params["silver_dir"]},
+    )
     return {"year_month": year_month, **result}
 
 

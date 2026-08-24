@@ -37,6 +37,7 @@ from schema.silver import (
     FINAL,
     PRELIMINARY,
 )
+from shared.airflow.common import lambda_invoke
 
 
 DAG = dag_module.eia_fuel_price_silver_dag
@@ -128,6 +129,32 @@ def test_통합만_재시도하고_확인과_검증은_재시도하지_않는다
     assert DAG.get_task("combine_silver").retries == 1
     assert DAG.get_task("check_clean_silver").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
+
+
+def test_통합task는_년월과_지역만_람다에_보낸다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {"row_count": 31, "locations": ["/silver/x.parquet"]}
+
+    monkeypatch.setattr(
+        lambda_invoke,
+        "lambda_handler_for",
+        lambda name, **_: handlers.append(name) or handler,
+    )
+    task_instance = _fake_task_instance("2024-03")
+    DAG.get_task("combine_silver").python_callable(
+        params={"silver_dir": "/silver", "service_area": "TX"},
+        task_instance=task_instance,
+    )
+    assert handlers == ["eia_fuel_price_silver"]
+    assert called == {
+        "year_month": "2024-03",
+        "service_area": "TX",
+        "silver_dir": "/silver",
+    }
 
 
 def test_Bronze_경로_파라미터는_더_이상_없다():
