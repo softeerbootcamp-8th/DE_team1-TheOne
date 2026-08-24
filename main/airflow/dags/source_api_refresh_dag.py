@@ -10,8 +10,10 @@ from main.airflow.common.assets import (
     DEFAULT_SERVICE_AREA,
     MAX_ACTIVE_SERVICE_AREA_RUNS,
 )
+from main.airflow.common.gold_staleness import DEFAULT_STALE_SLA_DAYS
 from main.airflow.scripts.source_api_refresh.tasks import (
     check_and_should_refresh_task,
+    check_gold_staleness_task,
     mark_processed_task,
     publish_api_refresh_ready_task,
 )
@@ -73,9 +75,19 @@ default_args = {
             pattern=r"^[A-Z][A-Z0-9_]*$",
             description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
         ),
+        "gold_stale_sla_days": Param(
+            None,
+            type=["integer", "null"],
+            description=(
+                "지역별 Gold 마지막 성공 이후 이 일수를 넘기면 Slack 경고를 보냅니다. "
+                "비우면 Variable(gold_stale_sla_days) 또는 기본값 "
+                f"{DEFAULT_STALE_SLA_DAYS}일을 씁니다."
+            ),
+        ),
     },
 )
 def source_api_refresh_pipeline():
+    check_gold_staleness_task()
     check_task_ids = []
     completed = []
     for dataset, dag_id in SOURCES:

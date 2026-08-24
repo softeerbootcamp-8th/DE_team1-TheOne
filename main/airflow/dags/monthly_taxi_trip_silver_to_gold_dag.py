@@ -21,7 +21,6 @@ from shared.airflow.common.slack_failure_callback import (
 )
 from main.airflow.scripts.monthly_taxi_trip_silver_to_gold.tasks import (
     DEFAULT_PATHS,
-    DEFAULT_STALE_SLA_DAYS,
     ROOT,
     validate_gold_task,
     validate_inputs_task,
@@ -160,8 +159,6 @@ def _build_gold_operator():
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
-        # 비우면 Variable(gold_stale_sla_days) 또는 기본값을 씁니다 — 절대 날짜가
-        # 아니라 상대 기준을 쓰는 이유는 tasks.resolve_stale_sla_days 참고.
         # 수동 실행의 대상 지역. Asset 트리거 실행에서는 파티션 키가 이 값을
         # **덮어씁니다**(resolve_target_service_area 참고) — 이 파라미터는 기본값이
         # 있어서 우선하면 "TX:2026-08" 파티션을 NYC 로 적재하게 됩니다.
@@ -173,15 +170,6 @@ def _build_gold_operator():
             type="string",
             pattern=r"^[A-Z][A-Z0-9_]*$",
             description="수동 실행 대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
-        ),
-        "gold_stale_sla_days": Param(
-            None,
-            type=["integer", "null"],
-            description=(
-                "직전 Gold 성공 완료 이후 이 일수를 넘기면 Slack에 staleness 경고를 "
-                f"보냅니다. 비우면 Variable(gold_stale_sla_days) 또는 기본값 "
-                f"{DEFAULT_STALE_SLA_DAYS}을 씁니다."
-            ),
         ),
     },
 )

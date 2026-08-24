@@ -10,6 +10,7 @@
 8. 모두 미변경이거나 하나라도 실패하면 READY Asset을 발행하지 않음
 9. 확정된 연월·API 주소·지역을 하위 DAG trigger conf로 전달
 10. refresh DAG가 내부 Source API 기본 주소를 사용
+11. 일일 Gold staleness 감시는 원천 refresh 분기와 독립적으로 실행
 """
 
 import requests
@@ -454,15 +455,18 @@ def test_수동_연월은_정규화한_URL과_trigger값으로_반환한다(monk
 def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한다():
     assert source_api_refresh_dag.schedule == "@daily"
     assert source_api_refresh_dag.max_active_runs == 3
-    assert len(source_api_refresh_dag.tasks) == len(SOURCES) * 3 + 1
+    assert len(source_api_refresh_dag.tasks) == len(SOURCES) * 3 + 2
 
     ready = source_api_refresh_dag.get_task("publish_api_refresh_ready")
+    watchdog = source_api_refresh_dag.get_task("check_gold_staleness")
     marker_ids = {f"mark_processed_{dataset}" for dataset, _ in SOURCES}
     assert ready.upstream_task_ids == marker_ids
     assert ready.trigger_rule == TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
     assert [outlet.name for outlet in ready.outlets] == [
         assets.API_SILVER_REFRESH_READY.name
     ]
+    assert not watchdog.upstream_task_ids
+    assert not watchdog.downstream_task_ids
 
     for dataset, child_dag_id in SOURCES:
         gate = source_api_refresh_dag.get_task(
