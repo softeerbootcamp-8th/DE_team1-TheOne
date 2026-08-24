@@ -30,7 +30,7 @@
 - 차량 교체 권장 고객 및 제안 차량 추천 대시보드
   - 대시보드 조건 : 차량 변경 시 '기사 순수익 월 600$ 이상 증가 & 리스 업체 렌탈 객단가 상승'
 ### 결과 이미지
-![대시보드 이미지](dashboard_reference.png)
+![대시보드 이미지](assets/dashboard_reference.png)
 
 
 ### 기대 효과
@@ -65,14 +65,27 @@
 
 
 ### 3. 파이프라인
-![메인 데이터 파이프라인 아키텍처](main_data_product_architecture.png)
+![메인 데이터 파이프라인 아키텍처](assets/main_data_product_architecture.png)
 > 가상 사내 시스템과 EIA에서 데이터를 수집해 **메달리온 정제 구조** 설계
 
 | 계층 | 역할 | 실행 런타임 | 적재 위치|
 | --- | --- | --- | --- |
 | **Bronze** | 원본 적재, 수집 품질 검증 | Lambda | S3 |
 | **Silver** | 원본별 정제, 연료비 통합, 레코드 품질 검증 | Lambda or Spark(EMR) | S3|
-| **Gold** | 비즈니스 로직 적용, 조인, 집계, 시뮬레이션, 추천 | Lambda or Spark | RDS |
+| **Gold** | 비즈니스 로직 적용, 조인, 집계, 시뮬레이션, 추천 | Lambda or Spark(EMR) | RDS |
+
+### 4. AWS Infra Architecture
+![AWS 인프라 아키텍처](assets/AWS_architecture.png)
+- [AWS 서비스별 역할 및 설명](/docs/AWS_INFRA.md)
+- 주요 항목
+  - **Lambda** : 역할에 따른 VPC 위치 구분
+    1. VPC 내부 : 원천 소스 API 서버와 상호작용하는 것
+        - 가정 : 리스 **회사 내의 개발자**가 개발한 **데이터 파이프라인**
+    2. VPC 외부 : 그 외 외부 통신 IAM 최소 권한으로 보안 확보
+  - **NGINX** : 리버스 프록시를 이용한 대시보드 접근 경로 단일화 / 내부 포트 은닉
+    - Public의 Nginx가 요청을 받아 Private 차량 추천 대시보드로 리버스 프록시
+    - 외부 사용자는 NginX를 통해서만 접근
+  - **모니터링 대시보드** : 외부망 노출 X (내부 전용)
 
 <details>
 <summary>원천 DB 파이프라인</summary>
@@ -102,7 +115,7 @@
   - 기사 선호도 / 근무 한도 / 공차 이동시간 제약을 만족하는 알고리즘
 
 #### 4. 파이프라인
-![원천 DB 파이프라인 아키텍처](source_company_architecture.png)
+![원천 DB 파이프라인 아키텍처](assets/source_company_architecture.png)
 > 원천 DB에서 생성한 데이터를 **API로 메인 데이터 파이프라인에서 수집**합니다.
 
 | 계층 | 내용 |
@@ -115,8 +128,7 @@
 
 </details>
 
-
----
+[목차로 이동](#목차)
 
 ## 문서화
 
@@ -154,16 +166,8 @@
 ### 파이프라인 설계
 
 
-### AWS 인프라 설계
-![AWS 인프라 아키텍처](docs/images/aws_infra_architecture.png)
-- Lambda는 원천 소스 API 서버와 상호작용하는 것만 VPC 내부에 위치, 나머지는 IAM 최소 권한으로 보안 확보
-- 게이트웨이 서버(nginx)가 public subnet에서 private subnet의 차량 추천 대시보드(8501)로 리버스 프록시
-- 모니터링 대시보드는 내부 전용으로 운영, 외부망에 노출하지 않음
-
-상세: [docs/AWS_INFRA.md](/docs/AWS_INFRA.md)
-
-### 트러블슈팅
-> AWS 인프라 운영 중 겪은 장애
+### AWS 인프라
+> AWS 인프라 운영 중 겪은 장애 해결
 
 <details>
 <summary><a href="/docs/troubleshooting/aws/CFN_INSTANCE_ID_PARAM_TYPE.md">[AWS] CloudFormation 배포가 exit 255 로만 죽음</a></summary>
@@ -204,6 +208,7 @@
 > 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
 
 
+[목차로 이동](#목차)
 
 ## 기술 스택
 
@@ -236,6 +241,8 @@
 
 </div>
 
+[목차로 이동](#목차)
+
 ## 팀원
 
 <table align="center">
@@ -258,3 +265,5 @@
     <td align="center"><b>DE</b></td>
   </tr>
 </table>
+
+[목차로 이동](#목차)
