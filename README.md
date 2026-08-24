@@ -136,31 +136,19 @@
 > Spark 성능 최적화
 
 <details>
-<summary><a href="/docs/SPARK_PARTITION_ETC_OPTIMIZATION.md">Silver → Gold Shuffle Partition 최적화</a></summary>
+<summary><a href="/docs/performance_opt/SPARK_PARTITION_OPTIMIZATION.md">Shuffle Partition 최적화</a></summary>
 
-- 과도한 Scheduling Overhead가 예상되어 파티션 수 변경 실험을 진행했습니다.
-  - 결과: Spark 기본값 200개 대신 실측 최적값 32개를 적용했습니다.
+- 과도한 Scheduling Overhead가 예상되어 파티션 수 변경 실험을 진행
+  - 접근: 200개(기존,default)-> 32개(최적값)으로 변경 
+  - 결과: (실행시간 **40% 단축**)
 </details>
 
 <details>
-<summary><a href="/docs/SPARK_OPTIMIZATION_BROADCAST.md">Silver → Gold Broadcast Join 최적화</a></summary>
+<summary><a href="/docs/performance_opt/SPARK_BROADCAST_OPTIMIZATION.md">Broadcast Join 명시 최적화</a></summary>
 
-- 작은 차량·유가 dimension을 broadcast해 큰 운행 DataFrame의 join shuffle을 줄였습니다.
-  - 결과: broadcast 완전 비활성화 대조군이 14.2% 느렸습니다.
-</details>
-
-<details>
-<summary><a href="/docs/SPARK_OPTIMIZATION_LAZY_CHECKPOINT.md">Silver → Gold Lazy Checkpoint 최적화</a></summary>
-
-- 반복 배정의 lineage 절단은 유지하고 checkpoint 즉시 실행만 지연했습니다.
-  - 결과: Jobs·Stages 8.7% 감소, 실행시간 7.3% 단축을 확인했습니다.
-</details>
-
-<details>
-<summary><a href="/docs/SPARK_OPTIMIZATION_STRATEGIC_CACHING.md">Silver → Gold 전략적 캐싱</a></summary>
-
-- 반복 사용되는 중간 결과만 persist하고 수명주기에 맞춰 unpersist합니다.
-  - 결과: 전체 Silver 입력 추가 캐시는 1.0% 느려 적용하지 않았습니다.
+- AQE로 자동 Broadcast가 적용 안 되는 경우 발견하여 명시 최적화 진행
+  - 접근: 항상 Broadcast가 적용되어야 하는 부분에 명시 
+  - 결과: 실행 시간 **22.9% 단축**
 </details>
 
 ### 파이프라인 설계
