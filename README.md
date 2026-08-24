@@ -151,42 +151,98 @@
   - 결과: 실행 시간 **22.9% 단축**
 </details>
 
-### 파이프라인 설계
-
-
-### AWS 인프라
-> AWS 인프라 운영 중 겪은 장애 해결
+### 파이프라인
+> 파이프라인 설계와 운영 중 해결한 문제
 
 <details>
-<summary><a href="/docs/troubleshooting/aws/CFN_INSTANCE_ID_PARAM_TYPE.md">[AWS] CloudFormation 배포가 exit 255 로만 죽음</a></summary>
+<summary><a href="/docs/pipeline/AIRFLOW_LAMBDA_RESPONSIBILITIES.md">실행 자원 격리를 위한 Lambda 원격 호출</a></summary>
+
+- Airflow worker에서 직접 실행하던 Lambda handler를 AWS Lambda 원격 호출로 전환해 CPU·메모리를 격리했습니다.
+  - Main 원천 3종 5개와 Sub Source→Raw 4개를 전환하고, 응답은 기존 XCom·validation 계약으로 유지했습니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline/VALIDATION_TASK_DESIGN.md">데이터 공개 안정성을 위한 Validation Task 분리</a></summary>
+
+- 실행 성공과 데이터 품질 통과를 분리해 파일·경로·스키마·행 수를 실제 산출물에서 다시 검증합니다.
+  - 검증 성공 후에만 `_SUCCESS`와 Asset을 발행해 미완료 결과가 하류로 흐르지 않게 합니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline/MEDALLION_ARCHITECTURE.md">재처리 범위를 분리한 메달리온 아키텍처</a></summary>
+
+- Published 원천을 Bronze에 그대로 보존하고, Silver에서 정제한 뒤 Gold에서 추천·집계합니다.
+  - 변환 로직 변경 시 외부 API부터 다시 수집하지 않고 필요한 계층부터 재처리할 수 있습니다.
+</details>
+
+<details>
+<summary><a href="/docs/troubleshooting/pipeline/SOURCE_API_REFRESH_DUPLICATE_GOLD.md">Gold 중복 실행을 방지하는 Source API 통합 제어</a></summary>
+
+- API Silver 3종의 개별 완료 이벤트가 같은 Gold를 반복 실행했습니다.
+  - 결과: 조건부 HEAD로 변경을 확인하고 필요한 DAG를 모두 기다린 뒤 READY Asset을 한 번만 발행합니다.
+</details>
+
+<details>
+<summary><a href="/docs/troubleshooting/pipeline/SOURCE_API_304_MISSING_DATA_RECOVERY.md">원본 변경 가능성을 고려한 설계</a></summary>
+
+- 같은 월의 API 원본은 사후 변경될 수 있고, 304 응답도 Bronze·Silver 완료를 보장하지 않았습니다.
+  - 결과: ETag·Last-Modified와 최신 Bronze token, 대응 Silver `_SUCCESS`를 함께 확인합니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline/LINEAGE_VERSIONING.md">멱등성을 고려한 수집 계보 기반 버전 경로</a></summary>
+
+- Bronze의 `collected_at`을 Silver의 `source_collected_at`으로 계승합니다.
+  - 같은 입력 재시도는 같은 경로를 교체하고, 다른 원본 재처리는 새 버전으로 보존합니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline/ASSET_TRIGGER_CONTRACT.md">입력 준비 상태를 보장하는 파티션 Asset 실행 계약</a></summary>
+
+- 최초 실행은 API READY와 Fuel을 모두 기다리고, 입력 검증 성공 후에는 한쪽 갱신만으로 재실행합니다.
+  - 지역·월 복합 파티션 키와 `_SUCCESS`를 사용해 검증된 같은 파티션만 연결합니다.
+</details>
+
+### 서버·인프라
+> AWS 서버·네트워크 설계와 운영 중 해결한 문제
+
+<details>
+<summary><a href="/docs/AWS_INFRA.md">AWS 인프라 구성</a></summary>
+
+- Airflow·대시보드·모니터링 서버를 역할별 EC2와 private subnet으로 분리했습니다.
+  - Nginx를 단일 진입점으로 두고 IAM Role과 보안 그룹으로 서비스별 권한·통신 범위를 제한합니다.
+</details>
+
+<details>
+<summary><a href="/docs/troubleshooting/aws/CFN_INSTANCE_ID_PARAM_TYPE.md">CloudFormation 배포가 exit 255 로만 죽음</a></summary>
 
 - 인스턴스 ID 파라미터 타입이 `AWS::EC2::Instance::Id`라 배포 role에 없는 `ec2:DescribeInstances` 호출이 거부됐습니다.
   - 결과: `Type: String` + `AllowedPattern`으로 교체해 해결했습니다.
 </details>
 
 <details>
-<summary><a href="/docs/troubleshooting/aws/GITHUB_OIDC_WRONG_ROLE.md">[AWS] GitHub Actions OIDC가 "Not authorized"로 계속 실패함</a></summary>
+<summary><a href="/docs/troubleshooting/aws/GITHUB_OIDC_WRONG_ROLE.md">GitHub Actions OIDC가 "Not authorized"로 계속 실패함</a></summary>
 
 - GitHub 레포 Variable이 EC2용 IAM role을 가리키고 있어 OIDC assume이 거부됐습니다.
   - 결과: GitHub Actions 배포 전용 role ARN으로 교체해 해결했습니다.
 </details>
 
 <details>
-<summary><a href="/docs/troubleshooting/aws/LETSENCRYPT_AMAZONAWS_DOMAIN.md">[AWS] Let's Encrypt가 AWS 기본 제공 도메인엔 인증서를 안 줌</a></summary>
+<summary><a href="/docs/troubleshooting/aws/LETSENCRYPT_AMAZONAWS_DOMAIN.md">Let's Encrypt가 AWS 기본 제공 도메인엔 인증서를 안 줌</a></summary>
 
 - `*.amazonaws.com` 공유 도메인은 정책상 인증서 발급이 차단되어 있었습니다.
   - 결과: 무료 와일드카드 DNS `sslip.io`로 전환해 해결했습니다.
 </details>
 
 <details>
-<summary><a href="/docs/troubleshooting/aws/RDS_PRIVATE_SUBNET.md">[AWS] RDS 생성 마법사에 서브넷(VPC) 선택 화면이 안 나옴</a></summary>
+<summary><a href="/docs/troubleshooting/aws/RDS_PRIVATE_SUBNET.md">RDS 생성 마법사에 서브넷(VPC) 선택 화면이 안 나옴</a></summary>
 
 - 표준 PostgreSQL 생성 흐름에서는 서브넷 그룹을 고르는 화면 자체가 빠져 있었습니다.
   - 결과: 서브넷 그룹을 CLI로 먼저 만들고 지정해 인스턴스를 생성했습니다.
 </details>
 
 <details>
-<summary><a href="/docs/troubleshooting/aws/S3_DELETE_PERMISSION_DAG.md">[AWS] S3 DeleteObject 권한 누락</a></summary>
+<summary><a href="/docs/troubleshooting/aws/S3_DELETE_PERMISSION_DAG.md">S3 DeleteObject 권한 누락</a></summary>
 
 - Airflow DAG가 직접 `DeleteObject`를 호출하는 주체라는 걸 놓쳐 권한이 빠져 있었습니다.
   - 결과: `theone-airflow-role`에 `s3:DeleteObject`를 추가해 해결했습니다.
