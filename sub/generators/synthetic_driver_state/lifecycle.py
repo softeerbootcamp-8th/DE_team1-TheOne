@@ -32,6 +32,7 @@ class SynthesizeResult:
     events: pd.DataFrame            # 이 달에 발생한 이벤트만
     current: pd.DataFrame           # 전체 이벤트를 접은 현재 상태
     profiles: pd.DataFrame          # 배정이 쓰는 기사 선호 (월별 실현값 반영)
+    fleet_units: pd.DataFrame       # 최초 정원 기준 전체 개별 차량 (배정·미배정 포함)
     noise_state: pd.DataFrame       # D7 (B) 자기상관 연쇄 — 시드가 아니라 상태
     clip_rate: float                # 클리핑 발생 빈도 (volatility 과다 신호)
 
@@ -222,5 +223,6 @@ def synthesize_month(
         raise ValueError(f"{target_month}: 활성 기사에 대응하는 선호가 없습니다")
     return SynthesizeResult(
         events=events_df, current=current, profiles=profiles,
+        fleet_units=fleet_units,
         noise_state=noise_state, clip_rate=clip_rate,
     )

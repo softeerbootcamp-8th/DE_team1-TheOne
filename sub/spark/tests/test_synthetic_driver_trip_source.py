@@ -166,7 +166,14 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
 
     first_cdv = pd.read_parquet(first.current_driver_vehicle_path)
     second_cdv = pd.read_parquet(second.current_driver_vehicle_path)
+    first_fleet = pd.read_parquet(first.fleet_units_path)
+    second_fleet = pd.read_parquet(second.fleet_units_path)
     assert len(first_cdv) == 400
+    assert len(first_fleet) > first_cdv["taxi_id"].nunique()
+    pd.testing.assert_frame_equal(
+        first_fleet.sort_values("taxi_id").reset_index(drop=True),
+        second_fleet.sort_values("taxi_id").reset_index(drop=True),
+    )
     # 경로가 str 인 이유 — `s3://` 도 담습니다(#767). `Path` 로 감싸면 스킴이 깨집니다.
     assert first.snapshot_dir.endswith("data_month=2026-08")
     assert second.snapshot_dir.endswith("data_month=2026-09")

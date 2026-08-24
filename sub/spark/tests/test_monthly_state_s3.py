@@ -1,6 +1,7 @@
 """월별 기사·차량 스냅샷을 S3 에 공개하는 경로 (#767).
 
-`prepare_monthly_state` 가 만드는 `driver_preferences`/`current_driver_vehicle` 두
+`prepare_monthly_state` 가 만드는 `driver_preferences`/`current_driver_vehicle`/
+`fleet_units` 세
 파일은 하류에서 `spark.read.parquet` 으로 읽습니다. 로컬 디스크에 두면 EMR
 Serverless executor 가 못 봐서 `spark.read` 가 죽습니다 — 체크포인트(#763)와 같은
 이유로 이 둘도 S3 로 갑니다.
@@ -202,7 +203,7 @@ def _upload_published_snapshot(client, *, config, year_month: str, taxi_id: str)
 
 
 @mock_aws
-def test_storage_s3면_스냅샷_두_파일이_S3로_가고_재실행이_같은_결과다(tmp_path, monkeypatch):
+def test_storage_s3면_스냅샷_세_파일이_S3로_가고_재실행이_같은_결과다(tmp_path, monkeypatch):
     """`vehicle_master` 도 `s3://` 로 받습니다 — pandas 가 boto3 로 읽습니다."""
     client = _make_bucket()
     vehicle_master_uri = _upload_vehicle_master(client)
@@ -224,6 +225,7 @@ def test_storage_s3면_스냅샷_두_파일이_S3로_가고_재실행이_같은_
     assert first.current_driver_vehicle_path == (
         f"{prefix}/{monthly.CURRENT_DRIVER_VEHICLE_FILE}"
     )
+    assert first.fleet_units_path == f"{prefix}/{monthly.FLEET_UNITS_FILE}"
     # 로컬 디스크에 새지 않아야 합니다 — EMR executor 가 못 보는 곳입니다.
     assert not (tmp_path / "state" / "data_month=2026-08").exists()
 
@@ -242,15 +244,17 @@ def test_storage_s3면_스냅샷_두_파일이_S3로_가고_재실행이_같은_
 
     preferences = read_parquet_uri(first.preferences_path)
     current = read_parquet_uri(first.current_driver_vehicle_path)
+    fleet_units = read_parquet_uri(first.fleet_units_path)
     assert len(current) == 30
+    assert len(fleet_units) > len(current)
     assert set(current.loc[current["lease_ended_on"].isna(), "driver_id"]) <= set(
         preferences["driver_id"]
     )
 
 
 @mock_aws
-def test_S3_스냅샷은_두_파일이_모두_있어야_완결로_본다(tmp_path, monkeypatch):
-    """S3 에는 rename 이 없습니다. 하나만 보고 완결로 치면 반쯤 쓰인 달을 재사용합니다."""
+def test_S3_스냅샷은_세_파일이_모두_있어야_완결로_본다(tmp_path, monkeypatch):
+    """S3 에는 rename 이 없습니다. 일부만 보고 완결로 치면 반쯤 쓰인 달을 재사용합니다."""
     client = _make_bucket()
     vehicle_master_uri = _upload_vehicle_master(client)
     monkeypatch.setattr(monthly, "load_bootstrap_pools", lambda **_: _bootstrap_pools())
