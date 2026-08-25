@@ -2,7 +2,7 @@
 
 1. 주간 이력을 오름차순으로 읽음 — 원본이 최신순이라 정렬을 빠뜨리면 아래 "그 날 이하
    가장 최근" 규칙이 엉뚱한 값을 집음
-2. 각 날짜에 그 날 이하 **가장 최근** 관측치를 복제. 선형 보간하지 않음
+2. 관측값 사이는 선형 보간하고 이력 양 끝은 가장 가까운 값을 복제
 3. 그 달 **전 일수**로 펼침. 하루라도 비면 하류 일자 조인에서 그 날이 통째로 빠지는데,
    실패가 아니라 조용히 줄어든 집계로 나타남
 4. 대상 월 첫날 이전 관측치가 없으면 실패
@@ -65,13 +65,23 @@ def test_주간_이력을_오름차순으로_읽는다():
     assert parse_gas_weekly(_xls(list(reversed(WEEKLY)))) == WEEKLY
 
 
-def test_각_날짜에_그날_이하_가장_최근_관측치를_복제한다():
+def test_관측값_사이는_선형보간한다():
     days = [date(2025, 5, 4), date(2025, 5, 5), date(2025, 5, 25), date(2025, 5, 26)]
 
     prices = gas_price_for(days, WEEKLY)
 
-    # 5-04 는 아직 4-28 관측치, 5-05 부터 3.1, 5-26 부터 3.2
-    assert [prices[day] for day in days] == [3.0, 3.1, 3.1, 3.2]
+    assert prices[days[0]] == pytest.approx(3.0 + 0.1 * 6 / 7)
+    assert prices[days[1]] == pytest.approx(3.1)
+    assert prices[days[2]] == pytest.approx(3.1 + 0.1 * 20 / 21)
+    assert prices[days[3]] == pytest.approx(3.2)
+
+
+def test_관측이력_양끝은_가장가까운값으로_채운다():
+    days = [date(2025, 4, 1), date(2025, 6, 1)]
+
+    prices = gas_price_for(days, WEEKLY)
+
+    assert [prices[day] for day in days] == [3.0, 3.2]
 
 
 def test_월_전체를_일별로_펼친다():
@@ -79,8 +89,8 @@ def test_월_전체를_일별로_펼친다():
 
     assert len(rows) == 31
     assert [row["date"] for row in rows] == [date(2025, 5, d) for d in range(1, 32)]
-    # 5-01~04 는 4-28 관측치가 이어집니다.
-    assert rows[0]["gas_price"] == 3.0
+    # 5-01 은 4-28과 5-05 사이 3/7 지점입니다.
+    assert rows[0]["gas_price"] == pytest.approx(3.0 + 0.1 * 3 / 7)
     assert rows[-1]["gas_price"] == 3.2
 
 
@@ -92,9 +102,10 @@ def test_어느_수집분으로_만들었는지_모든_행에_남는다():
     assert {row["bronze_collected_date"] for row in rows} == {COLLECTED}
 
 
-def test_대상월_이전_관측치가_없으면_실패한다():
-    with pytest.raises(ValueError, match="이전의 휘발유 관측치가 없습니다"):
-        build_daily_prices("2025-03", _xls(WEEKLY), COLLECTED)
+def test_대상월이_첫관측보다_앞이면_첫값으로_채운다():
+    rows = build_daily_prices("2025-03", _xls(WEEKLY), COLLECTED)
+
+    assert {row["gas_price"] for row in rows} == {3.0}
 
 
 def test_단가가_허용범위_밖이면_실패한다():

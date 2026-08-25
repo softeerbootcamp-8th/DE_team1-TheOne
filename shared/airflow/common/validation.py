@@ -5,14 +5,18 @@ from datetime import date, datetime, timezone
 import io
 import json
 import logging
+import mimetypes
 import os
 from pathlib import Path, PurePosixPath
+import tempfile
 from uuid import uuid4
 
 import boto3
 import pyarrow as pa
+import pyarrow.compute as pc
 import pyarrow.parquet as pq
 
+from shared.airflow.common.slack_quality_warning import send_gx_quality_warning
 from shared.common.s3_reader import get_object_bytes, get_object_stream
 from shared.common.success_marker import (
     marker_key,
@@ -39,6 +43,9 @@ _DEFAULT_DATA_DOCS_DIR = _PROJECT_ROOT / "data" / "gx_data_docs"
 
 
 S3_SCHEME = "s3://"
+REQUIRED_NULL_WARNING_RATIO = 0.01
+REQUIRED_NULL_ERROR_RATIO = 0.05
+OPTIONAL_NULL_WARNING_RATIO = 0.50
 
 
 @dataclass(frozen=True)
@@ -90,6 +97,30 @@ def parse_location(value: str) -> Path | S3Location:
     if not bucket or not key:
         raise ValueError(f"S3 URI 형식이 아닙니다: {value}")
     return S3Location(bucket, key)
+
+
+def gx_data_docs_location(
+    data_location: S3Location, *, layer: str, dataset: str
+) -> S3Location:
+    """실제 S3 파티션을 `logs/gx-data-docs` 아래에 그대로 미러링합니다."""
+    parts = PurePosixPath(data_location.key).parts
+    try:
+        layer_index = next(
+            index
+            for index in range(len(parts) - 1)
+            if parts[index:index + 2] == (layer, dataset)
+        )
+    except StopIteration as exc:
+        raise ValueError(
+            f"S3 데이터 경로에 {layer}/{dataset} 계층이 없습니다: {data_location}"
+        ) from exc
+    partitions = parts[layer_index + 2:-1]
+    if not partitions:
+        raise ValueError(f"S3 데이터 경로에 버전 파티션이 없습니다: {data_location}")
+    key = PurePosixPath(
+        "logs", "gx-data-docs", layer, dataset, *partitions
+    ).as_posix()
+    return S3Location(data_location.bucket, key)
 
 
 def location_size(location: Path | S3Location) -> int:
@@ -431,6 +462,213 @@ class _DataDocsLock:
         self._handle.close()
 
 
+def table_quality_summary(
+    table: pa.Table,
+    expected_schema: pa.Schema,
+    required_non_null: set[str] | frozenset[str],
+):
+    """작은 Arrow 적재 결과를 GX가 판정할 한 행짜리 지표로 요약합니다."""
+    import pandas as pd
+
+    expected_names = set(expected_schema.names)
+    unknown_required = set(required_non_null) - expected_names
+    if unknown_required:
+        raise ValueError(f"기대 스키마에 없는 필수 컬럼: {sorted(unknown_required)}")
+
+    actual = {field.name: field.type for field in table.schema}
+    missing = sorted(expected_names - set(actual))
+    extra = sorted(set(actual) - expected_names)
+    mismatched = sorted(
+        f"{field.name}:{actual[field.name]}!={field.type}"
+        for field in expected_schema
+        if field.name in actual and actual[field.name] != field.type
+    )
+    structurally_valid = not missing and not mismatched
+
+    invalid_count = 0
+    if table.num_rows and structurally_valid:
+        invalid = pa.array([False] * table.num_rows)
+        for name in sorted(required_non_null):
+            values = table[name].combine_chunks()
+            column_invalid = pc.is_null(values)
+            if pa.types.is_string(values.type):
+                column_invalid = pc.or_(
+                    column_invalid,
+                    pc.fill_null(
+                        pc.equal(pc.utf8_trim_whitespace(values), ""),
+                        False,
+                    ),
+                )
+            elif pa.types.is_floating(values.type):
+                column_invalid = pc.or_(
+                    column_invalid,
+                    pc.fill_null(pc.is_nan(values), False),
+                )
+            invalid = pc.or_(invalid, column_invalid)
+        invalid_count = int(pc.sum(pc.cast(invalid, pa.int64())).as_py() or 0)
+
+    optional = sorted(expected_names - set(required_non_null))
+    optional_ratios = {
+        f"{name}_null_ratio": (
+            table[name].null_count / table.num_rows
+            if table.num_rows and name in actual and actual[name] == expected_schema.field(name).type
+            else None
+        )
+        for name in optional
+    }
+    return pd.DataFrame(
+        [{
+            "row_count": table.num_rows,
+            "missing_columns": ",".join(missing),
+            "type_mismatch_columns": ",".join(mismatched),
+            "extra_columns": ",".join(extra),
+            "required_invalid_record_count": invalid_count,
+            "required_invalid_record_ratio": (
+                invalid_count / table.num_rows
+                if table.num_rows and structurally_valid
+                else None
+            ),
+            **optional_ratios,
+        }]
+    )
+
+
+def run_table_gx_validation(
+    table: pa.Table,
+    expected_schema: pa.Schema,
+    required_non_null: set[str] | frozenset[str],
+    *,
+    dataset: str,
+    layer: str,
+    data_location: S3Location,
+    context: dict,
+    required_warning_ratio: float | None,
+    required_error_ratio: float,
+) -> None:
+    """운영 S3의 작은 Parquet 결과에 공통 NULL·스키마 정책을 적용합니다."""
+    import great_expectations as gx
+
+    if not 0 <= required_error_ratio <= 1 or (
+        required_warning_ratio is not None
+        and not 0 <= required_warning_ratio < required_error_ratio
+    ):
+        raise ValueError(
+            "필수값 임계치는 0 <= warning < error <= 1 이어야 합니다"
+        )
+
+    summary = table_quality_summary(table, expected_schema, required_non_null)
+    expectations = [
+        gx.expectations.ExpectColumnValuesToBeBetween(column="row_count", min_value=1),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="missing_columns", value_set=[""]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="type_mismatch_columns", value_set=[""]
+        ),
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column="extra_columns", value_set=[""], meta={"severity": "warning"}
+        ),
+    ]
+    if summary["required_invalid_record_ratio"].notna().all():
+        if required_warning_ratio is not None:
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column="required_invalid_record_ratio",
+                    min_value=0,
+                    max_value=required_warning_ratio,
+                    strict_max=True,
+                    meta={"severity": "warning"},
+                )
+            )
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeBetween(
+                column="required_invalid_record_ratio",
+                min_value=0,
+                max_value=required_error_ratio,
+                strict_max=required_error_ratio > 0,
+            )
+        )
+    for column in summary.columns:
+        if column.endswith("_null_ratio") and summary[column].notna().all():
+            expectations.append(
+                gx.expectations.ExpectColumnValuesToBeBetween(
+                    column=column,
+                    min_value=0,
+                    max_value=OPTIONAL_NULL_WARNING_RATIO,
+                    strict_max=True,
+                    meta={"severity": "warning"},
+                )
+            )
+
+    docs = gx_data_docs_location(data_location, layer=layer, dataset=dataset)
+    warnings = run_gx_validation(
+        summary,
+        expectations,
+        suite_name=f"{dataset}_{layer}_suite",
+        layer=layer,
+        data_docs_s3_location=docs,
+    )
+    if warnings:
+        send_gx_quality_warning(
+            context,
+            dataset=dataset,
+            layer=layer,
+            partition=docs.name,
+            warnings=warnings,
+        )
+
+
+def run_file_gx_validation(
+    *,
+    size_bytes: int,
+    minimum_bytes: int,
+    dataset: str,
+    layer: str,
+    data_location: S3Location,
+) -> None:
+    """Parquet이 아닌 운영 원본은 파일 크기 지표를 GX로 판정합니다."""
+    import great_expectations as gx
+    import pandas as pd
+
+    run_gx_validation(
+        pd.DataFrame({"size_bytes": [size_bytes]}),
+        [
+            gx.expectations.ExpectColumnValuesToBeBetween(
+                column="size_bytes", min_value=minimum_bytes
+            )
+        ],
+        suite_name=f"{dataset}_{layer}_suite",
+        layer=layer,
+        data_docs_s3_location=gx_data_docs_location(
+            data_location, layer=layer, dataset=dataset
+        ),
+    )
+
+
+def _upload_data_docs(root: Path, target: S3Location) -> None:
+    client = boto3.client("s3")
+    paths = sorted(
+        root.rglob("*"),
+        key=lambda path: path.relative_to(root).as_posix() == "index.html",
+    )
+    for path in paths:
+        relative_path = path.relative_to(root)
+        if (
+            not path.is_file()
+            or path.name == ".build.lock"
+            or ".gx_store" in relative_path.parts
+        ):
+            continue
+        relative = relative_path.as_posix()
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        client.upload_file(
+            str(path),
+            target.bucket,
+            f"{target.key}/{relative}",
+            ExtraArgs={"ContentType": content_type},
+        )
+
+
 def run_gx_validation(
     dataframe,
     expectations,
@@ -438,7 +676,8 @@ def run_gx_validation(
     suite_name: str,
     layer: str,
     data_docs_dir: str | Path | None = None,
-) -> None:
+    data_docs_s3_location: S3Location | None = None,
+) -> tuple[str, ...]:
     """GX Suite를 실행하고 결과 로그와 정적 Data Docs를 공통 발행합니다.
 
     Suite 설정은 파일 저장을 거치므로 JSON으로 왕복 가능한 값을 사용합니다.
@@ -449,92 +688,130 @@ def run_gx_validation(
     import great_expectations as gx
 
     configured_dir = os.getenv("GX_DATA_DOCS_DIR")
-    docs_enabled = data_docs_dir is not None or os.getenv(
-        "GX_DATA_DOCS_ENABLED", "true"
-    ).lower() not in {"0", "false", "no"}
+    env_docs_enabled = os.getenv("GX_DATA_DOCS_ENABLED", "true").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    docs_enabled = data_docs_dir is not None or env_docs_enabled
+    if data_docs_s3_location is not None:
+        docs_enabled = env_docs_enabled
+    temporary_docs = (
+        tempfile.TemporaryDirectory()
+        if docs_enabled and data_docs_s3_location is not None
+        else None
+    )
     docs_root = None
     if docs_enabled:
-        docs_root = Path(
-            data_docs_dir or configured_dir or _DEFAULT_DATA_DOCS_DIR
-        ).resolve()
-
-    with _DataDocsLock(docs_root) if docs_root else nullcontext():
-        context = gx.get_context(
-            mode="ephemeral",
-            project_config=(
-                _data_docs_config(docs_root) if docs_root is not None else None
-            ),
-        )
-        context.variables.progress_bars = {"globally": False}
-
-        name_prefix = suite_name.removesuffix("_suite")
-        batch_definition = (
-            context.data_sources.add_pandas(name=f"{name_prefix}_source")
-            .add_dataframe_asset(name=f"{name_prefix}_asset")
-            .add_batch_definition_whole_dataframe(f"{name_prefix}_batch")
-        )
-        suite = context.suites.add_or_update(
-            gx.ExpectationSuite(name=suite_name, expectations=expectations)
-        )
-        validation = gx.ValidationDefinition(
-            name=f"{name_prefix}_validation",
-            data=batch_definition,
-            suite=suite,
-        ).run(
-            batch_parameters={"dataframe": dataframe},
-            result_format="SUMMARY",
+        docs_root = (
+            Path(temporary_docs.name)
+            if temporary_docs is not None
+            else Path(
+                data_docs_dir or configured_dir or _DEFAULT_DATA_DOCS_DIR
+            ).resolve()
         )
 
-        failed_results = [
-            result for result in validation.results if not result.success
-        ]
-        warning_failures = [
-            result
-            for result in failed_results
-            if result.expectation_config.meta.get("severity") == "warning"
-        ]
-        failures = [
-            result for result in failed_results if result not in warning_failures
-        ]
-        for failure in failed_results:
-            result = dict(failure.result)
-            observed_value = result.get("observed_value")
-            if observed_value is None:
-                observed_value = result.get("partial_unexpected_list")
-            if observed_value is None:
-                observed_value = "unavailable"
-            is_warning = failure in warning_failures
-            log = logger.warning if is_warning else logger.error
-            log(
-                "gx_validation %s layer=%s expectation=%s column=%s "
-                "unexpected_count=%s observed_value=%s",
-                "warning" if is_warning else "failed",
+    try:
+        with _DataDocsLock(docs_root) if docs_root else nullcontext():
+            context = gx.get_context(
+                mode="ephemeral",
+                project_config=(
+                    _data_docs_config(docs_root) if docs_root is not None else None
+                ),
+            )
+            context.variables.progress_bars = {"globally": False}
+
+            name_prefix = suite_name.removesuffix("_suite")
+            batch_definition = (
+                context.data_sources.add_pandas(name=f"{name_prefix}_source")
+                .add_dataframe_asset(name=f"{name_prefix}_asset")
+                .add_batch_definition_whole_dataframe(f"{name_prefix}_batch")
+            )
+            suite = context.suites.add_or_update(
+                gx.ExpectationSuite(name=suite_name, expectations=expectations)
+            )
+            validation = gx.ValidationDefinition(
+                name=f"{name_prefix}_validation",
+                data=batch_definition,
+                suite=suite,
+            ).run(
+                batch_parameters={"dataframe": dataframe},
+                result_format="SUMMARY",
+            )
+
+            failed_results = [
+                result for result in validation.results if not result.success
+            ]
+            warning_failures = [
+                result
+                for result in failed_results
+                if result.expectation_config.meta.get("severity") == "warning"
+            ]
+            failures = [
+                result
+                for result in failed_results
+                if result not in warning_failures
+            ]
+            warning_messages = []
+            for failure in failed_results:
+                result = dict(failure.result)
+                observed_value = result.get("observed_value")
+                if observed_value is None:
+                    observed_value = result.get("partial_unexpected_list")
+                if observed_value is None:
+                    observed_value = "unavailable"
+                is_warning = failure in warning_failures
+                log = logger.warning if is_warning else logger.error
+                column = _failure_column(failure)
+                log(
+                    "gx_validation %s layer=%s expectation=%s column=%s "
+                    "unexpected_count=%s observed_value=%s",
+                    "warning" if is_warning else "failed",
+                    layer,
+                    failure.expectation_config.type,
+                    column,
+                    result.get("unexpected_count"),
+                    observed_value,
+                )
+                if is_warning:
+                    warning_messages.append(
+                        f"{failure.expectation_config.type}[{column}]={observed_value}"
+                    )
+
+            if docs_root is not None:
+                try:
+                    context.build_data_docs(site_names=["local_site"])
+                    if data_docs_s3_location is not None:
+                        _upload_data_docs(docs_root, data_docs_s3_location)
+                        logger.info(
+                            "gx_data_docs updated path=%s",
+                            data_docs_s3_location,
+                        )
+                    else:
+                        logger.info(
+                            "gx_data_docs updated path=%s",
+                            docs_root / "index.html",
+                        )
+                except Exception:
+                    if not failures:
+                        raise
+                    logger.exception("gx_data_docs build failed path=%s", docs_root)
+
+            if failures:
+                rules = ", ".join(
+                    f"{failure.expectation_config.type}"
+                    f"[{_failure_column(failure)}]"
+                    for failure in failures
+                )
+                raise ValueError(f"GX 검증 실패 layer={layer}: {rules}")
+
+            logger.info(
+                "gx_validation passed layer=%s expectations=%s warnings=%s",
                 layer,
-                failure.expectation_config.type,
-                _failure_column(failure),
-                result.get("unexpected_count"),
-                observed_value,
+                validation.statistics["evaluated_expectations"],
+                len(warning_failures),
             )
-
-        if docs_root is not None:
-            try:
-                context.build_data_docs(site_names=["local_site"])
-                logger.info("gx_data_docs updated path=%s", docs_root / "index.html")
-            except Exception:
-                if not failures:
-                    raise
-                logger.exception("gx_data_docs build failed path=%s", docs_root)
-
-        if failures:
-            rules = ", ".join(
-                f"{failure.expectation_config.type}[{_failure_column(failure)}]"
-                for failure in failures
-            )
-            raise ValueError(f"GX 검증 실패 layer={layer}: {rules}")
-
-        logger.info(
-            "gx_validation passed layer=%s expectations=%s warnings=%s",
-            layer,
-            validation.statistics["evaluated_expectations"],
-            len(warning_failures),
-        )
+            return tuple(warning_messages)
+    finally:
+        if temporary_docs is not None:
+            temporary_docs.cleanup()
