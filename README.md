@@ -215,6 +215,18 @@
 
 ### 운영 용이성 및 안정성
 
+<details>
+<summary><a href="/docs/product_stability/PIPELINE_FAILURE_CAUSE_AND_ALERTING.md">같은 지역-월의 입력이 준비됐을 때만 추천 계산 진행</a></summary>
+
+- 요약
+  - 문제 : Gold 작업에서 상황별로 아래의 문제 발생 가능
+    - **입력이 바뀌지 않아도 추천 계산 반복**
+    - **다른 입력 준비 전 계산 시작**
+    - **일부 늦은 수정으로 기존 값 갱신 지연됨**
+  - 접근 : Airflow Asset에 복합키 사용({운영 지역}:{대상 월})
+    - 최초 계산/이후 갱신의 실행 조건 구분
+</details>
+
 ### 서버·인프라
 > AWS 서버·네트워크 설계와 운영 중 해결한 문제
 
@@ -291,7 +303,6 @@
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
 ![PySpark](https://img.shields.io/badge/PySpark-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white)
 ![Pandas](https://img.shields.io/badge/Pandas-150458?style=for-the-badge&logo=pandas&logoColor=white)
-![Apache Iceberg](https://img.shields.io/badge/Apache_Iceberg-1E4FFF?style=for-the-badge&logo=apacheiceberg&logoColor=white)
 
 ### Storage
 ![AWS S3](https://img.shields.io/badge/S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white)
@@ -311,6 +322,21 @@
 
 ### Visualization
 ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
+
+### ETC
+![Jira](https://img.shields.io/badge/Jira-0052CC?style=for-the-badge&logo=jira&logoColor=white)
+![Confluence](https://img.shields.io/badge/Confluence-172B4D?style=for-the-badge&logo=confluence&logoColor=white)
+
+### AI 기술
+![Codex](https://img.shields.io/badge/Codex-000000?style=for-the-badge)
+![Claude](https://img.shields.io/badge/Claude-D97757?style=for-the-badge&logo=claude&logoColor=white)
+<img src="https://img.shields.io/badge/Context Engineering-000080?style=for-the-badge&logoColor=white" alt="Grill-Me 바로가기" />
+<img src="https://img.shields.io/badge/필요 스킬 제작-1D2545?style=for-the-badge&logoColor=white" alt="스킬 제작" />
+<a href="https://www.aihero.dev/skills-grill-me"><img src="https://img.shields.io/badge/Grill ME Skill-0F000?style=for-the-badge&logoColor=white" alt="Grill-Me 바로가기" /></a>
+<a href="https://github.com/obra/superpowers"><img src="https://img.shields.io/badge/superpowers skill-A02000?style=for-the-badge&logoColor=white" alt="Superpowers 바로가기" /></a>
+<a href="https://github.com/dietrichgebert/ponytail"><img src="https://img.shields.io/badge/Ponytail Skill-A08000?style=for-the-badge&logoColor=white" alt="Ponytail 바로가기" /></a>
+
+
 
 </div>
 
