@@ -216,15 +216,14 @@
 ### 운영 용이성 및 안정성
 
 <details>
-<summary><a href="/docs/product_stability/PIPELINE_FAILURE_CAUSE_AND_ALERTING.md">같은 지역-월의 입력이 준비됐을 때만 추천 계산 진행</a></summary>
+<summary><a href="/docs/product_stability/PIPELINE_FAILURE_CAUSE_AND_ALERTING.md">EMR 실패 원인이 Slack 알림으로 표시되도록 구성(트러블슈팅)</a></summary>
 
 - 요약
-  - 문제 : Gold 작업에서 상황별로 아래의 문제 발생 가능
-    - **입력이 바뀌지 않아도 추천 계산 반복**
-    - **다른 입력 준비 전 계산 시작**
-    - **일부 늦은 수정으로 기존 값 갱신 지연됨**
-  - 접근 : Airflow Asset에 복합키 사용({운영 지역}:{대상 월})
-    - 최초 계산/이후 갱신의 실행 조건 구분
+  - 문제 : EMR 작업 실패해도 Airflow provider 오류가 실제 원인을 `KeyError`로 표시
+  - 접근 : 
+    - 실패 이벤트의 원문을 예외로 전달
+    - Slack 알림에 원인, 대상 파티션, 시도 횟수, 다음 조치, 로그 링크를 표시하도록 함.
+  - 검증 : 실제 운영 실패 이벤트를 테스트 입력으로 사용해 `ExitCode: 137`과 메모리 초과 원인이 알림으로 남는지 확인
 </details>
 
 ### 서버·인프라
