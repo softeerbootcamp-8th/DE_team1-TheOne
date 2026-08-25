@@ -1,0 +1,19 @@
+# Lambda·EMR 지표를 Grafana 에서 함께 보기 위한 CloudWatch 데이터소스.
+#
+# 키를 두지 않습니다. `authType: default` 는 AWS SDK 기본 체인을 쓰므로 EC2
+# 인스턴스 프로파일(IMDS)에서 자격증명을 받습니다 — 파일에도 Secret 에도 자격증명이
+# 남지 않고, 만료도 SDK 가 알아서 갱신합니다.
+#
+# ★ 인스턴스 role 에 CloudWatch 읽기 권한이 필요합니다. 없으면 데이터소스는 등록되고
+#   패널만 비어 조용히 실패합니다 — monitoring/README.md 의 "최초 1회 준비" 참고.
+apiVersion: 1
+
+datasources:
+  - name: CloudWatch
+    # 알림 규칙이 uid 로 지목합니다. 비워 두면 난수가 되고 컨테이너를 다시 만들 때
+    # 값이 바뀌어 규칙이 데이터소스를 잃습니다 (Prometheus 와 같은 이유).
+    uid: theone-cloudwatch
+    type: cloudwatch
+    jsonData:
+      authType: default
+      defaultRegion: ap-northeast-2

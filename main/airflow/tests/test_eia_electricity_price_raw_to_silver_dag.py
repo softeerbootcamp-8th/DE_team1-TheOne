@@ -235,7 +235,7 @@ def _fake_task_instance(result: dict):
     )()
 
 
-def test_검증_실패시_SUCCESS를_공개하지_않는다(tmp_path):
+def test_검증_실패시_산출물을_보존하고_격리한다(tmp_path):
     final = task_module.silver_file(
         str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
     )
@@ -251,6 +251,10 @@ def test_검증_실패시_SUCCESS를_공개하지_않는다(tmp_path):
         )
 
     assert final.is_file()
+    assert (final.parent / "_QUARANTINED.json").is_file()
+    assert '"layer": "silver"' in (
+        final.parent / "_QUARANTINED.json"
+    ).read_text()
     assert not (final.parent / "_SUCCESS").exists()
 
 
@@ -270,4 +274,5 @@ def test_검증_통과시_최종_경로에_SUCCESS를_공개한다(tmp_path):
 
     assert final.is_file()
     assert (final.parent / "_SUCCESS").is_file()
+    assert not (final.parent / "_QUARANTINED.json").exists()
     assert pq.ParquetFile(final).read().num_rows == 31

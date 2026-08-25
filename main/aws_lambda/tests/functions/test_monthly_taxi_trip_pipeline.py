@@ -9,6 +9,8 @@
 7. 응답 URL의 service_area가 요청과 다르면 저장 전에 거부
 """
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -33,6 +35,8 @@ FIRST_COLLECTED_AT = datetime(
 SECOND_COLLECTED_AT = datetime(
     2026, 8, 20, 11, 22, 5, 654321, tzinfo=timezone.utc
 )
+ETAG = '"source-etag"'
+LAST_MODIFIED = "Thu, 20 Aug 2026 10:00:00 GMT"
 
 
 def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
@@ -62,6 +66,7 @@ class Response:
     def __init__(self, *, url=DATASET_RESPONSE_URL, content=CONTENT):
         self.url = url
         self.content = content
+        self.headers = {"ETag": ETAG, "Last-Modified": LAST_MODIFIED}
 
     def raise_for_status(self):
         return None
@@ -117,6 +122,21 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     assert result["collected_at"] == "2026-08-20T10:15:30.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
     assert result["source_changed"] is True
+    manifest = json.loads((path.parent / "manifest.json").read_text())
+    assert manifest == {
+        "api_base_url": API_URL,
+        "collected_at": result["collected_at"],
+        "data_file": "data.parquet",
+        "dataset": "monthly_taxi_trip",
+        "file_size_bytes": len(CONTENT),
+        "row_count": 1,
+        "schema_version": 1,
+        "service_area": "NYC",
+        "sha256": hashlib.sha256(CONTENT).hexdigest(),
+        "source_etag": ETAG,
+        "source_last_modified": LAST_MODIFIED,
+        "year_month": YEAR_MONTH,
+    }
     assert set(result) == {
         "file_size_bytes",
         "collected_at",
@@ -167,7 +187,7 @@ def test_같은월의_원본이_변경되면_수집시각파일을_추가해_이
     assert first_path.read_bytes() == CONTENT
     assert second_path.read_bytes() == corrected
     assert len(list((tmp_path / "monthly_taxi_trip").rglob("*.parquet"))) == 2
-    assert not list((tmp_path / "monthly_taxi_trip").rglob("*.json"))
+    assert len(list((tmp_path / "monthly_taxi_trip").rglob("manifest.json"))) == 2
 
 
 def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_path, monkeypatch):
@@ -183,6 +203,7 @@ def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_
     assert first["source_changed"] is True
     assert second["source_changed"] is False
     assert len(list((tmp_path / "monthly_taxi_trip").rglob("*.parquet"))) == 1
+    assert len(list((tmp_path / "monthly_taxi_trip").rglob("manifest.json"))) == 1
 
 
 @pytest.mark.parametrize("content", [b"", b"not parquet"], ids=["empty", "invalid"])

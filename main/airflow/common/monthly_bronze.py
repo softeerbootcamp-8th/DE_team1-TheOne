@@ -1,20 +1,23 @@
 """월별 원천 API에서 받은 단일 Bronze 수집본을 검증합니다."""
 
+import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pyarrow as pa
+import pyarrow.parquet as pq
+
 from shared.airflow.common.validation import (
     S3Location,
-    location_size,
-    parquet_file,
     parse_handler_result,
     parse_location,
     parse_year_month,
     require_file,
 )
 from main.airflow.common.assets import join_segments, service_area_segment
-from shared.common.s3_reader import list_keys
+from shared.common.bronze_manifest import MANIFEST_FILE_NAME, parse_bronze_manifest
+from shared.common.s3_reader import get_object_bytes, list_keys
 
 
 BRONZE_DATA_FILE_NAME = "data.parquet"
@@ -163,8 +166,56 @@ def validate_monthly_parquet_bronze(
             raise ValueError(
                 f"Bronze 경로가 base_dir layout과 다릅니다: {partition}"
             )
-    if location_size(path) != result.get("file_size_bytes"):
+    if isinstance(path, S3Location):
+        try:
+            content = get_object_bytes(path.bucket, path.key)
+            manifest_body = get_object_bytes(
+                path.bucket,
+                f"{path.parent.key}/{MANIFEST_FILE_NAME}",
+            )
+        except Exception as exc:
+            raise ValueError(f"Bronze 원본 또는 manifest를 읽지 못했습니다: {path}") from exc
+        parquet = pq.ParquetFile(pa.BufferReader(content))
+        actual_sha256 = hashlib.sha256(content).hexdigest()
+        actual_size = len(content)
+    else:
+        manifest_path = path.parent / MANIFEST_FILE_NAME
+        if not manifest_path.is_file():
+            raise ValueError(f"Bronze manifest가 없습니다: {manifest_path}")
+        manifest_body = manifest_path.read_bytes()
+        try:
+            parquet = pq.ParquetFile(path)
+        except (OSError, pa.ArrowInvalid) as exc:
+            raise ValueError(f"Bronze 원본이 읽을 수 있는 Parquet이 아닙니다: {path}") from exc
+        with path.open("rb") as source:
+            actual_sha256 = hashlib.file_digest(source, "sha256").hexdigest()
+        actual_size = path.stat().st_size
+
+    try:
+        manifest = parse_bronze_manifest(manifest_body)
+    except ValueError as exc:
+        raise ValueError(f"Bronze manifest가 올바르지 않습니다: {path}") from exc
+    if actual_size != result.get("file_size_bytes"):
         raise ValueError(f"Bronze 원본 파일 크기가 수집 결과와 다릅니다: {path}")
-    if parquet_file(path).metadata.num_rows != parsed.row_count:
+    if parquet.metadata.num_rows != parsed.row_count:
         raise ValueError(f"Bronze 원본 행 수가 수집 결과와 다릅니다: {path}")
+    expected_manifest = {
+        "dataset": dataset_dir,
+        "service_area": service_area,
+        "year_month": year_month,
+        "collected_at": collected_at,
+        "data_file": path.name,
+        "file_size_bytes": actual_size,
+        "row_count": parquet.metadata.num_rows,
+        "sha256": actual_sha256,
+    }
+    mismatched = sorted(
+        field
+        for field, expected in expected_manifest.items()
+        if manifest.get(field) != expected
+    )
+    if mismatched:
+        raise ValueError(
+            f"Bronze manifest와 원본이 다릅니다: fields={mismatched}, path={path}"
+        )
     return path, year_month

@@ -60,7 +60,10 @@ writer는 쓰기 전에 이전 종결 marker를 제거합니다. 검증 성공�
 원인·run ID·실패 시각을 담은 `_QUARANTINED.json`으로 기록하며 둘은 동시에 존재하지
 않습니다. downstream은 `_SUCCESS`가 있는 버전만 읽습니다. 격리 marker는 재시도 명령이
 아니며 수집·변환의 일시 장애만 Airflow 재시도 정책으로 처리합니다.
-감시 DAG는 하위 DAG가 성공한 뒤에만 ETag 상태를 기록하므로 검증 실패 시 재처리됩니다.
+Source API 3종은 같은 Bronze 버전의 `manifest.json`에 SHA-256·행 수·HTTP validator를
+저장합니다. Airflow가 실제 Parquet과 manifest를 대조한 뒤에만 `_SUCCESS`를 공개하며,
+감시 DAG는 최신 정상 manifest에서 ETag 상태를 복원합니다. manifest 누락·손상이나
+검증 실패는 정상 상태로 인정하지 않아 다음 실행에서 재처리됩니다.
 
 ---
 

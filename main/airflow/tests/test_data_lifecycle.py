@@ -229,7 +229,7 @@ def test_S3_부분_삭제_오류를_실패로_처리한다():
         cleanup_expired_versions("lake", client=client, now=NOW)
 
 
-def test_Gold는_지역월별_최신본을_제외한_90일_초과_버전을_두_테이블에서_삭제한다():
+def test_Gold는_지역월별_최신본을_제외한_90일_초과_버전을_세_테이블에서_삭제한다():
     connection = FakeGoldConnection([("NYC", "2026-01", 1)])
 
     result = cleanup_expired_gold_versions(
@@ -239,6 +239,11 @@ def test_Gold는_지역월별_최신본을_제외한_90일_초과_버전을_두_
     )
 
     sql = [statement for statement, _ in connection.cursor_instance.executions]
+    assert all(f"FROM {table}" in sql[0] for table in (
+        "driver_aggregation",
+        "driver_car_suggestion",
+        "silver_lineage",
+    ))
     assert "MAX(version) OVER" in sql[1]
     assert "PARTITION BY service_area, year_month" in sql[1]
     assert "version < latest_version" in sql[1]
@@ -246,6 +251,7 @@ def test_Gold는_지역월별_최신본을_제외한_90일_초과_버전을_두_
     assert [statement for statement in sql if statement.startswith("DELETE FROM")] == [
         "DELETE FROM driver_aggregation WHERE service_area = %s AND year_month = %s AND version = %s",
         "DELETE FROM driver_car_suggestion WHERE service_area = %s AND year_month = %s AND version = %s",
+        "DELETE FROM silver_lineage WHERE service_area = %s AND year_month = %s AND version = %s",
         "DELETE FROM gold_load_versions WHERE service_area = %s AND year_month = %s AND version = %s",
     ]
     assert result["deleted_versions"] == [("NYC", "2026-01", 1)]
@@ -295,10 +301,10 @@ def test_Gold_dry_run과_재실행은_삭제하지_않는다():
     )
 
 
-def test_Gold_테이블_삭제_중_실패하면_트랜잭션을_롤백한다():
+def test_Gold_마지막_테이블_삭제가_실패하면_트랜잭션을_롤백한다():
     connection = FakeGoldConnection(
         [("NYC", "2026-01", 1)],
-        fail_table="driver_car_suggestion",
+        fail_table="silver_lineage",
     )
 
     with pytest.raises(RuntimeError, match="delete failed"):

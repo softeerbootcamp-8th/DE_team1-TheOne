@@ -5,6 +5,8 @@
 3. service_area를 데이터셋과 월 사이의 Bronze 경로에 저장
 """
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -19,6 +21,8 @@ YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/lease_vehicle_inventory"
 COLLECTED_AT = datetime(2026, 8, 20, 10, 15, 32, 123456, tzinfo=timezone.utc)
+ETAG = '"inventory-etag"'
+LAST_MODIFIED = "Thu, 20 Aug 2026 10:00:00 GMT"
 ROWS = [
     {
         "vehicle_model_id": f"model-{index}",
@@ -49,6 +53,7 @@ CONTENT = _parquet_bytes()
 class Response:
     url = DATASET_URL
     content = CONTENT
+    headers = {"ETag": ETAG, "Last-Modified": LAST_MODIFIED}
 
     def raise_for_status(self):
         return None
@@ -94,3 +99,6 @@ def test_보유차량Parquet만_직접받아_footer행수와함께_Bronze에_저
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
     assert result["source_changed"] is True
     assert "sha256" not in result and "marker_location" not in result
+    manifest = json.loads((path.parent / "manifest.json").read_text())
+    assert manifest["sha256"] == hashlib.sha256(CONTENT).hexdigest()
+    assert manifest["source_etag"] == ETAG

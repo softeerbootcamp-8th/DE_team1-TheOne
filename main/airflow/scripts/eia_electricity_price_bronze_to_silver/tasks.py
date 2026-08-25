@@ -25,8 +25,8 @@ from shared.airflow.common.validation import (
     parse_handler_result,
     parse_location,
     parse_year_month,
-    publish_success_marker,
     read_parquet,
+    run_quality_gate,
 )
 
 logger = logging.getLogger(__name__)
@@ -171,7 +171,10 @@ def bronze_to_silver_task(**context) -> dict:
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="bronze_to_silver")
     service_area = context["params"]["service_area"]
-    validate_silver(result, service_area)
-
     path = parse_location(result["locations"][0])
-    publish_success_marker(path.parent)
+    run_quality_gate(
+        path.parent,
+        lambda: validate_silver(result, service_area),
+        layer="silver",
+        context=context,
+    )

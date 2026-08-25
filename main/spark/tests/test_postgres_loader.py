@@ -1,4 +1,4 @@
-"""Gold RDS 2종 적재 검증. 이슈 #746, #809, #927.
+"""Gold RDS 3종 적재 검증. 이슈 #746, #809, #927.
 
 1. 저장된 행수가 기대치와 같으면 통과한다
 2. 저장된 행수가 기대치보다 적거나 많으면 커밋 전에 실패한다
@@ -104,12 +104,14 @@ def test_두_테이블_모두_PK에_지역이_들어간다():
         assert "PRIMARY KEY (service_area," in postgres_loader._create_table_sql(table)
 
 
-def test_최종추천_PK는_기사당_한행이다():
+def test_최종추천_PK는_기사당_알고리즘_threshold별_한행이다():
     assert postgres_loader._PRIMARY_KEYS["driver_car_suggestion"] == (
         "service_area",
         "year_month",
         "version",
         "driver_id",
+        "recommendation_algorithm_version_id",
+        "threshold",
     )
 
 
@@ -124,6 +126,7 @@ def _grain_frames(suggestion_drivers):
     return {
         "driver_aggregation": pd.DataFrame({"driver_id": ["D1", "D2"]}),
         "driver_car_suggestion": pd.DataFrame({"driver_id": suggestion_drivers}),
+        "silver_lineage": pd.DataFrame({"service_area": ["NYC"]}),
     }
 
 
@@ -140,7 +143,7 @@ def test_최종추천에서_기사가_빠지면_적재전에_실패한다():
         postgres_loader._validate_frame_grains(frames)
 
 
-def test_Gold_2종_스키마에_service_area_컬럼이_있다():
+def test_Gold_3종_스키마에_service_area_컬럼이_있다():
     for table in postgres_loader.TABLES:
         assert "service_area TEXT NOT NULL" in postgres_loader._create_table_sql(table)
 
@@ -192,7 +195,7 @@ def test_Gold_행과_버전_메타데이터를_같은_트랜잭션에_기록한�
             if self.last_sql.startswith("SELECT version"):
                 return None
             if self.last_sql.startswith("SELECT COUNT"):
-                return (2,)
+                return (1,) if "FROM silver_lineage" in self.last_sql else (2,)
             raise AssertionError(self.last_sql)
 
     class Connection:

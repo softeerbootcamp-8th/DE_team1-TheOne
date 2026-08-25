@@ -40,118 +40,6 @@ env:
   RULE_NAME: theone-emr-job-failed-or-cancelled
 
 jobs:
-  deploy:
-    name: EMR dashboard and alerts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: AWS 임시 자격증명 취득 (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_MONITORING }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: EMR 대시보드 반영
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
-        run: |
-          set -euo pipefail
-          # 치환하지 않은 ${...} 가 남으면 CloudWatch 가 조용히 빈 위젯을 그립니다.
-          envsubst '$AWS_REGION $EMR_APPLICATION_ID' \
-            < monitoring/dashboard.json > /tmp/dashboard.json
-          if grep -q '\${' /tmp/dashboard.json; then
-            echo "치환되지 않은 플레이스홀더가 남았습니다" >&2
-            grep -n '\${' /tmp/dashboard.json >&2
-            exit 1
-          fi
-          # put-dashboard 는 위젯이 깨져도 성공으로 끝나고 메시지만 돌려줍니다.
-          messages=$(aws cloudwatch put-dashboard \
-            --dashboard-name "$DASHBOARD_NAME" \
-            --dashboard-body file:///tmp/dashboard.json \
-            --query DashboardValidationMessages --output json)
-          if [ "$(printf '%s' "$messages" | tr -d '[:space:]')" != "[]" ]; then
-            echo "대시보드 검증 경고 — 위젯이 깨졌을 수 있습니다:" >&2
-            printf '%s\n' "$messages" >&2
-            exit 1
-          fi
-
-      - name: 알림 Topic 과 EMR 실패 rule 반영
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
-        run: |
-          set -euo pipefail
-          # create-topic 은 같은 이름이면 기존 ARN 을 그대로 돌려줍니다(멱등).
-          TOPIC_ARN=$(aws sns create-topic --name "$TOPIC_NAME" \
-            --query TopicArn --output text)
-          echo "TOPIC_ARN=$TOPIC_ARN" >> "$GITHUB_ENV"
-
-          # arn:aws:sns:<region>:<account>:<name> — 계정은 5번째 필드입니다.
-          AWS_ACCOUNT_ID=$(printf '%s' "$TOPIC_ARN" | cut -d: -f5)
-          case "$AWS_ACCOUNT_ID" in
-            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-            *) echo "계정 ID 추출 실패: '$AWS_ACCOUNT_ID' (ARN: $TOPIC_ARN)" >&2; exit 1 ;;
-          esac
-          export TOPIC_ARN AWS_ACCOUNT_ID
-          envsubst '$TOPIC_ARN $AWS_ACCOUNT_ID' \
-            < monitoring/alert-topic-policy.json > /tmp/topic-policy.json
-          aws sns set-topic-attributes \
-            --topic-arn "$TOPIC_ARN" \
-            --attribute-name Policy \
-            --attribute-value "$(cat /tmp/topic-policy.json)"
-
-          envsubst '$EMR_APPLICATION_ID' \
-            < monitoring/emr-failure-event-pattern.json > /tmp/event-pattern.json
-          aws events put-rule \
-            --name "$RULE_NAME" \
-            --state ENABLED \
-            --event-pattern "$(cat /tmp/event-pattern.json)" \
-            --query RuleArn --output text
-
-          # put-targets 도 같은 Id 면 덮어씁니다. 다만 개별 target 실패는 예외가 아니라
-          # FailedEntryCount 로만 돌아오므로, 검사하지 않으면 알림이 조용히 안 옵니다.
-          failed=$(aws events put-targets \
-            --rule "$RULE_NAME" \
-            --targets "Id=$TOPIC_NAME,Arn=$TOPIC_ARN" \
-            --query FailedEntryCount --output text)
-          if [ "$failed" != "0" ]; then
-            echo "rule 에 Topic 을 붙이지 못했습니다 (FailedEntryCount=$failed)" >&2
-            aws events put-targets \
-              --rule "$RULE_NAME" \
-              --targets "Id=$TOPIC_NAME,Arn=$TOPIC_ARN" \
-              --query FailedEntries --output json >&2
-            exit 1
-          fi
-
-      - name: 배포 요약
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-        run: |
-          set -euo pipefail
-          url="https://${AWS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${AWS_REGION}#dashboards:name=${DASHBOARD_NAME}"
-          subs=$(aws sns get-topic-attributes --topic-arn "$TOPIC_ARN" \
-            --query 'Attributes.SubscriptionsConfirmed' --output text)
-          {
-            echo "### EMR 모니터링 배포 완료"
-            echo "- [CloudWatch 대시보드]($url)"
-            echo "- 알림 Topic: \`$TOPIC_ARN\` (확인된 구독 $subs 개)"
-            if [ "$subs" = "0" ]; then
-              echo "- 구독이 0개입니다. 알림을 받으려면 이메일 구독을 1회 추가하세요:"
-              echo '  ```'
-              echo "  aws sns subscribe --topic-arn $TOPIC_ARN \\"
-              echo "    --protocol email --notification-endpoint <메일주소>"
-              echo '  ```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # Prometheus·Grafana 설정을 theone-monitoring 에 배포합니다. 이미지는 Docker Hub
-  # 공식 것을 쓰므로 ECR 이 개입하지 않고, 인스턴스 role 에는 SSM 등록 권한만 있습니다.
-  #
-  # SSH 가 아니라 SSM 인 이유 — 인스턴스가 private 서브넷이고 공인 IP 가 없습니다.
-  # 러너에서 SSH 로 붙으려면 보안그룹을 러너 IP 대역(유동)만큼 열고 개인키를 Secrets 에
-  # 넣어야 합니다. 이 저장소의 Secrets 는 0개로 유지합니다.
   stack:
     name: Prometheus and Grafana
     runs-on: ubuntu-latest
@@ -168,6 +56,8 @@ jobs:
         id: ssm
         env:
           INSTANCE: ${{ vars.MONITORING_INSTANCE_ID }}
+          # 프로비저닝 파일의 ${EMR_APPLICATION_ID} 를 여기서 채웁니다.
+          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
           # Airflow 알림과 같은 웹훅입니다. 채널을 하나로 두려는 것이고, 로테이션할 때
           # 고칠 곳도 이 Secret 하나입니다.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -175,7 +65,7 @@ jobs:
           set -euo pipefail
           # 셸 따옴표로 JSON 을 조립하면 깨지기 쉬워 파일로 만들어 넘깁니다.
           python3 - <<'PY' > /tmp/params.json
-          import base64, json, os, pathlib
+          import base64, json, os, pathlib, re
           root = pathlib.Path("monitoring/stack")
           files = {
               "prometheus.yml": root / "prometheus.yml",
@@ -188,11 +78,37 @@ jobs:
                   root / "grafana/provisioning/alerting/policies.yaml",
               "grafana/provisioning/alerting/rules.yaml":
                   root / "grafana/provisioning/alerting/rules.yaml",
+              "grafana/provisioning/alerting/lambda-rules.yaml":
+                  root / "grafana/provisioning/alerting/lambda-rules.yaml",
+              "grafana/provisioning/datasources/cloudwatch.yml":
+                  root / "grafana/provisioning/datasources/cloudwatch.yml",
+              "grafana/provisioning/dashboards/dashboards.yaml":
+                  root / "grafana/provisioning/dashboards/dashboards.yaml",
+              "grafana/provisioning/dashboards/lambda.json":
+                  root / "grafana/provisioning/dashboards/lambda.json",
+              "grafana/provisioning/dashboards/emr.json":
+                  root / "grafana/provisioning/dashboards/emr.json",
+              "grafana/provisioning/alerting/emr-rules.yaml":
+                  root / "grafana/provisioning/alerting/emr-rules.yaml",
           }
           cmds = ["set -eu", "cd /home/ec2-user/monitoring",
-                  "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting"]
+                  "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting "
+                  "grafana/provisioning/dashboards"]
+          # ★ 치환하고 나서 보냅니다. 프로비저닝 파일은 base64 로 그대로 복사되므로
+          #   여기서 안 바꾸면 Grafana 가 `${EMR_APPLICATION_ID}` 를 **문자열 그대로**
+          #   질의에 넣습니다. 대시보드는 정상으로 뜨고 패널만 비어서, 사람이 열어보기
+          #   전까지 아무도 모릅니다 — 실제로 그렇게 당했습니다.
+          values = {"EMR_APPLICATION_ID": os.environ["EMR_APPLICATION_ID"]}
           for dest, src in files.items():
-              blob = base64.b64encode(src.read_bytes()).decode()
+              text = src.read_text(encoding="utf-8")
+              for key, value in values.items():
+                  text = text.replace("${" + key + "}", value)
+              # 치환하지 못한 것이 남으면 배포를 멈춥니다. 그대로 보내면 조용히 빈
+              # 패널이 되고, 배포는 초록불이라 드러나지 않습니다.
+              leftover = set(re.findall(r"\$\{[A-Z_]+\}", text))
+              if leftover:
+                  raise SystemExit(f"치환되지 않은 플레이스홀더 {sorted(leftover)} in {dest}")
+              blob = base64.b64encode(text.encode("utf-8")).decode()
               cmds.append(f"echo {blob} | base64 -d > {dest}")
           cmds += [
               # 웹훅은 저장소 파일이 아니라 여기서만 씁니다. compose 가 같은 디렉터리의
@@ -202,6 +118,14 @@ jobs:
               "docker compose up -d --remove-orphans",
               # 설정만 바뀐 경우 컨테이너가 그대로라 Prometheus 가 다시 읽게 신호를 줍니다.
               "docker compose kill -s SIGHUP prometheus || true",
+              # ★ Grafana 는 프로비저닝을 **기동 시에만** 읽습니다. 그리고 SIGHUP
+              #   재적재를 지원하지 않습니다. 이미지도 compose 정의도 안 바뀌면
+              #   `up -d` 가 컨테이너를 그대로 두므로, 바인드 마운트된 파일만 새것이고
+              #   Grafana 안은 옛 설정 그대로입니다.
+              #
+              #   실제로 이렇게 당했습니다 — 배포는 초록불이고 파일도 인스턴스에 있는데
+              #   데이터소스와 알림 규칙이 16시간 동안 반영되지 않았습니다.
+              "docker compose restart grafana",
           ]
           print(json.dumps({"commands": cmds}))
           PY

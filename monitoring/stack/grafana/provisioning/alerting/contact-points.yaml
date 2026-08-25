@@ -1,5 +1,8 @@
 # Slack 알림 수신처.
 #
+# `instance_name` 은 호스트 알림에만 있습니다. 조건 없이 쓰면 EMR·Lambda 알림에서
+# `**` 만 찍혀 나갑니다 — `with` 로 감싸 있을 때만 붙입니다.
+#
 # 웹훅 URL 은 파일에 두지 않습니다. compose 가 `SLACK_WEBHOOK_URL` 을 컨테이너
 # 환경변수로 넘기고, Grafana 가 `$__env{}` 로 읽습니다. Airflow 가 쓰는 것과 같은
 # GitHub Secret 이라 채널도 같습니다.
@@ -15,6 +18,6 @@ contactPoints:
           url: $__env{SLACK_WEBHOOK_URL}
           title: '{{ if eq .Status "firing" }}🔥{{ else }}✅{{ end }} {{ .CommonLabels.alertname }}'
           text: |
-            {{ range .Alerts }}*{{ .Labels.instance_name }}* — {{ .Annotations.summary }}
+            {{ range .Alerts }}{{ with .Labels.instance_name }}*{{ . }}* — {{ end }}{{ .Annotations.summary }}
             상태 `{{ .Status }}` · 심각도 `{{ .Labels.severity }}`
             {{ end }}

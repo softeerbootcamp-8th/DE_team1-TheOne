@@ -16,6 +16,11 @@ from pipeline_core.loader import Loader, WriteResult
 from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
 from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
+from shared.common.bronze_manifest import (
+    MANIFEST_FILE_NAME,
+    bronze_manifest_bytes,
+    build_bronze_manifest,
+)
 from shared.common.s3_reader import get_object_bytes, list_keys
 from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 BRONZE_DATA_FILE_NAME = "data.parquet"
@@ -146,6 +151,12 @@ class MonthlyParquetAPIExtractor(Extractor):
             timeout=self._timeout,
         )
         response.raise_for_status()
+        etag = response.headers.get("ETag")
+        last_modified = response.headers.get("Last-Modified")
+        if not etag or not last_modified:
+            raise ValueError(
+                f"{self._dataset} GET 응답에 ETag 또는 Last-Modified가 없습니다"
+            )
         collected_at = (
             _utc_now()
             .astimezone(timezone.utc)
@@ -157,6 +168,10 @@ class MonthlyParquetAPIExtractor(Extractor):
             "dataset": self._dataset,
             "collected_at": collected_at,
             "content": response.content,
+            "sha256": hashlib.sha256(response.content).hexdigest(),
+            "api_base_url": self._api_base_url,
+            "source_etag": etag,
+            "source_last_modified": last_modified,
         }
 
     def _response_year_month(self, response_url: str) -> str:
@@ -213,7 +228,11 @@ class MonthlyParquetBronzeLoader(Loader):
         self.payload = payload
         self.path = self._data_path(payload)
         latest = self._latest_data_path(self.path.parent.parent)
-        if latest is not None and self._same_content(latest, content):
+        if (
+            latest is not None
+            and latest.name == BRONZE_DATA_FILE_NAME
+            and self._same_content(latest, content)
+        ):
             self.source_changed = False
             self.path = latest
             self.payload = {
@@ -222,12 +241,24 @@ class MonthlyParquetBronzeLoader(Loader):
                     bronze_collection_token(latest)
                 ),
             }
+            self._write_manifest(parquet.metadata.num_rows)
             return WriteResult(str(latest), parquet.metadata.num_rows)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
         invalidate_success_marker(self.path.parent)
         atomic_write(self.path, lambda temporary: temporary.write_bytes(content))
+        self._write_manifest(parquet.metadata.num_rows)
         return WriteResult(str(self.path), parquet.metadata.num_rows)
+
+    def _write_manifest(self, row_count: int) -> None:
+        manifest = build_bronze_manifest(
+            self.payload,
+            service_area=self._service_area,
+            row_count=row_count,
+        )
+        target = self.path.parent / MANIFEST_FILE_NAME
+        body = bronze_manifest_bytes(manifest)
+        atomic_write(target, lambda temporary: temporary.write_bytes(body))
 
     @staticmethod
     def _latest_data_path(partition_dir: Path) -> Path | None:
@@ -293,7 +324,11 @@ class S3MonthlyParquetBronzeLoader(Loader):
         latest_content = (
             get_object_bytes(self._bucket, latest) if latest is not None else None
         )
-        if latest is not None and _same_bytes(latest_content, content):
+        if (
+            latest is not None
+            and PurePosixPath(latest).name == BRONZE_DATA_FILE_NAME
+            and _same_bytes(latest_content, content)
+        ):
             self.source_changed = False
             self.payload = {
                 **payload,
@@ -301,17 +336,31 @@ class S3MonthlyParquetBronzeLoader(Loader):
                     bronze_collection_token(PurePosixPath(latest))
                 ),
             }
+            self._write_manifest(latest, parquet.metadata.num_rows)
             return WriteResult(
                 f"s3://{self._bucket}/{latest}", parquet.metadata.num_rows
             )
 
         key = f"{prefix}{_collected_at_dir_name(payload)}/{BRONZE_DATA_FILE_NAME}"
-        return S3Loader(
+        result = S3Loader(
             key=key,
             bucket=self._bucket,
             invalidate_parent_success=True,
         ).write(
             S3Object(body=content, row_count=parquet.metadata.num_rows)
+        )
+        self._write_manifest(key, parquet.metadata.num_rows)
+        return result
+
+    def _write_manifest(self, data_key: str, row_count: int) -> None:
+        manifest = build_bronze_manifest(
+            self.payload,
+            service_area=self._service_area,
+            row_count=row_count,
+        )
+        key = str(PurePosixPath(data_key).with_name(MANIFEST_FILE_NAME))
+        S3Loader(key=key, bucket=self._bucket).write(
+            S3Object(body=bronze_manifest_bytes(manifest))
         )
 
     def _partition_prefix(self, payload: dict) -> str:

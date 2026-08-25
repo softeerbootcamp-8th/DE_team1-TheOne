@@ -20,7 +20,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_RETENTION_DAYS = 90
 SCAN_PREFIXES = ("bronze/", "silver/")
 DELETE_BATCH_SIZE = 1000
-GOLD_TABLES = ("driver_aggregation", "driver_car_suggestion")
+GOLD_TABLES = (
+    "driver_aggregation",
+    "driver_car_suggestion",
+    "silver_lineage",
+)
 GOLD_VERSION_TABLE = "gold_load_versions"
 VERSION_SEGMENT_PATTERN = re.compile(
     r"^(?:source_)?collected_at=(?P<token>\d{8}T\d{12}Z)$"
@@ -229,15 +233,16 @@ def cleanup_expired_gold_versions(
     try:
         with connection:
             with connection.cursor() as cursor:
+                data_versions_sql = "\nUNION\n".join(
+                    "SELECT service_area, year_month, version "
+                    f"FROM {table}"
+                    for table in GOLD_TABLES
+                )
                 cursor.execute(
                     f"""
                     SELECT COUNT(*)
                     FROM (
-                        SELECT service_area, year_month, version
-                        FROM {GOLD_TABLES[0]}
-                        UNION
-                        SELECT service_area, year_month, version
-                        FROM {GOLD_TABLES[1]}
+                        {data_versions_sql}
                     ) data_versions
                     LEFT JOIN {GOLD_VERSION_TABLE} history
                     USING (service_area, year_month, version)

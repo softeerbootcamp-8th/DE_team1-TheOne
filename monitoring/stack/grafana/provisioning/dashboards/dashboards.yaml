@@ -1,0 +1,16 @@
+# 대시보드도 파일로 둡니다. UI 에서 만들면 컨테이너를 다시 만들 때 사라지고,
+# 무엇보다 재현이 안 됩니다 (데이터소스·알림과 같은 이유).
+#
+# JSON 을 같은 디렉터리에 둡니다. Grafana 는 이 yaml 을 대시보드로 읽지 않습니다.
+apiVersion: 1
+
+providers:
+  - name: theone
+    orgId: 1
+    folder: theone
+    type: file
+    # UI 에서 지워도 다음 기동에 다시 생깁니다 — 파일이 정본입니다.
+    disableDeletion: false
+    allowUiUpdates: false
+    options:
+      path: /etc/grafana/provisioning/dashboards

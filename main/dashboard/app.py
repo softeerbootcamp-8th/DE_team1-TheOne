@@ -14,9 +14,7 @@ import streamlit as st
 
 import charts
 import theme
-from datasource import build_data_source
-
-_DATA_SOURCE = build_data_source()
+from datasource import DataSource, build_data_source
 
 # 기사 예상 월 순수익 증가 하한 기본값 (USD). Gold monthly_report 제거(#915) 이후
 # 더 이상 Gold가 계산해주지 않아 대시보드 상수로 둔다.
@@ -33,9 +31,19 @@ SUGGESTION_COLUMNS = {
 }
 
 
+@st.cache_resource
+def _data_source() -> DataSource:
+    """RDS 연결은 재실행마다 새로 맺지 않고 프로세스 생존 기간 동안 재사용한다.
+
+    데이터셋이 2종에서 4종(#987)으로 늘면서 매 렌더링마다 새 연결을 맺으면
+    (SSH 터널 경유 시 연결당 ~150-300ms) 왕복 비용만 1초 가까이 쌓였다.
+    """
+    return build_data_source()
+
+
 @st.cache_data(ttl=5)
 def load(dataset: str) -> pd.DataFrame:
-    return _DATA_SOURCE.load(dataset)
+    return _data_source().load(dataset)
 
 
 def recommendation_scope(
@@ -151,18 +159,31 @@ def _aggregates(scope: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _previous_period(periods: list[str], period: str) -> str | None:
-    """정렬된 월 목록에서 바로 앞 달. 없으면 None — 델타를 숨기는 신호."""
-    ordered = sorted(periods)
-    index = ordered.index(period)
-    return ordered[index - 1] if index > 0 else None
+def _silver_source_expander(
+    lineage: pd.DataFrame, service_area: str, period: str
+) -> None:
+    """맨 아래 접힌 상태로 이번 실행이 읽은 Silver 4종 경로를 보여준다.
 
-
-def _delta(current: float, previous: float | None, money: bool = True) -> str | None:
-    if previous is None:
-        return None
-    diff = current - previous
-    return f"{diff:+,.0f}" if not money else f"${diff:+,.0f}"
+    lineage 는 지역·월 당 가장 최근 실행 한 행만 담고 있다(algorithm 축 없음) —
+    선택된 알고리즘 버전이 최신 실행과 다르면 그 실행의 출처와는 다를 수 있다.
+    """
+    with st.expander("Silver 데이터 출처", expanded=False):
+        matched = (
+            lineage[
+                (lineage["service_area"] == service_area)
+                & (lineage["year_month"] == period)
+            ]
+            if not lineage.empty
+            else lineage
+        )
+        if matched.empty:
+            st.caption("이 지역·월의 Silver 출처 정보가 없습니다.")
+            return
+        row = matched.iloc[0]
+        st.caption(f"운행 기록: {row['silver_monthly_taxi_trip_s3_link']}")
+        st.caption(f"기사 차량 스냅샷: {row['silver_driver_vehicle_monthly_snapshot_s3_link']}")
+        st.caption(f"보유 차량: {row['silver_lease_vehicle_inventory_s3_link']}")
+        st.caption(f"연료비: {row['silver_gas_ev_price_s3_link']}")
 
 
 # ── 화면 ───────────────────────────────────────────────────────────────────────
@@ -180,6 +201,8 @@ def render() -> None:
 
     suggestion = load("driver_car_suggestion")
     aggregation = load("driver_aggregation")
+    algorithms = load("recommendation_algorithm")
+    lineage = load("silver_lineage")
 
     if suggestion.empty or aggregation.empty:
         st.error(
@@ -190,6 +213,21 @@ def render() -> None:
 
     # 제목은 필터보다 위에 보여야 하니 자리를 먼저 잡고, 값이 정해진 뒤 채운다.
     head_slot = st.container()
+
+    # ── 알고리즘 버전 선택: 이 값으로 suggestion 전체를 좁힌 뒤 나머지 필터를 적용한다 ──
+    algo_col, desc_col = st.columns([1, 3], vertical_alignment="bottom")
+    algorithm_id = algo_col.selectbox(
+        "알고리즘 버전", sorted(suggestion["recommendation_algorithm_version_id"].unique())
+    )
+    descriptions = (
+        dict(zip(algorithms["recommendation_algorithm_version_id"], algorithms["description"]))
+        if not algorithms.empty
+        else {}
+    )
+    desc_col.caption(descriptions.get(algorithm_id, "이 버전에 대한 설명이 없습니다."))
+    suggestion = suggestion[
+        suggestion["recommendation_algorithm_version_id"] == algorithm_id
+    ]
 
     # ── 필터 한 줄: 아래 모든 카드·차트·표가 이 값으로 스코프된다 ──
     f1, f2, f3 = st.columns([1, 1, 2], vertical_alignment="bottom")
@@ -233,36 +271,21 @@ def render() -> None:
     _hero(agg["total_revenue"], int(agg["count"]), agg["avg_profit"],
           len(month_suggestion))
 
-    # 지난 달 대비 델타 — 같은 하한을 적용해 비교 기준을 맞춘다.
-    previous = _previous_period(list(area_suggestion["year_month"].unique()), period)
-    prev_agg = (
-        _aggregates(
-            recommendation_scope(
-                suggestion, aggregation, service_area, previous, threshold
-            )
-        )
-        if previous
-        else None
-    )
-
     st.write("")
     t1, t2, t3, t4 = st.columns(4)
     t1.metric(
         "추천 대상 기사",
         f"{int(agg['count']):,}명",
-        delta=_delta(agg["count"], prev_agg["count"] if prev_agg else None, money=False),
         help=f"{period} 분석 대상 {len(month_suggestion):,}명 중"
         f" {agg['count'] / max(len(month_suggestion), 1):.1%}",
     )
     t2.metric(
         "기사 1인당 예상 월 순수익 증가",
         f"${agg['avg_profit']:,.0f}",
-        delta=_delta(agg["avg_profit"], prev_agg["avg_profit"] if prev_agg else None),
     )
     t3.metric(
         "회사 평균 예상 월 렌탈 객단가 증가",
         f"${agg['avg_revenue']:,.0f}",
-        delta=_delta(agg["avg_revenue"], prev_agg["avg_revenue"] if prev_agg else None),
     )
     t4.metric(
         "추천 차종 수",
@@ -276,6 +299,7 @@ def render() -> None:
 
     if scope.empty:
         st.info("이 조건에는 해당하는 기사가 없습니다. 하한을 낮춰 보세요.")
+        _silver_source_expander(lineage, service_area, period)
         return
 
     # ── 분포 · 차종 · 사유 ──
@@ -350,6 +374,7 @@ def render() -> None:
     selected_rows = event.selection.rows if event and event.selection else []
     if not selected_rows:
         _section("기사 상세", "리스트에서 기사를 선택하면 현재 차량과 추천 차량을 나란히 비교합니다")
+        _silver_source_expander(lineage, service_area, period)
         return
 
     picked = scope.iloc[selected_rows[0]]
@@ -421,6 +446,8 @@ def render() -> None:
             """,
             unsafe_allow_html=True,
         )
+
+    _silver_source_expander(lineage, service_area, period)
 
 
 if __name__ == "__main__":

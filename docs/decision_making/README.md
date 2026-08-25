@@ -53,3 +53,8 @@
 2. Gold 세 번째 물리 테이블 : `monthly_report` 대신 `lease_vehicle_inventory` 적재
 3. Bronze·Silver S3 공개 : 최종 경로 직접 적재 후 검증 성공 시 `_SUCCESS` 기록
 5. Airflow 태스크 로그 보존 : S3 `logs/airflow/` 원격 로깅 + 만료 90일
+
+### 8/25 ([상세 정리 문서 링크](/docs/decision_making/0825.md))
+
+1. Source API refresh 상태 : Airflow Variable 대신 검증된 Bronze `manifest.json`
+2. Gold 재고 배정 threshold별 보고서 (#978) : 회사 매출 1순위·기사 순수익 threshold 필터인 v2를 기존 v1과 함께 운영, `driver_car_suggestion` 재사용
