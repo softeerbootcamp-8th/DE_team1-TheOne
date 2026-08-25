@@ -211,6 +211,24 @@ SNS→Slack 다리나 함수별 CloudWatch 알람을 따로 만들지 않습니�
 | Lambda 실패 | `AWS/Lambda Errors` | critical | Airflow 밖에서 실패하면 아무도 모릅니다 |
 | Lambda 동시성 제한 | `AWS/Lambda Throttles` | warning | Airflow 에는 그냥 "태스크 실패" 로만 보입니다 |
 
+### 규칙이 세 단계입니다 — A → B(reduce) → C(threshold)
+
+Grafana 알림은 **축약된 값**만 임계와 비교할 수 있습니다. Prometheus 규칙은
+`instant: true` 라 값이 계열당 하나씩이지만, **CloudWatch 는 항상 시계열**입니다.
+
+그대로 비교하면 규칙은 등록되고 평가만 실패합니다.
+
+```
+invalid format of evaluation results ... only reduced data can be alerted on
+```
+
+UI 에는 `Health: error` 로 보이고 **알림은 영원히 안 옵니다.** 상태가 `Normal` 이라
+얼핏 정상으로 보이는 것이 더 나쁩니다.
+
+reducer 는 `sum` 입니다 — 15분 창에서 실패가 한 번이라도 있었으면 울려야 합니다.
+`settings.mode` 는 `dropNN` 이어야 합니다. CloudWatch 는 호출이 없던 구간을 null 로
+돌려주는데, 그대로 더하면 합이 NaN 이 되어 NoData 로 빠집니다.
+
 ### 호스트 규칙과 `noDataState` 가 반대입니다
 
 ```

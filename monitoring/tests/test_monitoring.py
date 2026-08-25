@@ -665,3 +665,27 @@ def test_배포가_대시보드를_내려보낸다():
     assert "dashboards/lambda.json" in workflow
     assert "dashboards/dashboards.yaml" in workflow
     assert "grafana/provisioning/dashboards" in workflow
+
+
+def test_lambda_규칙은_축약_단계를_거친다():
+    """Grafana 알림은 **축약된 값**만 임계와 비교할 수 있습니다.
+
+    Prometheus 규칙은 `instant: true` 라 값이 계열당 하나씩이지만, CloudWatch 는 항상
+    시계열입니다. 그대로 비교하면 규칙은 남고 평가만 error 가 됩니다 — UI 에서
+    `Health: error` 로 보이고 **알림은 영원히 안 옵니다.**
+
+        invalid format of evaluation results ... only reduced data can be alerted on
+    """
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            kinds = [q["model"].get("type") for q in rule["data"]]
+            assert "reduce" in kinds, f"{rule['title']}: 축약 단계가 없습니다"
+
+            reduce_node = next(q for q in rule["data"] if q["model"].get("type") == "reduce")
+            threshold = next(q for q in rule["data"] if q["model"].get("type") == "threshold")
+
+            # 임계는 원본이 아니라 축약 결과를 봐야 합니다.
+            assert threshold["model"]["expression"] == reduce_node["refId"]
+            # CloudWatch 는 호출이 없던 구간을 null 로 돌려줍니다. 그대로 더하면 NaN 이
+            # 되어 규칙이 NoData 로 빠집니다.
+            assert reduce_node["model"]["settings"]["mode"] == "dropNN"
