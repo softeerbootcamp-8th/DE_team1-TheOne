@@ -102,6 +102,34 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 `recommendation_algorithm`은 Gold 파이프라인이 적재하지 않는 수동 마스터 테이블입니다
 — 새 알고리즘 버전이 생길 때마다 이 표에 설명 행을 직접 추가합니다.
 
+## 2026-08-25 threshold 추가 스크립트 실행 방법
+
+```bash
+psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f main/spark/jobs/silver_to_gold/migrations/2026-08-25_add_threshold_to_driver_car_suggestion.sql
+```
+
+`driver_car_suggestion`에 `threshold`를 추가하고 PK에 포함시킨 뒤, 알고리즘·threshold별
+최신 버전 조회용 지원 인덱스를 다시 만듭니다. 기존 인덱스
+`idx_driver_car_suggestion_area_month_algorithm`(#987 트러블슈팅 중 수동 생성 — 이때는
+마이그레이션 파일로 남기지 않았습니다)은 `threshold`가 없어 지웁니다.
+
+이 스크립트는 `BEGIN`/`COMMIT` 블록과 `CREATE/DROP INDEX CONCURRENTLY` 두 부분으로
+나뉩니다 — `CONCURRENTLY`는 트랜잭션 안에서 못 쓰기 때문입니다. `ON_ERROR_STOP=1`이
+있어도 두 부분은 별도 트랜잭션이니, 컬럼·PK 변경이 성공해도 인덱스 재생성이 실패할 수
+있습니다 — 실행 후 반드시 아래로 확인하세요.
+
+실행 후 확인:
+
+```sql
+\d driver_car_suggestion
+```
+
+PK가
+`(service_area, year_month, version, driver_id, recommendation_algorithm_version_id, threshold)`이고,
+`Indexes:`에 `idx_driver_car_suggestion_area_month_algorithm_threshold`가 있는지
+확인합니다.
+
 ## 이력
 
 | 날짜 | 스크립트 | 내용 | 관련 |
@@ -110,6 +138,7 @@ psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
 | 2026-08-24 | `2026-08-24_replace_monthly_report_with_inventory.sql` | 추천 뷰·`monthly_report`·`candidate_stock`을 제거하고 Gold 재고 테이블 생성 | #915 |
 | 2026-08-24 | 추가 SQL 없음 | 기존 추천 테이블을 다시 적재하고 Gold 출력을 집계·추천 2종으로 축소 | #927 |
 | 2026-08-25 | `2026-08-25_add_recommendation_algorithm_version.sql` | `driver_car_suggestion`에 `recommendation_algorithm_version_id` 추가, PK 확장. `recommendation_algorithm` 마스터 테이블 신설·시드 | #986 |
+| 2026-08-25 | `2026-08-25_add_threshold_to_driver_car_suggestion.sql` | `driver_car_suggestion`에 `threshold` 추가, PK 확장. 지원 인덱스를 threshold 포함해 재생성 | #997 |
 
 ### 추천 후보 확장 이력
 
