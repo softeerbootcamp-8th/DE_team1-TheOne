@@ -220,10 +220,31 @@ Lambda   noDataState: OK         실패 지표가 없음 = 실패가 없었음
 
 `Alerting` 으로 두면 그날 안 도는 함수들이 매분 울려 알림이 무시당하게 됩니다.
 
+### 화면은 `theone / Lambda` 대시보드
+
+```
+Grafana → Dashboards → theone → Lambda
+```
+
+| 패널 | 지표 | 읽는 법 |
+|---|---|---|
+| 실패 | `Errors` | 0 이 아니면 그 함수가 실패 |
+| 동시성 제한 | `Throttles` | Airflow 에는 그냥 "태스크 실패" 로만 보임 |
+| 호출 | `Invocations` | 월간 파이프라인이라 평소 0, 실행일에만 솟음 |
+| 실행 시간 | `Duration` | 함수 timeout 에 가까워지면 늘려야 함 |
+
 ### 함수 이름을 박지 않습니다
 
-`FunctionName: "*"` 에 `matchExact: false` 라 함수별로 시계열이 하나씩 나옵니다.
-새 함수를 배포해도 규칙을 안 고쳐도 되고, 고치는 걸 잊어 감시에서 빠지는 일이 없습니다.
+`FunctionName: "*"` 라 새 함수를 배포해도 규칙을 안 고쳐도 되고, 고치는 걸 잊어
+감시에서 빠지는 일이 없습니다.
+
+**`matchExact` 는 `true` 여야 합니다.** `false` 면 `FunctionName` 을 포함한 *모든* 차원
+조합이 잡혀서, AWS 가 함께 발행하는 `Resource` 차원 변형까지 딸려옵니다.
+
+```
+matchExact=false   시리즈 28개   함수마다 두 개씩 (같은 실패로 알림이 두 번)
+matchExact=true    시리즈 14개   함수당 하나
+```
 
 ### 자격증명을 두지 않습니다
 

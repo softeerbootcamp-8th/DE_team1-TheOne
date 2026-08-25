@@ -192,9 +192,14 @@ jobs:
                   root / "grafana/provisioning/alerting/lambda-rules.yaml",
               "grafana/provisioning/datasources/cloudwatch.yml":
                   root / "grafana/provisioning/datasources/cloudwatch.yml",
+              "grafana/provisioning/dashboards/dashboards.yaml":
+                  root / "grafana/provisioning/dashboards/dashboards.yaml",
+              "grafana/provisioning/dashboards/lambda.json":
+                  root / "grafana/provisioning/dashboards/lambda.json",
           }
           cmds = ["set -eu", "cd /home/ec2-user/monitoring",
-                  "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting"]
+                  "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting "
+                  "grafana/provisioning/dashboards"]
           for dest, src in files.items():
               blob = base64.b64encode(src.read_bytes()).decode()
               cmds.append(f"echo {blob} | base64 -d > {dest}")
