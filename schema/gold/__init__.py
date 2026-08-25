@@ -89,6 +89,10 @@ class DriverCarSuggestion:
     빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
     """
 
+    recommendation_algorithm_version_id: int
+    """추천 계산에 쓰인 알고리즘 버전. 알고리즘 로직이 바뀔 때만 사람이 올린다 (적재 시점마다
+    바뀌는 `version`과 다른 축)"""
+
     comfort_eligible: bool
     """Comfort 등급 대상 여부"""
 
@@ -127,3 +131,46 @@ class DriverCarSuggestion:
 
     expected_revenue_increase: float
     """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverMonthlyProfit.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
+
+
+"""
+[Gold 실행이 읽은 Silver 4종의 계보]
+input: (경로 문자열 — 계산 없음)
+output: schema/gold.py - SilverLineage
+"""
+@dataclass(frozen=True)
+class SilverLineage:
+    version: int
+    """ 골드 데이터 버전 """
+
+    service_area: str
+    """서비스 지역 코드 (예: NYC)"""
+
+    year_month: str
+    """집계 대상 월 (YYYY-MM)"""
+
+    silver_monthly_taxi_trip_s3_link: str
+    """이 실행이 읽은 월별 택시 운행 기록 Silver 파티션의 S3 경로"""
+
+    silver_driver_vehicle_monthly_snapshot_s3_link: str
+    """이 실행이 읽은 기사 차량 월 스냅샷 Silver 파티션의 S3 경로"""
+
+    silver_lease_vehicle_inventory_s3_link: str
+    """이 실행이 읽은 리스 업체 보유 차량 Silver 파티션의 S3 경로"""
+
+    silver_gas_ev_price_s3_link: str
+    """이 실행이 읽은 연료비 Silver 파티션의 S3 경로"""
+
+
+"""
+[추천 알고리즘 버전 설명]
+input: (사람이 직접 관리 — Gold 파이프라인이 적재하지 않음)
+output: schema/gold.py - RecommendationAlgorithm
+"""
+@dataclass(frozen=True)
+class RecommendationAlgorithm:
+    recommendation_algorithm_version_id: int
+    """추천 알고리즘 버전. DriverCarSuggestion.recommendation_algorithm_version_id 와 조인"""
+
+    description: str
+    """이 버전의 추천 로직 설명"""

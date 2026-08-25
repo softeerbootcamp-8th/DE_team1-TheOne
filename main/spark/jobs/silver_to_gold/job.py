@@ -1,8 +1,8 @@
-"""원천 Silver 4종을 직접 읽어 Gold 2종을 만듭니다.
+"""원천 Silver 4종을 직접 읽어 Gold 3종을 만듭니다.
 
 input: monthly_taxi_trip, driver_vehicle_monthly_snapshot, lease_vehicle_inventory,
        fuel_price (Silver)
-output: driver_aggregation, driver_car_suggestion (Gold)
+output: driver_aggregation, driver_car_suggestion, silver_lineage (Gold)
 
 사용 예 (로컬):
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
@@ -334,6 +334,16 @@ def main(args_list: list[str] | None = None) -> None:
         # 무거운 `toPandas()` 를 먼저 끝냅니다. 교체 직전까지 디스크를 안 건드려야
         # 계산 중 실패가 기존 산출물을 남기지 않습니다.
         frames = {name: frame.toPandas() for name, frame in outputs.items()}
+        # driver_aggregation·driver_car_suggestion 은 같은 실행에서 같은 Silver 4종을
+        # 함께 읽으므로, 행마다 경로를 반복하는 대신 실행당 한 행으로 따로 적재한다.
+        frames["silver_lineage"] = pd.DataFrame([{
+            "service_area": args.service_area,
+            "year_month": year_month,
+            "silver_monthly_taxi_trip_s3_link": monthly_taxi_trip_path,
+            "silver_driver_vehicle_monthly_snapshot_s3_link": driver_vehicle_monthly_snapshot_path,
+            "silver_lease_vehicle_inventory_s3_link": lease_vehicle_inventory_path,
+            "silver_gas_ev_price_s3_link": fuel_price_path,
+        }])
         if args.env == "prod":
             if not args.gold_dsn:
                 raise ValueError(

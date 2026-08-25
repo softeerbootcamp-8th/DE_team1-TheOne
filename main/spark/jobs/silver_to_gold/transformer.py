@@ -21,6 +21,9 @@ KWH_PER_GALLON_EQUIVALENT = 33.7
 # 프리미엄 자격을 얻어도 Standard 수요가 모두 전환되지는 않습니다.
 # 현재 사업 시나리오는 기존 Standard 운행 중 40%만 프리미엄으로 전환합니다.
 PREMIUM_TIER_TRIP_SHARE = 0.4
+# 추천 계산 로직이 바뀔 때만 사람이 올리는 알고리즘 코드 버전입니다.
+# 적재 시점마다 바뀌는 DriverCarSuggestion.version과는 다른 축입니다.
+RECOMMENDATION_ALGORITHM_VERSION_ID = 1
 
 
 def _columns(model: type) -> list[str]:
@@ -721,6 +724,9 @@ def build_monthly_vehicle_recommendation(
             "expected_monthly_net_profit",
             "expected_net_profit_increase",
             "expected_revenue_increase",
+            F.lit(RECOMMENDATION_ALGORITHM_VERSION_ID).alias(
+                "recommendation_algorithm_version_id"
+            ),
         ).select(*_columns(DriverCarSuggestion))
 
     # 회사 매출에 기여 못 하는 차량 교체는 추천에서 제외한다(#955). 현재 차량은
