@@ -47,6 +47,7 @@ from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
     enrich_trips_with_fuel_cost,
+    reconcile_gold_control_totals,
     validate_gold_business_invariants,
 )
 from shared.common.s3_reader import list_keys
@@ -336,6 +337,8 @@ def main(args_list: list[str] | None = None) -> None:
         driver_metrics = build_driver_monthly_aggregation(
             enriched, year_month, args.service_area
         ).persist()
+        # 집계를 만든 직후에 봅니다 — 추천까지 계산한 뒤에 걸리면 헛일이 큽니다.
+        reconcile_gold_control_totals(monthly_taxi_trip, driver_metrics)
         driver_profit = build_driver_monthly_profit(driver_metrics)
         # v1(기사 순수익 우선)과 v2(회사 매출 우선, threshold 스윕)를 한 실행에서
         # 함께 계산해 driver_car_suggestion에 알고리즘·threshold별로 쌓는다(#997).
