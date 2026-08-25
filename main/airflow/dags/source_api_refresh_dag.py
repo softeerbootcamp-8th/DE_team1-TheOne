@@ -14,7 +14,6 @@ from main.airflow.common.gold_staleness import DEFAULT_STALE_SLA_DAYS
 from main.airflow.scripts.source_api_refresh.tasks import (
     check_and_should_refresh_task,
     check_gold_staleness_task,
-    mark_processed_task,
     publish_api_refresh_ready_task,
 )
 from shared.airflow.common.slack_failure_callback import (
@@ -129,15 +128,12 @@ def source_api_refresh_pipeline():
             deferrable=True,
             poke_interval=30,
         )
-        processed = mark_processed_task.override(
-            task_id=f"mark_processed_{dataset}"
-        )(refresh)
-        refresh >> trigger >> processed
-        completed.append(processed)
+        refresh >> trigger
+        completed.append(trigger)
 
     ready = publish_api_refresh_ready_task(check_task_ids)
-    for processed in completed:
-        processed >> ready
+    for trigger in completed:
+        trigger >> ready
 
 
 source_api_refresh_dag = source_api_refresh_pipeline()

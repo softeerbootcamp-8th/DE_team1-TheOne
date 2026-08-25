@@ -8,6 +8,7 @@
 6. service_area를 Bronze 수집·정제와 Silver 경로에 전달
 """
 
+import hashlib
 from datetime import timedelta
 from pathlib import Path
 
@@ -25,6 +26,7 @@ from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
     tasks as task_module,
 )
+from shared.common.bronze_manifest import bronze_manifest_bytes, build_bronze_manifest
 
 
 DAG = dag_module.lease_vehicle_inventory_raw_to_silver_dag
@@ -66,6 +68,25 @@ def _rows():
             "stock": 12,
         }
     ]
+
+
+def _write_manifest(path: Path, service_area: str) -> None:
+    content = path.read_bytes()
+    manifest = build_bronze_manifest(
+        {
+            "dataset": "lease_vehicle_inventory",
+            "year_month": "2026-08",
+            "collected_at": "2026-08-21T12:34:56.123456Z",
+            "content": content,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "api_base_url": "http://source",
+            "source_etag": '"inventory-etag"',
+            "source_last_modified": "Fri, 21 Aug 2026 12:34:56 GMT",
+        },
+        service_area=service_area,
+        row_count=pq.ParquetFile(path).metadata.num_rows,
+    )
+    (path.parent / "manifest.json").write_bytes(bronze_manifest_bytes(manifest))
 
 
 def _silver_file(tmp_path: Path, rows: list[dict]) -> dict:
@@ -300,10 +321,12 @@ def test_Bronze_추가컬럼은_경고하고_공개한다(tmp_path, monkeypatch,
         / "lease_vehicle_inventory"
         / "service_area=NYC"
         / "year_month=2026-08"
-        / FILE_NAME
+        / "collected_at=20260821T123456123456Z"
+        / "data.parquet"
     )
     bronze.parent.mkdir(parents=True)
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), bronze)
+    _write_manifest(bronze, "NYC")
     monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
 
     DAG.get_task("validate_bronze").python_callable(
