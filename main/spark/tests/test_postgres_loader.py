@@ -124,6 +124,7 @@ def _grain_frames(suggestion_drivers):
     return {
         "driver_aggregation": pd.DataFrame({"driver_id": ["D1", "D2"]}),
         "driver_car_suggestion": pd.DataFrame({"driver_id": suggestion_drivers}),
+        "silver_lineage": pd.DataFrame({"service_area": ["NYC"]}),
     }
 
 
