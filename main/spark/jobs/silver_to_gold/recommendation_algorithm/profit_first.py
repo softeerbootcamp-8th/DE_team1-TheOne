@@ -166,4 +166,18 @@ class ProfitFirstAlgorithm(VehicleRecommendationAlgorithm):
                 & (F.col("expected_revenue_increase") > 0)
             )
         )
-        return recommendation_output(_allocate_candidates_by_stock(assignable))
+        allocated = _allocate_candidates_by_stock(
+            assignable,
+            preference_order=[
+                F.col("expected_monthly_net_profit").desc(),
+                F.col("_is_current").desc(),
+                F.col("_candidate_model_year").desc(),
+                F.col("_candidate_vehicle_model_id").asc(),
+            ],
+            stock_priority_order=[
+                F.col("expected_net_profit_increase").desc(),
+                F.col("expected_revenue_increase").desc(),
+                F.col("driver_id").asc(),
+            ],
+        )
+        return recommendation_output(allocated)

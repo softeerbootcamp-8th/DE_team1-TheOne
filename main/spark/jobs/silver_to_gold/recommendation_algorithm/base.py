@@ -1,6 +1,6 @@
 """추천 알고리즘 공통 계약과 재고 배정 인프라."""
 
-from pyspark.sql import DataFrame, Window
+from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
 
 # threshold를 쓰지 않는 알고리즘이 DriverCarSuggestion.threshold에 채우는 sentinel.
@@ -56,14 +56,19 @@ def _validate_candidate_grain(
         )
 
 
-def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
-    """기사별 수익 순위대로 제안하고 남은 모델 재고 안에서 Spark로 배정합니다."""
-    preference = Window.partitionBy("driver_id").orderBy(
-        F.col("expected_monthly_net_profit").desc(),
-        F.col("_is_current").desc(),
-        F.col("_candidate_model_year").desc(),
-        F.col("_candidate_vehicle_model_id").asc(),
-    )
+def _allocate_candidates_by_stock(
+    candidates: DataFrame,
+    preference_order: list[Column],
+    stock_priority_order: list[Column],
+) -> DataFrame:
+    """기사별로 `preference_order` 순위대로 제안하고, 같은 모델에 여러 기사가
+    몰리면 `stock_priority_order` 기준으로 남은 재고 안에서 배정합니다.
+
+    배정 메커니즘(랭킹 → 라운드별로 점유·소진 재고를 빼고 남은 재고만큼 채움)은
+    알고리즘과 무관한 공통 부분이라 여기 있고, "누구를 먼저 챙기는가"만 두
+    정렬 기준으로 각 알고리즘이 주입합니다.
+    """
+    preference = Window.partitionBy("driver_id").orderBy(*preference_order)
     ranked = candidates.withColumn(
         "_driver_rank", F.row_number().over(preference)
     ).persist()
@@ -101,9 +106,7 @@ def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
             ).fillna({"_used_stock": 0})
 
         stock_priority = Window.partitionBy("_candidate_vehicle_model_id").orderBy(
-            F.col("expected_net_profit_increase").desc(),
-            F.col("expected_revenue_increase").desc(),
-            F.col("driver_id").asc(),
+            *stock_priority_order
         )
         changes = (
             changes.withColumn("_stock_rank", F.row_number().over(stock_priority))
