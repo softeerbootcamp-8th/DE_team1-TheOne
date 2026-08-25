@@ -37,6 +37,13 @@
 2. **갱신 계산** : 하나만 갱신되어도 다시 계산
   - 필요한 데이터 중 하나 이상
   - 연료비 데이터
+  - 여러 원천이 함께 갱신된 경우에는 개별 Silver 완료마다 Gold를 예약하지 않고,
+    조정 파이프라인이 대상 작업의 완료를 모아 준비 완료 Asset을 한 번만 발행한다.
+    이 과정에서 발생했던 Asset 의미 혼동과 중복 실행 문제는
+    [운행·차량 Silver Asset 통합으로 Gold 중복 실행 방지](../troubleshooting/pipeline/SOURCE_API_REFRESH_COORDINATES_GOLD.md)에 정리했다.
+  - Gold 완료 Asset도 계속 남는 상태값이 아니라 다음 실행 조건에 사용되는 이벤트다.
+    다음 갱신이 중단되지 않도록 Gold 적재와 검증이 끝날 때마다 다시 발행하며, 자세한 과정은
+    [Gold 완료 Asset 재발행으로 후속 갱신 복구](../troubleshooting/pipeline/ASSET_EVENT_CONSUMPTION_STOPS_GOLD_REFRESH.md)에 정리했다.
 3. **원천 감시** : ETag와 수정 시각으로 변경 확인
   - 원천 그대로여도 아래에 해당하면 다시 처리
     1. 해당 지역/월의 수집 데이터 없음
