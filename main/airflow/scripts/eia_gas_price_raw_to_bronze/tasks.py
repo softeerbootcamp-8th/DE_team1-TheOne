@@ -17,8 +17,9 @@ from shared.airflow.common.validation import (
     layout_tail,
     location_size,
     parse_handler_result,
-    publish_success_marker,
+    parse_location,
     require_file,
+    run_quality_gate,
 )
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,15 @@ def raw_to_bronze_task(**context) -> dict:
 @task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> None:
     """적재 경로가 layout 규칙과 같은지, 파일이 비어 있지 않은지 확인합니다."""
+    run_quality_gate(
+        lambda: parse_location(result["locations"][0]).parent,
+        lambda: _validate_bronze(result, context),
+        layer="bronze",
+        context=context,
+    )
+
+
+def _validate_bronze(result: dict, context: dict) -> None:
     parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
     layout = _layout()
     service_area = context["params"]["service_area"]
@@ -71,5 +81,4 @@ def validate_bronze_task(result: dict, **context) -> None:
     size = location_size(path)
     if size < layout.GAS_MIN_BYTES:
         raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({path})")
-    publish_success_marker(path.parent)
     logger.info("bronze 검증 통과: %s (%d bytes)", path, size)

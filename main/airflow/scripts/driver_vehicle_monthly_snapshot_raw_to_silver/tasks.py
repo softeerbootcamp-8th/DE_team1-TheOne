@@ -13,15 +13,22 @@ from shared.airflow.common.validation import (
     S3Location,
     parse_handler_result,
     parse_location,
-    publish_success_marker,
     read_parquet,
+    run_quality_gate,
+)
+from shared.aws_lambda.common.schema_validator import (
+    SchemaValidationResult,
+    validate_parquet_schema,
 )
 from main.airflow.common.assets import resolve_service_area
 from main.airflow.common.monthly_bronze import (
     silver_version_path,
     validate_monthly_parquet_bronze,
 )
-from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
+from schema.bronze import DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as BRONZE_SCHEMA
+from schema.silver import (
+    CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SILVER_SCHEMA,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -52,7 +59,7 @@ def validate_silver_result(result: dict, expected_rows: int) -> None:
         table = read_parquet(path)
     except FileNotFoundError:
         raise ValueError(f"기사 차량 스냅샷 Silver 파일이 없습니다: {path}")
-    if table.schema != SCHEMA or table.num_rows != expected_rows:
+    if table.schema != SILVER_SCHEMA or table.num_rows != expected_rows:
         raise ValueError("기사 차량 스냅샷 Silver 스키마 또는 행 수가 Bronze와 다릅니다")
     # 적재된 파일에 같은 정제 규칙을 다시 적용합니다. 변환이 통과했더라도 적재
     # 과정에서 다른 파일이 놓였다면 여기서 걸립니다.
@@ -85,18 +92,36 @@ def _collect_bronze(params: dict) -> dict:
 
 @task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> dict:
+    state = {"result": result}
     params = context.get("params", {})
+    return run_quality_gate(
+        lambda: parse_location(state["result"]["locations"][0]).parent,
+        lambda: _validate_bronze(state, params),
+        layer="bronze",
+        context=context,
+    )
+
+
+def _validate_bronze(state: dict, params: dict) -> dict:
+    result = state["result"]
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     service_area = resolve_service_area(params)
-    _, missing = _validate_bronze_result(result, base_dir, service_area)
-    if missing:
-        logger.warning("기사 차량 스냅샷 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
+    _, schema_result = _validate_bronze_result(result, base_dir, service_area)
+    if schema_result.missing_columns:
+        logger.warning(
+            "기사 차량 스냅샷 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집",
+            schema_result.missing_columns,
+        )
         result = _collect_bronze(params)
-        _, missing = _validate_bronze_result(result, base_dir, service_area)
-    if missing:
-        raise ValueError(f"기사 차량 스냅샷 Bronze 필수 컬럼 누락: {missing}")
-    bronze_path = parse_handler_result(result, expected_locations=1).locations[0]
-    publish_success_marker(bronze_path.parent)
+        state["result"] = result
+        _, schema_result = _validate_bronze_result(result, base_dir, service_area)
+    for warning in schema_result.warnings:
+        logger.warning("기사 차량 스냅샷 Bronze 스키마 확장: %s", warning)
+    if schema_result.errors:
+        raise ValueError(
+            "기사 차량 스냅샷 Bronze 스키마 불일치: "
+            + "; ".join(schema_result.errors)
+        )
     version_path = silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
         result,
@@ -112,15 +137,15 @@ def _validate_bronze_result(
     result: dict,
     base_dir: str | Path,
     service_area: str,
-) -> tuple[Path | S3Location, list[str]]:
+) -> tuple[Path | S3Location, SchemaValidationResult]:
     path, _ = validate_monthly_parquet_bronze(
         result,
         dataset_dir=DATASET,
         base_dir=base_dir,
         service_area=service_area,
     )
-    missing = sorted(set(SCHEMA.names) - set(read_parquet(path).schema.names))
-    return path, missing
+    schema_result = validate_parquet_schema(read_parquet(path).schema, BRONZE_SCHEMA)
+    return path, schema_result
 
 
 @task(task_id="bronze_to_silver")
@@ -144,6 +169,17 @@ def bronze_to_silver_task(result: dict, **context) -> dict:
 @task(task_id="validate_silver")
 def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> None:
     version_path = parse_location(raw_result["silver_version_path"])
+    run_quality_gate(
+        version_path,
+        lambda: _validate_silver_output(silver_result, version_path),
+        layer="silver",
+        context=context,
+    )
+
+
+def _validate_silver_output(
+    silver_result: dict, version_path: Path | S3Location
+) -> None:
     expected_part = (
         f"{version_path}/data.parquet"
         if isinstance(version_path, S3Location)
@@ -153,4 +189,3 @@ def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> No
         raise ValueError("기사 차량 스냅샷 Silver 경로가 Bronze와 다릅니다")
     # Silver 는 퇴사 기사를 제외하므로 Bronze 와 행 수가 다를 수 있습니다.
     validate_silver_result(silver_result, silver_result["row_count"])
-    publish_success_marker(version_path)

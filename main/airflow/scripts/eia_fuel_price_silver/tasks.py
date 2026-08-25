@@ -29,8 +29,8 @@ from shared.airflow.common.validation import (
     parse_handler_result,
     parse_location,
     parse_year_month,
-    publish_success_marker,
     read_parquet,
+    run_quality_gate,
 )
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
 from main.common.eia_fuel_version import (
@@ -275,10 +275,13 @@ def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="combine_silver")
     year_month = result["year_month"]
     service_area = assets.resolve_service_area(context.get("params", {}))
-    validate_silver(result, service_area)
-
     path = parse_location(result["locations"][0])
-    publish_success_marker(path.parent)
+    run_quality_gate(
+        path.parent,
+        lambda: validate_silver(result, service_area),
+        layer="silver",
+        context=context,
+    )
 
     assets.publish_month_partition(
         context.get("outlet_events"),
