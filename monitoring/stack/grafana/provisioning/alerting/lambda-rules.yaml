@@ -1,5 +1,14 @@
 # Lambda 알림 규칙 (CloudWatch 데이터소스).
 #
+# ★ A -> B(reduce) -> C(threshold) 세 단계입니다.
+#   Grafana 알림은 **축약된 값**만 임계와 비교할 수 있습니다. Prometheus 규칙은
+#   `instant: true` 라 값이 계열당 하나씩이지만, CloudWatch 는 항상 시계열이라
+#   그대로 비교하면 이렇게 실패합니다 (규칙은 남고 평가만 error 가 됩니다).
+#
+#     invalid format of evaluation results ... only reduced data can be alerted on
+#
+#   reducer 는 sum 입니다 — 15분 창에서 실패가 한 번이라도 있었으면 울려야 합니다.
+#
 # 호스트 규칙과 noDataState 가 반대입니다. 호스트는 지표가 끊기면 그 자체가 문제라
 # Alerting 이지만, Lambda 는 "실패 지표가 없음 = 실패가 없었음" 이라 OK 입니다.
 # Alerting 으로 두면 그날 안 도는 함수들이 매분 울립니다.
@@ -39,6 +48,20 @@ groups:
         period: '300'
         intervalMs: 300000
         maxDataPoints: 43200
+    - refId: B
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: sum
+        settings:
+          mode: dropNN
+        intervalMs: 300000
+        maxDataPoints: 43200
     - refId: C
       relativeTimeRange:
         from: 900
@@ -47,7 +70,7 @@ groups:
       model:
         refId: C
         type: threshold
-        expression: A
+        expression: B
         conditions:
         - evaluator:
             type: gt
@@ -57,7 +80,7 @@ groups:
             type: and
           query:
             params:
-            - A
+            - B
           reducer:
             type: sum
             params: []
@@ -94,6 +117,20 @@ groups:
         period: '300'
         intervalMs: 300000
         maxDataPoints: 43200
+    - refId: B
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: sum
+        settings:
+          mode: dropNN
+        intervalMs: 300000
+        maxDataPoints: 43200
     - refId: C
       relativeTimeRange:
         from: 900
@@ -102,7 +139,7 @@ groups:
       model:
         refId: C
         type: threshold
-        expression: A
+        expression: B
         conditions:
         - evaluator:
             type: gt
@@ -112,7 +149,7 @@ groups:
             type: and
           query:
             params:
-            - A
+            - B
           reducer:
             type: sum
             params: []
