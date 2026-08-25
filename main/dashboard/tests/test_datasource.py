@@ -289,3 +289,55 @@ def test_알수없는_DASHBOARD_DATA_SOURCE값은_ValueError(monkeypatch):
 
     with pytest.raises(ValueError, match="알 수 없는 DASHBOARD_DATA_SOURCE"):
         build_data_source()
+
+
+def test_연결이_끊기면_다시_맺어_이어간다(monkeypatch):
+    """연결 하나를 프로세스 내내 재사용하므로 한 번 끊기면 이후 모든 조회가
+    `InterfaceError: connection already closed` 로 죽었다 — 컨테이너를 다시 띄우기
+    전까지 대시보드가 통째로 에러였다. RDS 재기동·유휴 타임아웃·네트워크 순단으로
+    흔히 끊긴다.
+    """
+    import psycopg2
+
+    columns = [field.name for field in fields(DriverMonthlyProfit)]
+    conns = [
+        _sqlite_conn_with("driver_aggregation", columns,
+                          [_driver_aggregation_row("D1", 1)]),
+        _sqlite_conn_with("driver_aggregation", columns,
+                          [_driver_aggregation_row("D2", 1)]),
+    ]
+    made = []
+
+    def connect(dsn):
+        made.append(dsn)
+        return conns[len(made) - 1]
+
+    monkeypatch.setattr("datasource.psycopg2.connect", connect)
+    source = RdsDataSource("dsn")
+    assert len(source.load("driver_aggregation")) == 1
+
+    # 죽은 연결을 흉내낸다 — 커서를 열자마자 InterfaceError.
+    class Dead:
+        def cursor(self):
+            raise psycopg2.InterfaceError("connection already closed")
+
+        def close(self):
+            raise psycopg2.InterfaceError("connection already closed")
+
+    source._conn = Dead()
+
+    frame = source.load("driver_aggregation")
+    assert frame["driver_id"].tolist() == ["D2"], "새 연결로 다시 읽어야 합니다"
+    assert len(made) == 2, "정확히 한 번만 다시 맺어야 합니다"
+
+
+def test_다시_맺어도_실패하면_그대로_올린다(monkeypatch):
+    """진짜 못 붙는 상황까지 삼키면 화면에 빈 표가 뜨고 원인을 못 찾는다."""
+    import psycopg2
+
+    def connect(dsn):
+        raise psycopg2.OperationalError("could not connect to server")
+
+    monkeypatch.setattr("datasource.psycopg2.connect", connect)
+    with pytest.raises(psycopg2.OperationalError):
+        RdsDataSource("dsn")
