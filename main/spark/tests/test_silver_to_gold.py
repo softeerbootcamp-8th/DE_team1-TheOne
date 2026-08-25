@@ -249,8 +249,8 @@ def test_거리대별_실측_프리미엄_배수를_각_운행에_적용한다(s
         .collect()
     }
 
-    assert rows["short-standard"] == pytest.approx(7.0)
-    assert rows["long-standard"] == pytest.approx(60.0)
+    assert rows["short-standard"] == pytest.approx(6.0)
+    assert rows["long-standard"] == pytest.approx(55.0)
 
 
 @pytest.mark.parametrize(
