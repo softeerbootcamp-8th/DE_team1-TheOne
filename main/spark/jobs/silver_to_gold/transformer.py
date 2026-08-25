@@ -4,9 +4,11 @@
 이 모듈의 build_driver_monthly_profit()·_columns() 등 공통 조각을 가져다 쓴다.
 """
 
+import logging
 from calendar import monthrange
 from dataclasses import fields
 from datetime import datetime
+from math import isclose
 
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
@@ -18,6 +20,9 @@ from schema.silver import (
     CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA,
     CLEAN_MONTHLY_TAXI_TRIP_SCHEMA,
 )
+
+
+logger = logging.getLogger(__name__)
 KWH_PER_GALLON_EQUIVALENT = 33.7
 # 프리미엄 자격을 얻어도 Standard 수요가 모두 전환되지는 않습니다.
 # 현재 사업 시나리오는 기존 Standard 운행 중 30%만 프리미엄으로 전환합니다.
@@ -442,6 +447,64 @@ def build_driver_monthly_aggregation(
 def build_driver_monthly_profit(driver_metrics: DataFrame) -> DataFrame:
     """확정된 Gold 스키마의 기사 월 순수익 컬럼만 반환합니다."""
     return driver_metrics.select(*_columns(DriverMonthlyProfit))
+
+
+# 합계는 부동소수점이라 정확히 같기를 요구하면 안 된다. Spark 는 집계 순서가
+# 실행마다 달라질 수 있어서다. 실측(NYC 2026-01, 운행 67.5만건)에서는 차이가
+# 0.00 이었지만, 그게 앞으로도 0.00 이라는 보장은 없다.
+CONTROL_TOTAL_REL_TOL = 1e-9
+CONTROL_TOTAL_ABS_TOL = 1e-6
+
+
+def reconcile_gold_control_totals(
+    trips: DataFrame, driver_metrics: DataFrame
+) -> None:
+    """Silver 운행 합계가 기사별 집계를 거쳐 보존됐는지 확인합니다.
+
+    조인 키 누락은 `_require_all_join_keys_match` 가 이미 막지만, 그건 "짝이 있나"
+    를 보는 것이고 여기서는 "합이 남았나"를 봅니다. 행 수가 맞아도 값이 밀리는
+    사고는 합계로만 잡힙니다.
+
+    Silver 운행에는 `driver_id` 가 없고 `taxi_id` 뿐입니다 — 기사는 스냅샷 조인으로
+    붙습니다. 그래서 스냅샷이 없는 `taxi_id` 의 운행이 조인에서 빠지면 합이 줄고,
+    그 순간 여기서 걸립니다.
+    """
+    silver = trips.agg(
+        F.count(F.lit(1)).alias("trips"),
+        F.sum("trip_miles").alias("mileage"),
+        F.sum("driver_pay").alias("driver_pay"),
+        F.sum(F.coalesce(F.col("tips"), F.lit(0.0))).alias("tips"),
+    ).first()
+    gold = driver_metrics.agg(
+        F.sum("monthly_mileage").alias("mileage"),
+        F.sum("monthly_driver_pay").alias("driver_pay"),
+        F.sum("monthly_tips").alias("tips"),
+    ).first()
+
+    mismatched = []
+    for name in ("mileage", "driver_pay", "tips"):
+        before = float(silver[name] or 0.0)
+        after = float(gold[name] or 0.0)
+        if not isclose(
+            before,
+            after,
+            rel_tol=CONTROL_TOTAL_REL_TOL,
+            abs_tol=CONTROL_TOTAL_ABS_TOL,
+        ):
+            mismatched.append(f"{name}: silver={before!r} gold={after!r}")
+    if mismatched:
+        raise ValueError(
+            "Gold 집계에서 운행 합계가 보존되지 않았습니다 — "
+            + "; ".join(mismatched)
+            + f" (Silver 운행 {int(silver['trips'] or 0)}건)"
+        )
+    logger.info(
+        "control total 보존 확인: trips=%d mileage=%.2f driver_pay=%.2f tips=%.2f",
+        int(silver["trips"] or 0),
+        float(silver["mileage"] or 0.0),
+        float(silver["driver_pay"] or 0.0),
+        float(silver["tips"] or 0.0),
+    )
 
 
 def validate_gold_business_invariants(
