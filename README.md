@@ -151,6 +151,19 @@
   - 결과: 실행 시간 **22.9% 단축**
 </details>
 
+<details>
+<summary><a href="/docs/performance_opt/SPARK_STRATEGIC_CACHING_OPTIMIZATION.md">DataFrame 캐싱 적절히 적용</a></summary>
+
+- 캐시의 메모리 문제와 실행 시간 절감 트레이드 오프 실험 확인 후 적용
+  - 접근: 특정 조건에 맞는 DataFrame 위주로 최대한 적게 Caching 적용과 미적용을 비교
+  - 결과: 적절히 적용으로 결정
+    - 실행 시간 : **15% 단축** (42.6->36.6)
+    - 메모리 : 약 36MiB 추가 사용
+  - 향후 계획 
+    - 메모리 관련 문제(executor memory pressure / disk spill / eviction)가 발생할 시 다시 검증 예정
+
+</details>
+
 ### 파이프라인
 > 파이프라인 설계와 운영 중 해결한 문제
 
