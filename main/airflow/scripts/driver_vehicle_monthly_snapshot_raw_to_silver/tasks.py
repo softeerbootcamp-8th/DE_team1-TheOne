@@ -5,6 +5,7 @@ import logging
 import os
 from pathlib import Path
 
+import pyarrow as pa
 from airflow.sdk import task
 
 from shared.airflow.common.lambda_invoke import invoke_lambda
@@ -144,7 +145,18 @@ def _validate_bronze_result(
         base_dir=base_dir,
         service_area=service_area,
     )
-    schema_result = validate_parquet_schema(read_parquet(path).schema, BRONZE_SCHEMA)
+    actual_schema = read_parquet(path).schema
+    snapshot_index = actual_schema.get_field_index("snapshot_created_at")
+    if snapshot_index >= 0:
+        snapshot_field = actual_schema.field(snapshot_index)
+        if snapshot_field.type == pa.timestamp("ns"):
+            actual_schema = actual_schema.set(
+                snapshot_index,
+                snapshot_field.with_type(
+                    BRONZE_SCHEMA.field("snapshot_created_at").type
+                ),
+            )
+    schema_result = validate_parquet_schema(actual_schema, BRONZE_SCHEMA)
     return path, schema_result
 
 

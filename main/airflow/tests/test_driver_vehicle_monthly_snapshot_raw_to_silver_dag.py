@@ -380,6 +380,39 @@ def test_Bronze_타입이_다르면_원본을_보존하고_격리한다(tmp_path
     assert not (bronze.parent / "_SUCCESS").exists()
 
 
+def test_Bronze_snapshot시각_ns는_us계약과_호환한다(tmp_path):
+    snapshot_index = BRONZE_SCHEMA.get_field_index("snapshot_created_at")
+    snapshot_field = BRONZE_SCHEMA.field(snapshot_index)
+    schema = BRONZE_SCHEMA.set(
+        snapshot_index,
+        snapshot_field.with_type(pa.timestamp("ns")),
+    )
+    bronze = (
+        tmp_path
+        / "driver_vehicle_monthly_snapshot"
+        / "service_area=NYC"
+        / "year_month=2026-08"
+        / "collected_at=20260821T123456123456Z"
+        / "data.parquet"
+    )
+    bronze.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(_rows(), schema=schema), bronze)
+    _write_manifest(bronze, "NYC")
+
+    validated = DAG.get_task("validate_bronze").python_callable(
+        {
+            "locations": [str(bronze)],
+            "year_month": "2026-08",
+            "collected_at": "2026-08-21T12:34:56.123456Z",
+            "row_count": 1,
+            "file_size_bytes": bronze.stat().st_size,
+        },
+        params={"base_dir": str(tmp_path), "silver_dir": str(tmp_path / "silver")},
+    )
+
+    assert validated["silver_version_path"].endswith(SOURCE_VERSION)
+
+
 def test_Silver_검증이_실패하면_산출물을_보존하고_격리한다(tmp_path, monkeypatch):
     final = tmp_path / "year_month=2026-08" / SOURCE_VERSION
     part = final / "data.parquet"
