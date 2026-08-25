@@ -145,22 +145,37 @@ def _validate_written_rows(
 
 
 def _validate_frame_grains(frames: dict[str, pd.DataFrame]) -> None:
-    """DB 연결 전에 집계와 최종 추천이 기사당 정확히 한 행인지 확인합니다."""
+    """DB 연결 전에 집계는 기사당 한 행, 최종 추천은 (알고리즘, threshold) 조합마다
+    기사당 정확히 한 행인지 확인합니다.
+
+    추천은 #997부터 알고리즘·threshold 조합 수만큼 기사당 여러 행이 쌓이므로
+    전체 행 수는 기사 수와 달라도 됩니다 — 조합별로 쪼개서 봐야 합니다.
+    """
     aggregation = frames[_DRIVER_AGGREGATION]
     suggestion = frames[_DRIVER_CAR_SUGGESTION]
-    driver_count = aggregation["driver_id"].nunique()
+    driver_ids = set(aggregation["driver_id"])
+    driver_count = len(driver_ids)
 
-    if (
-        len(aggregation) != driver_count
-        or len(suggestion) != suggestion["driver_id"].nunique()
-        or len(suggestion) != driver_count
-        or set(suggestion["driver_id"]) != set(aggregation["driver_id"])
-    ):
+    if len(aggregation) != driver_count:
         raise ValueError(
             "Gold 기사 그레인 불일치: "
-            f"aggregation={len(aggregation)} suggestion={len(suggestion)} "
-            f"drivers={driver_count}"
+            f"aggregation={len(aggregation)} drivers={driver_count}"
         )
+
+    group_columns = ["recommendation_algorithm_version_id", "threshold"]
+    groups = suggestion.groupby(group_columns)
+    # suggestion이 비어 있으면 groupby가 그룹을 하나도 안 만들어 루프가 통째로
+    # 스킵된다 — 빈 추천이 조용히 통과하지 않도록 그룹이 있어야 함을 먼저 확인.
+    if len(groups) == 0:
+        raise ValueError(f"Gold 기사 그레인 불일치: suggestion={len(suggestion)}행")
+
+    for (algorithm_version_id, threshold), group in groups:
+        if len(group) != driver_count or set(group["driver_id"]) != driver_ids:
+            raise ValueError(
+                "Gold 기사 그레인 불일치: "
+                f"algorithm={algorithm_version_id} threshold={threshold} "
+                f"suggestion={len(group)} drivers={driver_count}"
+            )
 
     lineage = frames[_SILVER_LINEAGE]
     if len(lineage) != 1:
