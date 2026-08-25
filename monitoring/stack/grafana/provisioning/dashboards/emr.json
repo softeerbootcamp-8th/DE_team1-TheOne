@@ -149,7 +149,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "메모리 사용 (GB)",
-      "description": "워커가 실제로 쓴 메모리와 애플리케이션 용량 상한. 상한선에 붙으면 자원이 모자란 것입니다.",
+      "description": "워커가 실제로 쓴 메모리와 애플리케이션 용량 상한. 상한선에 붙으면 자원이 모자란 것입니다. '할당' 은 EMR 이 잡아둔 양으로, 사용량보다 큽니다.",
       "datasource": {
         "type": "cloudwatch",
         "uid": "theone-cloudwatch"
@@ -193,6 +193,26 @@
           "matchExact": true,
           "region": "default",
           "label": "용량 상한",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MemoryAllocated",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "할당 (알림 기준)",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -258,7 +278,7 @@
       "id": 3,
       "type": "timeseries",
       "title": "CPU 사용 (vCPU)",
-      "description": "워커가 실제로 쓴 CPU 와 상한. CPU 는 양이 아니라 속도입니다 — 코어 N개를 쉬지 않고 돌리는 만큼.",
+      "description": "워커가 실제로 쓴 CPU 와 상한. CPU 는 양이 아니라 속도입니다 — 코어 N개를 쉬지 않고 돌리는 만큼. 알림은 '할당' 선이 상한에 15분 닿을 때 옵니다.",
       "datasource": {
         "type": "cloudwatch",
         "uid": "theone-cloudwatch"
@@ -302,6 +322,26 @@
           "matchExact": true,
           "region": "default",
           "label": "용량 상한",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "CPUAllocated",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "할당 (알림 기준)",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
