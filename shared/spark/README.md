@@ -11,7 +11,7 @@ Application 하나를 전체 프로젝트가 공용으로 씁니다 (Lambda 이�
 | Application | 이름 `theone-spark`, release `emr-7.13.0`, x86_64, pre-initialized capacity 없음 | AWS 계정 ID·Application ID는 GitHub Variable `EMR_APPLICATION_ID` 또는 EMR Studio 콘솔 |
 | 실행 역할 | `theone-spark-emr-exec` (S3 `de-theone` 버킷 전체 read/write/delete) | IAM 콘솔에서 이름으로 검색 |
 | 이미지 | ECR 리포지토리 `theone-spark` | `deploy-spark.yml`이 push 후 이 Application에 자동 반영 |
-| 로그 | `s3://de-theone/emr-logs/` | |
+| 로그 | `s3://de-theone/logs/emr-serverless/` | |
 
 ECR 리포지토리(`theone-spark`)에는 `emr-serverless.amazonaws.com`이 커스텀 이미지를 pull할 수 있게 하는 리포지토리 정책이 걸려 있어야 합니다 (`ecr:BatchGetImage`·`ecr:GetDownloadUrlForLayer`·`ecr:DescribeImages`).
 
@@ -37,7 +37,7 @@ aws emr-serverless start-job-run \
   }' \
   --configuration-overrides '{
     "monitoringConfiguration": {
-      "s3MonitoringConfiguration": { "logUri": "s3://de-theone/emr-logs/" }
+      "s3MonitoringConfiguration": { "logUri": "s3://de-theone/logs/emr-serverless/" }
     }
   }' \
   --region ap-northeast-2
