@@ -121,6 +121,44 @@ def test_threshold를_스윕하면_값마다_별도_행이_쌓이고_배정도_�
     assert len(rows) == 2
 
 
+def test_기존_보유자가_있는_모델의_점유량은_threshold_개수만큼_부풀지_않는다(spark):
+    """A는 재고 3대 중 D1이 실제로 1대만 보유. threshold를 3개 스윕해도 occupied_stock은
+    여전히 1대여야 하고, D2가 남은 2대 중 1대를 가져갈 수 있어야 한다. threshold별
+    복제 행을 그대로 세면(#1021 회귀) 점유가 3대로 잡혀 재고가 꽉 찬 것처럼 보이고
+    D2가 부당하게 현재 차량에 묶인다."""
+    driver_metrics = spark.createDataFrame(
+        [
+            ("D1", "2026-01", "NYC", False, False, "T1", "A", "MAKE", "A", 2024,
+             10.0, 1000.0, 1000.0, 0.0, 0.0, 300.0, 650.0, 0.0, 0.0,
+             1000.0, 1000.0, 1000.0, 4.0),
+            ("D2", "2026-01", "NYC", False, False, "T2", "B", "MAKE", "B", 2024,
+             10.0, 1000.0, 1000.0, 0.0, 0.0, 300.0, 300.0, 0.0, 0.0,
+             1000.0, 1000.0, 1000.0, 4.0),
+        ],
+        _DRIVER_METRICS_COLUMNS,
+    )
+    inventory = spark.createDataFrame(
+        [
+            ("A", "MAKE", "A", 2024, "GAS", 10.0, False, False, 150.0, 3),
+            ("B", "MAKE", "B", 2024, "GAS", 10.0, False, False, 100.0, 2),
+        ],
+        _INVENTORY_COLUMNS,
+    )
+
+    result = RevenueFirstAlgorithm(thresholds=(10, 20, 30)).recommend(
+        driver_metrics, inventory
+    )
+    by_driver_threshold = {
+        (row["driver_id"], row["threshold"]): row["vehicle_model_id"]
+        for row in result.collect()
+    }
+
+    assert by_driver_threshold == {
+        ("D1", 10): "A", ("D1", 20): "A", ("D1", 30): "A",
+        ("D2", 10): "A", ("D2", 20): "A", ("D2", 30): "A",
+    }
+
+
 def test_기본_threshold는_100부터_500까지_100단위_다섯개다():
     assert DEFAULT_THRESHOLDS == (100, 200, 300, 400, 500)
 
