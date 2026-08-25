@@ -16,15 +16,15 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "작업 상태",
-      "description": "지금 도는 작업과 최근 결과. 실패가 0이 아니면 Slack 알림도 함께 옵니다.",
+      "title": "진행 중",
+      "description": "지금 돌고 있는 작업과 대기 중인 작업. 순간 상태라 마지막 값을 봅니다.",
       "datasource": {
         "type": "cloudwatch",
         "uid": "theone-cloudwatch"
       },
       "gridPos": {
         "h": 4,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 0
       },
@@ -68,29 +68,61 @@
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "cloudwatch",
-            "uid": "theone-cloudwatch"
+        }
+      ],
+      "pluginVersion": "11.5.0",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
           },
-          "namespace": "AWS/EMRServerless",
-          "metricName": "FailedJobs",
-          "statistic": "Sum",
-          "dimensions": {
-            "ApplicationId": "${EMR_APPLICATION_ID}",
-            "ApplicationName": "*"
-          },
-          "matchExact": true,
-          "region": "default",
-          "label": "Failed",
-          "metricQueryType": 0,
-          "metricEditorMode": 0,
-          "period": "60"
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "기간 결과 (합계)",
+      "description": "선택한 기간에 성공·실패한 작업 수. 이벤트 카운트라 합계를 봅니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
         {
-          "refId": "D",
+          "refId": "A",
           "datasource": {
             "type": "cloudwatch",
             "uid": "theone-cloudwatch"
@@ -105,6 +137,26 @@
           "matchExact": true,
           "region": "default",
           "label": "Success",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "FailedJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "Failed",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -134,7 +186,7 @@
         "reduceOptions": {
           "values": false,
           "calcs": [
-            "lastNotNull"
+            "sum"
           ],
           "fields": ""
         },
