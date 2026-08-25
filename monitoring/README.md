@@ -201,6 +201,43 @@ period=300   executor 메모리 118.9 GB   ← 5배로 부풂
 테스트가 스키마 고정, 지표명, Metrics Insights 경유 여부, 위젯당 쿼리 수, period 를
 모두 잡습니다.
 
+## Lambda 알림 (CloudWatch 데이터소스)
+
+Lambda 실패를 **Grafana 알림 경로로** 받습니다. 호스트 알림과 같은 Slack 수신처를 쓰므로
+SNS→Slack 다리나 함수별 CloudWatch 알람을 따로 만들지 않습니다.
+
+| 규칙 | 지표 | 심각도 | 왜 |
+|---|---|---|---|
+| Lambda 실패 | `AWS/Lambda Errors` | critical | Airflow 밖에서 실패하면 아무도 모릅니다 |
+| Lambda 동시성 제한 | `AWS/Lambda Throttles` | warning | Airflow 에는 그냥 "태스크 실패" 로만 보입니다 |
+
+### 호스트 규칙과 `noDataState` 가 반대입니다
+
+```
+호스트   noDataState: Alerting   지표가 끊기면 그 자체가 문제
+Lambda   noDataState: OK         실패 지표가 없음 = 실패가 없었음
+```
+
+`Alerting` 으로 두면 그날 안 도는 함수들이 매분 울려 알림이 무시당하게 됩니다.
+
+### 함수 이름을 박지 않습니다
+
+`FunctionName: "*"` 에 `matchExact: false` 라 함수별로 시계열이 하나씩 나옵니다.
+새 함수를 배포해도 규칙을 안 고쳐도 되고, 고치는 걸 잊어 감시에서 빠지는 일이 없습니다.
+
+### 자격증명을 두지 않습니다
+
+`authType: default` 는 AWS SDK 기본 체인이라 **EC2 인스턴스 프로파일(IMDS)** 에서 받습니다.
+파일에도 Secret 에도 키가 남지 않고 만료 갱신도 SDK 가 합니다.
+
+**인스턴스 role 에 CloudWatch 읽기 권한이 필요합니다.** 없으면 데이터소스는 등록되고
+패널만 비어 조용히 실패합니다 — 실제로 확인한 오류는 이렇습니다.
+
+```
+AccessDenied: User: .../theone-monitoring-role/i-... is not authorized to perform:
+cloudwatch:ListMetrics because no identity-based policy allows the action
+```
+
 ## 최초 1회 준비
 
 Repository Variable `AWS_ROLE_ARN_MONITORING` 에 OIDC 배포 역할 ARN 이 필요합니다.

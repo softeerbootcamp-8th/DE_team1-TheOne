@@ -550,3 +550,62 @@ def test_없는_지표로_규칙을_만들지_않는다():
     body = (ALERTING / "rules.yaml").read_text()
 
     assert "node_memory_Swap" not in body
+
+
+# --- CloudWatch 데이터소스와 Lambda 알림 ---------------------------------------
+DATASOURCES = STACK / "grafana/provisioning/datasources"
+
+
+def test_cloudwatch_는_키_없이_인스턴스_role_을_쓴다():
+    """`authType: default` 는 AWS SDK 기본 체인이라 IMDS 에서 자격증명을 받습니다.
+
+    keys 를 쓰면 파일이나 Secret 에 자격증명이 남고 만료 갱신도 사람이 해야 합니다.
+    """
+    datasource = yaml.safe_load((DATASOURCES / "cloudwatch.yml").read_text())["datasources"][0]
+
+    assert datasource["type"] == "cloudwatch"
+    assert datasource["jsonData"]["authType"] == "default"
+    assert "accessKey" not in yaml.safe_dump(datasource)
+    assert "secretKey" not in yaml.safe_dump(datasource)
+
+
+def test_lambda_규칙은_지표가_없을_때_울리지_않는다():
+    """호스트 규칙과 반대입니다.
+
+    호스트는 지표가 끊기면 그 자체가 문제라 Alerting 이지만, Lambda 는
+    "실패 지표가 없음 = 실패가 없었음" 입니다. Alerting 으로 두면 그날 안 도는
+    함수들이 매분 울려 알림이 무시당하게 됩니다.
+    """
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            assert rule["noDataState"] == "OK", rule["title"]
+
+
+def test_lambda_규칙은_함수를_고정하지_않는다():
+    """함수 이름을 박으면 새 함수를 배포할 때마다 규칙을 고쳐야 하고,
+    고치는 걸 잊으면 그 함수만 감시에서 빠집니다.
+    """
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            for query in rule["data"]:
+                model = query["model"]
+                if model.get("namespace") != "AWS/Lambda":
+                    continue
+                assert model["dimensions"] == {"FunctionName": "*"}
+                assert model["matchExact"] is False
+
+
+def test_lambda_규칙이_고정된_데이터소스_uid를_쓴다():
+    uid = yaml.safe_load((DATASOURCES / "cloudwatch.yml").read_text())["datasources"][0]["uid"]
+
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            used = {q["datasourceUid"] for q in rule["data"] if q["datasourceUid"] != "__expr__"}
+            assert used == {uid}, f"{rule['title']}: {used}"
+
+
+def test_배포가_cloudwatch_설정을_내려보낸다():
+    workflow = WORKFLOW.read_text()
+
+    for path in ("datasources/cloudwatch.yml", "alerting/lambda-rules.yaml"):
+        assert path in workflow, f"{path} 가 배포 목록에 없습니다"

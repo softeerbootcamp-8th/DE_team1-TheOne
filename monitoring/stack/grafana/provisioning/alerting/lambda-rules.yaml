@@ -1,0 +1,124 @@
+# Lambda 알림 규칙 (CloudWatch 데이터소스).
+#
+# 호스트 규칙과 noDataState 가 반대입니다. 호스트는 지표가 끊기면 그 자체가 문제라
+# Alerting 이지만, Lambda 는 "실패 지표가 없음 = 실패가 없었음" 이라 OK 입니다.
+# Alerting 으로 두면 그날 안 도는 함수들이 매분 울립니다.
+#
+# FunctionName 을 와일드카드로 둡니다 — 함수를 새로 배포해도 규칙을 안 고쳐도 됩니다.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: lambda
+  folder: theone
+  interval: 5m
+  rules:
+  - uid: theone-lambda-errors
+    title: Lambda 실패
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: theone-cloudwatch
+      model:
+        refId: A
+        region: default
+        namespace: AWS/Lambda
+        metricName: Errors
+        statistic: Sum
+        dimensions:
+          FunctionName: '*'
+        matchExact: false
+        metricQueryType: 0
+        metricEditorMode: 0
+        period: '300'
+        intervalMs: 300000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+          operator:
+            type: and
+          query:
+            params:
+            - A
+          reducer:
+            type: sum
+            params: []
+          type: query
+        intervalMs: 300000
+        maxDataPoints: 43200
+    noDataState: OK
+    execErrState: Error
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: Lambda 함수가 실패했습니다. Airflow 가 부른 것이면 태스크 알림도 함께 옵니다.
+  - uid: theone-lambda-throttles
+    title: Lambda 동시성 제한
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: theone-cloudwatch
+      model:
+        refId: A
+        region: default
+        namespace: AWS/Lambda
+        metricName: Throttles
+        statistic: Sum
+        dimensions:
+          FunctionName: '*'
+        matchExact: false
+        metricQueryType: 0
+        metricEditorMode: 0
+        period: '300'
+        intervalMs: 300000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: A
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+          operator:
+            type: and
+          query:
+            params:
+            - A
+          reducer:
+            type: sum
+            params: []
+          type: query
+        intervalMs: 300000
+        maxDataPoints: 43200
+    noDataState: OK
+    execErrState: Error
+    for: 0m
+    labels:
+      severity: warning
+    annotations:
+      summary: Lambda 가 동시성 상한에 걸렸습니다. 태스크 실패의 원인이 코드가 아닐 수 있습니다.
