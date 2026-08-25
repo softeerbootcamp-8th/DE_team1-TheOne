@@ -144,9 +144,15 @@ def build_recommendation_candidates(
 
 
 def _finalize_recommendation_output(
-    rows: DataFrame, algorithm_version_id: int, threshold: int
+    rows: DataFrame, algorithm_version_id: int, threshold: int | Column
 ) -> DataFrame:
-    """배정 결과를 확정된 `DriverCarSuggestion` 스키마로 정리합니다."""
+    """배정 결과를 확정된 `DriverCarSuggestion` 스키마로 정리합니다.
+
+    `threshold`는 스칼라(예: `NO_THRESHOLD`)를 리터럴로 채우거나, `rows`가 이미
+    그룹별로 다른 threshold를 담고 있으면 그 컬럼(`F.col("threshold")`)을 그대로
+    넘겨 씁니다.
+    """
+    threshold_column = threshold if isinstance(threshold, Column) else F.lit(threshold)
     return rows.select(
         "driver_id",
         "year_month",
@@ -165,7 +171,7 @@ def _finalize_recommendation_output(
         "expected_net_profit_increase",
         "expected_revenue_increase",
         F.lit(algorithm_version_id).alias("recommendation_algorithm_version_id"),
-        F.lit(threshold).alias("threshold"),
+        threshold_column.alias("threshold"),
     ).select(*_columns(DriverCarSuggestion))
 
 
@@ -202,6 +208,7 @@ def _allocate_candidates_by_stock(
     candidates: DataFrame,
     preference_order: list[Column],
     stock_priority_order: list[Column],
+    group_columns: tuple[str, ...] = (),
 ) -> DataFrame:
     """기사별로 `preference_order` 순위대로 제안하고, 같은 모델에 여러 기사가
     몰리면 `stock_priority_order` 기준으로 남은 재고 안에서 배정합니다.
@@ -209,13 +216,24 @@ def _allocate_candidates_by_stock(
     배정 메커니즘(랭킹 → 라운드별로 점유·소진 재고를 빼고 남은 재고만큼 채움)은
     알고리즘과 무관한 공통 부분이라 여기 있고, "누구를 먼저 챙기는가"만 두
     정렬 기준으로 각 알고리즘이 주입합니다.
+
+    `group_columns`을 주면 그 값이 다른 행끼리는 서로 완전히 독립된 배정으로
+    취급합니다 — 같은 물리 재고를 그룹마다 전부 가진 것처럼 각자 배정합니다.
+    threshold 스윕처럼 원래 서로 다른 배정을 여러 번 만들어야 하는 경우, 이걸
+    쓰면 라운드 루프 자체는 한 번만 돌면서도 그룹별 배정 결과를 그대로 얻을 수
+    있습니다(#1021) — `occupied_stock`(실제 현재 보유 현황)은 그룹과 무관해
+    그대로 공유하고, `used_stock`·랭킹·재고 경쟁만 그룹별로 나눕니다.
     """
-    preference = Window.partitionBy("driver_id").orderBy(*preference_order)
+    preference = Window.partitionBy("driver_id", *group_columns).orderBy(
+        *preference_order
+    )
     ranked = candidates.withColumn(
         "_driver_rank", F.row_number().over(preference)
     ).persist()
     occupied_stock = (
         ranked.filter(F.col("_is_current"))
+        .select("driver_id", "_candidate_vehicle_model_id")
+        .distinct()
         .groupBy("_candidate_vehicle_model_id")
         .agg(F.count(F.lit(1)).alias("_occupied_stock"))
     )
@@ -226,7 +244,9 @@ def _allocate_candidates_by_stock(
         proposals = ranked.filter(F.col("_driver_rank") == driver_rank)
         if assigned is not None:
             proposals = proposals.join(
-                assigned.select("driver_id"), "driver_id", "left_anti"
+                assigned.select("driver_id", *group_columns),
+                ["driver_id", *group_columns],
+                "left_anti",
             )
 
         keep_current = proposals.filter(F.col("_is_current"))
@@ -240,16 +260,16 @@ def _allocate_candidates_by_stock(
         else:
             used_stock = (
                 assigned.filter(~F.col("_is_current"))
-                .groupBy("_candidate_vehicle_model_id")
+                .groupBy("_candidate_vehicle_model_id", *group_columns)
                 .agg(F.count(F.lit(1)).alias("_used_stock"))
             )
             changes = changes.join(
-                used_stock, "_candidate_vehicle_model_id", "left"
+                used_stock, ["_candidate_vehicle_model_id", *group_columns], "left"
             ).fillna({"_used_stock": 0})
 
-        stock_priority = Window.partitionBy("_candidate_vehicle_model_id").orderBy(
-            *stock_priority_order
-        )
+        stock_priority = Window.partitionBy(
+            "_candidate_vehicle_model_id", *group_columns
+        ).orderBy(*stock_priority_order)
         changes = (
             changes.withColumn("_stock_rank", F.row_number().over(stock_priority))
             .filter(
