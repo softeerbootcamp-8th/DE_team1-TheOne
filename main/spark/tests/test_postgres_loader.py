@@ -122,22 +122,44 @@ def test_최종추천은_내부후보와_재고컬럼을_내보내지_않는다(
     assert "stock" not in columns
 
 
-def _grain_frames(suggestion_drivers):
+def _grain_frames(suggestion_rows):
     return {
         "driver_aggregation": pd.DataFrame({"driver_id": ["D1", "D2"]}),
-        "driver_car_suggestion": pd.DataFrame({"driver_id": suggestion_drivers}),
+        "driver_car_suggestion": pd.DataFrame(
+            suggestion_rows,
+            columns=["driver_id", "recommendation_algorithm_version_id", "threshold"],
+        ),
         "silver_lineage": pd.DataFrame({"service_area": ["NYC"]}),
     }
 
 
-def test_최종추천은_기사당_한행을_적재한다():
-    frames = _grain_frames(["D1", "D2"])
+def test_최종추천은_조합별로_기사당_한행을_적재한다():
+    """추천은 알고리즘·threshold 조합마다 기사당 한 행씩 쌓여 전체 행 수는
+    기사 수의 배수가 된다(#997) — 조합별로는 여전히 기사당 정확히 한 행."""
+    frames = _grain_frames([
+        ("D1", 1, -1), ("D2", 1, -1),
+        ("D1", 2, 100), ("D2", 2, 100),
+        ("D1", 2, 200), ("D2", 2, 200),
+    ])
 
     postgres_loader._validate_frame_grains(frames)
 
 
-def test_최종추천에서_기사가_빠지면_적재전에_실패한다():
-    frames = _grain_frames(["D1"])
+def test_추천이_아예_비어있으면_적재전에_실패한다():
+    """groupby는 빈 프레임에서 그룹을 하나도 안 만들어 루프가 스킵되므로,
+    빈 추천이 조합별 검증을 통과한 것처럼 조용히 넘어가면 안 된다."""
+    frames = _grain_frames([])
+
+    with pytest.raises(ValueError, match="Gold 기사 그레인 불일치"):
+        postgres_loader._validate_frame_grains(frames)
+
+
+def test_한_조합에서만_기사가_빠지면_적재전에_실패한다():
+    """다른 조합이 정상이어도 한 조합에서 기사가 빠지면 가려지지 않고 잡혀야 한다."""
+    frames = _grain_frames([
+        ("D1", 1, -1), ("D2", 1, -1),
+        ("D1", 2, 100),
+    ])
 
     with pytest.raises(ValueError, match="Gold 기사 그레인 불일치"):
         postgres_loader._validate_frame_grains(frames)
@@ -217,7 +239,7 @@ def test_Gold_행과_버전_메타데이터를_같은_트랜잭션에_기록한�
     connection = Connection()
     monkeypatch.setattr(postgres_loader.psycopg2, "connect", lambda dsn: connection)
     monkeypatch.setattr(postgres_loader.psycopg2.extras, "execute_values", lambda *args: None)
-    frames = _grain_frames(["D1", "D2"])
+    frames = _grain_frames([("D1", 1, -1), ("D2", 1, -1)])
 
     postgres_loader.write_gold_to_postgres(
         frames,
