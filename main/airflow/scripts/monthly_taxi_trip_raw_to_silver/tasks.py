@@ -362,10 +362,7 @@ def _validate_bronze(state: dict, context: dict) -> dict:
         ),
     )
     invalid_ratio = float(summary.at[0, "invalid_required_row_ratio"])
-    extra_columns = [
-        column for column in summary.at[0, "extra_columns"].split(",") if column
-    ]
-    if invalid_ratio >= MONTHLY_TAXI_TRIP_WARNING_THRESHOLD or extra_columns:
+    if invalid_ratio >= MONTHLY_TAXI_TRIP_WARNING_THRESHOLD:
         send_quality_warning(
             context,
             dataset="monthly_taxi_trip",
@@ -373,7 +370,6 @@ def _validate_bronze(state: dict, context: dict) -> dict:
             invalid_rows=int(summary.at[0, "invalid_required_row_count"]),
             row_count=int(summary.at[0, "row_count"]),
             invalid_ratio=invalid_ratio,
-            extra_columns=extra_columns,
         )
     service_area = params.get("service_area")
     version_path = silver_version_path(

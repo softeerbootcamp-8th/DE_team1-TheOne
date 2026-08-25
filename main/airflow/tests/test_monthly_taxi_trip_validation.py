@@ -39,12 +39,6 @@ SILVER_REQUIRED_COLUMNS = [
     for name in SILVER_SCHEMA.names
     if name in task_module.SILVER_REQUIRED_NON_NULL
 ]
-SILVER_NULLABLE_COLUMNS = [
-    name
-    for name in SILVER_SCHEMA.names
-    if name not in task_module.SILVER_REQUIRED_NON_NULL
-]
-
 validate_bronze = DAG.get_task("validate_bronze").python_callable
 validate_silver = DAG.get_task("validate_silver").python_callable
 
@@ -334,13 +328,15 @@ def test_Bronze_변경여부_신호가_없어도_감시DAG호출이면_처리한
     ].endswith("source_collected_at=20260811T085354000000Z")
 
 
-def test_필수컬럼보다_컬럼이_많으면_경고후_통과한다(tmp_path, monkeypatch):
+def test_제거된_on_scene_datetime은_Data_Docs에만_기록하고_통과한다(
+    tmp_path, monkeypatch, caplog
+):
     """원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다 컬럼이 많아도(TLC 원본처럼) 막지 않습니다.
 
     물리 스키마 전체 일치는 더 이상 보지 않습니다(#529) — 필수 컬럼만 있으면 통과합니다.
     """
     extra_schema = pa.schema(
-        [*task_module.SCHEMA, pa.field("source_trace_id", pa.string())]
+        [*task_module.SCHEMA, pa.field("on_scene_datetime", pa.timestamp("us"))]
     )
     path = write_bronze(tmp_path, schema=extra_schema)
 
@@ -351,18 +347,12 @@ def test_필수컬럼보다_컬럼이_많으면_경고후_통과한다(tmp_path,
         lambda context, **values: warnings.append(values),
     )
 
-    validate_bronze(result_for(path), params=bronze_params(tmp_path))
+    with caplog.at_level("WARNING"):
+        validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
-    assert warnings == [
-        {
-            "dataset": "monthly_taxi_trip",
-            "year_month": YEAR_MONTH,
-            "invalid_rows": 0,
-            "row_count": 3,
-            "invalid_ratio": 0.0,
-            "extra_columns": ["source_trace_id"],
-        }
-    ]
+    assert "gx_validation warning layer=bronze" in caplog.text
+    assert "column=extra_columns" in caplog.text
+    assert warnings == []
 
 
 def test_파일이_없으면_막는다(tmp_path):
@@ -717,26 +707,16 @@ def test_silver_필수값이_NULL이면_GX가_실패한다(
     assert "observed_value=[1]" in caplog.text
 
 
-@pytest.mark.parametrize("column", SILVER_NULLABLE_COLUMNS)
-def test_silver_필수값이_아닌_컬럼은_전부_NULL이어도_통과한다(
-    tmp_path, monkeypatch, column
-):
-    """원천이 `on_scene_datetime` 을 채우지 않는 달이 있습니다(#582). 스키마에는
-    남아 있으므로 컬럼별 NULL 검사만 빠지고, 적재는 그대로 통과해야 합니다."""
-    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
-    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    records = silver_rows(5)
-    for record in records:
-        record[column] = None
-    write_silver(tmp_path / "silver", records=records)
+def test_on_scene_datetime은_전체_운행계약에서_제외된다():
+    from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as BRONZE_SCHEMA
+    from schema.silver.monthly_taxi_trip import FINAL_SCHEMA, REQUIRED_COLUMNS
+    from schema.source import MONTHLY_TAXI_TRIP_SCHEMA as SOURCE_SCHEMA
 
-    validate_silver(result_for(bronze_path))
-
-
-def test_silver_필수값_목록에_on_scene_datetime이_없다():
-    """계약이 되돌아가면(필수값에 다시 들어가면) 원천 릴리스가 100% 불합격합니다."""
-    assert "on_scene_datetime" in SILVER_SCHEMA.names
-    assert "on_scene_datetime" not in task_module.SILVER_REQUIRED_NON_NULL
+    assert "on_scene_datetime" not in SOURCE_SCHEMA.names
+    assert "on_scene_datetime" not in BRONZE_SCHEMA.names
+    assert "on_scene_datetime" not in SILVER_SCHEMA.names
+    assert "on_scene_datetime" not in FINAL_SCHEMA.names
+    assert "on_scene_datetime" not in REQUIRED_COLUMNS
 
 
 def test_silver_FINAL_SCHEMA_타입이_다르면_GX가_실패한다(

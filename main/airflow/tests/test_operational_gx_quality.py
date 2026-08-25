@@ -5,6 +5,7 @@
 3. 선택 컬럼의 존재·타입·NULL은 판정하지 않음
 4. 필수 컬럼 누락·타입 불일치는 비율과 무관하게 하드 실패
 5. Data Docs는 실제 데이터 파티션을 보존한 S3 prefix에 발행
+6. 추가 컬럼은 GX 경고로 기록하되 Slack 알림은 보내지 않음
 """
 
 import pandas as pd
@@ -106,6 +107,38 @@ def test_선택컬럼은_누락되어도_품질지표에서_제외한다(monkeyp
         required_warning_ratio=0.01,
         required_error_ratio=0.05,
     )
+
+
+def test_추가컬럼은_GX에_기록하되_Slack은_보내지_않는다(
+    monkeypatch, caplog
+):
+    monkeypatch.setenv("GX_DATA_DOCS_ENABLED", "false")
+    table = _table(1).append_column("source_note", pa.array(["upstream"]))
+    sent = []
+    monkeypatch.setattr(
+        validation,
+        "send_gx_quality_warning",
+        lambda context, **values: sent.append(values),
+    )
+
+    with caplog.at_level("WARNING"):
+        run_table_gx_validation(
+            table,
+            SCHEMA,
+            REQUIRED,
+            dataset="sample",
+            layer="bronze",
+            data_location=DATA,
+            context={},
+            required_warning_ratio=None,
+            required_error_ratio=0,
+            record_extra_columns=True,
+        )
+
+    assert table_quality_summary(table, SCHEMA, REQUIRED).at[0, "extra_columns"] == "source_note"
+    assert "gx_validation warning layer=bronze" in caplog.text
+    assert "column=extra_columns" in caplog.text
+    assert sent == []
 
 
 def test_필수값_경고임계치는_실패임계치보다_작아야한다():

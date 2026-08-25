@@ -153,6 +153,7 @@ def _validate_bronze(
             context=context or {},
             required_warning_ratio=None,
             required_error_ratio=0,
+            record_extra_columns=True,
         )
     version_path = silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
