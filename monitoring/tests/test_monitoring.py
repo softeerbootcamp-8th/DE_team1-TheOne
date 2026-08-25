@@ -483,22 +483,48 @@ def test_용량_알림의_근거가_대시보드에_보인다():
         if "용량" in r["title"] and q["model"].get("metricName")
     }
 
-    drawn = {
-        t.get("metricName")
-        for title, p in panels.items() if "사용" in title
-        for t in p["targets"]
-    }
+    drawn = {t.get("metricName") for p in panels.values() for t in p["targets"]}
     assert alerted <= drawn, f"알림이 보는데 안 그리는 지표: {alerted - drawn}"
 
 
 def test_용량_알림은_상한_도달로_판정한다():
-    """할당이 상한에 닿으면 새 워커가 못 뜹니다 — 그 순간이 대기가 시작되는 시점입니다."""
+    """할당이 상한에 닿으면 새 워커가 못 뜹니다 — 그 순간이 대기가 시작되는 시점입니다.
+
+    `>=` 만으로는 부족합니다. 애플리케이션 단위 지표라 값이 없는 분에 둘 다 0 으로
+    내려오고, 그러면 `0 >= 0` 이 참이 되어 상한 근처에도 안 갔는데 알림이 갑니다.
+    실제로 "상한에 안 닿았는데 경고가 온다" 는 지적을 받았습니다.
+
+    그래서 할당이 0 이 아닐 것과, 워커가 실제로 못 떠서 대기 중일 것을 함께 봅니다.
+    """
     for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
         for rule in group["rules"]:
             if "용량" not in rule["title"]:
                 continue
             math = next(q for q in rule["data"] if q["model"].get("type") == "math")
-            assert math["model"]["expression"] == "$C >= $D"
+            expression = math["model"]["expression"]
+            assert "$C >= $D" in expression, expression
+            assert "$C > 0" in expression, f"0 >= 0 오탐이 열려 있습니다: {expression}"
+            assert "$G > 0" in expression, f"대기 워커 조건이 없습니다: {expression}"
+
+            pending = {
+                q["model"]["metricName"]
+                for q in rule["data"]
+                if q["model"].get("metricName")
+            }
+            assert "PendingCreationWorkerCount" in pending
+
+
+def test_용량_알림이_근거_수치를_함께_보낸다():
+    """Slack 은 `.Annotations.summary` 만 보여줍니다. 수치가 없으면 받는 사람이
+    대시보드를 열기 전까지 얼마나 심각한지 모릅니다.
+    """
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            summary = rule["annotations"]["summary"]
+            for ref in ("$values.C.Value", "$values.D.Value", "$values.G.Value"):
+                assert ref in summary, f"근거 수치 {ref} 가 빠졌습니다"
 
 
 def test_작업_지표는_성격에_맞는_집계를_쓴다():
@@ -539,6 +565,51 @@ def test_할당_선을_기준선으로_오해하게_이름짓지_않는다():
             label = target.get("label") or ""
             if "할당" in label:
                 assert "기준" not in label, f"{panel['title']}: {label}"
+
+
+def test_패널에_깨진_외부_링크가_남지_않는다():
+    """CloudWatch 데이터소스는 응답에 'View in CloudWatch console' 링크를 심습니다.
+    그 URL 은 공백을 `+` 로 인코딩하는데 AWS 콘솔은 `%20` 만 받아서, 패널을 누르면
+    오류 화면으로 갑니다. 실제로 '진행 중'·'기간 결과 (합계)' 에서 그랬습니다.
+
+    링크를 고칠 수단이 없으므로 빈 `links` 로 덮어 아예 눌리지 않게 합니다.
+    """
+    for name in ("emr.json", "lambda.json"):
+        dashboard = json.loads((DASHBOARDS / name).read_text())
+        for panel in dashboard["panels"]:
+            cleared = [
+                prop
+                for override in panel["fieldConfig"]["overrides"]
+                for prop in override["properties"]
+                if prop["id"] == "links"
+            ]
+            assert cleared, f"{name}:{panel['title']}: 데이터소스 링크가 살아 있습니다"
+            assert all(prop["value"] == [] for prop in cleared), (
+                f"{name}:{panel['title']}: 링크를 비워야 합니다"
+            )
+
+
+def test_사용_패널은_할당을_그리지_않는다():
+    """`MemoryAllocated` 는 애플리케이션 단위, `WorkerMemoryUsed` 는 워커 단위라
+    갱신 주기가 어긋납니다. 워커가 막 뜬 분에는 사용량이 130 MB 로 찍히는데 할당은
+    0 GB 라, "할당이 없는데 어떻게 쓰이냐" 는 질문을 받았습니다.
+
+    메모리에는 알림이 없어 이 선이 뒷받침할 것도 없으므로 뺍니다. CPU 는 다릅니다 —
+    `CPUAllocated` 는 용량 알림이 비교하는 값이라 남깁니다.
+    """
+    panels = {
+        p["title"]: p
+        for p in json.loads((DASHBOARDS / "emr.json").read_text())["panels"]
+    }
+
+    memory = {t["metricName"] for t in panels["메모리 사용 (GB)"]["targets"]}
+    assert "MemoryAllocated" not in memory, "0 GB 로 찍혀 오해를 삽니다"
+
+    cpu = {t["metricName"] for t in panels["CPU 사용 (vCPU)"]["targets"]}
+    assert "CPUAllocated" not in cpu, "0 으로 떨어져 사용량 곡선을 방해합니다"
+
+    evidence = {t["metricName"] for t in panels["용량 상한 도달 (알림 근거)"]["targets"]}
+    assert "CPUAllocated" in evidence, "알림 근거는 전용 패널에 남겨야 합니다"
 
 
 def test_알림이_없는_패널을_알림이_있는_것처럼_적지_않는다():
