@@ -1,5 +1,6 @@
 """월별 택시 운행 데이터 Raw-to-Silver DAG의 실행·검증 함수."""
 
+import json
 import logging
 import os
 import sys
@@ -29,7 +30,8 @@ from shared.airflow.common.validation import (
     run_gx_validation,
     run_quality_gate,
 )
-from shared.common.s3_reader import list_keys
+from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.success_marker import recon_key, recon_path
 from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 from schema.silver import (
     CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL as SILVER_REQUIRED_NON_NULL,
@@ -154,6 +156,69 @@ def _bronze_quality_summary(parquet_file, required_columns):
             }
         ]
     )
+
+
+def _read_recon(version_path: Path | S3Location) -> dict:
+    """Spark 가 남긴 `_RECON.json` 을 읽습니다.
+
+    없으면 실패시킵니다. 없는 걸 통과시키면 옛 코드로 돈 실행이 조용히 검사를
+    건너뛰고, 그게 바로 이 검사를 넣는 이유였던 "조용히 틀린 값" 입니다.
+    """
+    if isinstance(version_path, S3Location):
+        key = recon_key(version_path.key)
+        body = get_object_bytes(version_path.bucket, key)
+        if not body:
+            raise ValueError(
+                f"reconciliation sidecar 가 없습니다: s3://{version_path.bucket}/{key}"
+            )
+        return json.loads(body)
+    path = recon_path(version_path)
+    if not path.is_file():
+        raise ValueError(f"reconciliation sidecar 가 없습니다: {path}")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _reconcile_silver(
+    version_path: Path | S3Location, bronze_rows: int, silver_rows: int
+) -> dict:
+    """Bronze 와 Silver 의 차이가 Spark 가 보고한 제외 건수로 설명되는지 봅니다.
+
+        Bronze = Silver + 제외
+
+    Spark 안에서 `invalid = total - valid` 는 항등식입니다. 여기서 의미가 생기는
+    건 Bronze·Silver 행 수를 **Airflow 가 parquet 메타데이터로 따로 세서** 맞대기
+    때문입니다. 계산과 저장 사이에서 행이 사라지면 그때만 어긋납니다.
+
+    예전 검사는 `silver_rows > bronze_rows` 뿐이라 Bronze 100만 건이 Silver 1건이
+    되어도 통과했습니다.
+    """
+    recon = _read_recon(version_path)
+    excluded = int(recon["invalid"])
+    expected_bronze = silver_rows + excluded
+    if bronze_rows != expected_bronze:
+        raise ValueError(
+            "택시 운행 reconciliation 실패: "
+            f"bronze={bronze_rows} silver={silver_rows} excluded={excluded} "
+            f"(기대 bronze={expected_bronze}) — 사유별 "
+            f"NULL/타입={recon.get('missing_or_type_mismatch')} "
+            f"값범위={recon.get('invalid_value')} "
+            f"등급={recon.get('invalid_service_tier')}"
+        )
+    logger.info(
+        "reconciliation %s",
+        json.dumps(
+            {
+                "dataset": "monthly_taxi_trip",
+                "input_rows": bronze_rows,
+                "output_rows": silver_rows,
+                "excluded_rows": excluded,
+                "rule": "input = output + excluded",
+                "status": "passed",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    return recon
 
 
 def _silver_quality_summary(parquet_files, required_columns):
@@ -478,10 +543,7 @@ def _validate_silver(raw_result: dict) -> None:
     )
 
     silver_rows = int(summary["row_count"].sum())
-    if silver_rows > bronze_rows:
-        raise ValueError(
-            f"Silver 행 수가 Bronze 보다 많습니다: {silver_rows} > {bronze_rows}"
-        )
+    _reconcile_silver(version_path, bronze_rows, silver_rows)
 
     # #165 재발 감시 — 쓰기 전에 있던 파티션이 사라졌는지만 봅니다. 이번에 쓴 달은
     # 당연히 새로 생기므로 비교 대상이 아닙니다.

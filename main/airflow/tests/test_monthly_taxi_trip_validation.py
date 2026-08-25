@@ -574,6 +574,26 @@ def silver_rows(count: int = 3, schema=None) -> list[dict]:
     return [row.copy() for _ in range(count)]
 
 
+def write_recon(version_dir: Path, excluded: int = 0) -> None:
+    """Spark 가 남기는 `_RECON.json` 을 흉내냅니다.
+
+    `validate_silver` 는 `Bronze = Silver + excluded` 를 이 파일로 판정합니다.
+    """
+    (version_dir / "_RECON.json").write_text(
+        json.dumps(
+            {
+                "total": 0,
+                "valid": 0,
+                "invalid": excluded,
+                "missing_or_type_mismatch": excluded,
+                "invalid_value": 0,
+                "invalid_service_tier": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def write_silver(
     silver_dir,
     year_month: str = YEAR_MONTH,
@@ -581,6 +601,7 @@ def write_silver(
     schema=None,
     records: list[dict] | None = None,
     service_area: str = "NYC",
+    excluded: int = 0,
 ) -> Path:
     """`validate_silver`가 마커 공개 전에 읽는 최종 경로 part를 씁니다(#912)."""
     schema = SILVER_SCHEMA if schema is None else schema
@@ -595,6 +616,7 @@ def write_silver(
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), target)
+    write_recon(target.parent, excluded)
     return partition
 
 
@@ -617,6 +639,7 @@ def write_committed_silver(
     version.mkdir(parents=True, exist_ok=True)
     target = version / "part-00000.parquet"
     pq.write_table(pa.Table.from_pylist(records, schema=schema), target)
+    write_recon(version)
     (version / "_SUCCESS").touch()
     return partition
 
@@ -624,7 +647,7 @@ def write_committed_silver(
 def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    write_silver(tmp_path / "silver", rows=5)
+    write_silver(tmp_path / "silver", rows=5, excluded=5)
 
     result = result_for(bronze_path)
     quarantine = Path(result["silver_version_path"]) / "_QUARANTINED.json"
@@ -750,7 +773,7 @@ def test_silver_timestamp_unit이_달라도_논리_타입이_같으면_통과한
         else field
         for field in SILVER_SCHEMA
     )
-    write_silver(tmp_path / "silver", rows=5, schema=schema)
+    write_silver(tmp_path / "silver", rows=5, schema=schema, excluded=5)
 
     validate_silver(result_for(bronze_path))
 
@@ -780,7 +803,50 @@ def test_silver_행_수가_bronze_보다_많으면_막는다(tmp_path, monkeypat
     bronze_path = write_bronze(tmp_path / "bronze", rows=3)
     write_silver(tmp_path / "silver", rows=5)
 
-    with pytest.raises(ValueError, match="Bronze 보다 많습니다"):
+    with pytest.raises(ValueError, match="reconciliation 실패"):
+        validate_silver(result_for(bronze_path))
+
+
+def test_대량_유실은_제외_건수로_설명되지_않으면_막는다(tmp_path, monkeypatch):
+    """예전 검사는 `silver_rows > bronze_rows` 만 봤다.
+
+    그래서 Bronze 10건이 Silver 1건이 되어도 통과했다 — 정확히 이 계열이 이번
+    파이프라인에서 반복된 "조용히 틀린 값" 이다. 보존식은 줄어든 만큼이 Spark 가
+    보고한 제외 건수로 설명되는지 본다.
+    """
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    # Spark 는 "아무것도 안 걸렀다" 고 보고했는데 실제로는 1건만 남았다.
+    write_silver(tmp_path / "silver", rows=1, excluded=0)
+
+    with pytest.raises(ValueError, match="bronze=10 silver=1 excluded=0"):
+        validate_silver(result_for(bronze_path))
+
+
+def test_제외_건수로_설명되면_줄어들어도_통과한다(tmp_path, monkeypatch):
+    """정상 실행은 행이 줄어든다 — 필수값·값범위·등급으로 걸러지기 때문이다.
+
+    줄어든 것 자체를 막으면 파이프라인이 매번 죽는다. 설명되는지만 본다.
+    """
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    write_silver(tmp_path / "silver", rows=7, excluded=3)
+
+    result = result_for(bronze_path)
+    validate_silver(result)
+
+    assert (Path(result["silver_version_path"]) / "_SUCCESS").is_file()
+
+
+def test_reconciliation_sidecar가_없으면_막는다(tmp_path, monkeypatch):
+    """없는 걸 통과시키면 옛 코드로 돈 실행이 조용히 검사를 건너뛴다."""
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=5)
+    partition = write_silver(tmp_path / "silver", rows=5)
+    for sidecar in partition.rglob("_RECON.json"):
+        sidecar.unlink()
+
+    with pytest.raises(ValueError, match="sidecar 가 없습니다"):
         validate_silver(result_for(bronze_path))
 
 
@@ -788,7 +854,7 @@ def test_쓰기_전에_있던_파티션이_사라지면_165_재발로_막는다(
     """정적 overwrite(#165)가 재발하면 이번에 쓴 달만 남고 나머지가 지워집니다."""
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
+    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5, excluded=5)
     # 쓰기 전에는 2026-05 도 있었는데 지금은 없는 상황 — 정확히 #165 의 signature
     result = result_for(bronze_path)
     result["silver_partitions_before"] = ["year_month=2026-05"]
@@ -803,7 +869,7 @@ def test_과거_달_백필은_통과한다(tmp_path, monkeypatch):
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_committed_silver(tmp_path / "silver", year_month="2026-06", rows=5)
-    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
+    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5, excluded=5)
     result = result_for(bronze_path)
     result["silver_partitions_before"] = ["year_month=2026-06"]
 
@@ -814,7 +880,7 @@ def test_쓰기_전_스냅샷이_없어도_통과한다(tmp_path, monkeypatch):
     """첫 실행이나 예전 XCom 에는 이 키가 없습니다. 없다고 막으면 안 됩니다."""
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
+    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5, excluded=5)
 
     validate_silver(result_for(bronze_path))
 
@@ -824,7 +890,7 @@ def test_같은_월_재처리중_SUCCESS가_없어도_다시_공개한다(
 ):
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5)
+    write_silver(tmp_path / "silver", year_month=YEAR_MONTH, rows=5, excluded=5)
     result = result_for(bronze_path)
     result["silver_partitions_before"] = [f"year_month={YEAR_MONTH}"]
 
