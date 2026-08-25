@@ -321,7 +321,8 @@ def test_emr_대시보드가_파일로_있다():
 
     assert dashboard["uid"] == "theone-emr"
     titles = {p["title"] for p in dashboard["panels"]}
-    assert {"작업 상태", "메모리 사용 (GB)", "CPU 사용 (vCPU)", "워커 수"} <= titles
+    assert {"진행 중", "기간 결과 (합계)", "메모리 사용 (GB)",
+            "CPU 사용 (vCPU)", "워커 수"} <= titles
 
 
 def test_emr_질의는_ApplicationName_을_함께_준다():
