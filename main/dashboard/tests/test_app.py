@@ -256,7 +256,7 @@ def test_threshold가_sentinel뿐이면_콤보박스_대신_캡션만_보인다(
     # 알고리즘·지역·월 3개뿐 — threshold 콤보박스가 없다.
     assert len(at.selectbox) == 3
     captions = [c.value for c in at.caption]
-    assert any("임계값을 쓰지 않습니다" in c for c in captions)
+    assert any("기본 하한 $500" in c for c in captions)
 
 
 def test_threshold가_있으면_실제_값들로만_콤보박스를_구성한다(tmp_path, monkeypatch):

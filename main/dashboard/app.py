@@ -5,10 +5,13 @@ Gold 4종(`driver_car_suggestion`, `driver_aggregation`, `recommendation_algorit
 전환한다 — `datasource.py` 참고.
 
 화면 구성은 위에서 아래로 한 줄기다.
-    알고리즘·threshold 선택 → 지역·월 필터 → 히어로(회사 총 매출 증가) → 지표 타일
+    알고리즘·하한 선택 → 지역·월 필터 → 히어로(회사 총 매출 증가) → 지표 타일
     → 분포·차종 → 선정 게이트 → 리스트 → 기사 상세
 필터는 화면 전체를 한 번에 스코프한다 (차트별 필터를 두지 않는다).
 """
+
+import base64
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
@@ -16,6 +19,8 @@ import streamlit as st
 import charts
 import theme
 from datasource import DataSource, build_data_source
+
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_for_dashboard.png"
 
 # 기사 예상 월 순수익 증가 하한 기본값 (USD). Gold monthly_report 제거(#915) 이후
 # 더 이상 Gold가 계산해주지 않아 대시보드 상수로 둔다. threshold를 안 쓰는 알고리즘
@@ -36,6 +41,17 @@ SUGGESTION_COLUMNS = {
     "expected_net_profit_increase": "기사 예상 월 순수익 증가",
     "expected_revenue_increase": "회사 월 렌탈 객단가 증가",
 }
+
+
+@st.cache_resource
+def _logo_data_uri() -> str:
+    """로고를 base64 data URI로 한 번만 인코딩해 재사용한다.
+
+    렌더링마다 `<img src="...">`에 박아 넣는 raw HTML이라, 로컬 파일 경로로는
+    브라우저가 못 읽는다 — data URI로 직접 값을 실어야 한다.
+    """
+    encoded = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 @st.cache_resource
@@ -105,8 +121,8 @@ def _head(period: str, generated_rows: int) -> None:
     st.markdown(
         f"""
         <div class="dash-head">
-          <div>
-            <h1>기사별 월간 차량 추천</h1>
+          <div style="display:flex; align-items:center; gap:.75rem;">
+            <img src="{_logo_data_uri()}" alt="logo" style="height:180px;">
             <p>Gold 산출물 기준 예상치 · 기사 순수익과 회사 렌탈 매출이 함께 늘어나는 교체 후보</p>
           </div>
           <div style="display:flex; gap:.5rem; align-items:center;">
@@ -198,8 +214,8 @@ def _silver_source_expander(
 
 def render() -> None:
     st.set_page_config(
-        page_title="기사 차량 추천",
-        page_icon="🚕",
+        page_title="NEXT MOVE",
+        page_icon=str(LOGO_PATH),
         layout="wide",
         initial_sidebar_state="collapsed",
     )
@@ -221,43 +237,48 @@ def render() -> None:
     # 제목은 필터보다 위에 보여야 하니 자리를 먼저 잡고, 값이 정해진 뒤 채운다.
     head_slot = st.container()
 
-    # ── 알고리즘 버전 선택: 이 값으로 suggestion 전체를 좁힌 뒤 나머지 필터를 적용한다 ──
-    algo_col, desc_col = st.columns([1, 3], vertical_alignment="bottom")
+    # ── 필터 한 줄: 알고리즘 → 하한 → 지역 → 월. 좁은 4칸에 나눠 담아 한 줄에 붙인다 ──
+    algo_col, threshold_col, area_col, month_col = st.columns(4, vertical_alignment="bottom")
+
+    # 알고리즘 버전: 이 값으로 suggestion 전체를 좁힌 뒤 나머지 필터를 적용한다.
+    # 최신(가장 큰) 버전을 기본값으로 — 새 버전이 추가되면 그게 기본으로 뜬다.
+    algorithm_options = sorted(suggestion["recommendation_algorithm_version_id"].unique())
     algorithm_id = algo_col.selectbox(
-        "알고리즘 버전", sorted(suggestion["recommendation_algorithm_version_id"].unique())
+        "알고리즘 버전", algorithm_options, index=len(algorithm_options) - 1
     )
     descriptions = (
         dict(zip(algorithms["recommendation_algorithm_version_id"], algorithms["description"]))
         if not algorithms.empty
         else {}
     )
-    desc_col.caption(descriptions.get(algorithm_id, "이 버전에 대한 설명이 없습니다."))
     suggestion = suggestion[
         suggestion["recommendation_algorithm_version_id"] == algorithm_id
     ]
 
-    # ── threshold 선택: 이 알고리즘이 실제로 쌓은 값 중에서만 고른다(#998) ──
-    # 값이 전부 sentinel이면 이 알고리즘은 threshold 축이 없다는 뜻 — 셀렉트박스
+    # 순수익 증가 하한: 이 알고리즘이 실제로 쌓은 값 중에서만 고른다(#998).
+    # 값이 전부 sentinel이면 이 알고리즘은 하한 축이 없다는 뜻 — 셀렉트박스
     # 대신 캡션만 보여주고, 기존 기본 하한을 그대로 쓴다. 알고리즘 ID로 분기하지
-    # 않아서 나중에 threshold 없는 알고리즘이 늘어도 그대로 통한다.
+    # 않아서 나중에 하한 없는 알고리즘이 늘어도 그대로 통한다.
     if (suggestion["threshold"] == NO_THRESHOLD).all():
-        st.caption("이 알고리즘은 임계값을 쓰지 않습니다.")
         threshold = DEFAULT_THRESHOLD
+        threshold_col.caption(f"기본 하한 ${threshold:,.0f}")
     else:
+        # 가장 엄격한(가장 큰) 하한을 기본값으로 — 안전한 쪽이 기본이다.
         available_thresholds = sorted(suggestion["threshold"].unique())
-        threshold = st.selectbox(
-            "기사 예상 월 순수익 증가 하한 threshold ($)",
+        threshold = threshold_col.selectbox(
+            "기사 순수익 증가 하한 ($)",
             available_thresholds,
+            index=len(available_thresholds) - 1,
             format_func=lambda value: f"${value:,.0f}",
         )
         suggestion = suggestion[suggestion["threshold"] == threshold]
 
-    # ── 필터 한 줄: 아래 모든 카드·차트·표가 이 값으로 스코프된다 ──
-    f1, f2 = st.columns(2, vertical_alignment="bottom")
-    service_area = f1.selectbox("지역", sorted(suggestion["service_area"].unique()))
+    service_area = area_col.selectbox("지역", sorted(suggestion["service_area"].unique()))
     area_suggestion = suggestion[suggestion["service_area"] == service_area]
     periods = sorted(area_suggestion["year_month"].unique(), reverse=True)
-    period = f2.selectbox("월", periods)
+    period = month_col.selectbox("월", periods)
+
+    st.caption(descriptions.get(algorithm_id, "이 버전에 대한 설명이 없습니다."))
 
     month_suggestion = area_suggestion[area_suggestion["year_month"] == period]
 
