@@ -161,3 +161,16 @@ class SilverLineage:
     silver_gas_ev_price_s3_link: str
     """이 실행이 읽은 연료비 Silver 파티션의 S3 경로"""
 
+
+"""
+[추천 알고리즘 버전 설명]
+input: (사람이 직접 관리 — Gold 파이프라인이 적재하지 않음)
+output: schema/gold.py - RecommendationAlgorithm
+"""
+@dataclass(frozen=True)
+class RecommendationAlgorithm:
+    recommendation_algorithm_version_id: int
+    """추천 알고리즘 버전. DriverCarSuggestion.recommendation_algorithm_version_id 와 조인"""
+
+    description: str
+    """이 버전의 추천 로직 설명"""
