@@ -418,6 +418,10 @@ def test_검증_실패시_SUCCESS와_asset을_공개하지_않는다(tmp_path):
         )
 
     assert final.is_file()
+    assert (final.parent / "_QUARANTINED.json").is_file()
+    assert '"layer": "silver"' in (
+        final.parent / "_QUARANTINED.json"
+    ).read_text()
     assert not (final.parent / "_SUCCESS").exists()
     assert outlet_events == {}
 
@@ -445,5 +449,6 @@ def test_검증_통과시_SUCCESS와_asset이_발행된다(tmp_path):
 
     assert final.is_file()
     assert (final.parent / "_SUCCESS").is_file()
+    assert not (final.parent / "_QUARANTINED.json").exists()
     assert pq.ParquetFile(final).read().num_rows == 31
     assert outlet_events[silver_tasks.assets.FUEL_PRICE_SILVER].partitions

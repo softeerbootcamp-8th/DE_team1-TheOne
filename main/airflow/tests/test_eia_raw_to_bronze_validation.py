@@ -10,6 +10,7 @@
    굳어 있어 전력 xlsx 가 lambda 하한(100_000)에 못 미쳐도 통과처럼 보였습니다
 4. service_area가 있으면 layout_tail 세그먼트 폭이 늘어나 데이터셋 이름이 다른
    엉뚱한 경로도 여전히 잡힘 (gas #843, electricity #844)
+5. 원본은 삭제하지 않고 통과하면 `_SUCCESS`, 실패하면 `_QUARANTINED.json`
 """
 
 import importlib
@@ -71,8 +72,69 @@ def test_원본이_하한보다_작으면_실패한다(tmp_path, tasks, bronze_f
 
     with pytest.raises(ValueError, match="EIA 원본이 너무 작습니다"):
         tasks.validate_bronze_task.function(
-            result, params={"bronze_dir": str(tmp_path), "service_area": service_area}
+            result,
+            params={"bronze_dir": str(tmp_path), "service_area": service_area},
+            run_id="manual__too-small",
         )
+
+    assert path.is_file()
+    assert (path.parent / "_QUARANTINED.json").is_file()
+    assert '"layer": "bronze"' in (
+        path.parent / "_QUARANTINED.json"
+    ).read_text()
+    assert not (path.parent / "_SUCCESS").exists()
+
+
+@pytest.mark.parametrize(("tasks", "bronze_file", "_min_attr", "service_area"), DATASETS)
+def test_EIA_Bronze_검증을_통과하면_SUCCESS를_공개한다(
+    tmp_path, tasks, bronze_file, _min_attr, service_area
+):
+    layout = _layout()
+    path = getattr(layout, bronze_file)(str(tmp_path), COLLECTED_AT, service_area)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(BIG_ENOUGH)
+    result = {
+        "row_count": 1,
+        "locations": [str(path)],
+        "collected_at": COLLECTED_AT,
+        "collected_date": "2026-08-17",
+    }
+
+    tasks.validate_bronze_task.function(
+        result,
+        params={"bronze_dir": str(tmp_path), "service_area": service_area},
+        run_id="manual__valid",
+    )
+
+    assert path.is_file()
+    assert (path.parent / "_SUCCESS").is_file()
+    assert not (path.parent / "_QUARANTINED.json").exists()
+
+
+@pytest.mark.parametrize(("tasks", "bronze_file", "_min_attr", "service_area"), DATASETS)
+def test_handler_행수가_틀리면_유효한_Bronze_경로에_격리한다(
+    tmp_path, tasks, bronze_file, _min_attr, service_area
+):
+    layout = _layout()
+    path = getattr(layout, bronze_file)(str(tmp_path), COLLECTED_AT, service_area)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(BIG_ENOUGH)
+
+    with pytest.raises(ValueError, match="row_count"):
+        tasks.validate_bronze_task.function(
+            {
+                "row_count": 2,
+                "locations": [str(path)],
+                "collected_at": COLLECTED_AT,
+                "collected_date": "2026-08-17",
+            },
+            params={"bronze_dir": str(tmp_path), "service_area": service_area},
+            run_id="manual__wrong-row-count",
+        )
+
+    assert path.is_file()
+    assert (path.parent / "_QUARANTINED.json").is_file()
+    assert not (path.parent / "_SUCCESS").exists()
 
 
 @pytest.mark.parametrize(

@@ -16,8 +16,11 @@ import pyarrow.parquet as pq
 import pytest
 
 from shared.airflow.common import lambda_invoke
+from shared.airflow.common.validation import run_quality_gate as real_run_quality_gate
+from shared.aws_lambda.common.schema_validator import SchemaValidationResult
 from dags import lease_vehicle_inventory_raw_to_silver_dag as dag_module
 from dags.driver_vehicle_monthly_snapshot_raw_to_silver_dag import driver_vehicle_monthly_snapshot_raw_to_silver_dag
+from schema.bronze import LEASE_VEHICLE_INVENTORY_SCHEMA as BRONZE_SCHEMA
 from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
     tasks as task_module,
@@ -30,8 +33,12 @@ SOURCE_VERSION = "source_collected_at=20260821T123456123456Z"
 
 
 @pytest.fixture(autouse=True)
-def _stub_success_publish(monkeypatch):
-    monkeypatch.setattr(task_module, "publish_success_marker", lambda directory: None)
+def _stub_quality_gate(monkeypatch):
+    monkeypatch.setattr(
+        task_module,
+        "run_quality_gate",
+        lambda directory, validator, **kwargs: validator(),
+    )
 
 
 def _raw_result(source_changed: bool = True) -> dict:
@@ -170,8 +177,11 @@ def test_정제task는_서비스지역과_적재위치를_정제핸들러에_전
 def test_보유차량필수컬럼이_누락되면_원천부터_다시_수집한다(monkeypatch):
     results = iter(
         [
-            (Path("broken.parquet"), ["stock"]),
-            (Path("corrected.parquet"), []),
+            (
+                Path("broken.parquet"),
+                SchemaValidationResult(missing_columns=("stock",)),
+            ),
+            (Path("corrected.parquet"), SchemaValidationResult()),
         ]
     )
     recollected = _raw_result()
@@ -214,7 +224,7 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
         task_module,
         "_validate_bronze_result",
         lambda result, base_dir, service_area: validated.append(result)
-        or (Path("same.parquet"), []),
+        or (Path("same.parquet"), SchemaValidationResult()),
     )
 
     result = _raw_result(source_changed=False)
@@ -237,7 +247,7 @@ def test_TX_Bronze검증은_지역별_Silver경로를_만든다(tmp_path, monkey
         task_module,
         "_validate_bronze_result",
         lambda result, base_dir, service_area: seen.append(service_area)
-        or (Path("same.parquet"), []),
+        or (Path("same.parquet"), SchemaValidationResult()),
     )
 
     result = DAG.get_task("validate_bronze").python_callable(
@@ -268,12 +278,7 @@ def test_Silver검증후_최종버전에_SUCCESS를_공개한다(tmp_path, monke
     part = final / "data.parquet"
     part.parent.mkdir(parents=True)
     pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), part)
-    published = []
-    monkeypatch.setattr(
-        task_module,
-        "publish_success_marker",
-        lambda directory: published.append(directory),
-    )
+    monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
 
     DAG.get_task("validate_silver").python_callable(
         {"locations": [str(part)], "row_count": 1, "year_month": "2026-08"},
@@ -283,7 +288,62 @@ def test_Silver검증후_최종버전에_SUCCESS를_공개한다(tmp_path, monke
         },
     )
 
-    assert published == [final]
+    assert (final / "_SUCCESS").is_file()
+    assert not (final / "_QUARANTINED.json").exists()
+
+
+def test_Bronze_추가컬럼은_경고하고_공개한다(tmp_path, monkeypatch, caplog):
+    schema = BRONZE_SCHEMA.append(pa.field("source_note", pa.string()))
+    rows = [{**_rows()[0], "source_note": "new upstream field"}]
+    bronze = (
+        tmp_path
+        / "lease_vehicle_inventory"
+        / "service_area=NYC"
+        / "year_month=2026-08"
+        / FILE_NAME
+    )
+    bronze.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=schema), bronze)
+    monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
+
+    DAG.get_task("validate_bronze").python_callable(
+        {
+            "locations": [str(bronze)],
+            "year_month": "2026-08",
+            "collected_at": "2026-08-21T12:34:56.123456Z",
+            "row_count": 1,
+            "file_size_bytes": bronze.stat().st_size,
+        },
+        params={
+            "base_dir": str(tmp_path),
+            "silver_dir": str(tmp_path / "silver"),
+            "service_area": "NYC",
+        },
+        run_id="manual__schema-expanded",
+    )
+
+    assert (bronze.parent / "_SUCCESS").is_file()
+    assert not (bronze.parent / "_QUARANTINED.json").exists()
+    assert "Bronze 스키마 확장" in caplog.text
+
+
+def test_Silver_검증이_실패하면_산출물을_보존하고_격리한다(tmp_path, monkeypatch):
+    final = tmp_path / "year_month=2026-08" / SOURCE_VERSION
+    part = final / "data.parquet"
+    part.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), part)
+    monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
+
+    with pytest.raises(ValueError, match="행 수가 Bronze와 다릅니다"):
+        DAG.get_task("validate_silver").python_callable(
+            {"locations": [str(part)], "row_count": 1, "year_month": "2026-08"},
+            {"row_count": 2, "silver_version_path": str(final)},
+            run_id="manual__silver-invalid",
+        )
+
+    assert part.is_file()
+    assert (final / "_QUARANTINED.json").is_file()
+    assert not (final / "_SUCCESS").exists()
 
 
 def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):

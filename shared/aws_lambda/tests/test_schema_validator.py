@@ -29,16 +29,18 @@ def expected_schema():
 
 def test_동일한_스키마는_diff가_없다(expected_schema):
     data = _create_parquet_bytes(expected_schema)
-    diffs = validate_parquet_schema(data, expected_schema)
-    assert diffs == []
+    result = validate_parquet_schema(data, expected_schema)
+    assert result.diffs == ()
+    assert result.errors == ()
+    assert result.warnings == ()
 
 
 def test_누락된_컬럼_감지(expected_schema):
     actual_schema = pa.schema([("col_a", pa.string())])
     data = _create_parquet_bytes(actual_schema)
-    diffs = validate_parquet_schema(data, expected_schema)
-    assert len(diffs) == 1
-    assert "❌ 누락된 컬럼: `col_b`" in diffs[0]
+    result = validate_parquet_schema(data, expected_schema)
+    assert len(result.errors) == 1
+    assert "❌ 누락된 컬럼: `col_b`" in result.missing_columns[0]
 
 
 def test_신규_추가된_컬럼_감지(expected_schema):
@@ -50,9 +52,10 @@ def test_신규_추가된_컬럼_감지(expected_schema):
         ]
     )
     data = _create_parquet_bytes(actual_schema)
-    diffs = validate_parquet_schema(data, expected_schema)
-    assert len(diffs) == 1
-    assert "➕ 신규 추가된 컬럼: `col_c`" in diffs[0]
+    result = validate_parquet_schema(data, expected_schema)
+    assert result.errors == ()
+    assert len(result.warnings) == 1
+    assert "➕ 신규 추가된 컬럼: `col_c`" in result.extra_columns[0]
 
 
 def test_타입_불일치_감지(expected_schema):
@@ -63,16 +66,22 @@ def test_타입_불일치_감지(expected_schema):
         ]
     )
     data = _create_parquet_bytes(actual_schema)
-    diffs = validate_parquet_schema(data, expected_schema)
-    assert len(diffs) == 1
-    assert "⚠️ 타입 불일치 컬럼 `col_b`" in diffs[0]
+    result = validate_parquet_schema(data, expected_schema)
+    assert len(result.errors) == 1
+    assert "⚠️ 타입 불일치 컬럼 `col_b`" in result.type_mismatches[0]
 
 
 def test_손상된_바이너리_입력_시_파싱_실패_메시지_반환(expected_schema):
     data = b"invalid_parquet_bytes"
-    diffs = validate_parquet_schema(data, expected_schema)
-    assert len(diffs) == 1
-    assert "⚠️ Parquet 메타데이터 파싱 실패" in diffs[0]
+    result = validate_parquet_schema(data, expected_schema)
+    assert len(result.errors) == 1
+    assert "⚠️ Parquet 메타데이터 파싱 실패" in result.parse_error
+
+
+def test_이미_읽은_PyArrow_스키마도_검증한다(expected_schema):
+    result = validate_parquet_schema(expected_schema, expected_schema)
+
+    assert result.diffs == ()
 
 
 def test_slack_webhook_url이_없으면_알림을_보내지_않는다(monkeypatch):
