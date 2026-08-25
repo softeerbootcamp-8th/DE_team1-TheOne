@@ -21,6 +21,7 @@ from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.slack_quality_warning import send_quality_warning
 from shared.airflow.common.validation import (
     S3Location,
+    gx_data_docs_location,
     parquet_file,
     parse_location,
     parse_handler_result,
@@ -344,11 +345,21 @@ def _validate_bronze(state: dict, context: dict) -> dict:
             meta={"severity": "warning"},
         )
     )
+    bronze_location = parse_location(result["locations"][0])
     run_gx_validation(
         summary,
         expectations,
         suite_name="monthly_taxi_trip_bronze_suite",
         layer="bronze",
+        data_docs_s3_location=(
+            gx_data_docs_location(
+                bronze_location,
+                layer="bronze",
+                dataset="monthly_taxi_trip",
+            )
+            if isinstance(bronze_location, S3Location)
+            else None
+        ),
     )
     invalid_ratio = float(summary.at[0, "invalid_required_row_ratio"])
     extra_columns = [
@@ -461,6 +472,13 @@ def _validate_silver(raw_result: dict) -> None:
         expectations,
         suite_name="monthly_taxi_trip_silver_suite",
         layer="silver",
+        data_docs_s3_location=(
+            gx_data_docs_location(
+                part_paths[0], layer="silver", dataset="monthly_taxi_trip"
+            )
+            if isinstance(part_paths[0], S3Location)
+            else None
+        ),
     )
 
     silver_rows = int(summary["row_count"].sum())

@@ -14,11 +14,13 @@ from airflow.sdk import task
 from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
+    S3Location,
     layout_tail,
     location_size,
     parse_handler_result,
     parse_location,
     require_file,
+    run_file_gx_validation,
     run_quality_gate,
 )
 
@@ -26,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 HANDLER_NAME = "eia_electricity_price_raw_to_bronze"
+DATASET = "eia_electricity_price"
 
 
 def _layout():
@@ -82,4 +85,12 @@ def _validate_bronze(result: dict, context: dict) -> None:
     size = location_size(path)
     if size < layout.ELECTRICITY_MIN_BYTES:
         raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({path})")
+    if isinstance(path, S3Location):
+        run_file_gx_validation(
+            size_bytes=size,
+            minimum_bytes=layout.ELECTRICITY_MIN_BYTES,
+            dataset=DATASET,
+            layer="bronze",
+            data_location=path,
+        )
     logger.info("bronze 검증 통과: %s (%d bytes)", path, size)
