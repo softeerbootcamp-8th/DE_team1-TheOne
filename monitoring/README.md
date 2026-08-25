@@ -1,4 +1,4 @@
-# EMR Serverless 모니터링
+# 모니터링 스택 (Prometheus · Grafana)
 
 `theone-infrastructure-prod` CloudWatch 대시보드에서 다음을 확인합니다.
 
@@ -74,10 +74,7 @@ NAT 라우팅을 담당하므로 `net.ipv4.ip_forward` 를 건드리지 않는 �
 
 | 파일 | 내용 |
 |---|---|
-| `dashboard.json` | 대시보드 본문. `${AWS_REGION}`, `${EMR_APPLICATION_ID}` 를 `envsubst` 로 치환 |
 | `stack/grafana/provisioning/alerting/` | Grafana Slack 알림 (수신처 · 경로 · 규칙) |
-| `alert-topic-policy.json` | EventBridge 가 Topic 에 발행하도록 허용하는 정책 |
-| `emr-failure-event-pattern.json` | `FAILED`/`CANCELLED` 만 걸러내는 이벤트 패턴 |
 
 ### 위젯을 추가할 때 — `SEARCH()` 는 차원 조합을 고정해야 합니다
 
@@ -346,3 +343,46 @@ GitHub Secret SLACK_WEBHOOK_URL
 
 Grafana 가 만드는 `grafana-default-email` 은 SMTP 미설정으로 실패합니다. 알림 경로가
 `slack` 을 가리키므로 실제로 쓰이지 않지만, 로그에 SMTP 오류가 보이면 이것입니다.
+
+
+## EMR Serverless — CloudWatch 대시보드에서 이관
+
+예전에는 CloudWatch 대시보드(`dashboard.json`)와 EventBridge → SNS → 이메일이었습니다.
+둘 다 걷어내고 Grafana 로 모았습니다.
+
+**옮긴 이유는 알림입니다.** CloudWatch 대시보드에는 알림이 없어서, CPU 가 상한에 붙어
+있어도 사람이 열어보기 전까지 아무도 몰랐습니다.
+
+```
+Grafana → Dashboards → theone → EMR Serverless
+```
+
+| 패널 | 내용 |
+|---|---|
+| 작업 상태 | Running · Pending · Failed · Success |
+| 메모리 사용 (GB) | 워커 실사용량 + 용량 상한선 |
+| CPU 사용 (vCPU) | 워커 실사용량 + 용량 상한선 |
+| 워커 수 | Running · 생성 대기 |
+
+알림 2건:
+
+| 규칙 | 지표 | 대체한 것 |
+|---|---|---|
+| EMR 작업 실패 | `FailedJobs` | EventBridge → SNS → 이메일 |
+| EMR 용량 상한 도달 | `CPUAllocated >= MaxCPUAllowed`, 15분 | **새로 생긴 것** |
+
+### 질의할 때 두 가지
+
+**`ApplicationName` 을 함께 줘야 합니다.** `ApplicationId` 만 주면 `matchExact` 가 맞지
+않아 **0계열**이 됩니다 — 실제 차원 조합이 `{ApplicationId, ApplicationName}` 이라서요.
+패널은 에러 없이 비어 있어 눈으로만 봐서는 원인을 알 수 없습니다.
+
+**한 패널에 Metrics Insights 는 하나뿐입니다.** `GetMetricData` 가 호출당 하나만 받고
+Grafana 도 같은 제한입니다. 두 개를 넣으면 배포는 통과하고 패널만 깨집니다.
+
+```
+Maximum number of queries (1) exceeded
+```
+
+그래서 워커 실사용량(MI)과 용량 상한(일반 질의)을 한 패널에 두고, 사용량과 할당량을
+동시에 그리지는 못합니다.

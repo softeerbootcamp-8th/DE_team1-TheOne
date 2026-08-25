@@ -1,0 +1,365 @@
+{
+  "uid": "theone-emr",
+  "title": "EMR Serverless",
+  "tags": [
+    "theone",
+    "emr"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": {
+    "from": "now-12h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "작업 상태",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "description": "지금 도는 작업과 최근 결과. 실패가 0이 아니면 Slack 알림도 함께 옵니다.",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "RunningJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "PendingJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "FailedJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "SuccessJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "sum"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "value_and_name",
+        "colorMode": "value"
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "메모리 사용 (GB)",
+      "description": "워커가 실제로 쓴 메모리와 애플리케이션 용량 상한. 상한선에 붙으면 자원이 모자란 것입니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "metricQueryType": 1,
+          "metricEditorMode": 1,
+          "sqlExpression": "SELECT SUM(WorkerMemoryUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "WorkerMemoryUsed",
+          "statistic": "Sum",
+          "dimensions": {},
+          "region": "default",
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MaxMemoryAllowed",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CPU 사용 (vCPU)",
+      "description": "워커가 실제로 쓴 CPU 와 상한. CPU 는 양이 아니라 속도입니다 — 코어 N개를 쉬지 않고 돌리는 만큼.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "metricQueryType": 1,
+          "metricEditorMode": 1,
+          "sqlExpression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "WorkerCpuUsed",
+          "statistic": "Sum",
+          "dimensions": {},
+          "region": "default",
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MaxCPUAllowed",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "워커 수",
+      "description": "생성 대기가 계속 남으면 용량 상한에 막힌 것입니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "RunningWorkerCount",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "PendingCreationWorkerCount",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

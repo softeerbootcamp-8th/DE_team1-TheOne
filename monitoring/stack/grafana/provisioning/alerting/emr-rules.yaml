@@ -1,0 +1,180 @@
+# EMR Serverless 알림 규칙 (CloudWatch 데이터소스).
+#
+# 작업 실패는 예전에 EventBridge -> SNS -> 이메일로 갔습니다. 그 경로를 걷어내고
+# 여기로 옮깁니다 — 호스트·Lambda 와 같은 Slack 수신처를 쓰므로 창구가 하나가 됩니다.
+#
+# 용량 상한 규칙은 **새로 생기는 것**입니다. CloudWatch 대시보드에는 알림이 없어서,
+# CPU 가 상한에 붙어 있어도 사람이 열어보기 전까지 아무도 몰랐습니다.
+#
+# Lambda 규칙과 같은 이유로 A -> reduce -> threshold 단계를 거칩니다. Grafana 알림은
+# 축약된 값만 임계와 비교할 수 있고 CloudWatch 는 항상 시계열입니다.
+#
+# 차원에 ApplicationName 을 함께 줍니다. ApplicationId 만 주면 matchExact 가 맞지 않아
+# 0계열이 되고, 규칙은 남고 평가만 비어 있게 됩니다(실측).
+apiVersion: 1
+groups:
+- orgId: 1
+  name: emr
+  folder: theone
+  interval: 1m
+  rules:
+  - uid: theone-emr-job-failed
+    title: EMR 작업 실패
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: theone-cloudwatch
+      model:
+        refId: A
+        namespace: AWS/EMRServerless
+        metricName: FailedJobs
+        statistic: Sum
+        dimensions:
+          ApplicationId: ${EMR_APPLICATION_ID}
+          ApplicationName: '*'
+        matchExact: true
+        region: default
+        metricQueryType: 0
+        metricEditorMode: 0
+        period: '60'
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: B
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: sum
+        settings:
+          mode: dropNN
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+          operator:
+            type: and
+          query:
+            params:
+            - B
+          reducer:
+            type: last
+            params: []
+          type: query
+        intervalMs: 60000
+        maxDataPoints: 43200
+    noDataState: OK
+    execErrState: Error
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: EMR Serverless 작업이 실패했습니다. Airflow 태스크 알림도 함께 옵니다.
+  - uid: theone-emr-capacity-full
+    title: EMR 용량 상한 도달
+    condition: E
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: theone-cloudwatch
+      model:
+        refId: A
+        namespace: AWS/EMRServerless
+        metricName: CPUAllocated
+        statistic: Maximum
+        dimensions:
+          ApplicationId: ${EMR_APPLICATION_ID}
+          ApplicationName: '*'
+        matchExact: true
+        region: default
+        metricQueryType: 0
+        metricEditorMode: 0
+        period: '60'
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: B
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: theone-cloudwatch
+      model:
+        refId: B
+        namespace: AWS/EMRServerless
+        metricName: MaxCPUAllowed
+        statistic: Maximum
+        dimensions:
+          ApplicationId: ${EMR_APPLICATION_ID}
+          ApplicationName: '*'
+        matchExact: true
+        region: default
+        metricQueryType: 0
+        metricEditorMode: 0
+        period: '60'
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: reduce
+        expression: A
+        reducer: max
+        settings:
+          mode: dropNN
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: D
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: D
+        type: reduce
+        expression: B
+        reducer: max
+        settings:
+          mode: dropNN
+        intervalMs: 60000
+        maxDataPoints: 43200
+    - refId: E
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: E
+        type: math
+        expression: $C >= $D
+        intervalMs: 60000
+        maxDataPoints: 43200
+    noDataState: OK
+    execErrState: Error
+    for: 15m
+    labels:
+      severity: warning
+    annotations:
+      summary: EMR 이 15분 넘게 CPU 상한에 붙어 있습니다. maximumCapacity 를 올려야 할 수 있습니다.

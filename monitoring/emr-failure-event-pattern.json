@@ -1,8 +1,0 @@
-{
-  "source": ["aws.emr-serverless"],
-  "detail-type": ["EMR Serverless Job Run State Change"],
-  "detail": {
-    "applicationId": ["${EMR_APPLICATION_ID}"],
-    "state": ["FAILED", "CANCELLED"]
-  }
-}

@@ -40,118 +40,6 @@ env:
   RULE_NAME: theone-emr-job-failed-or-cancelled
 
 jobs:
-  deploy:
-    name: EMR dashboard and alerts
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: AWS 임시 자격증명 취득 (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_ROLE_ARN_MONITORING }}
-          aws-region: ${{ vars.AWS_REGION }}
-
-      - name: EMR 대시보드 반영
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
-        run: |
-          set -euo pipefail
-          # 치환하지 않은 ${...} 가 남으면 CloudWatch 가 조용히 빈 위젯을 그립니다.
-          envsubst '$AWS_REGION $EMR_APPLICATION_ID' \
-            < monitoring/dashboard.json > /tmp/dashboard.json
-          if grep -q '\${' /tmp/dashboard.json; then
-            echo "치환되지 않은 플레이스홀더가 남았습니다" >&2
-            grep -n '\${' /tmp/dashboard.json >&2
-            exit 1
-          fi
-          # put-dashboard 는 위젯이 깨져도 성공으로 끝나고 메시지만 돌려줍니다.
-          messages=$(aws cloudwatch put-dashboard \
-            --dashboard-name "$DASHBOARD_NAME" \
-            --dashboard-body file:///tmp/dashboard.json \
-            --query DashboardValidationMessages --output json)
-          if [ "$(printf '%s' "$messages" | tr -d '[:space:]')" != "[]" ]; then
-            echo "대시보드 검증 경고 — 위젯이 깨졌을 수 있습니다:" >&2
-            printf '%s\n' "$messages" >&2
-            exit 1
-          fi
-
-      - name: 알림 Topic 과 EMR 실패 rule 반영
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
-        run: |
-          set -euo pipefail
-          # create-topic 은 같은 이름이면 기존 ARN 을 그대로 돌려줍니다(멱등).
-          TOPIC_ARN=$(aws sns create-topic --name "$TOPIC_NAME" \
-            --query TopicArn --output text)
-          echo "TOPIC_ARN=$TOPIC_ARN" >> "$GITHUB_ENV"
-
-          # arn:aws:sns:<region>:<account>:<name> — 계정은 5번째 필드입니다.
-          AWS_ACCOUNT_ID=$(printf '%s' "$TOPIC_ARN" | cut -d: -f5)
-          case "$AWS_ACCOUNT_ID" in
-            [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]) ;;
-            *) echo "계정 ID 추출 실패: '$AWS_ACCOUNT_ID' (ARN: $TOPIC_ARN)" >&2; exit 1 ;;
-          esac
-          export TOPIC_ARN AWS_ACCOUNT_ID
-          envsubst '$TOPIC_ARN $AWS_ACCOUNT_ID' \
-            < monitoring/alert-topic-policy.json > /tmp/topic-policy.json
-          aws sns set-topic-attributes \
-            --topic-arn "$TOPIC_ARN" \
-            --attribute-name Policy \
-            --attribute-value "$(cat /tmp/topic-policy.json)"
-
-          envsubst '$EMR_APPLICATION_ID' \
-            < monitoring/emr-failure-event-pattern.json > /tmp/event-pattern.json
-          aws events put-rule \
-            --name "$RULE_NAME" \
-            --state ENABLED \
-            --event-pattern "$(cat /tmp/event-pattern.json)" \
-            --query RuleArn --output text
-
-          # put-targets 도 같은 Id 면 덮어씁니다. 다만 개별 target 실패는 예외가 아니라
-          # FailedEntryCount 로만 돌아오므로, 검사하지 않으면 알림이 조용히 안 옵니다.
-          failed=$(aws events put-targets \
-            --rule "$RULE_NAME" \
-            --targets "Id=$TOPIC_NAME,Arn=$TOPIC_ARN" \
-            --query FailedEntryCount --output text)
-          if [ "$failed" != "0" ]; then
-            echo "rule 에 Topic 을 붙이지 못했습니다 (FailedEntryCount=$failed)" >&2
-            aws events put-targets \
-              --rule "$RULE_NAME" \
-              --targets "Id=$TOPIC_NAME,Arn=$TOPIC_ARN" \
-              --query FailedEntries --output json >&2
-            exit 1
-          fi
-
-      - name: 배포 요약
-        env:
-          AWS_REGION: ${{ vars.AWS_REGION }}
-        run: |
-          set -euo pipefail
-          url="https://${AWS_REGION}.console.aws.amazon.com/cloudwatch/home?region=${AWS_REGION}#dashboards:name=${DASHBOARD_NAME}"
-          subs=$(aws sns get-topic-attributes --topic-arn "$TOPIC_ARN" \
-            --query 'Attributes.SubscriptionsConfirmed' --output text)
-          {
-            echo "### EMR 모니터링 배포 완료"
-            echo "- [CloudWatch 대시보드]($url)"
-            echo "- 알림 Topic: \`$TOPIC_ARN\` (확인된 구독 $subs 개)"
-            if [ "$subs" = "0" ]; then
-              echo "- 구독이 0개입니다. 알림을 받으려면 이메일 구독을 1회 추가하세요:"
-              echo '  ```'
-              echo "  aws sns subscribe --topic-arn $TOPIC_ARN \\"
-              echo "    --protocol email --notification-endpoint <메일주소>"
-              echo '  ```'
-            fi
-          } >> "$GITHUB_STEP_SUMMARY"
-
-  # Prometheus·Grafana 설정을 theone-monitoring 에 배포합니다. 이미지는 Docker Hub
-  # 공식 것을 쓰므로 ECR 이 개입하지 않고, 인스턴스 role 에는 SSM 등록 권한만 있습니다.
-  #
-  # SSH 가 아니라 SSM 인 이유 — 인스턴스가 private 서브넷이고 공인 IP 가 없습니다.
-  # 러너에서 SSH 로 붙으려면 보안그룹을 러너 IP 대역(유동)만큼 열고 개인키를 Secrets 에
-  # 넣어야 합니다. 이 저장소의 Secrets 는 0개로 유지합니다.
   stack:
     name: Prometheus and Grafana
     runs-on: ubuntu-latest
@@ -196,6 +84,10 @@ jobs:
                   root / "grafana/provisioning/dashboards/dashboards.yaml",
               "grafana/provisioning/dashboards/lambda.json":
                   root / "grafana/provisioning/dashboards/lambda.json",
+              "grafana/provisioning/dashboards/emr.json":
+                  root / "grafana/provisioning/dashboards/emr.json",
+              "grafana/provisioning/alerting/emr-rules.yaml":
+                  root / "grafana/provisioning/alerting/emr-rules.yaml",
           }
           cmds = ["set -eu", "cd /home/ec2-user/monitoring",
                   "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting "
