@@ -36,10 +36,12 @@ _TABLE_MODELS = {
 # 수동 마스터 테이블이라 전체를 그대로 읽는다.
 _LATEST_VERSION_PARTITION = {
     "driver_aggregation": ("service_area", "year_month"),
-    # recommendation_algorithm_version_id 별로 latest version 을 따로 잡아야
-    # 다른 알고리즘이 더 최근에 재실행돼도 이전 알고리즘 이력이 가려지지 않는다.
+    # recommendation_algorithm_version_id·threshold 별로 latest version 을 따로
+    # 잡아야 다른 알고리즘·threshold 조합이 더 최근에 재실행돼도 이전 조합의
+    # 이력이 가려지지 않는다. RDS 지원 인덱스도 이 순서(#997)로 만들어져 있다.
     "driver_car_suggestion": (
-        "service_area", "year_month", "recommendation_algorithm_version_id"
+        "service_area", "year_month",
+        "recommendation_algorithm_version_id", "threshold",
     ),
     # 알고리즘 축이 없는 실행 계보 — service_area/year_month 당 가장 최근 실행만 본다.
     "silver_lineage": ("service_area", "year_month"),

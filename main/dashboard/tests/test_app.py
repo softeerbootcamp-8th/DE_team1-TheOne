@@ -35,6 +35,7 @@ def _suggestion(
         "driver_id": driver_id,
         "year_month": "2026-01",
         "recommendation_algorithm_version_id": 1,
+        "threshold": -1,
         "manufacturer": "KIA",
         "model_name": "FORTE",
         "model_year": 2024,
@@ -228,3 +229,65 @@ def test_알고리즘_버전별로_필터되고_설명과_silver_출처가_표�
 
     captions = [c.value for c in at.caption]
     assert any("s3://bucket/silver/monthly_taxi_trip" in c for c in captions)
+
+
+def test_threshold가_sentinel뿐이면_콤보박스_대신_캡션만_보인다(tmp_path, monkeypatch):
+    """이슈 #998 — threshold를 안 쓰는 알고리즘(v1)은 콤보박스를 안 띄운다."""
+    monkeypatch.setenv("GOLD_DIR", str(tmp_path))
+    monkeypatch.delenv("DASHBOARD_DATA_SOURCE", raising=False)
+
+    _write_partition(
+        tmp_path,
+        "driver_car_suggestion",
+        "NYC",
+        "2026-01",
+        [_suggestion("D1", 700.0, 20.0)],
+    )
+    _write_partition(
+        tmp_path, "driver_aggregation", "NYC", "2026-01", [_aggregation("D1")]
+    )
+
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    at = AppTest.from_file(APP_PATH)
+    at.run()
+
+    assert not at.exception
+    # 알고리즘·지역·월 3개뿐 — threshold 콤보박스가 없다.
+    assert len(at.selectbox) == 3
+    captions = [c.value for c in at.caption]
+    assert any("임계값을 쓰지 않습니다" in c for c in captions)
+
+
+def test_threshold가_있으면_실제_값들로만_콤보박스를_구성한다(tmp_path, monkeypatch):
+    """이슈 #998 — threshold를 쓰는 알고리즘(v2)은 실제 존재하는 값만 고를 수 있다."""
+    monkeypatch.setenv("GOLD_DIR", str(tmp_path))
+    monkeypatch.delenv("DASHBOARD_DATA_SOURCE", raising=False)
+
+    _write_partition(
+        tmp_path,
+        "driver_car_suggestion",
+        "NYC",
+        "2026-01",
+        [
+            {**_suggestion("D1", 700.0, 20.0), "recommendation_algorithm_version_id": 2, "threshold": 100},
+            {**_suggestion("D2", 900.0, 30.0), "recommendation_algorithm_version_id": 2, "threshold": 300},
+        ],
+    )
+    _write_partition(
+        tmp_path,
+        "driver_aggregation",
+        "NYC",
+        "2026-01",
+        [_aggregation("D1"), _aggregation("D2")],
+    )
+
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    at = AppTest.from_file(APP_PATH)
+    at.run()
+
+    assert not at.exception
+    # 알고리즘·threshold·지역·월 4개 — threshold 콤보박스가 실제 값(100, 300)만 담는다.
+    assert len(at.selectbox) == 4
+    assert sorted(at.selectbox[1].options) == ["$100", "$300"]

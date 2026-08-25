@@ -1,11 +1,12 @@
 """기사별 월간 차량 추천 대시보드.
 
-Gold 2종(`driver_car_suggestion`, `driver_aggregation`)을 읽는다.
-`DASHBOARD_DATA_SOURCE` 환경변수로 로컬 CSV(기본)/RDS를 전환한다 — `datasource.py` 참고.
-두 데이터셋 모두 `service_area`, `year_month` 그레인 — Gold job 산출물.
+Gold 4종(`driver_car_suggestion`, `driver_aggregation`, `recommendation_algorithm`,
+`silver_lineage`)을 읽는다. `DASHBOARD_DATA_SOURCE` 환경변수로 로컬 CSV(기본)/RDS를
+전환한다 — `datasource.py` 참고.
 
 화면 구성은 위에서 아래로 한 줄기다.
-    필터 한 줄 → 히어로(회사 총 매출 증가) → 지표 타일 → 분포·차종 → 선정 게이트 → 리스트 → 기사 상세
+    알고리즘·threshold 선택 → 지역·월 필터 → 히어로(회사 총 매출 증가) → 지표 타일
+    → 분포·차종 → 선정 게이트 → 리스트 → 기사 상세
 필터는 화면 전체를 한 번에 스코프한다 (차트별 필터를 두지 않는다).
 """
 
@@ -17,8 +18,14 @@ import theme
 from datasource import DataSource, build_data_source
 
 # 기사 예상 월 순수익 증가 하한 기본값 (USD). Gold monthly_report 제거(#915) 이후
-# 더 이상 Gold가 계산해주지 않아 대시보드 상수로 둔다.
+# 더 이상 Gold가 계산해주지 않아 대시보드 상수로 둔다. threshold를 안 쓰는 알고리즘
+# (v1)에는 이 값을 그대로 쓴다.
 DEFAULT_THRESHOLD = 500.0
+
+# schema.gold.DriverCarSuggestion.threshold의 sentinel — 알고리즘이 threshold를
+# 쓰지 않으면 이 값으로 통일해 적재된다(#997). 실제 threshold는 항상 0 이상이라
+# 구분된다.
+NO_THRESHOLD = -1
 
 SUGGESTION_COLUMNS = {
     "driver_id": "기사 ID",
@@ -229,8 +236,24 @@ def render() -> None:
         suggestion["recommendation_algorithm_version_id"] == algorithm_id
     ]
 
+    # ── threshold 선택: 이 알고리즘이 실제로 쌓은 값 중에서만 고른다(#998) ──
+    # 값이 전부 sentinel이면 이 알고리즘은 threshold 축이 없다는 뜻 — 셀렉트박스
+    # 대신 캡션만 보여주고, 기존 기본 하한을 그대로 쓴다. 알고리즘 ID로 분기하지
+    # 않아서 나중에 threshold 없는 알고리즘이 늘어도 그대로 통한다.
+    if (suggestion["threshold"] == NO_THRESHOLD).all():
+        st.caption("이 알고리즘은 임계값을 쓰지 않습니다.")
+        threshold = DEFAULT_THRESHOLD
+    else:
+        available_thresholds = sorted(suggestion["threshold"].unique())
+        threshold = st.selectbox(
+            "기사 예상 월 순수익 증가 하한 threshold ($)",
+            available_thresholds,
+            format_func=lambda value: f"${value:,.0f}",
+        )
+        suggestion = suggestion[suggestion["threshold"] == threshold]
+
     # ── 필터 한 줄: 아래 모든 카드·차트·표가 이 값으로 스코프된다 ──
-    f1, f2, f3 = st.columns([1, 1, 2], vertical_alignment="bottom")
+    f1, f2 = st.columns(2, vertical_alignment="bottom")
     service_area = f1.selectbox("지역", sorted(suggestion["service_area"].unique()))
     area_suggestion = suggestion[suggestion["service_area"] == service_area]
     periods = sorted(area_suggestion["year_month"].unique(), reverse=True)
@@ -238,34 +261,12 @@ def render() -> None:
 
     month_suggestion = area_suggestion[area_suggestion["year_month"] == period]
 
-    threshold = f3.slider(
-        "기사 예상 월 순수익 증가 하한 ($)",
-        min_value=0.0,
-        max_value=float(month_suggestion["expected_net_profit_increase"].max()),
-        value=DEFAULT_THRESHOLD,
-        step=50.0,
-        format="$%d",
-        help=rf"기본 하한은 \${DEFAULT_THRESHOLD:,.0f} 입니다.",
-    )
-
     scope = recommendation_scope(
         suggestion, aggregation, service_area, period, threshold
     )
 
     with head_slot:
         _head(period, len(month_suggestion))
-
-    if threshold != DEFAULT_THRESHOLD:
-        default_count = len(
-            recommendation_scope(
-                suggestion, aggregation, service_area, period, DEFAULT_THRESHOLD
-            )
-        )
-        st.caption(
-            rf"기본 하한(\${DEFAULT_THRESHOLD:,.0f}, "
-            f"{default_count:,}명) 대신 "
-            rf"하한 \${threshold:,.0f} 로 다시 계산한 값입니다."
-        )
 
     agg = _aggregates(scope)
     _hero(agg["total_revenue"], int(agg["count"]), agg["avg_profit"],
