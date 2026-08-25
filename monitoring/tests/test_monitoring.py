@@ -385,3 +385,21 @@ def test_CloudWatch_대시보드와_SNS_경로를_남기지_않는다():
         assert gone not in workflow, f"{gone} 가 남아 있습니다"
     for gone in ("dashboard.json", "alert-topic-policy.json", "emr-failure-event-pattern.json"):
         assert not (MONITORING / gone).exists(), f"{gone} 가 남아 있습니다"
+
+
+def test_패널이_AWS_콘솔로_나가는_링크를_지운다():
+    """CloudWatch 데이터소스가 계열마다 붙이는 딥링크는 URL 이 깨져 있습니다.
+
+    공백을 `+` 로 인코딩해서 AWS 콘솔이 SEARCH 식을 못 읽고 "Something went wrong." 을
+    냅니다. 링크는 대시보드 JSON 이 아니라 백엔드가 질의 응답에 실어 보내므로
+    데이터소스 설정으로는 끌 수 없습니다 — 패널 오버라이드로 지웁니다.
+    """
+    for name in ("emr.json", "lambda.json"):
+        dashboard = json.loads((DASHBOARDS / name).read_text())
+        for panel in dashboard["panels"]:
+            cleared = any(
+                prop["id"] == "links" and prop["value"] == []
+                for override in panel["fieldConfig"]["overrides"]
+                for prop in override["properties"]
+            )
+            assert cleared, f"{name} / {panel['title']}: 링크를 지우지 않습니다"

@@ -385,6 +385,31 @@ Grafana → Dashboards → theone → EMR Serverless
 `oam:*` 은 교차 계정 관측(Observability Access Manager) 기능을 쓰는지 확인하는 호출입니다.
 우리는 안 쓰지만 Grafana 가 항상 물어봅니다.
 
+### 패널의 값을 클릭해도 밖으로 안 나갑니다
+
+CloudWatch 데이터소스는 계열마다 **"View in CloudWatch console"** 링크를 붙입니다.
+대시보드 JSON 이 아니라 **백엔드가 질의 응답에 실어 보내서**, 데이터소스 설정으로 끌 수
+없습니다 (`jsonData` 에 해당 옵션이 없습니다).
+
+그런데 그 URL 이 깨져 있습니다 — 공백을 `+` 로 인코딩합니다.
+
+```
+SEARCH('{"AWS/EMRServerless",...}+MetricName="RunningJobs"+...',+'Sum',+60)
+                                 ↑                          ↑     ↑
+                            공백이어야 할 자리
+```
+
+AWS 콘솔이 이 `+` 를 글자 그대로 읽어 SEARCH 식이 깨지고 **"Something went wrong.
+Please check the console log."** 를 냅니다.
+
+패널마다 필드 오버라이드로 링크를 비웁니다. 오버라이드는 데이터소스가 준 설정 위에
+적용되므로 이걸로 지워집니다.
+
+```json
+{"matcher": {"id": "byRegexp", "options": ".*"},
+ "properties": [{"id": "links", "value": []}]}
+```
+
 ### 질의할 때 두 가지
 
 **`ApplicationName` 을 함께 줘야 합니다.** `ApplicationId` 만 주면 `matchExact` 가 맞지
