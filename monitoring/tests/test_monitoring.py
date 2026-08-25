@@ -321,7 +321,8 @@ def test_emr_대시보드가_파일로_있다():
 
     assert dashboard["uid"] == "theone-emr"
     titles = {p["title"] for p in dashboard["panels"]}
-    assert {"작업 상태", "메모리 사용 (GB)", "CPU 사용 (vCPU)", "워커 수"} <= titles
+    assert {"진행 중", "기간 결과 (합계)", "메모리 사용 (GB)",
+            "CPU 사용 (vCPU)", "워커 수"} <= titles
 
 
 def test_emr_질의는_ApplicationName_을_함께_준다():
@@ -498,3 +499,29 @@ def test_용량_알림은_상한_도달로_판정한다():
                 continue
             math = next(q for q in rule["data"] if q["model"].get("type") == "math")
             assert math["model"]["expression"] == "$C >= $D"
+
+
+def test_작업_지표는_성격에_맞는_집계를_쓴다():
+    """EMR 작업 지표는 성격이 둘로 갈립니다.
+
+        RunningJobs / PendingJobs    순간 상태  — 지금 몇 개인지
+        SuccessJobs / FailedJobs     이벤트 카운트 — 성공·실패할 때마다 1분간 1
+
+    넷을 한 패널에 `lastNotNull` 로 두면 Success 가 거의 항상 0 으로 보입니다.
+    실제로 12시간에 7건 성공했는데 화면에는 0 이었습니다.
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+    stats = [p for p in dashboard["panels"] if p["type"] == "stat"]
+    assert len(stats) >= 2, "순간 상태와 이벤트 카운트를 한 패널에 섞지 않습니다"
+
+    EVENT = {"SuccessJobs", "FailedJobs"}
+    STATE = {"RunningJobs", "PendingJobs"}
+    for panel in stats:
+        metrics = {t["metricName"] for t in panel["targets"]}
+        calc = panel["options"]["reduceOptions"]["calcs"][0]
+        if metrics <= EVENT:
+            assert calc == "sum", f"{panel['title']}: 이벤트 카운트는 합계여야 합니다"
+        elif metrics <= STATE:
+            assert calc == "lastNotNull", f"{panel['title']}: 순간 상태는 마지막 값입니다"
+        else:
+            raise AssertionError(f"{panel['title']}: 성격이 다른 지표가 섞였습니다 {metrics}")
