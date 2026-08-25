@@ -11,7 +11,7 @@ Bronze 원본 검증은 여기 없습니다 — `test_eia_raw_to_bronze_validati
 5. 잠정값(`Preliminary`)은 실패시키지 않고 통과 — 정상 산출물이지만 재생성 시 값이 바뀜
 6. gas·electricity 둘 다 같은 service_area 경로에서만 찾음
 7. 비지역 예전 경로의 CLEAN은 대상 지역 데이터로 사용하지 않음
-8. 통합 Silver 검증과 공개는 `input_version=<상류조합>/ny_fuel.parquet` 경로를 사용
+8. 통합 Silver 검증과 공개는 `input_version=<상류조합>/fuel.parquet` 경로를 사용
 
 Lambda 핸들러는 부르지 않습니다 — 파일을 직접 놓고 검증 함수만 확인합니다.
 """
@@ -353,7 +353,7 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
             "row_count": 31,
             "locations": [
                 "s3://data-lake/silver/gas_ev_price/service_area=NYC/"
-                f"year_month=2024-03/{INPUT_VERSION}/ny_fuel.parquet"
+                f"year_month=2024-03/{INPUT_VERSION}/fuel.parquet"
             ],
         },
         "NYC",

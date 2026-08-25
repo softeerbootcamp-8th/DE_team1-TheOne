@@ -4,7 +4,7 @@
 1. 더 최신 월이 있어도 Gold 대상 year_month 파일을 고른다
 2. 대상 월의 Parquet이나 `_SUCCESS`가 없으면 FileNotFoundError
 3. 로컬·S3 모두 같은 지역·월 계약을 쓴다
-4. 버전 파일명은 `ny_fuel.parquet`만 허용하고 옛 이름은 읽지 않는다
+4. 버전 파일명은 `fuel.parquet`만 허용하고 옛 이름은 읽지 않는다
 
 이슈 #912 (월별 3종의 공개 버전):
 5. `_SUCCESS`가 있는 source_collected_at 디렉터리만 공개 버전으로 고른다
@@ -38,10 +38,10 @@ def _write_fuel_version(
 ):
     version = partition / f"input_version=gas-{gas_token}__ev-{ev_token}"
     version.mkdir(parents=True, exist_ok=True)
-    (version / "ny_fuel.parquet").touch()
+    (version / "fuel.parquet").touch()
     if complete:
         (version / "_SUCCESS").touch()
-    return version / "ny_fuel.parquet"
+    return version / "fuel.parquet"
 
 
 @pytest.fixture
@@ -99,11 +99,11 @@ def test_로컬_연료비는_지역별로_자기_파일만_고른다(tmp_path):
 
     assert job.monthly_fuel_price_path(str(tmp_path), "2026-05", "NYC") == str(
         tmp_path / "service_area=NYC" / "year_month=2026-05"
-        / f"input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}" / "ny_fuel.parquet"
+        / f"input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}" / "fuel.parquet"
     )
     assert job.monthly_fuel_price_path(str(tmp_path), "2026-09", "TX") == str(
         tmp_path / "service_area=TX" / "year_month=2026-09"
-        / f"input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}" / "ny_fuel.parquet"
+        / f"input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}" / "fuel.parquet"
     )
 
 
@@ -114,7 +114,7 @@ def test_S3_연료비도_지역별로_자기_파일만_고른다(s3_client):
             Bucket=S3_BUCKET,
             Key=(
                 f"{prefix}/service_area={area}/year_month={year_month}/"
-                f"input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}/ny_fuel.parquet"
+                f"input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}/fuel.parquet"
             ),
             Body=b"x",
         )
@@ -164,7 +164,7 @@ def test_S3에_더_최신_월이_있어도_대상월_파일을_고른다(s3_clie
             Key=(
                 f"{prefix}/service_area={SERVICE_AREA}/"
                 f"year_month={year_month}/input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}/"
-                "ny_fuel.parquet"
+                "fuel.parquet"
             ),
             Body=b"x",
         )
@@ -184,7 +184,7 @@ def test_S3에_더_최신_월이_있어도_대상월_파일을_고른다(s3_clie
     assert result == (
         f"s3://{S3_BUCKET}/{prefix}/service_area=NYC/"
         f"year_month=2026-01/input_version=gas-{GAS_TOKEN}__ev-{EV_TOKEN}/"
-        "ny_fuel.parquet"
+        "fuel.parquet"
     )
 
 

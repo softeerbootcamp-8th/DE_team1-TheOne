@@ -10,7 +10,7 @@ SOURCE_COLLECTED_AT_PATTERN = re.compile(
 INPUT_VERSION_PATTERN = re.compile(
     r"^input_version=gas-(\d{8}T\d{12}Z)__ev-(\d{8}T\d{12}Z)$"
 )
-FUEL_FILE_NAME = "ny_fuel.parquet"
+FUEL_FILE_NAME = "fuel.parquet"
 
 
 def require_collected_at_token(token: str) -> str:

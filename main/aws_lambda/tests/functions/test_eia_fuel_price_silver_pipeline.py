@@ -15,7 +15,7 @@
 8. 지역 경로와 옛 경로가 모두 있어도 지역 경로만 읽는다
 9. service_area를 TX로 주면 읽기·쓰기 모두 그 경로로 나간다 — 두 CLEAN을 읽는 지역과
    결합 결과를 쓰는 지역이 같음을 함께 증명 (#845)
-10. 통합 Silver는 두 CLEAN 원천 조합의 `input_version`과 `ny_fuel.parquet`를 쓴다
+10. 통합 Silver는 두 CLEAN 원천 조합의 `input_version`과 `fuel.parquet`를 쓴다
 11. 같은 input_version 재처리는 같은 파일을 덮어쓰고, 다른 버전은 새 파일을 만든다
 """
 
@@ -179,7 +179,7 @@ def test_산출물_경로는_데이터의_달을_쓴다(tmp_path):
 
     assert (
         "gas_ev_price/service_area=NYC/year_month=2025-05/"
-        f"{INPUT_VERSION}/ny_fuel.parquet"
+        f"{INPUT_VERSION}/fuel.parquet"
         in result["locations"][0]
     )
 
@@ -247,7 +247,7 @@ def test_산출물_S3_키도_데이터의_달을_쓴다():
         "2025-05", GAS_SOURCE_TOKEN, EV_SOURCE_TOKEN, SERVICE_AREA
     ) == (
         "silver/gas_ev_price/service_area=NYC/"
-        f"year_month=2025-05/{INPUT_VERSION}/ny_fuel.parquet"
+        f"year_month=2025-05/{INPUT_VERSION}/fuel.parquet"
     )
 
 
@@ -306,7 +306,7 @@ def test_service_area를_TX로_주면_읽기_쓰기_모두_그_경로로_나간�
 
     assert (
         "gas_ev_price/service_area=TX/year_month=2025-05/"
-        f"{INPUT_VERSION}/ny_fuel.parquet"
+        f"{INPUT_VERSION}/fuel.parquet"
         in result["locations"][0]
     )
 
