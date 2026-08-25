@@ -32,10 +32,10 @@ from main.spark.jobs.service_area_path import (
     service_area_prefix,
     service_area_root,
 )
+from main.spark.jobs.silver_to_gold.recommendation_algorithm import ProfitFirstAlgorithm
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
-    build_monthly_vehicle_recommendation,
     enrich_trips_with_fuel_cost,
     validate_gold_business_invariants,
 )
@@ -317,7 +317,7 @@ def main(args_list: list[str] | None = None) -> None:
             enriched, year_month, args.service_area
         ).persist()
         driver_profit = build_driver_monthly_profit(driver_metrics)
-        recommendation = build_monthly_vehicle_recommendation(
+        recommendation = ProfitFirstAlgorithm().recommend(
             driver_metrics, inventory
         ).persist()
         validate_gold_business_invariants(

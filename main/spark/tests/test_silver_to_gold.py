@@ -13,7 +13,7 @@ import pytest
 from pyspark.sql import functions as F
 
 from main.spark.jobs.silver_to_gold import transformer as gold_transformer
-from main.spark.jobs.silver_to_gold.transformer import build_monthly_vehicle_recommendation
+from main.spark.jobs.silver_to_gold.recommendation_algorithm import ProfitFirstAlgorithm
 from shared.spark.common.session import get_or_create_spark_session
 
 
@@ -54,7 +54,7 @@ def test_현재보유차량을_차감하고_재고0은_skip한다(spark):
         ],
     )
 
-    recommendation = build_monthly_vehicle_recommendation(driver_metrics, inventory)
+    recommendation = ProfitFirstAlgorithm().recommend(driver_metrics, inventory)
     assigned = {row.driver_id: row.vehicle_model_id for row in recommendation.collect()}
 
     assert assigned == {"D1": "B", "D2": "A", "D3": "B"}
@@ -92,7 +92,7 @@ def test_매출_기여가_없는_차량은_순수익이_더_높아도_추천에�
         ],
     )
 
-    recommendation = build_monthly_vehicle_recommendation(driver_metrics, inventory)
+    recommendation = ProfitFirstAlgorithm().recommend(driver_metrics, inventory)
     assigned = {row.driver_id: row.vehicle_model_id for row in recommendation.collect()}
 
     assert assigned == {"D1": "A"}
