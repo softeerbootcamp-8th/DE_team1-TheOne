@@ -1,6 +1,7 @@
 """기사 차량 월별 스냅샷 수집·정제 Lambda 실행과 Bronze·Silver 검증 함수."""
 
 import importlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -120,13 +121,35 @@ def validate_bronze_task(result: dict, **context) -> dict:
     )
 
 
+def _bronze_recon_counts(table: pa.Table) -> dict:
+    """Bronze 에서 Silver 가 몇 행이 되어야 하는지 미리 계산합니다.
+
+    Silver 변환이 행을 줄이는 경로는 **퇴사 기사 제외 하나뿐**입니다. 나머지 규칙
+    (필수값·리스료·driver_id 중복)은 걸러내지 않고 예외를 던지므로 보존식에
+    들어가지 않습니다.
+
+        Bronze = Silver + 퇴사 기사
+
+    Bronze 쪽을 여기서 세는 이유 — 예전에는 핸들러가 보고한 행 수를 그 자신의
+    기대값으로 넘겨(`silver_result["row_count"]`) 항진명제였습니다. 변환과 적재가
+    같이 틀리면 통과했습니다.
+    """
+    if "exit_date" not in table.column_names:
+        raise ValueError("Bronze 에 exit_date 가 없어 보존식을 세울 수 없습니다")
+    # 퇴사자 = exit_date 가 있는 행. NULL 이 아직 재직 중입니다.
+    exited = table.num_rows - table["exit_date"].null_count
+    return {"bronze_row_count": table.num_rows, "exited_driver_rows": exited}
+
+
 def _validate_bronze(
     state: dict, params: dict, context: dict | None = None
 ) -> dict:
     result = state["result"]
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     service_area = resolve_service_area(params)
-    path, schema_result = _validate_bronze_result(result, base_dir, service_area)
+    path, schema_result, counts = _validate_bronze_result(
+        result, base_dir, service_area
+    )
     if schema_result.missing_columns:
         logger.warning(
             "기사 차량 스냅샷 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집",
@@ -134,7 +157,9 @@ def _validate_bronze(
         )
         result = _collect_bronze(params)
         state["result"] = result
-        path, schema_result = _validate_bronze_result(result, base_dir, service_area)
+        path, schema_result, counts = _validate_bronze_result(
+            result, base_dir, service_area
+        )
     for warning in schema_result.warnings:
         logger.warning("기사 차량 스냅샷 Bronze 스키마 확장: %s", warning)
     if schema_result.errors:
@@ -163,6 +188,7 @@ def _validate_bronze(
     return {
         **result,
         "silver_version_path": str(version_path),
+        **counts,
     }
 
 
@@ -205,17 +231,16 @@ def _validate_bronze_result(
     result: dict,
     base_dir: str | Path,
     service_area: str,
-) -> tuple[Path | S3Location, SchemaValidationResult]:
+) -> tuple[Path | S3Location, SchemaValidationResult, dict]:
     path, _ = validate_monthly_parquet_bronze(
         result,
         dataset_dir=DATASET,
         base_dir=base_dir,
         service_area=service_area,
     )
-    schema_result = validate_parquet_schema(
-        _read_bronze_table(path).schema, BRONZE_SCHEMA
-    )
-    return path, schema_result
+    table = _read_bronze_table(path)
+    schema_result = validate_parquet_schema(table.schema, BRONZE_SCHEMA)
+    return path, schema_result, _bronze_recon_counts(table)
 
 
 @task(task_id="bronze_to_silver")
@@ -241,7 +266,9 @@ def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> No
     version_path = parse_location(raw_result["silver_version_path"])
     run_quality_gate(
         version_path,
-        lambda: _validate_silver_output(silver_result, version_path, context),
+        lambda: _validate_silver_output(
+            silver_result, raw_result, version_path, context
+        ),
         layer="silver",
         context=context,
     )
@@ -249,6 +276,7 @@ def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> No
 
 def _validate_silver_output(
     silver_result: dict,
+    raw_result: dict,
     version_path: Path | S3Location,
     context: dict | None = None,
 ) -> None:
@@ -259,5 +287,41 @@ def _validate_silver_output(
     )
     if silver_result["locations"] != [expected_part]:
         raise ValueError("기사 차량 스냅샷 Silver 경로가 Bronze와 다릅니다")
-    # Silver 는 퇴사 기사를 제외하므로 Bronze 와 행 수가 다를 수 있습니다.
-    validate_silver_result(silver_result, silver_result["row_count"], context)
+    validate_silver_result(silver_result, _expected_silver_rows(raw_result), context)
+
+
+def _expected_silver_rows(raw_result: dict) -> int:
+    """`Bronze = Silver + 퇴사 기사` 로 Silver 행 수를 Bronze 에서 되짚습니다.
+
+    Silver 는 퇴사 기사를 제외하니 Bronze 와 행 수가 다릅니다. 그렇다고 비교를
+    포기하면(예전에는 핸들러가 보고한 값을 그 자신의 기대값으로 넘겼습니다) 변환과
+    적재가 같이 틀렸을 때 통과합니다. 빠진 만큼이 설명되는지를 봅니다.
+    """
+    try:
+        bronze_rows = int(raw_result["bronze_row_count"])
+        exited = int(raw_result["exited_driver_rows"])
+    except KeyError as exc:
+        # 없는 걸 통과시키면 옛 코드로 돈 실행이 조용히 검사를 건너뜁니다.
+        raise ValueError(
+            f"Bronze 검증이 보존식 재료를 넘기지 않았습니다: {exc.args[0]}"
+        ) from None
+    expected = bronze_rows - exited
+    if expected < 0:
+        raise ValueError(
+            f"퇴사 기사 수가 Bronze 행 수를 넘습니다: "
+            f"bronze={bronze_rows} exited={exited}"
+        )
+    logger.info(
+        "reconciliation %s",
+        json.dumps(
+            {
+                "dataset": DATASET,
+                "input_rows": bronze_rows,
+                "output_rows": expected,
+                "excluded_rows": exited,
+                "rule": "input = output + excluded",
+            },
+            ensure_ascii=False,
+        ),
+    )
+    return expected

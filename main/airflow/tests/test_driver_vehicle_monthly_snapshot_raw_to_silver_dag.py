@@ -203,7 +203,7 @@ def test_필수컬럼이_누락되면_원천부터_다시_수집한다(monkeypat
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir, service_area: next(results),
+        lambda result, base_dir, service_area: (*next(results), {"bronze_row_count": 1, "exited_driver_rows": 0}),
     )
     monkeypatch.setattr(
         task_module,
@@ -236,7 +236,7 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
         task_module,
         "_validate_bronze_result",
         lambda result, base_dir, service_area: validated.append(result)
-        or (Path("same.parquet"), SchemaValidationResult()),
+        or (Path("same.parquet"), SchemaValidationResult(), {"bronze_row_count": 1, "exited_driver_rows": 0}),
     )
 
     result = _raw_result(source_changed=False)
@@ -303,6 +303,8 @@ def test_Silver검증후_최종버전에_SUCCESS를_공개한다(tmp_path, monke
         {
             "row_count": 1,
             "silver_version_path": str(final),
+            "bronze_row_count": 1,
+            "exited_driver_rows": 0,
         },
     )
 
@@ -325,7 +327,7 @@ def test_Bronze_재수집에_성공하면_최신_파티션만_공개한다(tmp_p
     monkeypatch.setattr(
         task_module,
         "_validate_bronze_result",
-        lambda result, base_dir, service_area: next(results),
+        lambda result, base_dir, service_area: (*next(results), {"bronze_row_count": 1, "exited_driver_rows": 0}),
     )
     monkeypatch.setattr(task_module, "_collect_bronze", lambda params: recollected)
 
@@ -431,6 +433,7 @@ def test_S3_Bronze_추가컬럼은_GX_Data_Docs_기록을_활성화한다(monkey
         lambda *args: (
             location,
             SchemaValidationResult(extra_columns=("추가 컬럼: source_note",)),
+            {"bronze_row_count": 1, "exited_driver_rows": 0},
         ),
     )
     monkeypatch.setattr(task_module, "read_parquet", lambda path: table)
@@ -506,7 +509,12 @@ def test_Silver_검증이_실패하면_산출물을_보존하고_격리한다(tm
     with pytest.raises(ValueError, match="행 수가 Bronze와 다릅니다"):
         DAG.get_task("validate_silver").python_callable(
             {"locations": [str(part)], "row_count": 2, "year_month": "2026-08"},
-            {"row_count": 2, "silver_version_path": str(final)},
+            {
+                "row_count": 2,
+                "silver_version_path": str(final),
+                "bronze_row_count": 2,
+                "exited_driver_rows": 0,
+            },
             run_id="manual__silver-invalid",
         )
 
@@ -560,3 +568,81 @@ def test_Silver파일이_없으면_검증에서_실패한다(tmp_path):
         task_module.validate_silver_result(
             {"locations": [str(tmp_path / "없는파일.parquet")], "row_count": 1}, 1
         )
+
+
+def test_퇴사자로_설명되지_않는_유실은_막는다(tmp_path, monkeypatch):
+    """예전에는 핸들러가 보고한 행 수를 그 자신의 기대값으로 넘겨 항진명제였다.
+
+        validate_silver_result(silver_result, silver_result["row_count"], ...)
+
+    그래서 변환과 적재가 같이 틀리면 통과했다. Bronze 에서 되짚은 기대값과 비교한다.
+    """
+    final = tmp_path / "year_month=2026-08" / SOURCE_VERSION
+    part = final / "data.parquet"
+    part.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), part)  # 1행
+    monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
+
+    with pytest.raises(ValueError, match="행 수가 Bronze와 다릅니다"):
+        DAG.get_task("validate_silver").python_callable(
+            {"locations": [str(part)], "row_count": 1, "year_month": "2026-08"},
+            {
+                "row_count": 1,
+                "silver_version_path": str(final),
+                # Bronze 10행 · 퇴사 0명 이면 Silver 도 10행이어야 한다.
+                "bronze_row_count": 10,
+                "exited_driver_rows": 0,
+            },
+            run_id="manual__recon-gap",
+        )
+
+
+def test_퇴사자로_설명되면_줄어들어도_통과한다(tmp_path, monkeypatch):
+    """Silver 가 퇴사 기사를 빼므로 줄어드는 건 정상이다 — 설명되는지만 본다."""
+    final = tmp_path / "year_month=2026-08" / SOURCE_VERSION
+    part = final / "data.parquet"
+    part.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), part)  # 1행
+    monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
+
+    DAG.get_task("validate_silver").python_callable(
+        {"locations": [str(part)], "row_count": 1, "year_month": "2026-08"},
+        {
+            "row_count": 1,
+            "silver_version_path": str(final),
+            "bronze_row_count": 4,
+            "exited_driver_rows": 3,
+        },
+    )
+
+    assert (final / "_SUCCESS").is_file()
+
+
+def test_보존식_재료가_없으면_막는다(tmp_path, monkeypatch):
+    """없는 걸 통과시키면 옛 코드로 돈 실행이 조용히 검사를 건너뛴다."""
+    final = tmp_path / "year_month=2026-08" / SOURCE_VERSION
+    part = final / "data.parquet"
+    part.parent.mkdir(parents=True)
+    pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), part)
+    monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
+
+    with pytest.raises(ValueError, match="보존식 재료를 넘기지 않았습니다"):
+        DAG.get_task("validate_silver").python_callable(
+            {"locations": [str(part)], "row_count": 1, "year_month": "2026-08"},
+            {"row_count": 1, "silver_version_path": str(final)},
+            run_id="manual__no-recon",
+        )
+
+
+def test_Bronze_검증이_퇴사자를_세어_넘긴다(tmp_path):
+    """`exit_date` 가 있는 행이 퇴사자다. NULL 이 재직 중."""
+    rows = [
+        {**_rows()[0], "driver_id": "d1", "exit_date": None},
+        {**_rows()[0], "driver_id": "d2", "exit_date": None},
+        {**_rows()[0], "driver_id": "d3", "exit_date": date(2026, 7, 31)},
+    ]
+    table = pa.Table.from_pylist(rows, schema=BRONZE_SCHEMA)
+
+    counts = task_module._bronze_recon_counts(table)
+
+    assert counts == {"bronze_row_count": 3, "exited_driver_rows": 1}
