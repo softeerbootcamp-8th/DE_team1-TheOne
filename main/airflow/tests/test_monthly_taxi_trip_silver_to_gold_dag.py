@@ -13,7 +13,7 @@
 11. Gold 검증 성공 뒤 지역·월 성공 상태와 READY Asset 기록
 12. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
 13. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
-14. Fuel Silver는 최신 완료 `input_version`의 `ny_fuel.parquet`만 Gold 입력으로 선택
+14. Fuel Silver는 최신 완료 `input_version`의 `fuel.parquet`만 Gold 입력으로 선택
 15. 운영 수동 실행도 S3 Silver 4종 완료본이 실제로 있어야 통과
 """
 
@@ -115,7 +115,7 @@ def _write_inputs(
         / FUEL_INPUT_VERSION
     )
     version.mkdir(parents=True)
-    (version / "ny_fuel.parquet").touch()
+    (version / "fuel.parquet").touch()
     (version / "_SUCCESS").touch()
 
 
@@ -346,7 +346,7 @@ def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
     )
     assert resolved["fuel_price_path"].endswith(
         "service_area=NYC/year_month=2026-05/"
-        f"{FUEL_INPUT_VERSION}/ny_fuel.parquet"
+        f"{FUEL_INPUT_VERSION}/fuel.parquet"
     )
 
 
@@ -381,7 +381,7 @@ def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):
     _write_inputs(tmp_path, "2026-05")
     data_file = (
         tmp_path / "gas_ev_price/service_area=NYC/year_month=2026-05/"
-        f"{FUEL_INPUT_VERSION}/ny_fuel.parquet"
+        f"{FUEL_INPUT_VERSION}/fuel.parquet"
     )
     data_file.unlink()
     (data_file.parent / "gas_ev_price.parquet").touch()
@@ -539,7 +539,7 @@ def test_운영_수동실행은_S3_Silver_4종_완료본이_있으면_통과한�
                 f"{prefix}input_version=gas-20260824T123456123456Z"
                 "__ev-20260823T123456123456Z/"
             )
-            return [f"{version}ny_fuel.parquet", f"{version}_SUCCESS"]
+            return [f"{version}fuel.parquet", f"{version}_SUCCESS"]
         version = f"{prefix}source_collected_at=20260824T123456123456Z/"
         return [f"{version}data.parquet", f"{version}_SUCCESS"]
 
@@ -564,7 +564,7 @@ def test_운영_수동실행은_S3_데이터만_있고_SUCCESS가_없으면_실�
         "list_keys",
         lambda bucket, prefix: [
             f"{prefix}input_version=gas-20260824T123456123456Z"
-            "__ev-20260823T123456123456Z/ny_fuel.parquet"
+            "__ev-20260823T123456123456Z/fuel.parquet"
         ],
         raising=False,
     )

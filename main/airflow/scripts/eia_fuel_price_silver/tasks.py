@@ -1,6 +1,6 @@
 """휘발유·전력 CLEAN Silver 두 개를 통합 연료비 Silver 로 붙이는 실행·검증 함수.
 
-산출물은 `gas_ev_price/year_month=YYYY-MM/input_version=<상류조합>/ny_fuel.parquet`입니다.
+산출물은 `gas_ev_price/year_month=YYYY-MM/input_version=<상류조합>/fuel.parquet`입니다.
 출처는 `price_source` 로 남깁니다.
 
 대상 월을 파라미터로 받는 이유

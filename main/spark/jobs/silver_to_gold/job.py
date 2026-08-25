@@ -140,7 +140,7 @@ def latest_partition_file(
 def monthly_fuel_price_path(
     fuel_price_dir: str, year_month: str, service_area: str
 ) -> str:
-    """대상 지역·월에서 완료된 최신 연료비 `ny_fuel.parquet` 경로."""
+    """대상 지역·월에서 완료된 최신 연료비 `fuel.parquet` 경로."""
     if _is_s3_path(fuel_price_dir):
         scheme = fuel_price_dir.split("://", 1)[0]
         parsed = urlsplit(fuel_price_dir)
