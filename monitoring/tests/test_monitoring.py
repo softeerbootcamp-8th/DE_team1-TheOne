@@ -488,13 +488,43 @@ def test_용량_알림의_근거가_대시보드에_보인다():
 
 
 def test_용량_알림은_상한_도달로_판정한다():
-    """할당이 상한에 닿으면 새 워커가 못 뜹니다 — 그 순간이 대기가 시작되는 시점입니다."""
+    """할당이 상한에 닿으면 새 워커가 못 뜹니다 — 그 순간이 대기가 시작되는 시점입니다.
+
+    `>=` 만으로는 부족합니다. 애플리케이션 단위 지표라 값이 없는 분에 둘 다 0 으로
+    내려오고, 그러면 `0 >= 0` 이 참이 되어 상한 근처에도 안 갔는데 알림이 갑니다.
+    실제로 "상한에 안 닿았는데 경고가 온다" 는 지적을 받았습니다.
+
+    그래서 할당이 0 이 아닐 것과, 워커가 실제로 못 떠서 대기 중일 것을 함께 봅니다.
+    """
     for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
         for rule in group["rules"]:
             if "용량" not in rule["title"]:
                 continue
             math = next(q for q in rule["data"] if q["model"].get("type") == "math")
-            assert math["model"]["expression"] == "$C >= $D"
+            expression = math["model"]["expression"]
+            assert "$C >= $D" in expression, expression
+            assert "$C > 0" in expression, f"0 >= 0 오탐이 열려 있습니다: {expression}"
+            assert "$G > 0" in expression, f"대기 워커 조건이 없습니다: {expression}"
+
+            pending = {
+                q["model"]["metricName"]
+                for q in rule["data"]
+                if q["model"].get("metricName")
+            }
+            assert "PendingCreationWorkerCount" in pending
+
+
+def test_용량_알림이_근거_수치를_함께_보낸다():
+    """Slack 은 `.Annotations.summary` 만 보여줍니다. 수치가 없으면 받는 사람이
+    대시보드를 열기 전까지 얼마나 심각한지 모릅니다.
+    """
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            summary = rule["annotations"]["summary"]
+            for ref in ("$values.C.Value", "$values.D.Value", "$values.G.Value"):
+                assert ref in summary, f"근거 수치 {ref} 가 빠졌습니다"
 
 
 def test_작업_지표는_성격에_맞는_집계를_쓴다():
