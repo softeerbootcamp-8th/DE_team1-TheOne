@@ -525,3 +525,34 @@ def test_작업_지표는_성격에_맞는_집계를_쓴다():
             assert calc == "lastNotNull", f"{panel['title']}: 순간 상태는 마지막 값입니다"
         else:
             raise AssertionError(f"{panel['title']}: 성격이 다른 지표가 섞였습니다 {metrics}")
+
+def test_할당_선을_기준선으로_오해하게_이름짓지_않는다():
+    """'기준' 은 기준선(threshold)으로 읽힙니다.
+
+    이 선은 기준이 아니라 **알림이 비교하는 값** 이고, 기준선은 '용량 상한' 입니다.
+    실제로 "기준이라는 게 기준선 아니냐" 는 질문을 받았습니다.
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+
+    for panel in dashboard["panels"]:
+        for target in panel.get("targets", []):
+            label = target.get("label") or ""
+            if "할당" in label:
+                assert "기준" not in label, f"{panel['title']}: {label}"
+
+
+def test_알림이_없는_패널을_알림이_있는_것처럼_적지_않는다():
+    """용량 알림은 CPU 만 봅니다. 메모리 패널에 '알림 기준' 이라고 적어 두면
+    없는 알림을 있는 것으로 읽게 됩니다.
+    """
+    rules = yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())
+    alerted = {
+        q["model"]["metricName"]
+        for g in rules["groups"] for r in g["rules"]
+        for q in r["data"] if "용량" in r["title"] and q["model"].get("metricName")
+    }
+    assert "MemoryAllocated" not in alerted, "메모리 알림이 생겼으면 설명도 고치세요"
+
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+    memory = next(p for p in dashboard["panels"] if p["title"] == "메모리 사용 (GB)")
+    assert "알림이 없습니다" in memory["description"]

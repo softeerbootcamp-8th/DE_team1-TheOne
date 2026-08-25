@@ -194,4 +194,4 @@ groups:
     labels:
       severity: warning
     annotations:
-      summary: EMR CPU 할당이 15분 넘게 상한에 닿아 있습니다. 새 워커가 못 떠서 작업이 대기합니다 — 대시보드의 '할당 (알림 기준)' 선을 보세요.
+      summary: EMR CPU 할당이 15분 넘게 상한에 닿아 있습니다. 새 워커가 못 떠서 작업이 대기합니다 — 대시보드 'CPU 사용' 패널의 '할당' 선이 '용량 상한' 에 닿아 있습니다.
