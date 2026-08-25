@@ -371,6 +371,20 @@ Grafana → Dashboards → theone → EMR Serverless
 | EMR 작업 실패 | `FailedJobs` | EventBridge → SNS → 이메일 |
 | EMR 용량 상한 도달 | `CPUAllocated >= MaxCPUAllowed`, 15분 | **새로 생긴 것** |
 
+### 데이터소스가 UI 에서 부르는 것도 권한이 필요합니다
+
+패널을 클릭해 편집기가 열리면 데이터소스가 리소스 API 를 부릅니다. 하나라도 403 이면
+**"Something went wrong. Please check the console log."** 로 화면이 죽습니다.
+
+| 엔드포인트 | 필요한 권한 | 없으면 |
+|---|---|---|
+| `metrics`, `dimension-keys` | `cloudwatch:ListMetrics` | 질의 자체가 안 됨 |
+| `accounts` | `oam:ListSinks` | **편집기가 죽음** |
+| `regions` | `ec2:DescribeRegions` | 내장 목록으로 대체 (로그만 남음) |
+
+`oam:*` 은 교차 계정 관측(Observability Access Manager) 기능을 쓰는지 확인하는 호출입니다.
+우리는 안 쓰지만 Grafana 가 항상 물어봅니다.
+
 ### 질의할 때 두 가지
 
 **`ApplicationName` 을 함께 줘야 합니다.** `ApplicationId` 만 주면 `matchExact` 가 맞지
