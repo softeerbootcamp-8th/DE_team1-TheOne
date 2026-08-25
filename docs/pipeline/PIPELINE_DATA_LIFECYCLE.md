@@ -101,4 +101,3 @@ S3 버전 관리가 켜진 버킷에서는 일반 삭제가 과거 객체 버전
 - [`data_lifecycle_dag.py`](../../main/airflow/dags/data_lifecycle_dag.py): 일일 실행 설정
 - [`test_data_lifecycle.py`](../../main/airflow/tests/test_data_lifecycle.py): 보존 기간과 실패 상황 검증
 - [`postgres_loader.py`](../../main/spark/jobs/silver_to_gold/postgres_loader.py): Gold 버전 생성 시각 기록
-- [`GOLD_DB_MIGRATION.md`](../GOLD_DB_MIGRATION.md): 운영 RDS 메타데이터 마이그레이션 순서
