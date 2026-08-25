@@ -541,6 +541,28 @@ def test_할당_선을_기준선으로_오해하게_이름짓지_않는다():
                 assert "기준" not in label, f"{panel['title']}: {label}"
 
 
+def test_패널에_깨진_외부_링크가_남지_않는다():
+    """CloudWatch 데이터소스는 응답에 'View in CloudWatch console' 링크를 심습니다.
+    그 URL 은 공백을 `+` 로 인코딩하는데 AWS 콘솔은 `%20` 만 받아서, 패널을 누르면
+    오류 화면으로 갑니다. 실제로 '진행 중'·'기간 결과 (합계)' 에서 그랬습니다.
+
+    링크를 고칠 수단이 없으므로 빈 `links` 로 덮어 아예 눌리지 않게 합니다.
+    """
+    for name in ("emr.json", "lambda.json"):
+        dashboard = json.loads((DASHBOARDS / name).read_text())
+        for panel in dashboard["panels"]:
+            cleared = [
+                prop
+                for override in panel["fieldConfig"]["overrides"]
+                for prop in override["properties"]
+                if prop["id"] == "links"
+            ]
+            assert cleared, f"{name}:{panel['title']}: 데이터소스 링크가 살아 있습니다"
+            assert all(prop["value"] == [] for prop in cleared), (
+                f"{name}:{panel['title']}: 링크를 비워야 합니다"
+            )
+
+
 def test_알림이_없는_패널을_알림이_있는_것처럼_적지_않는다():
     """용량 알림은 CPU 만 봅니다. 메모리 패널에 '알림 기준' 이라고 적어 두면
     없는 알림을 있는 것으로 읽게 됩니다.
