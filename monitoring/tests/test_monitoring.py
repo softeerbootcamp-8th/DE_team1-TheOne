@@ -1,4 +1,5 @@
 import json
+import re
 from pathlib import Path
 
 import yaml
@@ -385,3 +386,49 @@ def test_CloudWatch_대시보드와_SNS_경로를_남기지_않는다():
         assert gone not in workflow, f"{gone} 가 남아 있습니다"
     for gone in ("dashboard.json", "alert-topic-policy.json", "emr-failure-event-pattern.json"):
         assert not (MONITORING / gone).exists(), f"{gone} 가 남아 있습니다"
+
+
+# --- 플레이스홀더 치환 ---------------------------------------------------------
+PROVISIONING = STACK / "grafana/provisioning"
+PLACEHOLDER = re.compile(r"\$\{([A-Z_]+)\}")
+
+
+def _provisioning_files():
+    return [f for f in PROVISIONING.rglob("*") if f.suffix in (".json", ".yaml", ".yml")]
+
+
+def test_배포가_플레이스홀더를_치환한다():
+    """프로비저닝 파일은 base64 로 **그대로** 복사됩니다.
+
+    배포가 안 바꾸면 Grafana 가 `${EMR_APPLICATION_ID}` 를 문자열 그대로 질의에
+    넣습니다. 대시보드는 정상으로 뜨고 **패널만 비어서**, 사람이 열어보기 전까지
+    아무도 모릅니다 — 실제로 13곳이 치환되지 않은 채 배포됐습니다.
+    """
+    used = set()
+    for path in _provisioning_files():
+        used |= set(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
+
+    workflow = WORKFLOW.read_text()
+    for name in sorted(used):
+        assert f'"{name}"' in workflow or f"{name}:" in workflow, (
+            f"{name} 을 쓰는데 배포가 값을 넘기지 않습니다"
+        )
+
+
+def test_치환하지_못하면_배포가_멈춘다():
+    """남은 채로 보내면 배포는 초록불이고 패널만 빕니다 — 가장 드러나지 않는 실패입니다."""
+    workflow = WORKFLOW.read_text()
+
+    assert "치환되지 않은 플레이스홀더" in workflow
+    assert "raise SystemExit" in workflow
+
+
+def test_치환_대상은_배포가_아는_이름뿐이다():
+    """배포가 모르는 이름을 새로 쓰면 위 검사가 잡습니다. 목록을 여기에 고정해
+    무엇이 필요한지 한눈에 보이게 합니다.
+    """
+    used = set()
+    for path in _provisioning_files():
+        used |= set(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
+
+    assert used == {"EMR_APPLICATION_ID"}, f"새 플레이스홀더: {used}"
