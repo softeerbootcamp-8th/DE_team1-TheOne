@@ -20,8 +20,8 @@ from schema.silver import (
 )
 KWH_PER_GALLON_EQUIVALENT = 33.7
 # 프리미엄 자격을 얻어도 Standard 수요가 모두 전환되지는 않습니다.
-# 현재 사업 시나리오는 기존 Standard 운행 중 20%만 프리미엄으로 전환합니다.
-PREMIUM_TIER_TRIP_SHARE = 0.2
+# 현재 사업 시나리오는 기존 Standard 운행 중 30%만 프리미엄으로 전환합니다.
+PREMIUM_TIER_TRIP_SHARE = 0.3
 
 
 def _columns(model: type) -> list[str]:
