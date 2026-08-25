@@ -48,13 +48,15 @@ GOLD_INPUTS = (
 
 ### 4.2 이후 재실행
 
-Gold의 `validate_inputs`가 성공하면 같은 파티션에 `GOLD_INPUTS_READY`를 발행한다.
+Gold의 `validate_gold`가 성공하면 같은 파티션에 `GOLD_INPUTS_READY`를 발행한다.
 이후에는 API 또는 Fuel 중 하나가 갱신돼도 재실행한다.
 
 ### 4.3 Asset 발행 시점
 
 Asset은 writer 종료가 아니라 파일·경로·품질 검증과 `_SUCCESS` 발행 뒤에 기록한다.
 Task 성공과 데이터 공개 가능 상태를 구분하기 위해서다.
+Gold는 소비한 모든 `AssetEvent.partition_key`의 지역·연월이 DagRun 대상과 같은지
+입력 검증에서 다시 확인한다.
 
 ## 5. 조건 대조
 

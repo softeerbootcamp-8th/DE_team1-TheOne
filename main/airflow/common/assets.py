@@ -38,9 +38,9 @@ API_SILVER_REFRESH_READY = Asset("silver://api_refresh_ready")
 GOLD_INPUTS_READY = Asset("silver://gold_inputs_ready")
 
 # API 3종은 감시 DAG가 변경된 Silver 실행을 모두 기다린 뒤 READY를 한 번만 냅니다.
-# 같은 파티션의 두 입력이 처음 모이면 Gold를 실행합니다. Gold 입력 검증이 성공하면
-# GOLD_INPUTS_READY를 같은 키로 발행해 준비 상태를 남기므로, 그다음부터는 두 입력 중
-# 하나만 갱신돼도 같은 파티션을 다시 실행합니다.
+# 같은 파티션의 두 입력이 처음 모이면 Gold를 실행합니다. Gold 최종 검증이 성공하면
+# GOLD_INPUTS_READY를 같은 키로 발행하므로, 그다음부터는 두 입력 중 하나만 갱신돼도
+# 같은 파티션을 다시 실행합니다.
 GOLD_INPUTS = (
     (API_SILVER_REFRESH_READY & FUEL_PRICE_SILVER)
     | (GOLD_INPUTS_READY & (API_SILVER_REFRESH_READY | FUEL_PRICE_SILVER))
