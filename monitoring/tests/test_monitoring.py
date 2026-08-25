@@ -540,25 +540,26 @@ def test_해소_알림에_발생_시점_문구를_쓰지_않는다():
     assert branch < summary, "summary 는 발생(firing) 가지 안에만 있어야 합니다"
 
 
-def test_용량_알림의_근거가_대시보드에_보인다():
-    """알림은 `CPUAllocated`(할당)를 보는데 패널이 `WorkerCpuUsed`(사용)만 그리면,
-    알림이 와도 화면에 근거가 없어 사람이 오탐으로 판단합니다 — 실제로 그랬습니다.
+def test_용량_알림의_근거가_알림_본문에_실린다():
+    """알림만 오고 근거가 없으면 사람이 오탐으로 판단합니다 — 실제로 그랬습니다.
 
-    알림이 보는 지표를 같은 패널에 그려 둡니다.
+    한때 같은 지표를 전용 패널로 그려 뒀는데, 알림 본문이 수치를 들고 오게 된 뒤로는
+    패널을 하나 더 두는 값이 없어 뺐습니다(`test_사용_패널은_할당을_그리지_않는다`).
+    그래서 근거의 유일한 경로가 본문이고, 여기서 그걸 지킵니다.
     """
-    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
-    panels = {p["title"]: p for p in dashboard["panels"]}
-
-    rules = yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())
-    alerted = {
-        q["model"]["metricName"]
-        for g in rules["groups"] for r in g["rules"]
-        for q in r["data"]
-        if "용량" in r["title"] and q["model"].get("metricName")
-    }
-
-    drawn = {t.get("metricName") for p in panels.values() for t in p["targets"]}
-    assert alerted <= drawn, f"알림이 보는데 안 그리는 지표: {alerted - drawn}"
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            alerted = {
+                q["model"]["metricName"]
+                for q in rule["data"]
+                if q["model"].get("metricName")
+            }
+            summary = rule["annotations"]["summary"]
+            assert alerted, rule["title"]
+            assert "$values" in summary, "근거 수치가 본문에 없습니다"
+            assert "패널" not in summary, "없는 패널을 가리키고 있습니다"
 
 
 def test_용량_알림은_상한_도달로_판정한다():
@@ -679,11 +680,9 @@ def test_사용_패널은_할당을_그리지_않는다():
     memory = {t["metricName"] for t in panels["메모리 사용 (GB)"]["targets"]}
     assert "MemoryAllocated" not in memory, "0 GB 로 찍혀 오해를 삽니다"
 
-    cpu = {t["metricName"] for t in panels["CPU 사용 (vCPU)"]["targets"]}
-    assert "CPUAllocated" not in cpu, "0 으로 떨어져 사용량 곡선을 방해합니다"
-
-    evidence = {t["metricName"] for t in panels["용량 상한 도달 (알림 근거)"]["targets"]}
-    assert "CPUAllocated" in evidence, "알림 근거는 전용 패널에 남겨야 합니다"
+    drawn = {t["metricName"] for p in panels.values() for t in p["targets"]}
+    assert "CPUAllocated" not in drawn, "0 으로 떨어져 사용량 곡선을 방해합니다"
+    assert "MemoryAllocated" not in drawn
 
 
 def test_알림이_없는_패널을_알림이_있는_것처럼_적지_않는다():
