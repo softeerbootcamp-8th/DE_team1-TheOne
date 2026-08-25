@@ -615,6 +615,25 @@ def test_배포가_cloudwatch_설정을_내려보낸다():
         assert path in workflow, f"{path} 가 배포 목록에 없습니다"
 
 
+def test_배포가_grafana_를_재기동한다():
+    """Grafana 는 프로비저닝을 **기동 시에만** 읽고 SIGHUP 재적재를 지원하지 않습니다.
+
+    이미지도 compose 정의도 안 바뀌면 `up -d` 가 컨테이너를 그대로 둡니다. 그러면
+    바인드 마운트된 파일만 새것이고 Grafana 안은 옛 설정이라, **배포는 초록불인데
+    반영이 안 된 상태**가 됩니다. 실제로 데이터소스와 알림 규칙이 16시간 동안
+    반영되지 않았습니다.
+    """
+    workflow = WORKFLOW.read_text()
+
+    assert "docker compose restart grafana" in workflow
+
+
+def test_배포가_prometheus_설정을_다시_읽게_한다():
+    """Prometheus 는 SIGHUP 으로 재적재합니다 — 재기동보다 짧게 끊깁니다."""
+    workflow = WORKFLOW.read_text()
+
+    assert "SIGHUP prometheus" in workflow
+
 DASHBOARDS = STACK / "grafana/provisioning/dashboards"
 
 

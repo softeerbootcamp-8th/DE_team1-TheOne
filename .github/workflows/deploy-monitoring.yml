@@ -211,6 +211,14 @@ jobs:
               "docker compose up -d --remove-orphans",
               # 설정만 바뀐 경우 컨테이너가 그대로라 Prometheus 가 다시 읽게 신호를 줍니다.
               "docker compose kill -s SIGHUP prometheus || true",
+              # ★ Grafana 는 프로비저닝을 **기동 시에만** 읽습니다. 그리고 SIGHUP
+              #   재적재를 지원하지 않습니다. 이미지도 compose 정의도 안 바뀌면
+              #   `up -d` 가 컨테이너를 그대로 두므로, 바인드 마운트된 파일만 새것이고
+              #   Grafana 안은 옛 설정 그대로입니다.
+              #
+              #   실제로 이렇게 당했습니다 — 배포는 초록불이고 파일도 인스턴스에 있는데
+              #   데이터소스와 알림 규칙이 16시간 동안 반영되지 않았습니다.
+              "docker compose restart grafana",
           ]
           print(json.dumps({"commands": cmds}))
           PY
