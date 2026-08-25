@@ -64,7 +64,16 @@ def _data_source() -> DataSource:
     return build_data_source()
 
 
-@st.cache_data(ttl=5)
+# 4개 데이터셋을 다 읽는 데 실측 1.9초다(대부분이 8.6만 행짜리
+# `driver_car_suggestion`). 5초였을 때는 필터를 한 번 만지는 사이에 캐시가 만료돼
+# 조작마다 그 1.9초를 다시 냈다 — Gold 는 월 단위 적재라 그만한 신선도가 필요 없다.
+#
+# 30초로 둔다. 연속 조작은 캐시를 타서 즉시 반응하고, 새 적재도 30초 안에 뜬다.
+# 더 빠릿하게 하려면 올려도 되지만 그만큼 새 데이터가 늦게 보인다.
+DATA_TTL_SECONDS = 30
+
+
+@st.cache_data(ttl=DATA_TTL_SECONDS)
 def load(dataset: str) -> pd.DataFrame:
     return _data_source().load(dataset)
 

@@ -9,6 +9,7 @@ Gold RDS는 같은 지역·월에 재실행 이력이 버전으로 쌓이므로(
 (`recommendation_algorithm`)은 버전 개념이 없는 수동 마스터 테이블이라 전체를 읽는다.
 """
 
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import fields
@@ -23,6 +24,8 @@ from schema.gold import (
     RecommendationAlgorithm,
     SilverLineage,
 )
+
+logger = logging.getLogger(__name__)
 
 _TABLE_MODELS = {
     "driver_aggregation": DriverMonthlyProfit,
@@ -98,7 +101,16 @@ class RdsDataSource(DataSource):
     """
 
     def __init__(self, dsn: str):
+        self._dsn = dsn
         self._conn = psycopg2.connect(dsn)
+
+    def _fetch(self, query: str) -> list[tuple]:
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(query)
+            return cursor.fetchall()
+        finally:
+            cursor.close()
 
     def load(self, dataset: str) -> pd.DataFrame:
         try:
@@ -114,12 +126,24 @@ class RdsDataSource(DataSource):
             else _latest_version_query(dataset, columns, partition)
         )
 
-        cursor = self._conn.cursor()
         try:
-            cursor.execute(query)
-            rows = cursor.fetchall()
-        finally:
-            cursor.close()
+            rows = self._fetch(query)
+        except (psycopg2.InterfaceError, psycopg2.OperationalError):
+            # 연결 하나를 프로세스 내내 재사용하므로 한 번 끊기면 이후 모든 조회가
+            # `InterfaceError: connection already closed` 로 죽는다 — 컨테이너를
+            # 다시 띄우기 전까지 대시보드가 통째로 에러다. RDS 재기동·유휴
+            # 타임아웃·네트워크 순단으로 흔히 끊기고, 유휴 쪽은 사람이 대시보드를
+            # 한동안 안 보기만 해도 걸린다.
+            #
+            # 한 번만 다시 맺고 재시도한다. 그래도 실패하면 진짜 못 붙는 상황이라
+            # 그대로 올려 화면에 드러낸다.
+            logger.warning("Gold 연결이 끊겨 다시 맺습니다: dataset=%s", dataset)
+            try:
+                self._conn.close()
+            except Exception:  # 이미 죽은 연결이면 닫기도 실패한다
+                pass
+            self._conn = psycopg2.connect(self._dsn)
+            rows = self._fetch(query)
         return pd.DataFrame(rows, columns=columns)
 
 
