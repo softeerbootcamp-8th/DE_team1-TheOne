@@ -249,7 +249,14 @@ def inject_css(theme_mode: str | None = None) -> None:
         div.swap span.arrow {{ color: var(--brand); font-weight: 700; }}
 
         /* ── 위젯·표 ── */
-        [data-testid="stDataFrame"] {{ border-radius: 16px; overflow: hidden; }}
+        /* 표는 둥글리지 않는다.
+
+           `border-radius` 를 주려면 `overflow: hidden` 이 함께 필요한데, 그러면
+           차트를 "Show data" 로 바꿨을 때 그 요소가 stDataFrame 이 되고 툴바가
+           위쪽으로 걸쳐 그려져 잘린다 — "Show chart" 를 못 눌러 그래프로 돌아오지
+           못한다. 툴바를 안쪽으로 내려도 헤더 좌우 모서리에 이물감이 남았다.
+
+           표를 감싸는 카드가 이미 둥글어서 각진 표가 어색하지 않다. 기능을 택했다. */
         [data-testid="stExpander"] details {{
             border-radius: var(--r-card);
             border: 1px solid var(--border);
