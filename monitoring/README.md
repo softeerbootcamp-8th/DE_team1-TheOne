@@ -369,7 +369,7 @@ Grafana → Dashboards → theone → EMR Serverless
 | 규칙 | 지표 | 대체한 것 |
 |---|---|---|
 | EMR 작업 실패 | `FailedJobs` | EventBridge → SNS → 이메일 |
-| EMR 용량 상한 도달 | `CPUAllocated >= MaxCPUAllowed`, 15분 | **새로 생긴 것** |
+| EMR 용량 상한 도달 | `CPUAllocated >= MaxCPUAllowed`, 15분 지속 | **새로 생긴 것** |
 
 ### 데이터소스가 UI 에서 부르는 것도 권한이 필요합니다
 
@@ -400,3 +400,28 @@ Maximum number of queries (1) exceeded
 
 그래서 워커 실사용량(MI)과 용량 상한(일반 질의)을 한 패널에 두고, 사용량과 할당량을
 동시에 그리지는 못합니다.
+
+
+### 용량 알림은 사용량이 아니라 할당량을 봅니다
+
+| | 지표 | 뜻 |
+|---|---|---|
+| 패널의 `Spark_Driver` / `Spark_Executor` | `WorkerCpuUsed` | 워커가 **실제로 쓴** 양 |
+| 패널의 `할당 (알림 기준)` | `CPUAllocated` | EMR 이 **잡아둔** 양 — **알림이 보는 것** |
+| 패널의 `용량 상한` | `MaxCPUAllowed` | `maximumCapacity` 설정값 |
+
+**할당이 상한에 닿으면 새 워커가 못 뜹니다.** 사용량이 낮아도 작업이 대기합니다.
+
+세 선을 같은 패널에 그리는 이유가 이것입니다. 알림만 오고 화면에 근거가 없으면 사람이
+오탐으로 판단합니다 — 실제로 사용량 9.84 / 상한 12 만 보고 "안 닿았는데 왜 울리냐" 가
+됐습니다. 그때 할당은 12 로 19분간 상한에 붙어 있었습니다.
+
+### 창과 `for` 를 겹치지 마세요
+
+```
+창 15분 + reduce(max) + for 15m   →  포화가 끝나고 16분 뒤에 발사
+창  5분 + reduce(last) + for 15m  →  포화가 진행 중일 때 발사
+```
+
+`max` 는 창 안의 최댓값이라 값이 내려가도 조건이 참으로 남고, `for` 가 그 번진 값 위에서
+다시 셉니다. 지속 여부는 `for` 하나가 보게 두세요.

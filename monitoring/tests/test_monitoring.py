@@ -432,3 +432,69 @@ def test_치환_대상은_배포가_아는_이름뿐이다():
         used |= set(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
 
     assert used == {"EMR_APPLICATION_ID"}, f"새 플레이스홀더: {used}"
+
+
+def test_용량_알림의_창이_for_보다_짧다():
+    """창과 `for` 가 겹치면 알림이 늦습니다.
+
+    `reduce(max)` 는 창 안의 최댓값을 보므로 값이 이미 내려가도 조건이 참으로 남고,
+    `for` 가 그 "번진 값" 위에서 다시 셉니다. 실측에서 12:27~12:45 에 19분 포화였는데
+    알림은 13:01 에 왔습니다 — 상황이 끝나고 16분 뒤입니다.
+    """
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            for_seconds = int(rule["for"].rstrip("m")) * 60
+            for query in rule["data"]:
+                window = query["relativeTimeRange"]["from"]
+                assert window < for_seconds, (
+                    f"{rule['title']}: 창 {window}초 >= for {for_seconds}초"
+                )
+                if query["model"].get("type") == "reduce":
+                    # max 는 지나간 스파이크를 계속 참으로 만듭니다.
+                    assert query["model"]["reducer"] == "last", rule["title"]
+
+
+def test_슬랙_템플릿이_없는_라벨을_비워두지_않는다():
+    """`instance_name` 은 호스트 알림에만 있습니다. 조건 없이 쓰면 EMR·Lambda 알림이
+    `**` 만 찍고 나갑니다 — 실제로 그렇게 나갔습니다.
+    """
+    text = (ALERTING / "contact-points.yaml").read_text()
+
+    assert "{{ with .Labels.instance_name }}" in text
+
+
+def test_용량_알림의_근거가_대시보드에_보인다():
+    """알림은 `CPUAllocated`(할당)를 보는데 패널이 `WorkerCpuUsed`(사용)만 그리면,
+    알림이 와도 화면에 근거가 없어 사람이 오탐으로 판단합니다 — 실제로 그랬습니다.
+
+    알림이 보는 지표를 같은 패널에 그려 둡니다.
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    rules = yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())
+    alerted = {
+        q["model"]["metricName"]
+        for g in rules["groups"] for r in g["rules"]
+        for q in r["data"]
+        if "용량" in r["title"] and q["model"].get("metricName")
+    }
+
+    drawn = {
+        t.get("metricName")
+        for title, p in panels.items() if "사용" in title
+        for t in p["targets"]
+    }
+    assert alerted <= drawn, f"알림이 보는데 안 그리는 지표: {alerted - drawn}"
+
+
+def test_용량_알림은_상한_도달로_판정한다():
+    """할당이 상한에 닿으면 새 워커가 못 뜹니다 — 그 순간이 대기가 시작되는 시점입니다."""
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            math = next(q for q in rule["data"] if q["model"].get("type") == "math")
+            assert math["model"]["expression"] == "$C >= $D"
