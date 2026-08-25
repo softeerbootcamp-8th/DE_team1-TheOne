@@ -1,0 +1,165 @@
+# Lambda 알림 규칙 (CloudWatch 데이터소스).
+#
+# ★ A -> B(reduce) -> C(threshold) 세 단계입니다.
+#   Grafana 알림은 **축약된 값**만 임계와 비교할 수 있습니다. Prometheus 규칙은
+#   `instant: true` 라 값이 계열당 하나씩이지만, CloudWatch 는 항상 시계열이라
+#   그대로 비교하면 이렇게 실패합니다 (규칙은 남고 평가만 error 가 됩니다).
+#
+#     invalid format of evaluation results ... only reduced data can be alerted on
+#
+#   reducer 는 sum 입니다 — 15분 창에서 실패가 한 번이라도 있었으면 울려야 합니다.
+#
+# 호스트 규칙과 noDataState 가 반대입니다. 호스트는 지표가 끊기면 그 자체가 문제라
+# Alerting 이지만, Lambda 는 "실패 지표가 없음 = 실패가 없었음" 이라 OK 입니다.
+# Alerting 으로 두면 그날 안 도는 함수들이 매분 울립니다.
+#
+# FunctionName 을 와일드카드로 둡니다 — 함수를 새로 배포해도 규칙을 안 고쳐도 됩니다.
+#
+# matchExact 는 true 여야 합니다. false 면 FunctionName 을 포함한 **모든** 차원 조합이
+# 잡혀서, AWS 가 함께 발행하는 Resource 차원 변형까지 딸려와 함수마다 시계열이 두 개씩
+# 생깁니다 (실측 14개 -> 28개). 같은 실패로 알림이 두 번 옵니다.
+apiVersion: 1
+groups:
+- orgId: 1
+  name: lambda
+  folder: theone
+  interval: 5m
+  rules:
+  - uid: theone-lambda-errors
+    title: Lambda 실패
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: theone-cloudwatch
+      model:
+        refId: A
+        region: default
+        namespace: AWS/Lambda
+        metricName: Errors
+        statistic: Sum
+        dimensions:
+          FunctionName: '*'
+        matchExact: true
+        metricQueryType: 0
+        metricEditorMode: 0
+        period: '300'
+        intervalMs: 300000
+        maxDataPoints: 43200
+    - refId: B
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: sum
+        settings:
+          mode: dropNN
+        intervalMs: 300000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+          operator:
+            type: and
+          query:
+            params:
+            - B
+          reducer:
+            type: sum
+            params: []
+          type: query
+        intervalMs: 300000
+        maxDataPoints: 43200
+    noDataState: OK
+    execErrState: Error
+    for: 0m
+    labels:
+      severity: critical
+    annotations:
+      summary: Lambda 함수가 실패했습니다. Airflow 가 부른 것이면 태스크 알림도 함께 옵니다.
+  - uid: theone-lambda-throttles
+    title: Lambda 동시성 제한
+    condition: C
+    data:
+    - refId: A
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: theone-cloudwatch
+      model:
+        refId: A
+        region: default
+        namespace: AWS/Lambda
+        metricName: Throttles
+        statistic: Sum
+        dimensions:
+          FunctionName: '*'
+        matchExact: true
+        metricQueryType: 0
+        metricEditorMode: 0
+        period: '300'
+        intervalMs: 300000
+        maxDataPoints: 43200
+    - refId: B
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: B
+        type: reduce
+        expression: A
+        reducer: sum
+        settings:
+          mode: dropNN
+        intervalMs: 300000
+        maxDataPoints: 43200
+    - refId: C
+      relativeTimeRange:
+        from: 900
+        to: 0
+      datasourceUid: __expr__
+      model:
+        refId: C
+        type: threshold
+        expression: B
+        conditions:
+        - evaluator:
+            type: gt
+            params:
+            - 0
+          operator:
+            type: and
+          query:
+            params:
+            - B
+          reducer:
+            type: sum
+            params: []
+          type: query
+        intervalMs: 300000
+        maxDataPoints: 43200
+    noDataState: OK
+    execErrState: Error
+    for: 0m
+    labels:
+      severity: warning
+    annotations:
+      summary: Lambda 가 동시성 상한에 걸렸습니다. 태스크 실패의 원인이 코드가 아닐 수 있습니다.

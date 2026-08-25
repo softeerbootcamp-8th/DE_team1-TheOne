@@ -1,8 +1,8 @@
-"""Gold 2종(driver_aggregation, driver_car_suggestion)을 RDS
+"""Gold 3종(driver_aggregation, driver_car_suggestion, silver_lineage)을 RDS
 PostgreSQL에 원자적으로, 버전을 붙여 적재합니다.
 
-같은 year_month에 이미 데이터가 있으면 그 버전 + 1로, 없으면 버전 1로 두
-테이블에 같은 버전을 붙여 적재합니다. 하나라도 실패하면 둘 다
+같은 year_month에 이미 데이터가 있으면 그 버전 + 1로, 없으면 버전 1로 세
+테이블에 같은 버전을 붙여 적재합니다. 하나라도 실패하면 셋 다
 반영되지 않아야 하므로 하나의 트랜잭션으로 묶습니다.
 """
 
@@ -13,17 +13,20 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 
-from schema.gold import DriverMonthlyProfit, DriverCarSuggestion
+from schema.gold import DriverMonthlyProfit, DriverCarSuggestion, SilverLineage
 
 logger = logging.getLogger(__name__)
 
 _DRIVER_AGGREGATION = "driver_aggregation"
 _DRIVER_CAR_SUGGESTION = "driver_car_suggestion"
-TABLES = (_DRIVER_AGGREGATION, _DRIVER_CAR_SUGGESTION)
+_SILVER_LINEAGE = "silver_lineage"
+TABLES = (_DRIVER_AGGREGATION, _DRIVER_CAR_SUGGESTION, _SILVER_LINEAGE)
+_GOLD_LOAD_VERSIONS = "gold_load_versions"
 
 _TABLE_MODELS = {
     _DRIVER_AGGREGATION: DriverMonthlyProfit,
     _DRIVER_CAR_SUGGESTION: DriverCarSuggestion,
+    _SILVER_LINEAGE: SilverLineage,
 }
 
 # PRIMARY KEY는 저장소 쪽 결정이라 dataclass에는 없는 정보라 별도로 둡니다.
@@ -33,11 +36,14 @@ _TABLE_MODELS = {
 # 지역을 타야 합니다 — 일부만 고치면 안 고친 것보다 나쁩니다(#809):
 #   PK 만 고치면 버전이 지역 간 공유 카운터로 남고,
 #   검증만 고치면 다른 지역 행을 세어 매번 롤백합니다.
+# silver_lineage 는 기사 그레인이 아니라 실행 그레인(실행당 한 행)이라 driver_id 가 없습니다.
 _PRIMARY_KEYS = {
     _DRIVER_AGGREGATION: ("service_area", "year_month", "version", "driver_id"),
     _DRIVER_CAR_SUGGESTION: (
-        "service_area", "year_month", "version", "driver_id"
+        "service_area", "year_month", "version", "driver_id",
+        "recommendation_algorithm_version_id", "threshold",
     ),
+    _SILVER_LINEAGE: ("service_area", "year_month", "version"),
 }
 
 _SQL_TYPES = {
@@ -61,10 +67,30 @@ def _create_table_sql(table: str) -> str:
     )
 
 
+def _create_version_table_sql() -> str:
+    return f"""CREATE TABLE IF NOT EXISTS {_GOLD_LOAD_VERSIONS} (
+    service_area TEXT NOT NULL,
+    year_month TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (service_area, year_month, version)
+)"""
+
+
+def _record_gold_version(
+    cursor, service_area: str, year_month: str, version: int
+) -> None:
+    cursor.execute(
+        f"INSERT INTO {_GOLD_LOAD_VERSIONS} "
+        "(service_area, year_month, version) VALUES (%s, %s, %s)",
+        (service_area, year_month, version),
+    )
+
+
 def _next_version(cursor, service_area: str, year_month: str) -> int:
     """`driver_aggregation`에서 지역·월의 기존 버전을 확인해 +1.
 
-    두 테이블은 항상 같은 버전으로 함께 적재되므로 집계 테이블만 봐도 이 달의
+    세 테이블은 항상 같은 버전으로 함께 적재되므로 집계 테이블만 봐도 이 달의
     현재 버전을 알 수 있습니다.
 
     지역으로 안 좁히면 버전이 지역 간 공유 카운터가 됩니다 — NYC 가 v1 을 쓴 뒤
@@ -87,7 +113,7 @@ def _validate_written_rows(
     year_month: str,
     version: int,
 ) -> None:
-    """커밋 전에 Gold 2종이 기대한 버전·행 수로 들어갔는지 확인합니다.
+    """커밋 전에 Gold 3종이 기대한 버전·행 수로 들어갔는지 확인합니다.
 
     `execute_values` 는 영향받은 행 수를 돌려주지 않아 `written`(itertuples 로 센
     값)이 실제로 반영됐는지 확인할 방법이 없었습니다. 여기서 실제 저장된 행을
@@ -136,11 +162,15 @@ def _validate_frame_grains(frames: dict[str, pd.DataFrame]) -> None:
             f"drivers={driver_count}"
         )
 
+    lineage = frames[_SILVER_LINEAGE]
+    if len(lineage) != 1:
+        raise ValueError(f"Gold Silver 계보는 실행당 한 행이어야 합니다: rows={len(lineage)}")
+
 
 def write_gold_to_postgres(
     frames: dict[str, pd.DataFrame], dsn: str, service_area: str, year_month: str
 ) -> dict[str, int]:
-    """Gold 2종을 한 트랜잭션으로 적재합니다. 반환값은 `{테이블명: 적재 행 수}`.
+    """Gold 3종을 한 트랜잭션으로 적재합니다. 반환값은 `{테이블명: 적재 행 수}`.
 
     `frames`는 job.py의 `outputs`와 같은 모양(`toPandas()` 이전이 아니라 이후)이어야
     합니다 — CSV로 쓰던 것과 같은 시점의 값을 그대로 재사용합니다.
@@ -156,6 +186,7 @@ def write_gold_to_postgres(
             with conn.cursor() as cursor:
                 for table in TABLES:
                     cursor.execute(_create_table_sql(table))
+                cursor.execute(_create_version_table_sql())
 
                 version = _next_version(cursor, service_area, year_month)
                 logger.info(
@@ -180,6 +211,9 @@ def write_gold_to_postgres(
                     logger.info("Gold 적재: table=%s rows=%d", table, len(rows))
                 _validate_written_rows(
                     cursor, written, service_area, year_month, version
+                )
+                _record_gold_version(
+                    cursor, service_area, year_month, version
                 )
         return written
     finally:

@@ -1,4 +1,4 @@
-"""원천 API를 본문 다운로드 없이 독립적으로 검사하고 처리 상태를 기록합니다."""
+"""원천 API를 본문 다운로드 없이 검사하고 정상 Bronze manifest와 비교합니다."""
 
 import hashlib
 import logging
@@ -9,7 +9,7 @@ from pathlib import Path, PurePosixPath
 from urllib.parse import parse_qs, urljoin, urlsplit
 
 import requests
-from airflow.sdk import Variable, task
+from airflow.sdk import task
 from airflow.task.trigger_rule import TriggerRule
 
 from main.airflow.common import assets
@@ -20,11 +20,13 @@ from main.airflow.common.gold_staleness import (
 from main.airflow.common.monthly_bronze import (
     SILVER_PART_PATTERN,
     bronze_collection_token,
+    collected_at_token,
     latest_local_silver_version,
 )
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.slack_failure_callback import slack_stale_alert_callback
-from shared.common.s3_reader import list_keys
+from shared.common.bronze_manifest import MANIFEST_FILE_NAME, parse_bronze_manifest
+from shared.common.s3_reader import get_object_bytes, list_keys
 from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 
 
@@ -33,7 +35,6 @@ logger = logging.getLogger(__name__)
 DATASET_URL_PATTERN = re.compile(
     r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$"
 )
-STATE_KEY_PREFIX = "source_api_processed__"
 BRONZE_DATASET_DIRS = {
     "monthly_taxi_trip": "monthly_taxi_trip",
     "driver_vehicle_monthly_snapshot": "driver_vehicle_monthly_snapshot",
@@ -46,21 +47,14 @@ SILVER_DIR_ENVS = {
 }
 
 
-def state_key(dataset: str, service_area: str) -> str:
-    """원천 재수집 판단에 쓰는 직전 처리 상태의 Variable 키입니다.
-
-    지역이 키에 없으면 지역들이 하나의 ETag 상태를 공유합니다. 그러면 NYC 가 먼저
-    돌아 ETag 를 기록한 뒤 TX 가 같은 원천에서 304 를 받아 `changed=False` 가 되고,
-    TX 는 자기 수집을 한 번도 못 한 채 건너뜁니다 — 실패가 아니라 **성공적인
-    skip** 이라 알림도 가지 않습니다. 그다음엔 TX 가 키를 덮어써 NYC 가 굶습니다.
-    지역별로 키를 나눠 이 상호 굶김을 막습니다(#674).
-    """
-    return f"{STATE_KEY_PREFIX}{dataset}__{service_area}"
-
-
-def _latest_bronze_collection_token(
+def _latest_bronze_state(
     dataset: str, year_month: str, service_area: str
-) -> str | None:
+) -> tuple[str | None, dict | None]:
+    """최신 `_SUCCESS` Bronze token과 검증 가능한 manifest를 읽습니다.
+
+    manifest가 없거나 깨졌으면 token은 유지하고 상태만 None으로 돌려 다음 수집이
+    기존 원본을 재검증하며 manifest를 복구하게 합니다.
+    """
     dataset_dir = BRONZE_DATASET_DIRS[dataset]
     storage = os.getenv("BRONZE_STORAGE", "local")
     if storage == "local":
@@ -77,15 +71,26 @@ def _latest_bronze_collection_token(
             *partition.glob("*.parquet"),
             *partition.glob("collected_at=*/data.parquet"),
         )
-        return max(
+        latest = max(
             (
-                token
+                (token, path)
                 for path in candidates
                 if data_path_is_complete(path)
                 and (token := bronze_collection_token(path))
             ),
-            default=None,
+            default=(None, None),
+            key=lambda item: item[0],
         )
+        token, path = latest
+        if path is None or path.name != "data.parquet":
+            return token, None
+        manifest_path = path.parent / MANIFEST_FILE_NAME
+        try:
+            manifest = _manifest_for_token(manifest_path.read_bytes(), token)
+        except (OSError, ValueError):
+            logger.warning("Bronze manifest를 읽지 못해 재수집합니다: %s", manifest_path)
+            return token, None
+        return token, manifest
     if storage == "s3":
         bucket = os.environ["DATA_LAKE_S3_BUCKET"]
         prefix = (
@@ -94,16 +99,73 @@ def _latest_bronze_collection_token(
         )
         keys = list_keys(bucket, prefix)
         key_set = set(keys)
-        return max(
+        token, key = max(
             (
-                token
+                (token, key)
                 for key in keys
                 if data_key_is_complete(key, key_set)
                 and (token := bronze_collection_token(PurePosixPath(key)))
             ),
-            default=None,
+            default=(None, None),
+            key=lambda item: item[0],
         )
+        if key is None or PurePosixPath(key).name != "data.parquet":
+            return token, None
+        manifest_key = str(PurePosixPath(key).with_name(MANIFEST_FILE_NAME))
+        if manifest_key not in key_set:
+            logger.warning(
+                "Bronze manifest가 없어 재수집합니다: s3://%s/%s",
+                bucket,
+                manifest_key,
+            )
+            return token, None
+        try:
+            manifest = _manifest_for_token(
+                get_object_bytes(bucket, manifest_key), token
+            )
+        except (OSError, ValueError):
+            logger.warning(
+                "Bronze manifest를 읽지 못해 재수집합니다: s3://%s/%s",
+                bucket,
+                manifest_key,
+            )
+            return token, None
+        return token, manifest
     raise ValueError(f"알 수 없는 BRONZE_STORAGE: {storage!r} (local 또는 s3)")
+
+
+def _manifest_for_token(body: bytes, token: str) -> dict:
+    manifest = parse_bronze_manifest(body)
+    if collected_at_token(manifest["collected_at"]) != token:
+        raise ValueError("Bronze manifest collected_at이 경로 token과 다릅니다")
+    return manifest
+
+
+def _manifest_previous(
+    manifest: dict | None,
+    *,
+    api_base_url: str,
+    dataset: str,
+    year_month: str,
+    service_area: str,
+) -> dict | None:
+    if not manifest:
+        return None
+    expected = {
+        "api_base_url": api_base_url.rstrip("/"),
+        "dataset": dataset,
+        "year_month": year_month,
+        "service_area": service_area,
+    }
+    if any(manifest.get(field) != value for field, value in expected.items()):
+        logger.warning("Bronze manifest 계보가 요청과 달라 재수집합니다: %s", expected)
+        return None
+    return {
+        "api_base_url": expected["api_base_url"],
+        "year_month": year_month,
+        "etag": manifest["source_etag"],
+        "last_modified": manifest["source_last_modified"],
+    }
 
 
 def _silver_version_exists(
@@ -232,6 +294,28 @@ def inspect_source(
         service_area,
         timeout=timeout,
     )
+    return _inspect_target_source(
+        api_base_url,
+        dataset,
+        target_url,
+        year_month,
+        service_area=service_area,
+        previous=previous,
+        timeout=timeout,
+    )
+
+
+def _inspect_target_source(
+    api_base_url: str,
+    dataset: str,
+    target_url: str,
+    year_month: str,
+    *,
+    service_area: str,
+    previous: dict | None,
+    timeout: int,
+) -> dict:
+    """확정된 월 URL을 이전 정상 Bronze validator로 검사합니다."""
 
     headers = {}
     same_source = (
@@ -292,26 +376,37 @@ def inspect_source(
 def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
     params = context["params"]
     service_area = assets.resolve_service_area(params)
-    previous = Variable.get(
-        state_key(dataset, service_area),
-        default=None,
-        deserialize_json=True,
+    api_base_url = params["api_base_url"].rstrip("/")
+    requested_month = _requested_year_month(
+        params.get("year"), params.get("month")
     )
-    result = inspect_source(
-        params["api_base_url"],
+    target_url, year_month = _target_url(
+        api_base_url,
         dataset,
+        requested_month,
+        service_area,
+        timeout=params["request_timeout"],
+    )
+    collection_token, manifest = _latest_bronze_state(
+        dataset, year_month, service_area
+    )
+    previous = _manifest_previous(
+        manifest,
+        api_base_url=api_base_url,
+        dataset=dataset,
+        year_month=year_month,
         service_area=service_area,
-        year=params.get("year"),
-        month=params.get("month"),
+    )
+    result = _inspect_target_source(
+        api_base_url,
+        dataset,
+        target_url,
+        year_month,
+        service_area=service_area,
         previous=previous,
         timeout=params["request_timeout"],
     )
-    # mark_processed_task 는 context 없이 result 만 받으므로 지역을 여기서 실어
-    # 보냅니다 — 상태를 읽은 키와 쓰는 키가 어긋나면 안 됩니다.
-    collection_token = _latest_bronze_collection_token(
-        dataset, result["year_month"], service_area
-    )
-    bronze_exists = collection_token is not None
+    bronze_exists = collection_token is not None and manifest is not None
     silver_exists = bool(collection_token) and _silver_version_exists(
         dataset,
         result["year_month"],
@@ -334,20 +429,6 @@ def check_and_should_refresh_task(dataset: str, **context) -> dict | bool:
         result["etag"],
     )
     return result if result["refresh_required"] else False
-
-
-@task(task_id="mark_processed")
-def mark_processed_task(result: dict) -> None:
-    Variable.set(
-        state_key(result["dataset"], result["service_area"]),
-        {
-            "api_base_url": result["api_base_url"],
-            "year_month": result["year_month"],
-            "etag": result["etag"],
-            "last_modified": result["last_modified"],
-        },
-        serialize_json=True,
-    )
 
 
 @task(

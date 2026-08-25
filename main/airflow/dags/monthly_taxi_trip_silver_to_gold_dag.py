@@ -3,6 +3,7 @@
 import os
 from datetime import datetime, timedelta
 
+from airflow.models import Variable
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
@@ -75,7 +76,8 @@ def _local_build_gold() -> BashOperator:
             + "--fuel_price_path "
             + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }}\" "
             + f"{common_tail} "
-            + "--output_dir {{ params.output_dir }}"
+            + "--output_dir {{ params.output_dir }} "
+            + "--thresholds \"{{ params.thresholds }}\""
         ),
         # BashOperator 가 띄우는 별도 프로세스는 DAG 파싱 때의 sys.path 를 물려받지
         # 않습니다. spark/common/io.py 가 pipeline_core 를 import 하므로 그 경로까지
@@ -114,13 +116,14 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     "--year", f"{{{{ {xcom}['year'] }}}}",
                     "--month", f"{{{{ {xcom}['month'] }}}}",
                     "--service_area", f"{{{{ {xcom}['service_area'] }}}}",
+                    "--thresholds", "{{ params.thresholds }}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,
             }
         },
         configuration_overrides={
             "monitoringConfiguration": {
-                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/emr-logs/"}
+                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/logs/emr-serverless/"}
             }
         },
         aws_conn_id="aws_default",
@@ -170,6 +173,23 @@ def _build_gold_operator():
             type="string",
             pattern=r"^[A-Z][A-Z0-9_]*$",
             description="수동 실행 대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
+        ),
+        # RevenueFirstAlgorithm(v2)이 스윕할 기사 순수익 증가 threshold 목록.
+        # 기본값을 Variable(gold_recommendation_thresholds)에서 가져옵니다 — DAG
+        # 파싱 시점 코드라 task 실행 전용인 airflow.sdk가 아니라 DB에 직접
+        # 접근하는 airflow.models.Variable을 씁니다(#743 패턴).
+        #
+        # 새 파라미터를 추가하면 test_main_dag_params.py의 기대 집합도 함께
+        # 고쳐야 합니다 — 그 테스트가 파라미터 집합 완전일치를 요구합니다.
+        "thresholds": Param(
+            Variable.get(
+                "gold_recommendation_thresholds",
+                default_var=[100, 200, 300, 400, 500],
+                deserialize_json=True,
+            ),
+            type="array",
+            items={"type": "integer"},
+            description="v2가 스윕할 기사 순수익 증가 threshold(USD) 목록",
         ),
     },
 )

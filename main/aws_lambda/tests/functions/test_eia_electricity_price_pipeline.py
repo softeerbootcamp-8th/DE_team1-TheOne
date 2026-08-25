@@ -5,7 +5,7 @@
 2. 월값을 그 달 **전 일수**로 펼침. 하루라도 비면 하류 일자 조인에서 그 날이 통째로
    빠지는데, 실패가 아니라 조용히 줄어든 집계로 나타남
 3. 공공 충전 배수를 곱해 ¢/kWh → $/kWh 로 변환
-4. 대상 월이 이력에 없으면 보유 구간을 알려주며 실패 — 전력 통계는 약 3개월 지연
+4. 대상 월이 비면 앞뒤 월을 선형 보간하고 이력 양 끝은 가장 가까운 월값 사용
 5. 단가가 허용 범위 밖이면 실패
 6. Loader 가 CLEAN 스키마 그대로, 대상 월 파티션에 씀
 7. service_area가 다르면 실제로 다른 주(State) 값을 읽는다 (#844)
@@ -93,9 +93,27 @@ def test_수집분과_확정상태가_모든_행에_남는다(status):
     assert {row["ev_price_status"] for row in rows} == {status}
 
 
-def test_대상_월이_이력에_없으면_보유구간을_알려주며_실패한다():
-    with pytest.raises(ValueError, match="2025-07 이 없습니다"):
-        build_daily_prices("2025-07", _xlsx(ROWS), COLLECTED, SERVICE_AREA)
+def test_대상월이_중간에비면_앞뒤월을_선형보간한다():
+    rows = build_daily_prices(
+        "2025-06",
+        _xlsx([(2025, 5, "NY", 20.0), (2025, 7, "NY", 22.0)]),
+        COLLECTED,
+        SERVICE_AREA,
+    )
+
+    assert {row["ev_price"] for row in rows} == {
+        21.0 / CENTS_PER_DOLLAR * PUBLIC_CHARGING_MARKUP
+    }
+    assert {row["ev_price_status"] for row in rows} == {"Interpolated"}
+
+
+def test_대상월이_이력끝을넘으면_가장가까운월값으로_채운다():
+    rows = build_daily_prices("2025-07", _xlsx(ROWS), COLLECTED, SERVICE_AREA)
+
+    assert {row["ev_price"] for row in rows} == {
+        21.0 / CENTS_PER_DOLLAR * PUBLIC_CHARGING_MARKUP
+    }
+    assert {row["ev_price_status"] for row in rows} == {"Interpolated"}
 
 
 def test_단가가_허용범위_밖이면_실패한다():

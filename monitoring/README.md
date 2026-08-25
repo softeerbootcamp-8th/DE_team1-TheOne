@@ -1,4 +1,4 @@
-# EMR Serverless 모니터링
+# 모니터링 스택 (Prometheus · Grafana)
 
 `theone-infrastructure-prod` CloudWatch 대시보드에서 다음을 확인합니다.
 
@@ -74,10 +74,7 @@ NAT 라우팅을 담당하므로 `net.ipv4.ip_forward` 를 건드리지 않는 �
 
 | 파일 | 내용 |
 |---|---|
-| `dashboard.json` | 대시보드 본문. `${AWS_REGION}`, `${EMR_APPLICATION_ID}` 를 `envsubst` 로 치환 |
 | `stack/grafana/provisioning/alerting/` | Grafana Slack 알림 (수신처 · 경로 · 규칙) |
-| `alert-topic-policy.json` | EventBridge 가 Topic 에 발행하도록 허용하는 정책 |
-| `emr-failure-event-pattern.json` | `FAILED`/`CANCELLED` 만 걸러내는 이벤트 패턴 |
 
 ### 위젯을 추가할 때 — `SEARCH()` 는 차원 조합을 고정해야 합니다
 
@@ -201,6 +198,82 @@ period=300   executor 메모리 118.9 GB   ← 5배로 부풂
 테스트가 스키마 고정, 지표명, Metrics Insights 경유 여부, 위젯당 쿼리 수, period 를
 모두 잡습니다.
 
+## Lambda 알림 (CloudWatch 데이터소스)
+
+Lambda 실패를 **Grafana 알림 경로로** 받습니다. 호스트 알림과 같은 Slack 수신처를 쓰므로
+SNS→Slack 다리나 함수별 CloudWatch 알람을 따로 만들지 않습니다.
+
+| 규칙 | 지표 | 심각도 | 왜 |
+|---|---|---|---|
+| Lambda 실패 | `AWS/Lambda Errors` | critical | Airflow 밖에서 실패하면 아무도 모릅니다 |
+| Lambda 동시성 제한 | `AWS/Lambda Throttles` | warning | Airflow 에는 그냥 "태스크 실패" 로만 보입니다 |
+
+### 규칙이 세 단계입니다 — A → B(reduce) → C(threshold)
+
+Grafana 알림은 **축약된 값**만 임계와 비교할 수 있습니다. Prometheus 규칙은
+`instant: true` 라 값이 계열당 하나씩이지만, **CloudWatch 는 항상 시계열**입니다.
+
+그대로 비교하면 규칙은 등록되고 평가만 실패합니다.
+
+```
+invalid format of evaluation results ... only reduced data can be alerted on
+```
+
+UI 에는 `Health: error` 로 보이고 **알림은 영원히 안 옵니다.** 상태가 `Normal` 이라
+얼핏 정상으로 보이는 것이 더 나쁩니다.
+
+reducer 는 `sum` 입니다 — 15분 창에서 실패가 한 번이라도 있었으면 울려야 합니다.
+`settings.mode` 는 `dropNN` 이어야 합니다. CloudWatch 는 호출이 없던 구간을 null 로
+돌려주는데, 그대로 더하면 합이 NaN 이 되어 NoData 로 빠집니다.
+
+### 호스트 규칙과 `noDataState` 가 반대입니다
+
+```
+호스트   noDataState: Alerting   지표가 끊기면 그 자체가 문제
+Lambda   noDataState: OK         실패 지표가 없음 = 실패가 없었음
+```
+
+`Alerting` 으로 두면 그날 안 도는 함수들이 매분 울려 알림이 무시당하게 됩니다.
+
+### 화면은 `theone / Lambda` 대시보드
+
+```
+Grafana → Dashboards → theone → Lambda
+```
+
+| 패널 | 지표 | 읽는 법 |
+|---|---|---|
+| 실패 | `Errors` | 0 이 아니면 그 함수가 실패 |
+| 동시성 제한 | `Throttles` | Airflow 에는 그냥 "태스크 실패" 로만 보임 |
+| 호출 | `Invocations` | 월간 파이프라인이라 평소 0, 실행일에만 솟음 |
+| 실행 시간 | `Duration` | 함수 timeout 에 가까워지면 늘려야 함 |
+
+### 함수 이름을 박지 않습니다
+
+`FunctionName: "*"` 라 새 함수를 배포해도 규칙을 안 고쳐도 되고, 고치는 걸 잊어
+감시에서 빠지는 일이 없습니다.
+
+**`matchExact` 는 `true` 여야 합니다.** `false` 면 `FunctionName` 을 포함한 *모든* 차원
+조합이 잡혀서, AWS 가 함께 발행하는 `Resource` 차원 변형까지 딸려옵니다.
+
+```
+matchExact=false   시리즈 28개   함수마다 두 개씩 (같은 실패로 알림이 두 번)
+matchExact=true    시리즈 14개   함수당 하나
+```
+
+### 자격증명을 두지 않습니다
+
+`authType: default` 는 AWS SDK 기본 체인이라 **EC2 인스턴스 프로파일(IMDS)** 에서 받습니다.
+파일에도 Secret 에도 키가 남지 않고 만료 갱신도 SDK 가 합니다.
+
+**인스턴스 role 에 CloudWatch 읽기 권한이 필요합니다.** 없으면 데이터소스는 등록되고
+패널만 비어 조용히 실패합니다 — 실제로 확인한 오류는 이렇습니다.
+
+```
+AccessDenied: User: .../theone-monitoring-role/i-... is not authorized to perform:
+cloudwatch:ListMetrics because no identity-based policy allows the action
+```
+
 ## 최초 1회 준비
 
 Repository Variable `AWS_ROLE_ARN_MONITORING` 에 OIDC 배포 역할 ARN 이 필요합니다.
@@ -270,3 +343,104 @@ GitHub Secret SLACK_WEBHOOK_URL
 
 Grafana 가 만드는 `grafana-default-email` 은 SMTP 미설정으로 실패합니다. 알림 경로가
 `slack` 을 가리키므로 실제로 쓰이지 않지만, 로그에 SMTP 오류가 보이면 이것입니다.
+
+
+## EMR Serverless — CloudWatch 대시보드에서 이관
+
+예전에는 CloudWatch 대시보드(`dashboard.json`)와 EventBridge → SNS → 이메일이었습니다.
+둘 다 걷어내고 Grafana 로 모았습니다.
+
+**옮긴 이유는 알림입니다.** CloudWatch 대시보드에는 알림이 없어서, CPU 가 상한에 붙어
+있어도 사람이 열어보기 전까지 아무도 몰랐습니다.
+
+```
+Grafana → Dashboards → theone → EMR Serverless
+```
+
+| 패널 | 내용 |
+|---|---|
+| 작업 상태 | Running · Pending · Failed · Success |
+| 메모리 사용 (GB) | 워커 실사용량 + 용량 상한선 |
+| CPU 사용 (vCPU) | 워커 실사용량 + 용량 상한선 |
+| 워커 수 | Running · 생성 대기 |
+
+알림 2건:
+
+| 규칙 | 지표 | 대체한 것 |
+|---|---|---|
+| EMR 작업 실패 | `FailedJobs` | EventBridge → SNS → 이메일 |
+| EMR 용량 상한 도달 | `CPUAllocated >= MaxCPUAllowed`, 15분 지속 | **새로 생긴 것** |
+
+### 데이터소스가 UI 에서 부르는 것도 권한이 필요합니다
+
+패널을 클릭해 편집기가 열리면 데이터소스가 리소스 API 를 부릅니다. 하나라도 403 이면
+**"Something went wrong. Please check the console log."** 로 화면이 죽습니다.
+
+| 엔드포인트 | 필요한 권한 | 없으면 |
+|---|---|---|
+| `metrics`, `dimension-keys` | `cloudwatch:ListMetrics` | 질의 자체가 안 됨 |
+| `accounts` | `oam:ListSinks` | **편집기가 죽음** |
+| `regions` | `ec2:DescribeRegions` | 내장 목록으로 대체 (로그만 남음) |
+
+`oam:*` 은 교차 계정 관측(Observability Access Manager) 기능을 쓰는지 확인하는 호출입니다.
+우리는 안 쓰지만 Grafana 가 항상 물어봅니다.
+
+### 질의할 때 두 가지
+
+**`ApplicationName` 을 함께 줘야 합니다.** `ApplicationId` 만 주면 `matchExact` 가 맞지
+않아 **0계열**이 됩니다 — 실제 차원 조합이 `{ApplicationId, ApplicationName}` 이라서요.
+패널은 에러 없이 비어 있어 눈으로만 봐서는 원인을 알 수 없습니다.
+
+**한 패널에 Metrics Insights 는 하나뿐입니다.** `GetMetricData` 가 호출당 하나만 받고
+Grafana 도 같은 제한입니다. 두 개를 넣으면 배포는 통과하고 패널만 깨집니다.
+
+```
+Maximum number of queries (1) exceeded
+```
+
+그래서 워커 실사용량(MI)과 용량 상한(일반 질의)을 한 패널에 두고, 사용량과 할당량을
+동시에 그리지는 못합니다.
+
+
+### 용량 알림은 사용량이 아니라 할당량을 봅니다
+
+| | 지표 | 뜻 |
+|---|---|---|
+| 패널의 `Spark_Driver` / `Spark_Executor` | `WorkerCpuUsed` | 워커가 **실제로 쓴** 양 |
+| 패널의 `할당 (알림 기준)` | `CPUAllocated` | EMR 이 **잡아둔** 양 — **알림이 보는 것** |
+| 패널의 `용량 상한` | `MaxCPUAllowed` | `maximumCapacity` 설정값 |
+
+**할당이 상한에 닿으면 새 워커가 못 뜹니다.** 사용량이 낮아도 작업이 대기합니다.
+
+세 선을 같은 패널에 그리는 이유가 이것입니다. 알림만 오고 화면에 근거가 없으면 사람이
+오탐으로 판단합니다 — 실제로 사용량 9.84 / 상한 12 만 보고 "안 닿았는데 왜 울리냐" 가
+됐습니다. 그때 할당은 12 로 19분간 상한에 붙어 있었습니다.
+
+### 창과 `for` 를 겹치지 마세요
+
+```
+창 15분 + reduce(max) + for 15m   →  포화가 끝나고 16분 뒤에 발사
+창  5분 + reduce(last) + for 15m  →  포화가 진행 중일 때 발사
+```
+
+`max` 는 창 안의 최댓값이라 값이 내려가도 조건이 참으로 남고, `for` 가 그 번진 값 위에서
+다시 셉니다. 지속 여부는 `for` 하나가 보게 두세요.
+
+
+### 작업 지표는 성격이 둘로 갈립니다
+
+```
+RunningJobs / PendingJobs    순간 상태     지금 몇 개인지        -> 마지막 값
+SuccessJobs / FailedJobs     이벤트 카운트  성공·실패마다 1분간 1  -> 기간 합계
+```
+
+넷을 한 패널에 `마지막 값` 으로 두면 **Success 가 거의 항상 0** 으로 보입니다. 성공은
+1분만 1이고 나머지는 0이기 때문입니다. 실측으로 12시간에 7건 성공했는데 화면에는 0이었고,
+CloudWatch 대시보드도 같은 방식이라 똑같이 0이었습니다.
+
+패널을 둘로 나눴습니다.
+
+| 패널 | 지표 | 집계 |
+|---|---|---|
+| 진행 중 | `RunningJobs`, `PendingJobs` | 마지막 값 |
+| 기간 결과 (합계) | `SuccessJobs`, `FailedJobs` | 합계 |

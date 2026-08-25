@@ -14,16 +14,20 @@ from airflow.sdk import task
 from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
+    S3Location,
     layout_tail,
     location_size,
     parse_handler_result,
-    publish_success_marker,
+    parse_location,
     require_file,
+    run_file_gx_validation,
+    run_quality_gate,
 )
 
 logger = logging.getLogger(__name__)
 
 BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
+DATASET = "eia_gas_price"
 
 
 def _layout():
@@ -55,6 +59,15 @@ def raw_to_bronze_task(**context) -> dict:
 @task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> None:
     """적재 경로가 layout 규칙과 같은지, 파일이 비어 있지 않은지 확인합니다."""
+    run_quality_gate(
+        lambda: parse_location(result["locations"][0]).parent,
+        lambda: _validate_bronze(result, context),
+        layer="bronze",
+        context=context,
+    )
+
+
+def _validate_bronze(result: dict, context: dict) -> None:
     parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
     layout = _layout()
     service_area = context["params"]["service_area"]
@@ -71,5 +84,12 @@ def validate_bronze_task(result: dict, **context) -> None:
     size = location_size(path)
     if size < layout.GAS_MIN_BYTES:
         raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({path})")
-    publish_success_marker(path.parent)
+    if isinstance(path, S3Location):
+        run_file_gx_validation(
+            size_bytes=size,
+            minimum_bytes=layout.GAS_MIN_BYTES,
+            dataset=DATASET,
+            layer="bronze",
+            data_location=path,
+        )
     logger.info("bronze 검증 통과: %s (%d bytes)", path, size)

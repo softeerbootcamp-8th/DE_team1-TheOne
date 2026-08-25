@@ -129,6 +129,12 @@ def _put_bronze(
         Key=f"{marker_parent}/_SUCCESS",
         Body=b"",
     )
+    if directory_layout:
+        s3_client.put_object(
+            Bucket=S3_BUCKET,
+            Key=f"{marker_parent}/manifest.json",
+            Body=b"{}",
+        )
 
 
 def _s3_event(

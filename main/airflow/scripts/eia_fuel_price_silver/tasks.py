@@ -24,13 +24,16 @@ from main.airflow.common.assets import (
 from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
+    REQUIRED_NULL_ERROR_RATIO,
+    REQUIRED_NULL_WARNING_RATIO,
     S3Location,
     layout_tail,
     parse_handler_result,
     parse_location,
     parse_year_month,
-    publish_success_marker,
     read_parquet,
+    run_quality_gate,
+    run_table_gx_validation,
 )
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
 from main.common.eia_fuel_version import (
@@ -170,7 +173,9 @@ def require_clean_silver(
     return found
 
 
-def validate_silver(result: object, service_area: str) -> None:
+def validate_silver(
+    result: object, service_area: str, context: dict | None = None
+) -> None:
     """스키마·행 수·날짜 완결성·출처를 확인합니다.
 
     날짜가 하루라도 비면 Gold 의 일자 조인에서 그 날 운행이 통째로 매칭 실패하고,
@@ -236,6 +241,19 @@ def validate_silver(result: object, service_area: str) -> None:
             year_month, FINAL, status or "표기없음",
         )
 
+    if isinstance(path, S3Location):
+        run_table_gx_validation(
+            table,
+            SCHEMA,
+            frozenset(SCHEMA.names),
+            dataset=INTEGRATED_DATASET,
+            layer="silver",
+            data_location=path,
+            context=context or {},
+            required_warning_ratio=REQUIRED_NULL_WARNING_RATIO,
+            required_error_ratio=REQUIRED_NULL_ERROR_RATIO,
+        )
+
     logger.info(
         "EIA 통합 Silver 검증 통과: %s rows=%d 수집분=%s 전력상태=%s",
         path, table.num_rows, collected.pop(), status or "(표기없음)",
@@ -275,10 +293,13 @@ def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="combine_silver")
     year_month = result["year_month"]
     service_area = assets.resolve_service_area(context.get("params", {}))
-    validate_silver(result, service_area)
-
     path = parse_location(result["locations"][0])
-    publish_success_marker(path.parent)
+    run_quality_gate(
+        path.parent,
+        lambda: validate_silver(result, service_area, context),
+        layer="silver",
+        context=context,
+    )
 
     assets.publish_month_partition(
         context.get("outlet_events"),

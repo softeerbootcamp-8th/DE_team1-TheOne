@@ -8,6 +8,7 @@
 from pathlib import Path
 
 import pandas as pd
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 from app import DEFAULT_THRESHOLD, recommendation_scope
@@ -33,6 +34,7 @@ def _suggestion(
         "service_area": service_area,
         "driver_id": driver_id,
         "year_month": "2026-01",
+        "recommendation_algorithm_version_id": 1,
         "manufacturer": "KIA",
         "model_name": "FORTE",
         "model_year": 2024,
@@ -167,8 +169,62 @@ def test_render_전체_흐름이_gold_2종만으로_에러없이_동작한다(tm
         [_aggregation("D1")],
     )
 
+    # _data_source() 는 st.cache_resource라 GOLD_DIR이 달라도 프로세스 안에서
+    # 첫 테스트가 만든 인스턴스를 계속 재사용한다 — 새 tmp_path를 실제로 읽게 비운다.
+    st.cache_resource.clear()
     at = AppTest.from_file(APP_PATH)
     at.run()
 
     assert not at.exception
     assert not at.error
+
+
+def test_알고리즘_버전별로_필터되고_설명과_silver_출처가_표시된다(tmp_path, monkeypatch):
+    """이슈 #987 — 알고리즘 선택 박스 옆 설명, 맨 아래 접힌 Silver 출처."""
+    monkeypatch.setenv("GOLD_DIR", str(tmp_path))
+    monkeypatch.delenv("DASHBOARD_DATA_SOURCE", raising=False)
+
+    _write_partition(
+        tmp_path,
+        "driver_car_suggestion",
+        "NYC",
+        "2026-01",
+        [
+            {**_suggestion("D1", 700.0, 20.0), "recommendation_algorithm_version_id": 1},
+            {**_suggestion("D2", 900.0, 30.0), "recommendation_algorithm_version_id": 2},
+        ],
+    )
+    _write_partition(
+        tmp_path,
+        "driver_aggregation",
+        "NYC",
+        "2026-01",
+        [_aggregation("D1"), _aggregation("D2")],
+    )
+    _write_partition(
+        tmp_path,
+        "silver_lineage",
+        "NYC",
+        "2026-01",
+        [{
+            "service_area": "NYC",
+            "year_month": "2026-01",
+            "silver_monthly_taxi_trip_s3_link": "s3://bucket/silver/monthly_taxi_trip",
+            "silver_driver_vehicle_monthly_snapshot_s3_link": "s3://bucket/silver/driver_vehicle_monthly_snapshot",
+            "silver_lease_vehicle_inventory_s3_link": "s3://bucket/silver/lease_vehicle_inventory",
+            "silver_gas_ev_price_s3_link": "s3://bucket/silver/gas_ev_price",
+        }],
+    )
+
+    # load() 는 dataset 이름으로만 캐시 키를 잡고, _data_source() 는 인자 없이
+    # 캐시되는 리소스라 GOLD_DIR이 달라도 이전 테스트 값이 샐 수 있어 둘 다 비운다.
+    st.cache_data.clear()
+    st.cache_resource.clear()
+    at = AppTest.from_file(APP_PATH)
+    at.run()
+
+    assert not at.exception
+    assert sorted(at.selectbox[0].options) == ["1", "2"]
+
+    captions = [c.value for c in at.caption]
+    assert any("s3://bucket/silver/monthly_taxi_trip" in c for c in captions)

@@ -5,13 +5,16 @@
 3. API가 미변경이어도 대상 월 Bronze나 대응 Silver 완료본이 없으면 하위 DAG를 다시 실행
 4. 로컬과 S3에서 최신 Bronze와 대응 Silver 완료본이 있으면 미변경 분기를 Skip
 5. 원천별 변경 분기는 서로 독립적으로 하위 DAG를 실행
-6. 성공한 원천만 상태를 기록하고 실패한 분기는 다음 실행에 남김
+6. 최신 정상 Bronze manifest에서 조건부 HEAD validator를 복원
 7. 변경 또는 복구된 하위 DAG를 모두 기다린 뒤 READY Asset을 정확히 한 번 발행
 8. 모두 미변경이거나 하나라도 실패하면 READY Asset을 발행하지 않음
 9. 확정된 연월·API 주소·지역을 하위 DAG trigger conf로 전달
 10. refresh DAG가 내부 Source API 기본 주소를 사용
 11. 일일 Gold staleness 감시는 원천 refresh 분기와 독립적으로 실행
 """
+
+import hashlib
+from datetime import datetime, timezone
 
 import requests
 import pytest
@@ -20,6 +23,7 @@ from airflow.task.trigger_rule import TriggerRule
 from dags.source_api_refresh_dag import SOURCES, source_api_refresh_dag
 from main.airflow.common import assets
 from main.airflow.scripts.source_api_refresh import tasks as task_module
+from shared.common.bronze_manifest import bronze_manifest_bytes, build_bronze_manifest
 
 
 API_BASE_URL = "https://company.example"
@@ -68,10 +72,17 @@ def _inspection_result(dataset: str = "monthly_taxi_trip") -> dict:
 
 
 def _mock_unchanged_source(monkeypatch, dataset: str) -> None:
-    monkeypatch.setattr(task_module.Variable, "get", lambda *args, **kwargs: {})
     monkeypatch.setattr(
         task_module,
-        "inspect_source",
+        "_target_url",
+        lambda *args, **kwargs: (
+            f"{API_BASE_URL}/v1/data/{YEAR_MONTH}/datasets/{dataset}",
+            YEAR_MONTH,
+        ),
+    )
+    monkeypatch.setattr(
+        task_module,
+        "_inspect_target_source",
         lambda *args, **kwargs: _inspection_result(dataset),
     )
 
@@ -108,8 +119,31 @@ def _write_local_bronze(
         / "data.parquet"
     )
     data.parent.mkdir(parents=True, exist_ok=True)
-    data.touch()
+    content = b"bronze"
+    data.write_bytes(content)
+    collected_at = (
+        datetime.strptime(token, "%Y%m%dT%H%M%S%fZ")
+        .replace(tzinfo=timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    manifest = build_bronze_manifest(
+        {
+            "dataset": dataset,
+            "year_month": YEAR_MONTH,
+            "collected_at": collected_at,
+            "content": content,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "api_base_url": API_BASE_URL,
+            "source_etag": ETAG,
+            "source_last_modified": LAST_MODIFIED,
+        },
+        service_area=service_area,
+        row_count=1,
+    )
+    (data.parent / "manifest.json").write_bytes(bronze_manifest_bytes(manifest))
     (data.parent / "_SUCCESS").touch()
+    return data
 
 
 def _write_local_silver(
@@ -259,6 +293,20 @@ def test_API가_미변경이고_Silver가_없으면_재실행한다(tmp_path, mo
     assert _check(dataset)["refresh_required"] is True
 
 
+def test_Bronze_manifest가_없거나_깨졌으면_재실행한다(tmp_path, monkeypatch):
+    dataset = "monthly_taxi_trip"
+    _mock_unchanged_source(monkeypatch, dataset)
+    bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
+    path = _write_local_bronze(bronze_root, dataset)
+    _write_local_silver(silver_root)
+
+    (path.parent / "manifest.json").unlink()
+    assert _check(dataset)["refresh_required"] is True
+
+    (path.parent / "manifest.json").write_text("{broken")
+    assert _check(dataset)["refresh_required"] is True
+
+
 def test_최신_Bronze보다_이전_Silver만_있으면_재실행한다(tmp_path, monkeypatch):
     dataset = "monthly_taxi_trip"
     _mock_unchanged_source(monkeypatch, dataset)
@@ -305,6 +353,8 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
                 f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet",
                 "bronze/lease_vehicle_inventory/service_area=NYC/"
                 f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/_SUCCESS",
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/manifest.json",
             ],
             [],
             True,
@@ -315,6 +365,8 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
                 f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet",
                 "bronze/lease_vehicle_inventory/service_area=NYC/"
                 f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/_SUCCESS",
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/manifest.json",
             ],
             [
                 "silver/lease_vehicle_inventory/service_area=NYC/"
@@ -332,6 +384,8 @@ def test_빈_collected_at_디렉터리는_Bronze로_보지않는다(tmp_path, mo
                 f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/data.parquet",
                 "bronze/lease_vehicle_inventory/service_area=NYC/"
                 f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/_SUCCESS",
+                "bronze/lease_vehicle_inventory/service_area=NYC/"
+                f"year_month={YEAR_MONTH}/collected_at={COLLECTION_TOKEN}/manifest.json",
             ],
             [
                 "silver/lease_vehicle_inventory/service_area=NYC/"
@@ -359,6 +413,25 @@ def test_S3_Bronze와_Silver_존재여부로_미변경_원천의_재실행을_�
         return bronze_keys if prefix.startswith("bronze/") else silver_keys
 
     monkeypatch.setattr(task_module, "list_keys", list_keys)
+    manifest = build_bronze_manifest(
+        {
+            "dataset": dataset,
+            "year_month": YEAR_MONTH,
+            "collected_at": "2026-08-22T01:02:03.123456Z",
+            "content": b"bronze",
+            "sha256": hashlib.sha256(b"bronze").hexdigest(),
+            "api_base_url": API_BASE_URL,
+            "source_etag": ETAG,
+            "source_last_modified": LAST_MODIFIED,
+        },
+        service_area="NYC",
+        row_count=1,
+    )
+    monkeypatch.setattr(
+        task_module,
+        "get_object_bytes",
+        lambda bucket, key: bronze_manifest_bytes(manifest),
+    )
 
     result = _check(dataset)
 
@@ -404,16 +477,7 @@ def test_다른지역_Silver는_대상지역의_누락을_가리지않는다(tmp
 
 def test_같은지역과_원본의_두번째_감시는_skip한다(tmp_path, monkeypatch):
     dataset = "monthly_taxi_trip"
-    inspections = iter(
-        [
-            {**_inspection_result(dataset), "changed": True},
-            _inspection_result(dataset),
-        ]
-    )
-    monkeypatch.setattr(task_module.Variable, "get", lambda *args, **kwargs: {})
-    monkeypatch.setattr(
-        task_module, "inspect_source", lambda *args, **kwargs: next(inspections)
-    )
+    _mock_unchanged_source(monkeypatch, dataset)
     bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
 
     assert _check(dataset)["refresh_required"] is True
@@ -455,12 +519,12 @@ def test_수동_연월은_정규화한_URL과_trigger값으로_반환한다(monk
 def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한다():
     assert source_api_refresh_dag.schedule == "@daily"
     assert source_api_refresh_dag.max_active_runs == 3
-    assert len(source_api_refresh_dag.tasks) == len(SOURCES) * 3 + 2
+    assert len(source_api_refresh_dag.tasks) == len(SOURCES) * 2 + 2
 
     ready = source_api_refresh_dag.get_task("publish_api_refresh_ready")
     watchdog = source_api_refresh_dag.get_task("check_gold_staleness")
-    marker_ids = {f"mark_processed_{dataset}" for dataset, _ in SOURCES}
-    assert ready.upstream_task_ids == marker_ids
+    trigger_ids = {f"trigger_{dataset}" for dataset, _ in SOURCES}
+    assert ready.upstream_task_ids == trigger_ids
     assert ready.trigger_rule == TriggerRule.NONE_FAILED_MIN_ONE_SUCCESS
     assert [outlet.name for outlet in ready.outlets] == [
         assets.API_SILVER_REFRESH_READY.name
@@ -473,13 +537,12 @@ def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한�
             f"check_and_should_refresh_{dataset}"
         )
         trigger = source_api_refresh_dag.get_task(f"trigger_{dataset}")
-        marker = source_api_refresh_dag.get_task(f"mark_processed_{dataset}")
 
         assert not gate.upstream_task_ids
         assert gate.ignore_downstream_trigger_rules is False
-        assert gate.downstream_task_ids == {trigger.task_id, marker.task_id}
-        assert marker.upstream_task_ids == {gate.task_id, trigger.task_id}
-        assert marker.downstream_task_ids == {ready.task_id}
+        assert gate.downstream_task_ids == {trigger.task_id}
+        assert trigger.upstream_task_ids == {gate.task_id}
+        assert trigger.downstream_task_ids == {ready.task_id}
         assert trigger.trigger_dag_id == child_dag_id
         assert trigger.wait_for_completion is True
         assert trigger.deferrable is True
@@ -585,46 +648,31 @@ def test_미변경_Bronze_복구도_READY_파티션을_발행한다():
     assert recorder.keys == {READY_PARTITION_KEY}
 
 
-def test_처리완료_validator는_원천별로_기록한다(monkeypatch):
-    written = {}
-    monkeypatch.setattr(
-        task_module.Variable,
-        "set",
-        lambda key, value, **kwargs: written.update(
-            {"key": key, "value": value, **kwargs}
-        ),
+def test_최신_Bronze_manifest를_조건부_HEAD에_사용한다(tmp_path, monkeypatch):
+    dataset = "monthly_taxi_trip"
+    bronze_root, silver_root = _local_roots(tmp_path, monkeypatch, dataset)
+    _write_local_bronze(bronze_root, dataset)
+    _write_local_silver(silver_root)
+    calls = []
+    responses = iter(
+        [
+            _latest_response(dataset),
+            _response(
+                304,
+                f"{API_BASE_URL}/v1/data/{YEAR_MONTH}/datasets/{dataset}",
+                {"ETag": ETAG, "Last-Modified": LAST_MODIFIED},
+            ),
+        ]
     )
 
-    task_module.mark_processed_task.function(
-        {
-            "dataset": "monthly_taxi_trip",
-            "service_area": "NYC",
-            "api_base_url": API_BASE_URL,
-            "year_month": YEAR_MONTH,
-            "etag": ETAG,
-            "last_modified": LAST_MODIFIED,
-        }
-    )
+    def head(url, **kwargs):
+        calls.append((url, kwargs))
+        return next(responses)
 
-    assert written == {
-        "key": task_module.state_key("monthly_taxi_trip", "NYC"),
-        "value": {
-            "api_base_url": API_BASE_URL,
-            "year_month": YEAR_MONTH,
-            "etag": ETAG,
-            "last_modified": LAST_MODIFIED,
-        },
-        "serialize_json": True,
+    monkeypatch.setattr(task_module.requests, "head", head)
+
+    assert _check(dataset) is False
+    assert calls[1][1]["headers"] == {
+        "If-None-Match": ETAG,
+        "If-Modified-Since": LAST_MODIFIED,
     }
-
-
-def test_지역이_다르면_다른_상태키에_기록한다():
-    """지역이 상태 키에 없으면 NYC 가 ETag 를 기록한 뒤 TX 가 304 를 받아 자기
-    수집을 한 번도 못 하고 건너뜁니다 — 실패가 아니라 성공적인 skip 이라 알림도
-    가지 않고, 그다음엔 TX 가 키를 덮어써 NYC 가 굶습니다(#674)."""
-    nyc = task_module.state_key("monthly_taxi_trip", "NYC")
-    tx = task_module.state_key("monthly_taxi_trip", "TX")
-
-    assert nyc != tx
-    assert nyc.startswith(task_module.STATE_KEY_PREFIX)
-    assert tx.startswith(task_module.STATE_KEY_PREFIX)

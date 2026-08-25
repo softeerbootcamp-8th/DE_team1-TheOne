@@ -30,7 +30,11 @@ def _write(path, rows, schema=SCHEMA):
 
 def _march(day_count=31):
     return [
-        {"date": date(2024, 3, day), "gas_price": 3.4}
+        {
+            "date": date(2024, 3, day),
+            "gas_price": 3.4,
+            "bronze_collected_date": date(2026, 8, 17),
+        }
         for day in range(1, day_count + 1)
     ]
 
@@ -199,11 +203,17 @@ def test_산출물이_없으면_실패한다(tmp_path):
 
 def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     seen = []
+    gx = []
     table = pa.Table.from_pylist(_march(), schema=SCHEMA)
     monkeypatch.setattr(
         task_module,
         "read_parquet",
         lambda path: seen.append(path) or table,
+    )
+    monkeypatch.setattr(
+        task_module,
+        "run_table_gx_validation",
+        lambda *args, **kwargs: gx.append(kwargs),
     )
 
     task_module.validate_silver(
@@ -221,6 +231,8 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     )
 
     assert isinstance(seen[0], S3Location)
+    assert gx[0]["required_warning_ratio"] == 0.01
+    assert gx[0]["required_error_ratio"] == 0.05
 
 
 # --- validate-then-publish (#912) --------------------------------------------
@@ -232,7 +244,7 @@ def _fake_task_instance(result: dict):
     )()
 
 
-def test_검증_실패시_SUCCESS를_공개하지_않는다(tmp_path):
+def test_검증_실패시_산출물을_보존하고_격리한다(tmp_path):
     final = task_module.silver_file(
         str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
     )
@@ -248,6 +260,10 @@ def test_검증_실패시_SUCCESS를_공개하지_않는다(tmp_path):
         )
 
     assert final.is_file()
+    assert (final.parent / "_QUARANTINED.json").is_file()
+    assert '"layer": "silver"' in (
+        final.parent / "_QUARANTINED.json"
+    ).read_text()
     assert not (final.parent / "_SUCCESS").exists()
 
 
@@ -267,4 +283,5 @@ def test_검증_통과시_최종_경로에_SUCCESS를_공개한다(tmp_path):
 
     assert final.is_file()
     assert (final.parent / "_SUCCESS").is_file()
+    assert not (final.parent / "_QUARANTINED.json").exists()
     assert pq.ParquetFile(final).read().num_rows == 31

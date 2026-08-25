@@ -24,11 +24,16 @@ from datasource import (
     _latest_version_query,
     build_data_source,
 )
-from schema.gold import DriverCarSuggestion, DriverMonthlyProfit
+from schema.gold import DriverCarSuggestion, DriverMonthlyProfit, RecommendationAlgorithm
 
 
-def test_RDS_소스는_현재_Gold_2종만_노출한다():
-    assert set(_TABLE_MODELS) == {"driver_aggregation", "driver_car_suggestion"}
+def test_RDS_소스는_현재_Gold_4종만_노출한다():
+    assert set(_TABLE_MODELS) == {
+        "driver_aggregation",
+        "driver_car_suggestion",
+        "silver_lineage",
+        "recommendation_algorithm",
+    }
 
 
 def test_로컬_소스는_모든_파티션을_이어붙인다(tmp_path):
@@ -174,6 +179,8 @@ def _driver_car_suggestion_row(driver_id: str, version: int, **overrides) -> dic
         "driver_id": driver_id,
         "year_month": "2026-05",
         "service_area": "NYC",
+        "recommendation_algorithm_version_id": 1,
+        "threshold": -1,
         "comfort_eligible": False,
         "extra_comfort_eligible": False,
         "vehicle_model_id": "V1",
@@ -205,6 +212,50 @@ def test_RDS_소스는_driver_car_suggestion을_읽는다(monkeypatch):
 
     assert set(frame.columns) == set(columns)
     assert frame.loc[0, "expected_net_profit_increase"] == 999
+
+
+def test_RDS_소스는_알고리즘_버전별로_최신_버전을_따로_읽는다(monkeypatch):
+    """알고리즘 A 가 v1, 알고리즘 B 가 나중에 v2 로 재실행돼도 A 의 이력이 가려지면 안 된다."""
+    columns = [field.name for field in fields(DriverCarSuggestion)]
+    conn = _sqlite_conn_with(
+        "driver_car_suggestion",
+        columns,
+        [
+            _driver_car_suggestion_row(
+                "D1", 1, recommendation_algorithm_version_id=1,
+                expected_net_profit_increase=100,
+            ),
+            _driver_car_suggestion_row(
+                "D1", 2, recommendation_algorithm_version_id=2,
+                expected_net_profit_increase=200,
+            ),
+        ],
+    )
+    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
+
+    frame = RdsDataSource("dsn").load("driver_car_suggestion")
+
+    assert len(frame) == 2
+    by_algorithm = frame.set_index("recommendation_algorithm_version_id")
+    assert by_algorithm.loc[1, "expected_net_profit_increase"] == 100
+    assert by_algorithm.loc[2, "expected_net_profit_increase"] == 200
+
+
+def test_RDS_소스는_버전_개념이_없는_마스터_테이블은_전체를_읽는다(monkeypatch):
+    columns = [field.name for field in fields(RecommendationAlgorithm)]
+    conn = _sqlite_conn_with(
+        "recommendation_algorithm",
+        columns,
+        [
+            {"recommendation_algorithm_version_id": 1, "description": "초기 배정"},
+            {"recommendation_algorithm_version_id": 2, "description": "매출 우선"},
+        ],
+    )
+    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
+
+    frame = RdsDataSource("dsn").load("recommendation_algorithm")
+
+    assert sorted(frame["recommendation_algorithm_version_id"]) == [1, 2]
 
 
 def test_알수없는_dataset이름은_RDS에서_ValueError(monkeypatch):

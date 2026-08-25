@@ -9,389 +9,6 @@ ROOT = Path(__file__).parents[2]
 MONITORING = ROOT / "monitoring"
 WORKFLOW = ROOT / ".github/workflows/deploy-monitoring.yml"
 
-# SEARCH 는 차원을 "부분 일치"로 봅니다. 이름만 걸면 그 이름을 가진 모든 차원 조합이
-# 잡히는데, EMR Serverless 는 Worker* 지표를 JobId 별로 발행합니다. 그래서 작업이
-# 쌓일수록 위젯이 무한히 커지고, 500개를 넘으면 CloudWatch 가 "허용된 최대 지표 수를
-# 초과함" 을 띄우고 그리기를 포기합니다. 중괄호로 차원 조합 자체를 고정해야 막힙니다.
-APP_SCHEMA = "{AWS/EMRServerless,ApplicationId,ApplicationName}"
-
-# 위 스키마로 실제 발행되는 지표명 (`aws cloudwatch list-metrics` 로 확인).
-# 여기 없는 이름을 쓰면 위젯이 조용히 비거나(#890) JobId 차원으로 새어 폭증합니다.
-APP_LEVEL_METRICS = {
-    "CPUAllocated", "CancelledJobs", "CancellingJobs", "FailedJobs", "FailedSessions",
-    "IdleWorkerCount", "MaxCPUAllowed", "MaxMemoryAllowed", "MaxStorageAllowed",
-    "MemoryAllocated", "PendingCreationWorkerCount", "PendingJobs", "RunningJobs",
-    "RunningWorkerCount", "ScheduledJobs", "StartedSessions", "StartingSessions",
-    "StorageAllocated", "SubmittedJobs", "SubmittedSessions", "SuccessJobs",
-    "TerminatedSessions", "TerminatingSessions", "TotalWorkerCount",
-}
-
-# JobId 차원으로만 발행되어 대시보드에 두면 작업 수만큼 시계열이 늘어나는 지표.
-PER_JOB_METRICS = {
-    "WorkerCpuAllocated", "WorkerCpuUsed", "WorkerMemoryAllocated", "WorkerMemoryUsed",
-    "WorkerEphemeralStorageAllocated", "WorkerEphemeralStorageUsed",
-    "WorkerStorageReadBytes", "WorkerStorageWriteBytes",
-}
-
-PLACEHOLDERS = {"AWS_REGION", "EMR_APPLICATION_ID", "TOPIC_ARN", "AWS_ACCOUNT_ID"}
-
-
-def _render(path, **values):
-    text = path.read_text()
-    for key, value in values.items():
-        text = text.replace("${" + key + "}", value)
-    return text
-
-
-def _dashboard():
-    rendered = _render(
-        MONITORING / "dashboard.json",
-        AWS_REGION="ap-northeast-2",
-        EMR_APPLICATION_ID="00g85el8u6tujt2p",
-    )
-    assert "${" not in rendered, "치환되지 않은 플레이스홀더가 남았습니다"
-    return json.loads(rendered)
-
-
-def test_dashboard_shows_job_states_usage_and_workers():
-    titles = {
-        widget["properties"].get("title") for widget in _dashboard()["widgets"]
-    }
-    assert {
-        "EMR Serverless job states",
-        "EMR memory used (GB)",
-        "EMR CPU used (vCPU)",
-        "EMR worker count",
-    }.issubset(titles)
-
-
-def test_usage_widgets_split_driver_and_executor():
-    """합치면 튜닝 대상이 안 보입니다. 자원의 대부분은 executor 가 씁니다
-    (실측 executor 23.85GB vs driver 4.44GB) — 합계만 보면 driver 를 줄여야 하는지
-    executor 를 줄여야 하는지 알 수 없습니다.
-    """
-    for title, expressions in _widget_expressions():
-        if "used (" not in title:
-            continue
-        selects = [e for e in expressions if e.startswith("SELECT ")]
-        assert selects, f"{title}: Metrics Insights 쿼리가 없습니다"
-        assert all("GROUP BY WorkerType" in e for e in selects), (
-            f"{title}: driver·executor 를 나누지 않습니다"
-        )
-
-
-def test_usage_widgets_show_the_total_of_both_worker_types():
-    """driver 와 executor 는 서로 다른 워커 집단이라 자원을 나눠 씁니다.
-
-    상한선은 둘을 합친 애플리케이션 전체 한도라, 개별 선만 있으면 눈으로 더해야
-    남은 여유를 알 수 있습니다. executor 23.80 만 보고 24GB 라고 읽으면 driver 2.07 이
-    빠집니다(실제 25.87).
-
-    `SUM()` 을 GROUP BY 결과에 걸면 Metrics Insights 쿼리를 더 쓰지 않고 합계선이
-    나옵니다 — 위젯당 쿼리 1개 제한을 지키면서.
-    """
-    for title, expressions in _widget_expressions():
-        if "used (" not in title:
-            continue
-        assert "SUM(u)" in expressions, f"{title}: 합계선이 없습니다"
-
-
-# CloudWatch 가 색을 지정하지 않은 계열에 주는 기본 팔레트. 위젯 안 "순번"으로 배정되며,
-# 다른 계열이 같은 색을 지정해 뒀는지는 보지 않습니다.
-DEFAULT_PALETTE = [
-    "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
-    "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf",
-]
-
-
-def _rendered_colors(widget):
-    """위젯이 실제로 그릴 색을 순번대로 계산합니다.
-
-    `GROUP BY WorkerType` 은 driver·executor 두 계열이 되므로 순번을 둘 소비합니다.
-    """
-    colors, index = [], 0
-    for row in widget["properties"]["metrics"]:
-        for item in row:
-            if not isinstance(item, dict):
-                continue
-            count = 2 if "GROUP BY WorkerType" in item.get("expression", "") else 1
-            explicit = item.get("color")
-            for offset in range(count):
-                slot = index + offset
-                colors.append((
-                    item["id"],
-                    (explicit or DEFAULT_PALETTE[slot % len(DEFAULT_PALETTE)]).lower(),
-                ))
-            index += count
-    return colors
-
-
-def test_no_two_lines_in_a_widget_get_the_same_color():
-    """자동 색은 위젯 안 순번으로 정해지고, 다른 계열의 지정색을 피해 가지 않습니다.
-
-    합계·상한을 범례 앞으로 옮겼더니 워커 선이 3·4번 순번으로 밀려 초록·빨강을 받았고,
-    합계·상한에 지정한 초록·빨강과 똑같아져 네 선이 두 쌍으로 겹쳐 보였습니다.
-    `GROUP BY` 결과에는 색을 지정할 수 없으므로 순서로만 막을 수 있습니다.
-    """
-    for widget in _dashboard()["widgets"]:
-        if widget["type"] != "metric":
-            continue
-        colors = _rendered_colors(widget)
-        seen = {}
-        for series_id, color in colors:
-            assert color not in seen, (
-                f"{widget['properties'].get('title')}: {series_id} 와 {seen[color]} 가 "
-                f"모두 {color} 입니다"
-            )
-            seen[color] = series_id
-
-
-def test_grouped_series_come_first_so_they_take_the_base_palette():
-    """색을 지정할 수 없는 계열이 앞에 와야 합니다.
-
-    뒤로 밀리면 팔레트 뒤쪽 색을 받는데, 그 색을 다른 계열이 이미 지정해 뒀을 수 있습니다.
-    """
-    for widget in _dashboard()["widgets"]:
-        if widget["type"] != "metric":
-            continue
-        rows = widget["properties"]["metrics"]
-        grouped = [n for n, row in enumerate(rows)
-                   if "GROUP BY WorkerType" in row[0].get("expression", "")]
-        if not grouped:
-            continue
-        assert grouped == [0], (
-            f"{widget['properties'].get('title')}: GROUP BY 계열이 첫 번째가 아닙니다"
-        )
-
-
-def test_usage_widgets_draw_the_ceiling_from_a_metric():
-    """"20GB 사용" 은 상한을 모르면 해석이 안 됩니다. 상한선이 있어야 남은 여유가 보입니다.
-
-    값을 박지 않고 `Max*Allowed` 지표로 그립니다. maximumCapacity 를 올렸을 때
-    선이 따라 올라가야 하고, 박아두면 조용히 틀린 기준을 보여줍니다.
-    """
-    for title, expressions in _widget_expressions():
-        if "used (" not in title:
-            continue
-        joined = " ".join(expressions)
-        assert "MaxMemoryAllowed" in joined or "MaxCPUAllowed" in joined, (
-            f"{title}: 상한선이 없습니다"
-        )
-
-
-def test_usage_widgets_avoid_the_app_level_allocated_gauge():
-    """앱 수준 `MemoryAllocated`/`CPUAllocated` 는 워커가 도는 중에도 0 으로 끊깁니다.
-
-    작업별 사용량과 나란히 두면 "사용량 > 할당량" 이 활성 표본의 21~28% 에서 나타나
-    보는 사람을 혼란스럽게 합니다(실측 330 표본). 상한값은 상수라 그런 일이 없습니다.
-    """
-    for title, expressions in _widget_expressions():
-        if "used (" not in title:
-            continue
-        for name in ("MemoryAllocated", "CPUAllocated"):
-            for expression in expressions:
-                assert f'MetricName="{name}"' not in expression, (
-                    f"{title}: {name} 는 0 으로 끊겨 동반 지표로 쓸 수 없습니다"
-                )
-
-
-def test_metrics_insights_widgets_aggregate_per_minute():
-    """Metrics Insights 의 SUM 은 기간 안의 모든 샘플을 더합니다.
-
-    지표가 1분 간격이라 period 를 300 으로 두면 샘플 5개가 합쳐져 값이 5배가 됩니다
-    (실측: executor 메모리 23.8GB 가 118.9GB 로 표시). 그래프는 멀쩡해 보이고 숫자만
-    틀리는, 알아채기 어려운 실패라 고정합니다.
-    """
-    for widget in _dashboard()["widgets"]:
-        if widget["type"] != "metric":
-            continue
-        expressions = [
-            item.get("expression", "")
-            for row in widget["properties"]["metrics"]
-            for item in row
-            if isinstance(item, dict)
-        ]
-        if not any(e.startswith("SELECT ") for e in expressions):
-            continue
-        period = widget["properties"].get("period")
-        assert period == 60, (
-            f"{widget['properties']['title']}: period 가 {period} 입니다 — 60 이어야 합니다"
-        )
-
-
-def _search_expressions():
-    for widget in _dashboard()["widgets"]:
-        if widget["type"] != "metric":
-            continue
-        for row in widget["properties"]["metrics"]:
-            for item in row:
-                expression = item.get("expression", "") if isinstance(item, dict) else ""
-                if "SEARCH(" in expression:
-                    yield expression
-
-
-def test_every_search_pins_the_dimension_schema():
-    """차원 이름만 걸면 SEARCH 가 JobId 차원 지표까지 함께 잡습니다.
-
-    Worker* 지표는 작업마다 새 시계열이 생기므로, 이렇게 두면 위젯이 계속 커지다가
-    500개를 넘는 순간 "허용된 최대 지표 수를 초과함" 으로 그리기를 멈춥니다. 실제로
-    memory·CPU 위젯이 각각 510개까지 늘어 깨졌습니다. 중괄호 스키마 고정이 유일한
-    구조적 방어라서, 새 위젯이 이걸 빠뜨리지 못하게 막습니다.
-    """
-    expressions = list(_search_expressions())
-    assert expressions, "SEARCH 가 하나도 없습니다"
-    for expression in expressions:
-        assert f"SEARCH('{APP_SCHEMA} " in expression, f"스키마 미고정: {expression}"
-
-
-def _widget_expressions():
-    for widget in _dashboard()["widgets"]:
-        if widget["type"] != "metric":
-            continue
-        expressions = [
-            item.get("expression", "")
-            for row in widget["properties"]["metrics"]
-            for item in row
-            if isinstance(item, dict)
-        ]
-        yield widget["properties"]["title"], expressions
-
-
-def test_per_job_metrics_are_only_read_through_metrics_insights():
-    """작업별 지표를 SEARCH 로 끌어오면 작업 수만큼 시계열이 늘어 한도를 넘습니다.
-
-    Metrics Insights 는 서버에서 집계해 GROUP BY 결과만 돌려주므로 스캔한 지표가
-    위젯 개수에 잡히지 않습니다. Worker*Used 는 앱 수준에 아예 없어서 사용량을 보려면
-    이 경로뿐입니다. 그래서 '쓰지 마라' 가 아니라 '이 경로로만 써라' 로 고정합니다.
-    """
-    for title, expressions in _widget_expressions():
-        for expression in expressions:
-            used = {m for m in PER_JOB_METRICS if m in expression}
-            if not used:
-                continue
-            assert expression.startswith("SELECT "), (
-                f"{title}: {used} 를 SEARCH 로 읽고 있습니다 — Metrics Insights 를 쓰세요"
-            )
-
-
-def test_each_widget_has_at_most_one_metrics_insights_query():
-    """GetMetricData 는 호출당 Metrics Insights 쿼리를 1개만 받습니다. 위젯 하나가
-
-    한 번의 호출로 그려지므로, 두 개를 넣으면 배포는 통과하고 위젯만 깨집니다.
-    used/allocated 비율을 한 위젯에 못 담는 이유가 이것입니다.
-    """
-    for title, expressions in _widget_expressions():
-        count = sum(1 for e in expressions if e.startswith("SELECT "))
-        assert count <= 1, f"{title}: Metrics Insights 쿼리가 {count}개입니다"
-
-
-def test_dashboard_metric_names_are_published_at_app_level():
-    found = set(re.findall(r'MetricName=\\"([^\\"]+)\\"', json.dumps(_dashboard())))
-    assert found, "MetricName 을 하나도 찾지 못했습니다"
-    assert found <= APP_LEVEL_METRICS, f"앱 수준에 없는 지표: {found - APP_LEVEL_METRICS}"
-
-
-def test_dashboard_carries_no_ec2_host_metrics():
-    """EC2 자원은 Grafana 담당. Agent 권한이 없어 여기 두면 빈 위젯이 됩니다."""
-    body = (MONITORING / "dashboard.json").read_text()
-    for namespace in ("TheOne/EC2", "CWAgent", "AWS/EC2"):
-        assert namespace not in body
-    assert "mem_used_percent" not in body
-    assert "disk_used_percent" not in body
-
-
-def test_dashboard_aggregates_without_pinning_job_identifiers():
-    """JobId/JobName 을 고정하면 작업마다 시계열이 늘어 위젯이 한계에 걸립니다."""
-    body = (MONITORING / "dashboard.json").read_text()
-    assert "JobId=" not in body
-    assert "JobName=" not in body
-
-
-def test_alert_routes_emr_failures_to_the_topic():
-    pattern = json.loads(
-        _render(
-            MONITORING / "emr-failure-event-pattern.json",
-            EMR_APPLICATION_ID="00g85el8u6tujt2p",
-        )
-    )
-    assert pattern["source"] == ["aws.emr-serverless"]
-    assert set(pattern["detail"]["state"]) == {"FAILED", "CANCELLED"}
-
-    policy = json.loads(
-        _render(
-            MONITORING / "alert-topic-policy.json",
-            TOPIC_ARN="arn:aws:sns:ap-northeast-2:572660899671:theone-pipeline-alerts",
-            AWS_ACCOUNT_ID="572660899671",
-        )
-    )
-    statement = policy["Statement"][0]
-    assert statement["Principal"]["Service"] == "events.amazonaws.com"
-    assert statement["Action"] == "sns:Publish"
-    # SourceAccount 조건이 없으면 다른 계정의 EventBridge 가 이 Topic 에 발행할 수 있습니다.
-    assert statement["Condition"]["StringEquals"]["AWS:SourceAccount"] == "572660899671"
-
-
-def test_deploy_uses_idempotent_cli_without_cloudformation():
-    workflow = WORKFLOW.read_text()
-    # CloudFormation 은 DeleteStack·AlreadyExists·파라미터 검증으로 세 번 배포를 막았습니다.
-    # 주석으로 그 이유를 남기는 건 괜찮고, 명령을 다시 부르는 것만 막습니다.
-    assert "aws cloudformation" not in workflow
-    assert not (MONITORING / "cloudformation.yml").exists()
-    for command in (
-        "cloudwatch put-dashboard",
-        "sns create-topic",
-        "sns set-topic-attributes",
-        "events put-rule",
-        "events put-targets",
-    ):
-        assert command in workflow
-
-
-def test_deploy_no_longer_installs_the_cloudwatch_agent():
-    """Agent 는 인스턴스 role 에 PutMetricData 가 없어 지표를 보낼 수 없습니다."""
-    workflow = WORKFLOW.read_text()
-    for removed in (
-        "AmazonCloudWatchAgent",
-        "AmazonCloudWatch-ManageAgent",
-        "AWS-ConfigureAWSPackage",
-        "ssm put-parameter",
-    ):
-        assert removed not in workflow
-    assert not (MONITORING / "cloudwatch-agent.json").exists()
-
-
-def test_deploy_fails_loudly_on_unsubstituted_placeholders():
-    """치환이 빠지면 CloudWatch 는 에러 없이 빈 위젯을 그립니다. 배포가 막아야 합니다."""
-    workflow = WORKFLOW.read_text()
-    assert "envsubst" in workflow
-    assert "치환되지 않은 플레이스홀더" in workflow
-    assert "set -euo pipefail" in workflow
-
-
-def test_deploy_checks_the_results_that_do_not_raise():
-    """put-dashboard 와 put-targets 는 실패해도 예외가 아니라 값으로 알려줍니다.
-
-    검사하지 않으면 배포는 초록불인데 위젯이 깨지거나 알림이 오지 않습니다.
-    """
-    workflow = WORKFLOW.read_text()
-    assert "DashboardValidationMessages" in workflow
-    assert '!= "[]"' in workflow
-    assert "FailedEntryCount" in workflow
-    assert 'if [ "$failed" != "0" ]' in workflow
-
-
-def test_workflow_is_valid_yaml_and_passes_required_variables():
-    workflow = yaml.safe_load(WORKFLOW.read_text())
-    steps = workflow["jobs"]["deploy"]["steps"]
-    rendered = WORKFLOW.read_text()
-    for variable in ("AWS_REGION", "EMR_APPLICATION_ID", "AWS_ROLE_ARN_MONITORING"):
-        assert f"vars.{variable}" in rendered
-    # envsubst 를 쓰는 스텝은 그 변수를 env 로 받아야 합니다.
-    for step in steps:
-        if "envsubst" in step.get("run", ""):
-            assert "EMR_APPLICATION_ID" in step.get("env", {})
-
-
 STACK = MONITORING / "stack"
 TARGET_IPS = {
     "10.0.10.28": "theone-airflow",
@@ -550,3 +167,463 @@ def test_없는_지표로_규칙을_만들지_않는다():
     body = (ALERTING / "rules.yaml").read_text()
 
     assert "node_memory_Swap" not in body
+
+
+# --- CloudWatch 데이터소스와 Lambda 알림 ---------------------------------------
+DATASOURCES = STACK / "grafana/provisioning/datasources"
+
+
+def test_cloudwatch_는_키_없이_인스턴스_role_을_쓴다():
+    """`authType: default` 는 AWS SDK 기본 체인이라 IMDS 에서 자격증명을 받습니다.
+
+    keys 를 쓰면 파일이나 Secret 에 자격증명이 남고 만료 갱신도 사람이 해야 합니다.
+    """
+    datasource = yaml.safe_load((DATASOURCES / "cloudwatch.yml").read_text())["datasources"][0]
+
+    assert datasource["type"] == "cloudwatch"
+    assert datasource["jsonData"]["authType"] == "default"
+    assert "accessKey" not in yaml.safe_dump(datasource)
+    assert "secretKey" not in yaml.safe_dump(datasource)
+
+
+def test_lambda_규칙은_지표가_없을_때_울리지_않는다():
+    """호스트 규칙과 반대입니다.
+
+    호스트는 지표가 끊기면 그 자체가 문제라 Alerting 이지만, Lambda 는
+    "실패 지표가 없음 = 실패가 없었음" 입니다. Alerting 으로 두면 그날 안 도는
+    함수들이 매분 울려 알림이 무시당하게 됩니다.
+    """
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            assert rule["noDataState"] == "OK", rule["title"]
+
+
+def test_lambda_규칙은_함수를_고정하지_않는다():
+    """함수 이름을 박으면 새 함수를 배포할 때마다 규칙을 고쳐야 하고,
+    고치는 걸 잊으면 그 함수만 감시에서 빠집니다.
+    """
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            for query in rule["data"]:
+                model = query["model"]
+                if model.get("namespace") != "AWS/Lambda":
+                    continue
+                assert model["dimensions"] == {"FunctionName": "*"}
+                # matchExact 는 true 여야 합니다. false 면 FunctionName 을 포함한 모든
+                # 차원 조합이 잡혀 AWS 가 함께 발행하는 Resource 차원 변형까지 딸려오고,
+                # 함수마다 시계열이 두 개씩 생겨 같은 실패로 알림이 두 번 옵니다
+                # (실측 14개 -> 28개).
+                assert model["matchExact"] is True
+
+
+def test_lambda_규칙이_고정된_데이터소스_uid를_쓴다():
+    uid = yaml.safe_load((DATASOURCES / "cloudwatch.yml").read_text())["datasources"][0]["uid"]
+
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            used = {q["datasourceUid"] for q in rule["data"] if q["datasourceUid"] != "__expr__"}
+            assert used == {uid}, f"{rule['title']}: {used}"
+
+
+def test_배포가_cloudwatch_설정을_내려보낸다():
+    workflow = WORKFLOW.read_text()
+
+    for path in ("datasources/cloudwatch.yml", "alerting/lambda-rules.yaml"):
+        assert path in workflow, f"{path} 가 배포 목록에 없습니다"
+
+
+def test_배포가_grafana_를_재기동한다():
+    """Grafana 는 프로비저닝을 **기동 시에만** 읽고 SIGHUP 재적재를 지원하지 않습니다.
+
+    이미지도 compose 정의도 안 바뀌면 `up -d` 가 컨테이너를 그대로 둡니다. 그러면
+    바인드 마운트된 파일만 새것이고 Grafana 안은 옛 설정이라, **배포는 초록불인데
+    반영이 안 된 상태**가 됩니다. 실제로 데이터소스와 알림 규칙이 16시간 동안
+    반영되지 않았습니다.
+    """
+    workflow = WORKFLOW.read_text()
+
+    assert "docker compose restart grafana" in workflow
+
+
+def test_배포가_prometheus_설정을_다시_읽게_한다():
+    """Prometheus 는 SIGHUP 으로 재적재합니다 — 재기동보다 짧게 끊깁니다."""
+    workflow = WORKFLOW.read_text()
+
+    assert "SIGHUP prometheus" in workflow
+
+DASHBOARDS = STACK / "grafana/provisioning/dashboards"
+
+
+def test_lambda_대시보드가_파일로_있다():
+    """UI 에서 만들면 컨테이너를 다시 만들 때 사라집니다 (데이터소스·알림과 같은 이유)."""
+    provider = yaml.safe_load((DASHBOARDS / "dashboards.yaml").read_text())["providers"][0]
+    assert provider["options"]["path"] == "/etc/grafana/provisioning/dashboards"
+    # 파일이 정본이라 UI 수정을 막습니다 — 막지 않으면 파일과 화면이 갈립니다.
+    assert provider["allowUiUpdates"] is False
+
+    dashboard = json.loads((DASHBOARDS / "lambda.json").read_text())
+    assert dashboard["uid"] == "theone-lambda"
+    assert len(dashboard["panels"]) >= 4
+
+
+def test_대시보드도_시리즈를_중복시키지_않는다():
+    """알림과 같은 이유입니다 — false 면 함수마다 선이 두 개 그려집니다."""
+    dashboard = json.loads((DASHBOARDS / "lambda.json").read_text())
+
+    for panel in dashboard["panels"]:
+        for target in panel["targets"]:
+            assert target["matchExact"] is True, panel["title"]
+            assert target["dimensions"] == {"FunctionName": "*"}, panel["title"]
+
+
+def test_배포가_대시보드를_내려보낸다():
+    workflow = WORKFLOW.read_text()
+
+    assert "dashboards/lambda.json" in workflow
+    assert "dashboards/dashboards.yaml" in workflow
+    assert "grafana/provisioning/dashboards" in workflow
+
+
+def test_lambda_규칙은_축약_단계를_거친다():
+    """Grafana 알림은 **축약된 값**만 임계와 비교할 수 있습니다.
+
+    Prometheus 규칙은 `instant: true` 라 값이 계열당 하나씩이지만, CloudWatch 는 항상
+    시계열입니다. 그대로 비교하면 규칙은 남고 평가만 error 가 됩니다 — UI 에서
+    `Health: error` 로 보이고 **알림은 영원히 안 옵니다.**
+
+        invalid format of evaluation results ... only reduced data can be alerted on
+    """
+    for group in yaml.safe_load((ALERTING / "lambda-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            kinds = [q["model"].get("type") for q in rule["data"]]
+            assert "reduce" in kinds, f"{rule['title']}: 축약 단계가 없습니다"
+
+            reduce_node = next(q for q in rule["data"] if q["model"].get("type") == "reduce")
+            threshold = next(q for q in rule["data"] if q["model"].get("type") == "threshold")
+
+            # 임계는 원본이 아니라 축약 결과를 봐야 합니다.
+            assert threshold["model"]["expression"] == reduce_node["refId"]
+            # CloudWatch 는 호출이 없던 구간을 null 로 돌려줍니다. 그대로 더하면 NaN 이
+            # 되어 규칙이 NoData 로 빠집니다.
+            assert reduce_node["model"]["settings"]["mode"] == "dropNN"
+
+
+# --- EMR Serverless (CloudWatch 대시보드에서 이관) -----------------------------
+
+
+def test_emr_대시보드가_파일로_있다():
+    """CloudWatch 대시보드를 걷어내고 Grafana 로 옮겼습니다.
+
+    옮긴 이유는 알림입니다 — CloudWatch 대시보드에는 알림이 없어서 CPU 가 상한에
+    붙어 있어도 사람이 열어보기 전까지 아무도 몰랐습니다.
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+
+    assert dashboard["uid"] == "theone-emr"
+    titles = {p["title"] for p in dashboard["panels"]}
+    assert {"진행 중", "기간 결과 (합계)", "메모리 사용 (GB)",
+            "CPU 사용 (vCPU)", "워커 수"} <= titles
+
+
+def test_emr_질의는_ApplicationName_을_함께_준다():
+    """`ApplicationId` 만 주면 `matchExact` 가 맞지 않아 **0계열**이 됩니다.
+
+    실제 지표의 차원 조합이 `{ApplicationId, ApplicationName}` 이라서입니다. 패널은
+    에러 없이 비어 있게 되므로 눈으로만 봐서는 원인을 알 수 없습니다(실측).
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+
+    for panel in dashboard["panels"]:
+        for target in panel["targets"]:
+            if target.get("metricQueryType") == 1:
+                continue  # Metrics Insights 는 SQL 로 지목합니다
+            assert "ApplicationName" in target["dimensions"], panel["title"]
+            assert target["matchExact"] is True, panel["title"]
+
+
+def test_한_패널에_Metrics_Insights_는_하나다():
+    """`GetMetricData` 가 호출당 하나만 받습니다 — Grafana 도 같은 제한입니다.
+
+    두 개를 넣으면 배포는 통과하고 패널만 `Maximum number of queries (1) exceeded`
+    로 깨집니다.
+    """
+    for name in ("emr.json", "lambda.json"):
+        dashboard = json.loads((DASHBOARDS / name).read_text())
+        for panel in dashboard["panels"]:
+            count = sum(1 for t in panel["targets"] if t.get("metricQueryType") == 1)
+            assert count <= 1, f"{name} / {panel['title']}: {count}개"
+
+
+def test_emr_작업_실패_알림이_있다():
+    """EventBridge -> SNS -> 이메일 경로를 걷어냈으므로, 이 규칙이 없으면 작업 실패를
+    알려주는 곳이 사라집니다.
+    """
+    rules = yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())
+    titles = {r["title"] for g in rules["groups"] for r in g["rules"]}
+
+    assert "EMR 작업 실패" in titles
+
+
+def test_emr_규칙도_축약_단계를_거친다():
+    """Lambda 규칙과 같은 이유입니다 — CloudWatch 는 항상 시계열입니다."""
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            kinds = [q["model"].get("type") for q in rule["data"]]
+            assert "reduce" in kinds, f"{rule['title']}: 축약 단계가 없습니다"
+
+
+def test_배포가_emr_설정을_내려보낸다():
+    workflow = WORKFLOW.read_text()
+
+    assert "dashboards/emr.json" in workflow
+    assert "alerting/emr-rules.yaml" in workflow
+
+
+def test_CloudWatch_대시보드와_SNS_경로를_남기지_않는다():
+    """옮긴 뒤 남겨두면 두 곳을 봐야 하고, 배포도 두 벌을 유지해야 합니다."""
+    workflow = WORKFLOW.read_text()
+
+    for gone in ("cloudwatch put-dashboard", "sns create-topic", "events put-rule"):
+        assert gone not in workflow, f"{gone} 가 남아 있습니다"
+    for gone in ("dashboard.json", "alert-topic-policy.json", "emr-failure-event-pattern.json"):
+        assert not (MONITORING / gone).exists(), f"{gone} 가 남아 있습니다"
+
+
+# --- 플레이스홀더 치환 ---------------------------------------------------------
+PROVISIONING = STACK / "grafana/provisioning"
+PLACEHOLDER = re.compile(r"\$\{([A-Z_]+)\}")
+
+
+def _provisioning_files():
+    return [f for f in PROVISIONING.rglob("*") if f.suffix in (".json", ".yaml", ".yml")]
+
+
+def test_배포가_플레이스홀더를_치환한다():
+    """프로비저닝 파일은 base64 로 **그대로** 복사됩니다.
+
+    배포가 안 바꾸면 Grafana 가 `${EMR_APPLICATION_ID}` 를 문자열 그대로 질의에
+    넣습니다. 대시보드는 정상으로 뜨고 **패널만 비어서**, 사람이 열어보기 전까지
+    아무도 모릅니다 — 실제로 13곳이 치환되지 않은 채 배포됐습니다.
+    """
+    used = set()
+    for path in _provisioning_files():
+        used |= set(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
+
+    workflow = WORKFLOW.read_text()
+    for name in sorted(used):
+        assert f'"{name}"' in workflow or f"{name}:" in workflow, (
+            f"{name} 을 쓰는데 배포가 값을 넘기지 않습니다"
+        )
+
+
+def test_치환하지_못하면_배포가_멈춘다():
+    """남은 채로 보내면 배포는 초록불이고 패널만 빕니다 — 가장 드러나지 않는 실패입니다."""
+    workflow = WORKFLOW.read_text()
+
+    assert "치환되지 않은 플레이스홀더" in workflow
+    assert "raise SystemExit" in workflow
+
+
+def test_치환_대상은_배포가_아는_이름뿐이다():
+    """배포가 모르는 이름을 새로 쓰면 위 검사가 잡습니다. 목록을 여기에 고정해
+    무엇이 필요한지 한눈에 보이게 합니다.
+    """
+    used = set()
+    for path in _provisioning_files():
+        used |= set(PLACEHOLDER.findall(path.read_text(encoding="utf-8")))
+
+    assert used == {"EMR_APPLICATION_ID"}, f"새 플레이스홀더: {used}"
+
+
+def test_용량_알림의_창이_for_보다_짧다():
+    """창과 `for` 가 겹치면 알림이 늦습니다.
+
+    `reduce(max)` 는 창 안의 최댓값을 보므로 값이 이미 내려가도 조건이 참으로 남고,
+    `for` 가 그 "번진 값" 위에서 다시 셉니다. 실측에서 12:27~12:45 에 19분 포화였는데
+    알림은 13:01 에 왔습니다 — 상황이 끝나고 16분 뒤입니다.
+    """
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            for_seconds = int(rule["for"].rstrip("m")) * 60
+            for query in rule["data"]:
+                window = query["relativeTimeRange"]["from"]
+                assert window < for_seconds, (
+                    f"{rule['title']}: 창 {window}초 >= for {for_seconds}초"
+                )
+                if query["model"].get("type") == "reduce":
+                    # max 는 지나간 스파이크를 계속 참으로 만듭니다.
+                    assert query["model"]["reducer"] == "last", rule["title"]
+
+
+def test_슬랙_템플릿이_없는_라벨을_비워두지_않는다():
+    """`instance_name` 은 호스트 알림에만 있습니다. 조건 없이 쓰면 EMR·Lambda 알림이
+    `**` 만 찍고 나갑니다 — 실제로 그렇게 나갔습니다.
+    """
+    text = (ALERTING / "contact-points.yaml").read_text()
+
+    assert "{{ with .Labels.instance_name }}" in text
+
+
+def test_용량_알림의_근거가_대시보드에_보인다():
+    """알림은 `CPUAllocated`(할당)를 보는데 패널이 `WorkerCpuUsed`(사용)만 그리면,
+    알림이 와도 화면에 근거가 없어 사람이 오탐으로 판단합니다 — 실제로 그랬습니다.
+
+    알림이 보는 지표를 같은 패널에 그려 둡니다.
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+    panels = {p["title"]: p for p in dashboard["panels"]}
+
+    rules = yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())
+    alerted = {
+        q["model"]["metricName"]
+        for g in rules["groups"] for r in g["rules"]
+        for q in r["data"]
+        if "용량" in r["title"] and q["model"].get("metricName")
+    }
+
+    drawn = {t.get("metricName") for p in panels.values() for t in p["targets"]}
+    assert alerted <= drawn, f"알림이 보는데 안 그리는 지표: {alerted - drawn}"
+
+
+def test_용량_알림은_상한_도달로_판정한다():
+    """할당이 상한에 닿으면 새 워커가 못 뜹니다 — 그 순간이 대기가 시작되는 시점입니다.
+
+    `>=` 만으로는 부족합니다. 애플리케이션 단위 지표라 값이 없는 분에 둘 다 0 으로
+    내려오고, 그러면 `0 >= 0` 이 참이 되어 상한 근처에도 안 갔는데 알림이 갑니다.
+    실제로 "상한에 안 닿았는데 경고가 온다" 는 지적을 받았습니다.
+
+    그래서 할당이 0 이 아닐 것과, 워커가 실제로 못 떠서 대기 중일 것을 함께 봅니다.
+    """
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            math = next(q for q in rule["data"] if q["model"].get("type") == "math")
+            expression = math["model"]["expression"]
+            assert "$C >= $D" in expression, expression
+            assert "$C > 0" in expression, f"0 >= 0 오탐이 열려 있습니다: {expression}"
+            assert "$G > 0" in expression, f"대기 워커 조건이 없습니다: {expression}"
+
+            pending = {
+                q["model"]["metricName"]
+                for q in rule["data"]
+                if q["model"].get("metricName")
+            }
+            assert "PendingCreationWorkerCount" in pending
+
+
+def test_용량_알림이_근거_수치를_함께_보낸다():
+    """Slack 은 `.Annotations.summary` 만 보여줍니다. 수치가 없으면 받는 사람이
+    대시보드를 열기 전까지 얼마나 심각한지 모릅니다.
+    """
+    for group in yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())["groups"]:
+        for rule in group["rules"]:
+            if "용량" not in rule["title"]:
+                continue
+            summary = rule["annotations"]["summary"]
+            for ref in ("$values.C.Value", "$values.D.Value", "$values.G.Value"):
+                assert ref in summary, f"근거 수치 {ref} 가 빠졌습니다"
+
+
+def test_작업_지표는_성격에_맞는_집계를_쓴다():
+    """EMR 작업 지표는 성격이 둘로 갈립니다.
+
+        RunningJobs / PendingJobs    순간 상태  — 지금 몇 개인지
+        SuccessJobs / FailedJobs     이벤트 카운트 — 성공·실패할 때마다 1분간 1
+
+    넷을 한 패널에 `lastNotNull` 로 두면 Success 가 거의 항상 0 으로 보입니다.
+    실제로 12시간에 7건 성공했는데 화면에는 0 이었습니다.
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+    stats = [p for p in dashboard["panels"] if p["type"] == "stat"]
+    assert len(stats) >= 2, "순간 상태와 이벤트 카운트를 한 패널에 섞지 않습니다"
+
+    EVENT = {"SuccessJobs", "FailedJobs"}
+    STATE = {"RunningJobs", "PendingJobs"}
+    for panel in stats:
+        metrics = {t["metricName"] for t in panel["targets"]}
+        calc = panel["options"]["reduceOptions"]["calcs"][0]
+        if metrics <= EVENT:
+            assert calc == "sum", f"{panel['title']}: 이벤트 카운트는 합계여야 합니다"
+        elif metrics <= STATE:
+            assert calc == "lastNotNull", f"{panel['title']}: 순간 상태는 마지막 값입니다"
+        else:
+            raise AssertionError(f"{panel['title']}: 성격이 다른 지표가 섞였습니다 {metrics}")
+
+def test_할당_선을_기준선으로_오해하게_이름짓지_않는다():
+    """'기준' 은 기준선(threshold)으로 읽힙니다.
+
+    이 선은 기준이 아니라 **알림이 비교하는 값** 이고, 기준선은 '용량 상한' 입니다.
+    실제로 "기준이라는 게 기준선 아니냐" 는 질문을 받았습니다.
+    """
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+
+    for panel in dashboard["panels"]:
+        for target in panel.get("targets", []):
+            label = target.get("label") or ""
+            if "할당" in label:
+                assert "기준" not in label, f"{panel['title']}: {label}"
+
+
+def test_패널에_깨진_외부_링크가_남지_않는다():
+    """CloudWatch 데이터소스는 응답에 'View in CloudWatch console' 링크를 심습니다.
+    그 URL 은 공백을 `+` 로 인코딩하는데 AWS 콘솔은 `%20` 만 받아서, 패널을 누르면
+    오류 화면으로 갑니다. 실제로 '진행 중'·'기간 결과 (합계)' 에서 그랬습니다.
+
+    링크를 고칠 수단이 없으므로 빈 `links` 로 덮어 아예 눌리지 않게 합니다.
+    """
+    for name in ("emr.json", "lambda.json"):
+        dashboard = json.loads((DASHBOARDS / name).read_text())
+        for panel in dashboard["panels"]:
+            cleared = [
+                prop
+                for override in panel["fieldConfig"]["overrides"]
+                for prop in override["properties"]
+                if prop["id"] == "links"
+            ]
+            assert cleared, f"{name}:{panel['title']}: 데이터소스 링크가 살아 있습니다"
+            assert all(prop["value"] == [] for prop in cleared), (
+                f"{name}:{panel['title']}: 링크를 비워야 합니다"
+            )
+
+
+def test_사용_패널은_할당을_그리지_않는다():
+    """`MemoryAllocated` 는 애플리케이션 단위, `WorkerMemoryUsed` 는 워커 단위라
+    갱신 주기가 어긋납니다. 워커가 막 뜬 분에는 사용량이 130 MB 로 찍히는데 할당은
+    0 GB 라, "할당이 없는데 어떻게 쓰이냐" 는 질문을 받았습니다.
+
+    메모리에는 알림이 없어 이 선이 뒷받침할 것도 없으므로 뺍니다. CPU 는 다릅니다 —
+    `CPUAllocated` 는 용량 알림이 비교하는 값이라 남깁니다.
+    """
+    panels = {
+        p["title"]: p
+        for p in json.loads((DASHBOARDS / "emr.json").read_text())["panels"]
+    }
+
+    memory = {t["metricName"] for t in panels["메모리 사용 (GB)"]["targets"]}
+    assert "MemoryAllocated" not in memory, "0 GB 로 찍혀 오해를 삽니다"
+
+    cpu = {t["metricName"] for t in panels["CPU 사용 (vCPU)"]["targets"]}
+    assert "CPUAllocated" not in cpu, "0 으로 떨어져 사용량 곡선을 방해합니다"
+
+    evidence = {t["metricName"] for t in panels["용량 상한 도달 (알림 근거)"]["targets"]}
+    assert "CPUAllocated" in evidence, "알림 근거는 전용 패널에 남겨야 합니다"
+
+
+def test_알림이_없는_패널을_알림이_있는_것처럼_적지_않는다():
+    """용량 알림은 CPU 만 봅니다. 메모리 패널에 '알림 기준' 이라고 적어 두면
+    없는 알림을 있는 것으로 읽게 됩니다.
+    """
+    rules = yaml.safe_load((ALERTING / "emr-rules.yaml").read_text())
+    alerted = {
+        q["model"]["metricName"]
+        for g in rules["groups"] for r in g["rules"]
+        for q in r["data"] if "용량" in r["title"] and q["model"].get("metricName")
+    }
+    assert "MemoryAllocated" not in alerted, "메모리 알림이 생겼으면 설명도 고치세요"
+
+    dashboard = json.loads((DASHBOARDS / "emr.json").read_text())
+    memory = next(p for p in dashboard["panels"] if p["title"] == "메모리 사용 (GB)")
+    assert "알림이 없습니다" in memory["description"]

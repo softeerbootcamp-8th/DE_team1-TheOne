@@ -108,6 +108,7 @@ CLEAN_EV_CHARGING_PRICE_SCHEMA = pa.schema(
         ("date", pa.date32()),
         ("ev_price", pa.float64()),
         ("bronze_collected_date", pa.date32()),
+        # EIA 확정 상태. 원천 월이 비어 보간한 경우 "Interpolated".
         ("ev_price_status", pa.string()),
     ]
 )
@@ -123,7 +124,8 @@ CLEAN_FUEL_PRICE_SCHEMA = pa.schema(
         ("ev_price", pa.float64()),
         ("price_source", pa.string()),  # 출처 (예: "eia")
         ("bronze_collected_date", pa.date32()),  # 수집 시점
-        ("ev_price_status", pa.string()),  # 전력값 확정 여부 ("Preliminary" / "Final")
+        # EIA 확정 상태. 원천 월이 비어 보간한 경우 "Interpolated".
+        ("ev_price_status", pa.string()),
     ]
 )
 
