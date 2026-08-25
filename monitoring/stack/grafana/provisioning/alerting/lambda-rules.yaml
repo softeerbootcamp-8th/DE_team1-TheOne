@@ -92,6 +92,7 @@ groups:
     for: 0m
     labels:
       severity: critical
+      notify: fire_only
     annotations:
       summary: Lambda 함수가 실패했습니다. Airflow 가 부른 것이면 태스크 알림도 함께 옵니다.
   - uid: theone-lambda-throttles
@@ -161,5 +162,6 @@ groups:
     for: 0m
     labels:
       severity: warning
+      notify: fire_only
     annotations:
       summary: Lambda 가 동시성 상한에 걸렸습니다. 태스크 실패의 원인이 코드가 아닐 수 있습니다.
