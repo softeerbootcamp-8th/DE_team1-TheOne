@@ -19,6 +19,7 @@ ENV PYTHONPATH=/app
 
 COPY main/dashboard/app.py main/dashboard/charts.py main/dashboard/theme.py main/dashboard/datasource.py /app/main/dashboard/
 COPY main/dashboard/.streamlit/ /app/main/dashboard/.streamlit/
+COPY main/dashboard/assets/ /app/main/dashboard/assets/
 COPY schema/ /app/schema/
 
 WORKDIR /app/main/dashboard
