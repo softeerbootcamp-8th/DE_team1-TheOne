@@ -159,20 +159,6 @@ def _aggregates(scope: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _previous_period(periods: list[str], period: str) -> str | None:
-    """정렬된 월 목록에서 바로 앞 달. 없으면 None — 델타를 숨기는 신호."""
-    ordered = sorted(periods)
-    index = ordered.index(period)
-    return ordered[index - 1] if index > 0 else None
-
-
-def _delta(current: float, previous: float | None, money: bool = True) -> str | None:
-    if previous is None:
-        return None
-    diff = current - previous
-    return f"{diff:+,.0f}" if not money else f"${diff:+,.0f}"
-
-
 def _silver_source_expander(
     lineage: pd.DataFrame, service_area: str, period: str
 ) -> None:
@@ -285,36 +271,21 @@ def render() -> None:
     _hero(agg["total_revenue"], int(agg["count"]), agg["avg_profit"],
           len(month_suggestion))
 
-    # 지난 달 대비 델타 — 같은 하한을 적용해 비교 기준을 맞춘다.
-    previous = _previous_period(list(area_suggestion["year_month"].unique()), period)
-    prev_agg = (
-        _aggregates(
-            recommendation_scope(
-                suggestion, aggregation, service_area, previous, threshold
-            )
-        )
-        if previous
-        else None
-    )
-
     st.write("")
     t1, t2, t3, t4 = st.columns(4)
     t1.metric(
         "추천 대상 기사",
         f"{int(agg['count']):,}명",
-        delta=_delta(agg["count"], prev_agg["count"] if prev_agg else None, money=False),
         help=f"{period} 분석 대상 {len(month_suggestion):,}명 중"
         f" {agg['count'] / max(len(month_suggestion), 1):.1%}",
     )
     t2.metric(
         "기사 1인당 예상 월 순수익 증가",
         f"${agg['avg_profit']:,.0f}",
-        delta=_delta(agg["avg_profit"], prev_agg["avg_profit"] if prev_agg else None),
     )
     t3.metric(
         "회사 평균 예상 월 렌탈 객단가 증가",
         f"${agg['avg_revenue']:,.0f}",
-        delta=_delta(agg["avg_revenue"], prev_agg["avg_revenue"] if prev_agg else None),
     )
     t4.metric(
         "추천 차종 수",
