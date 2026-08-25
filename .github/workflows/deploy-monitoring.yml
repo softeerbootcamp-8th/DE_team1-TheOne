@@ -188,6 +188,10 @@ jobs:
                   root / "grafana/provisioning/alerting/policies.yaml",
               "grafana/provisioning/alerting/rules.yaml":
                   root / "grafana/provisioning/alerting/rules.yaml",
+              "grafana/provisioning/alerting/lambda-rules.yaml":
+                  root / "grafana/provisioning/alerting/lambda-rules.yaml",
+              "grafana/provisioning/datasources/cloudwatch.yml":
+                  root / "grafana/provisioning/datasources/cloudwatch.yml",
           }
           cmds = ["set -eu", "cd /home/ec2-user/monitoring",
                   "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting"]
