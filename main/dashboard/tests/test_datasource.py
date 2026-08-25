@@ -180,6 +180,7 @@ def _driver_car_suggestion_row(driver_id: str, version: int, **overrides) -> dic
         "year_month": "2026-05",
         "service_area": "NYC",
         "recommendation_algorithm_version_id": 1,
+        "threshold": -1,
         "comfort_eligible": False,
         "extra_comfort_eligible": False,
         "vehicle_model_id": "V1",

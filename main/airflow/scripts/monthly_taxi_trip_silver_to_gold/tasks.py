@@ -51,6 +51,7 @@ REQUIRED_COLUMNS = {
         "driver_id", "year_month", "vehicle_model_id",
         "manufacturer", "model_name",
         "expected_net_profit_increase", "recommendation_reason",
+        "recommendation_algorithm_version_id", "threshold",
     },
 }
 PROD_INPUT_DATASETS = (

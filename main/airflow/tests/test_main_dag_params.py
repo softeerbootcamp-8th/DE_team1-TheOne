@@ -55,6 +55,7 @@ DAG_PARAMS = {
             "fuel_price_path",
             "output_dir",
             "service_area",
+            "thresholds",
         },
     ),
     "source_api_refresh_dag": (
