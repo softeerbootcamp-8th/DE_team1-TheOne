@@ -179,6 +179,13 @@
 </details>
 
 <details>
+<summary><a href="/docs/MONITORING.md">모니터링 구축</a></summary>
+
+- 감시 대상이 두 종류라 도구를 나눴습니다 — EC2 호스트 4대는 Prometheus + Grafana, EMR Serverless 는 CloudWatch.
+  - 임계값은 실측 평시값에서 잡고, 대시보드에서 겪은 함정 4개(지표 한도 초과·값 5배 부풀림 등)를 실측으로 고쳤습니다.
+</details>
+
+<details>
 <summary><a href="/docs/troubleshooting/aws/CFN_INSTANCE_ID_PARAM_TYPE.md">CloudFormation 배포가 exit 255 로만 죽음</a></summary>
 
 - 인스턴스 ID 파라미터 타입이 `AWS::EC2::Instance::Id`라 배포 role에 없는 `ec2:DescribeInstances` 호출이 거부됐습니다.
