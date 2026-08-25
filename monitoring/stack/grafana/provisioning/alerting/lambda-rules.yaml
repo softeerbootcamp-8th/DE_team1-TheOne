@@ -5,6 +5,10 @@
 # Alerting 으로 두면 그날 안 도는 함수들이 매분 울립니다.
 #
 # FunctionName 을 와일드카드로 둡니다 — 함수를 새로 배포해도 규칙을 안 고쳐도 됩니다.
+#
+# matchExact 는 true 여야 합니다. false 면 FunctionName 을 포함한 **모든** 차원 조합이
+# 잡혀서, AWS 가 함께 발행하는 Resource 차원 변형까지 딸려와 함수마다 시계열이 두 개씩
+# 생깁니다 (실측 14개 -> 28개). 같은 실패로 알림이 두 번 옵니다.
 apiVersion: 1
 groups:
 - orgId: 1
@@ -29,7 +33,7 @@ groups:
         statistic: Sum
         dimensions:
           FunctionName: '*'
-        matchExact: false
+        matchExact: true
         metricQueryType: 0
         metricEditorMode: 0
         period: '300'
@@ -84,7 +88,7 @@ groups:
         statistic: Sum
         dimensions:
           FunctionName: '*'
-        matchExact: false
+        matchExact: true
         metricQueryType: 0
         metricEditorMode: 0
         period: '300'

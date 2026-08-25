@@ -592,7 +592,11 @@ def test_lambda_규칙은_함수를_고정하지_않는다():
                 if model.get("namespace") != "AWS/Lambda":
                     continue
                 assert model["dimensions"] == {"FunctionName": "*"}
-                assert model["matchExact"] is False
+                # matchExact 는 true 여야 합니다. false 면 FunctionName 을 포함한 모든
+                # 차원 조합이 잡혀 AWS 가 함께 발행하는 Resource 차원 변형까지 딸려오고,
+                # 함수마다 시계열이 두 개씩 생겨 같은 실패로 알림이 두 번 옵니다
+                # (실측 14개 -> 28개).
+                assert model["matchExact"] is True
 
 
 def test_lambda_규칙이_고정된_데이터소스_uid를_쓴다():
@@ -609,3 +613,36 @@ def test_배포가_cloudwatch_설정을_내려보낸다():
 
     for path in ("datasources/cloudwatch.yml", "alerting/lambda-rules.yaml"):
         assert path in workflow, f"{path} 가 배포 목록에 없습니다"
+
+
+DASHBOARDS = STACK / "grafana/provisioning/dashboards"
+
+
+def test_lambda_대시보드가_파일로_있다():
+    """UI 에서 만들면 컨테이너를 다시 만들 때 사라집니다 (데이터소스·알림과 같은 이유)."""
+    provider = yaml.safe_load((DASHBOARDS / "dashboards.yaml").read_text())["providers"][0]
+    assert provider["options"]["path"] == "/etc/grafana/provisioning/dashboards"
+    # 파일이 정본이라 UI 수정을 막습니다 — 막지 않으면 파일과 화면이 갈립니다.
+    assert provider["allowUiUpdates"] is False
+
+    dashboard = json.loads((DASHBOARDS / "lambda.json").read_text())
+    assert dashboard["uid"] == "theone-lambda"
+    assert len(dashboard["panels"]) >= 4
+
+
+def test_대시보드도_시리즈를_중복시키지_않는다():
+    """알림과 같은 이유입니다 — false 면 함수마다 선이 두 개 그려집니다."""
+    dashboard = json.loads((DASHBOARDS / "lambda.json").read_text())
+
+    for panel in dashboard["panels"]:
+        for target in panel["targets"]:
+            assert target["matchExact"] is True, panel["title"]
+            assert target["dimensions"] == {"FunctionName": "*"}, panel["title"]
+
+
+def test_배포가_대시보드를_내려보낸다():
+    workflow = WORKFLOW.read_text()
+
+    assert "dashboards/lambda.json" in workflow
+    assert "dashboards/dashboards.yaml" in workflow
+    assert "grafana/provisioning/dashboards" in workflow
