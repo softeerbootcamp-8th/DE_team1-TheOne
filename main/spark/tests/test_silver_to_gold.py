@@ -249,8 +249,13 @@ def test_거리대별_실측_프리미엄_배수를_각_운행에_적용한다(s
         .collect()
     }
 
-    assert rows["short-standard"] == pytest.approx(6.0)
-    assert rows["long-standard"] == pytest.approx(55.0)
+    # 기대값을 상수(PREMIUM_TIER_TRIP_SHARE)로 직접 계산한다 — 값이 바뀔 때마다
+    # 매번 다시 손으로 맞춰야 하는 하드코딩 숫자 대신, 배수 계산 로직 자체를 검증한다.
+    share = gold_transformer.PREMIUM_TIER_TRIP_SHARE
+    # short: 표준 5.0/mile, comfort 10.0/mile -> 배수 2.0
+    assert rows["short-standard"] == pytest.approx(5.0 * (1 + share * 1.0))
+    # long: 표준 2.0/mile, comfort 3.0/mile -> 배수 1.5
+    assert rows["long-standard"] == pytest.approx(50.0 * (1 + share * 0.5))
 
 
 @pytest.mark.parametrize(
