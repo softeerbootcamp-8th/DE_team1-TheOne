@@ -6,6 +6,7 @@
 4. Bronze 행 수·스키마·재고 품질로 Silver 확인
 5. S3 Silver 경로를 로컬 Path로 접지 않고 검증
 6. service_area를 Bronze 수집·정제와 Silver 경로에 전달
+7. S3 Bronze 추가 컬럼은 GX Data Docs 기록을 활성화함
 """
 
 import hashlib
@@ -348,6 +349,41 @@ def test_Bronze_추가컬럼은_경고하고_공개한다(tmp_path, monkeypatch,
     assert (bronze.parent / "_SUCCESS").is_file()
     assert not (bronze.parent / "_QUARANTINED.json").exists()
     assert "Bronze 스키마 확장" in caplog.text
+
+
+def test_S3_Bronze_추가컬럼은_GX_Data_Docs_기록을_활성화한다(monkeypatch):
+    location = task_module.S3Location(
+        "de-theone",
+        "bronze/lease_vehicle_inventory/service_area=NYC/"
+        "year_month=2026-08/collected_at=20260821T123456123456Z/data.parquet",
+    )
+    schema = BRONZE_SCHEMA.append(pa.field("source_note", pa.string()))
+    table = pa.Table.from_pylist(
+        [{**_rows()[0], "source_note": "upstream"}], schema=schema
+    )
+    calls = []
+    monkeypatch.setattr(
+        task_module,
+        "_validate_bronze_result",
+        lambda *args: (
+            location,
+            SchemaValidationResult(extra_columns=("추가 컬럼: source_note",)),
+        ),
+    )
+    monkeypatch.setattr(task_module, "read_parquet", lambda path: table)
+    monkeypatch.setattr(
+        task_module,
+        "run_table_gx_validation",
+        lambda *args, **kwargs: calls.append(kwargs),
+    )
+
+    task_module._validate_bronze(
+        {"result": _raw_result()},
+        {"silver_dir": "/silver", "service_area": "NYC"},
+        {},
+    )
+
+    assert calls[0]["record_extra_columns"] is True
 
 
 def test_Silver_검증이_실패하면_산출물을_보존하고_격리한다(tmp_path, monkeypatch):

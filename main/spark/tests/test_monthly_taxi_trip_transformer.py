@@ -1,10 +1,10 @@
 """Monthly Taxi Trip Bronze→Silver 새 스키마와 원천 운행 등급 전달 회귀 테스트.
 
-1. 새 14컬럼을 Silver 스키마와 순서·타입까지 맞춰 전달
+1. 새 13컬럼을 Silver 스키마와 순서·타입까지 맞춰 전달
 2. Uber Comfort와 Lyft Extra Comfort를 추정 없이 보존
 3. 누락 컬럼과 잘못된 license·등급 조합을 실패 처리
 4. 임계치 미만의 잘못된 행만 제거
-5. 필수값이 아닌 `on_scene_datetime` 이 전 행 NULL 이어도 살아남음
+5. `on_scene_datetime` 없는 입력을 정상 처리하고 출력 계약에서도 제외
 """
 
 from datetime import datetime
@@ -35,7 +35,6 @@ def _row(**overrides) -> dict:
     row = {
         "taxi_id": "taxi-1",
         "hvfhs_license_num": "HV0003",
-        "on_scene_datetime": datetime(2026, 8, 1, 9, 55),
         "pickup_datetime": datetime(2026, 8, 1, 10, 0),
         "dropoff_datetime": datetime(2026, 8, 1, 10, 20),
         "PULocationID": 1,
@@ -52,20 +51,18 @@ def _row(**overrides) -> dict:
     return row
 
 
-def test_on_scene_datetime이_전부_NULL이어도_행이_살아남는다(spark):
-    """원천이 이 컬럼을 채우지 않는 달이 있습니다(#582). 필수값 검사에서 빠졌으므로
-    전 행 NULL 이어도 불합격 0건이어야 합니다 — 예전 계약에서는 100% 탈락했습니다."""
-    rows = [_row(on_scene_datetime=None), _row(taxi_id="taxi-2", on_scene_datetime=None)]
+def test_on_scene_datetime_없는_입력을_정상처리한다(spark):
+    rows = [_row(), _row(taxi_id="taxi-2")]
 
     result = MonthlyTaxiTripCleanTransformer(error_threshold=0.05).transform(
         spark.createDataFrame(rows, schema=BRONZE_INPUT_SCHEMA)
     )
 
     assert result.count() == 2
-    assert result.filter("on_scene_datetime is not null").count() == 0
+    assert "on_scene_datetime" not in result.columns
 
 
-def test_새_14컬럼과_원천_운행등급을_Silver에_그대로_전달한다(spark):
+def test_새_13컬럼과_원천_운행등급을_Silver에_그대로_전달한다(spark):
     rows = [
         _row(),
         _row(

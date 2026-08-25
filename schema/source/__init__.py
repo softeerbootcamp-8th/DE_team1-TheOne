@@ -172,7 +172,6 @@ MONTHLY_TAXI_TRIP_SCHEMA = pa.schema(
     [
         ("taxi_id", pa.string()),  # 운행한 택시 ID
         ("hvfhs_license_num", pa.string()),  # platform_name 역매핑 (Uber→HV0003, Lyft→HV0005)
-        ("on_scene_datetime", pa.timestamp("us")),  # 장소 도착 시각
         ("pickup_datetime", pa.timestamp("us")),  # 승차 시각
         ("dropoff_datetime", pa.timestamp("us")),  # 하차 시각
         ("PULocationID", pa.int32()),  # 승차 지역 ID

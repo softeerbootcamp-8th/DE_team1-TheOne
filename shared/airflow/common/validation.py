@@ -475,6 +475,7 @@ def table_quality_summary(
         raise ValueError(f"기대 스키마에 없는 필수 컬럼: {sorted(unknown_required)}")
 
     actual = {field.name: field.type for field in table.schema}
+    extra = sorted(set(actual) - expected_names)
     missing = sorted(set(required_non_null) - set(actual))
     mismatched = sorted(
         f"{field.name}:{actual[field.name]}!={field.type}"
@@ -510,6 +511,7 @@ def table_quality_summary(
     return pd.DataFrame(
         [{
             "row_count": table.num_rows,
+            "extra_columns": ",".join(extra),
             "missing_columns": ",".join(missing),
             "type_mismatch_columns": ",".join(mismatched),
             "required_invalid_record_count": invalid_count,
@@ -533,6 +535,7 @@ def run_table_gx_validation(
     context: dict,
     required_warning_ratio: float | None,
     required_error_ratio: float,
+    record_extra_columns: bool = False,
 ) -> None:
     """운영 S3의 작은 Parquet 결과에 공통 NULL·스키마 정책을 적용합니다."""
     import great_expectations as gx
@@ -555,6 +558,14 @@ def run_table_gx_validation(
             column="type_mismatch_columns", value_set=[""]
         ),
     ]
+    if record_extra_columns:
+        expectations.append(
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column="extra_columns",
+                value_set=[""],
+                meta={"severity": "warning", "notify": False},
+            )
+        )
     if summary["required_invalid_record_ratio"].notna().all():
         if required_warning_ratio is not None:
             expectations.append(
@@ -747,7 +758,9 @@ def run_gx_validation(
                     result.get("unexpected_count"),
                     observed_value,
                 )
-                if is_warning:
+                if is_warning and failure.expectation_config.meta.get(
+                    "notify", True
+                ):
                     warning_messages.append(
                         f"{failure.expectation_config.type}[{column}]={observed_value}"
                     )

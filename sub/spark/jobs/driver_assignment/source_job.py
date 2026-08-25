@@ -150,7 +150,7 @@ def add_trip_keys(raw_trips: DataFrame) -> DataFrame:
 def build_trip_source(
     raw_trips: DataFrame, clean_trips: DataFrame, assignments: DataFrame
 ) -> DataFrame:
-    """배정된 운행을 `MONTHLY_TAXI_TRIP_SCHEMA` 14컬럼으로 좁힙니다.
+    """배정된 운행을 `MONTHLY_TAXI_TRIP_SCHEMA` 13컬럼으로 좁힙니다.
 
     예전에는 TLC 원본 26컬럼을 그대로 내보냈습니다 — 공개 계약이 원본 형태에
     묶여 있었고, 원본이 컬럼을 추가하면 하류가 조용히 따라 늘어났습니다.
@@ -171,8 +171,6 @@ def build_trip_source(
     selected = assignments.select(
         "trip_key", col("taxi_id").alias("_assigned_taxi_id")
     )
-    # 원본에만 있는 것(on_scene_datetime)과 정제본에만 있는 것(zone·등급·platform_name)이
-    # 갈려 있어 둘 다 붙입니다. FINAL_SCHEMA 에 on_scene_datetime 이 없습니다.
     clean = clean_trips.select(
         "trip_key",
         col("pickup_zone"),
@@ -195,7 +193,7 @@ def build_trip_source(
     typed = _as_schema(source, MONTHLY_TAXI_TRIP_SCHEMA)
     _require_non_null(
         typed,
-        set(MONTHLY_TAXI_TRIP_SCHEMA.names) - {"on_scene_datetime"},
+        set(MONTHLY_TAXI_TRIP_SCHEMA.names),
         "운행 기록",
     )
     return typed
