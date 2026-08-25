@@ -57,3 +57,4 @@
 ### 8/25 ([상세 정리 문서 링크](/docs/decision_making/0825.md))
 
 1. Source API refresh 상태 : Airflow Variable 대신 검증된 Bronze `manifest.json`
+2. Gold 재고 배정 threshold별 보고서 (#978) : 회사 매출 1순위·기사 순수익 threshold 필터인 v2를 기존 v1과 함께 운영, `driver_car_suggestion` 재사용

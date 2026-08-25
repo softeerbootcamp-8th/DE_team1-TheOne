@@ -15,6 +15,7 @@ from shared.airflow.common.validation import (
     parse_location,
     read_parquet,
     run_quality_gate,
+    run_table_gx_validation,
 )
 from shared.aws_lambda.common.schema_validator import (
     SchemaValidationResult,
@@ -25,7 +26,11 @@ from main.airflow.common.monthly_bronze import (
     validate_monthly_parquet_bronze,
 )
 from schema.bronze import LEASE_VEHICLE_INVENTORY_SCHEMA as BRONZE_SCHEMA
-from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SILVER_SCHEMA
+from schema.silver import (
+    CLEAN_LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as SILVER_REQUIRED,
+    CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SILVER_SCHEMA,
+)
+from schema.source import LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as BRONZE_REQUIRED
 
 
 logger = logging.getLogger(__name__)
@@ -49,7 +54,9 @@ def _silver_transformer():
     return module.LeaseVehicleInventorySilverTransformer()
 
 
-def validate_silver_result(result: dict, expected_rows: int) -> None:
+def validate_silver_result(
+    result: dict, expected_rows: int, context: dict | None = None
+) -> None:
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
     try:
@@ -61,6 +68,18 @@ def validate_silver_result(result: dict, expected_rows: int) -> None:
     # 적재된 파일에 같은 정제 규칙을 다시 적용합니다. 변환이 통과했더라도 적재
     # 과정에서 다른 파일이 놓였다면 여기서 걸립니다.
     _silver_transformer().transform(table)
+    if isinstance(path, S3Location):
+        run_table_gx_validation(
+            table,
+            SILVER_SCHEMA,
+            SILVER_REQUIRED,
+            dataset=DATASET,
+            layer="silver",
+            data_location=path,
+            context=context or {},
+            required_warning_ratio=None,
+            required_error_ratio=0,
+        )
 
 
 @task(task_id="raw_to_bronze")
@@ -94,17 +113,19 @@ def validate_bronze_task(result: dict, **context) -> dict:
     params = context.get("params", {})
     return run_quality_gate(
         lambda: parse_location(state["result"]["locations"][0]).parent,
-        lambda: _validate_bronze(state, params),
+        lambda: _validate_bronze(state, params, context),
         layer="bronze",
         context=context,
     )
 
 
-def _validate_bronze(state: dict, params: dict) -> dict:
+def _validate_bronze(
+    state: dict, params: dict, context: dict | None = None
+) -> dict:
     result = state["result"]
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     service_area = params.get("service_area")
-    _, schema_result = _validate_bronze_result(result, base_dir, service_area)
+    path, schema_result = _validate_bronze_result(result, base_dir, service_area)
     if schema_result.missing_columns:
         logger.warning(
             "보유 차량 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집",
@@ -112,13 +133,25 @@ def _validate_bronze(state: dict, params: dict) -> dict:
         )
         result = _collect_bronze(params)
         state["result"] = result
-        _, schema_result = _validate_bronze_result(result, base_dir, service_area)
+        path, schema_result = _validate_bronze_result(result, base_dir, service_area)
     for warning in schema_result.warnings:
         logger.warning("보유 차량 Bronze 스키마 확장: %s", warning)
     if schema_result.errors:
         raise ValueError(
             "보유 차량 Bronze 스키마 불일치: "
             + "; ".join(schema_result.errors)
+        )
+    if isinstance(path, S3Location):
+        run_table_gx_validation(
+            read_parquet(path),
+            BRONZE_SCHEMA,
+            BRONZE_REQUIRED,
+            dataset=DATASET,
+            layer="bronze",
+            data_location=path,
+            context=context or {},
+            required_warning_ratio=None,
+            required_error_ratio=0,
         )
     version_path = silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
@@ -172,7 +205,7 @@ def validate_silver_task(silver_result: dict, raw_result: dict, **context) -> No
     run_quality_gate(
         version_path,
         lambda: _validate_silver_output(
-            silver_result, raw_result["row_count"], version_path
+            silver_result, raw_result["row_count"], version_path, context
         ),
         layer="silver",
         context=context,
@@ -183,6 +216,7 @@ def _validate_silver_output(
     silver_result: dict,
     expected_rows: int,
     version_path: Path | S3Location,
+    context: dict | None = None,
 ) -> None:
     expected_part = (
         f"{version_path}/data.parquet"
@@ -191,4 +225,4 @@ def _validate_silver_output(
     )
     if silver_result["locations"] != [expected_part]:
         raise ValueError("보유 차량 Silver 경로가 Bronze와 다릅니다")
-    validate_silver_result(silver_result, expected_rows)
+    validate_silver_result(silver_result, expected_rows, context)

@@ -21,12 +21,16 @@ from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
 from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
+    REQUIRED_NULL_ERROR_RATIO,
+    REQUIRED_NULL_WARNING_RATIO,
+    S3Location,
     layout_tail,
     parse_handler_result,
     parse_location,
     parse_year_month,
     read_parquet,
     run_quality_gate,
+    run_table_gx_validation,
 )
 
 logger = logging.getLogger(__name__)
@@ -96,7 +100,9 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def validate_silver(result: object, service_area: str) -> None:
+def validate_silver(
+    result: object, service_area: str, context: dict | None = None
+) -> None:
     """스키마·행 수·날짜 완결성을 확인합니다.
 
     날짜가 하루라도 비면 하류의 일자 조인에서 그 날이 통째로 매칭 실패하고, 그건
@@ -140,6 +146,18 @@ def validate_silver(result: object, service_area: str) -> None:
         )
     if len({str(value) for value in table["date"].to_pylist()}) != expected:
         raise ValueError(f"{year_month} 일자에 중복이 있습니다")
+    if isinstance(path, S3Location):
+        run_table_gx_validation(
+            table,
+            SCHEMA,
+            frozenset(SCHEMA.names),
+            dataset=DATASET,
+            layer="silver",
+            data_location=path,
+            context=context or {},
+            required_warning_ratio=REQUIRED_NULL_WARNING_RATIO,
+            required_error_ratio=REQUIRED_NULL_ERROR_RATIO,
+        )
 
     logger.info("EIA 휘발유 단가 Silver 검증 통과: %s rows=%d", path, table.num_rows)
 
@@ -173,7 +191,7 @@ def validate_silver_task(**context) -> None:
     path = parse_location(result["locations"][0])
     run_quality_gate(
         path.parent,
-        lambda: validate_silver(result, service_area),
+        lambda: validate_silver(result, service_area, context),
         layer="silver",
         context=context,
     )

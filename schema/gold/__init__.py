@@ -93,6 +93,11 @@ class DriverCarSuggestion:
     """추천 계산에 쓰인 알고리즘 버전. 알고리즘 로직이 바뀔 때만 사람이 올린다 (적재 시점마다
     바뀌는 `version`과 다른 축)"""
 
+    threshold: int
+    """회사 매출 증가를 1순위, 기사 순수익 증가가 이 값(USD) 이상인 것을 2순위로 배정하는
+    알고리즘(v2)이 스윕한 임계값. threshold를 쓰지 않는 알고리즘(v1)은 `-1`로 고정한다 —
+    실제 임계값은 항상 0 이상이라 `-1`은 "이 알고리즘엔 threshold 축이 없다"는 뜻으로 구분된다."""
+
     comfort_eligible: bool
     """Comfort 등급 대상 여부"""
 

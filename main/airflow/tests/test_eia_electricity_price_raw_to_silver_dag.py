@@ -30,7 +30,12 @@ def _write(path, rows, schema=SCHEMA):
 
 def _march(day_count=31):
     return [
-        {"date": date(2024, 3, day), "ev_price": 0.28}
+        {
+            "date": date(2024, 3, day),
+            "ev_price": 0.28,
+            "bronze_collected_date": date(2026, 8, 17),
+            "ev_price_status": "Final",
+        }
         for day in range(1, day_count + 1)
     ]
 
@@ -202,11 +207,17 @@ def test_산출물이_없으면_실패한다(tmp_path):
 
 def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     seen = []
+    gx = []
     table = pa.Table.from_pylist(_march(), schema=SCHEMA)
     monkeypatch.setattr(
         task_module,
         "read_parquet",
         lambda path: seen.append(path) or table,
+    )
+    monkeypatch.setattr(
+        task_module,
+        "run_table_gx_validation",
+        lambda *args, **kwargs: gx.append(kwargs),
     )
 
     task_module.validate_silver(
@@ -224,6 +235,8 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     )
 
     assert isinstance(seen[0], S3Location)
+    assert gx[0]["required_warning_ratio"] == 0.01
+    assert gx[0]["required_error_ratio"] == 0.05
 
 
 # --- validate-then-publish (#912) --------------------------------------------

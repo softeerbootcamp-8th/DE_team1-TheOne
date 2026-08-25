@@ -263,14 +263,30 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
         "main.airflow.common.monthly_bronze.get_object_bytes",
         lambda bucket, key: manifest if key.endswith("manifest.json") else payload,
     )
+    captured = {}
+    monkeypatch.setattr(
+        task_module,
+        "run_gx_validation",
+        lambda dataframe, expectations, **kwargs: captured.update(
+            summary=dataframe, **kwargs
+        ) or (),
+    )
+    monkeypatch.setattr(task_module, "existing_silver_partitions", lambda _: [])
 
-    summary = task_module._bronze_quality_result(
-        result,
-        {"base_dir": "s3://de-theone/bronze", "service_area": "NYC"},
-        list(task_module.SCHEMA.names),
+    task_module._validate_bronze(
+        {"result": result},
+        {
+            "params": {
+                "base_dir": "s3://de-theone/bronze",
+                "service_area": "NYC",
+            }
+        },
     )
 
-    assert summary.at[0, "row_count"] == 3
+    assert captured["summary"].at[0, "row_count"] == 3
+    assert captured["data_docs_s3_location"].key.startswith(
+        "logs/gx-data-docs/bronze/monthly_taxi_trip/"
+    )
 
 
 def test_S3_Bronze의_Silver버전은_같은버킷의_monthly_taxi_trip경로다():

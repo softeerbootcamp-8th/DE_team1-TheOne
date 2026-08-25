@@ -47,3 +47,29 @@ def send_quality_warning(context: dict, **values) -> None:
         )(context)
     except Exception:
         logger.exception("품질 경고 Slack 전송 실패: %s", text)
+
+
+def build_gx_quality_warning(
+    *, dataset: str, layer: str, partition: str, warnings: tuple[str, ...]
+) -> str:
+    details = "\n".join(f"• `{warning}`" for warning in warnings)
+    return (
+        "⚠️ *GX 데이터 품질 경고*\n"
+        f"*데이터셋*: `{dataset}`\n"
+        f"*계층*: `{layer}`\n"
+        f"*버전*: `{partition}`\n"
+        f"{details}\n"
+        "*처리 결과*: `다음 단계 진행`\n"
+        "*로그*: <{{ ti.log_url }}|Airflow 로그 열기>"
+    )
+
+
+def send_gx_quality_warning(context: dict, **values) -> None:
+    text = build_gx_quality_warning(**values)
+    try:
+        send_slack_webhook_notification(
+            slack_webhook_conn_id=SLACK_WEBHOOK_CONN_ID,
+            text=text,
+        )(context)
+    except Exception:
+        logger.exception("GX 품질 경고 Slack 전송 실패: %s", text)

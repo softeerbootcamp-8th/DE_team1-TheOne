@@ -434,11 +434,17 @@ def test_Silver_검증이_실패하면_산출물을_보존하고_격리한다(tm
 
 def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     seen = []
+    gx = []
     table = pa.Table.from_pylist(_rows(), schema=SCHEMA)
     monkeypatch.setattr(
         task_module,
         "read_parquet",
         lambda path: seen.append(path) or table,
+    )
+    monkeypatch.setattr(
+        task_module,
+        "run_table_gx_validation",
+        lambda *args, **kwargs: gx.append(kwargs),
     )
 
     task_module.validate_silver_result(
@@ -453,6 +459,8 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     )
 
     assert isinstance(seen[0], task_module.S3Location)
+    assert gx[0]["required_warning_ratio"] is None
+    assert gx[0]["required_error_ratio"] == 0
 
 
 def test_적재된_Silver가_driver_id중복을_깨면_검증에서_잡는다(tmp_path):

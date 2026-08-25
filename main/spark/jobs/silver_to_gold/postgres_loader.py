@@ -21,6 +21,7 @@ _DRIVER_AGGREGATION = "driver_aggregation"
 _DRIVER_CAR_SUGGESTION = "driver_car_suggestion"
 _SILVER_LINEAGE = "silver_lineage"
 TABLES = (_DRIVER_AGGREGATION, _DRIVER_CAR_SUGGESTION, _SILVER_LINEAGE)
+_GOLD_LOAD_VERSIONS = "gold_load_versions"
 
 _TABLE_MODELS = {
     _DRIVER_AGGREGATION: DriverMonthlyProfit,
@@ -39,7 +40,8 @@ _TABLE_MODELS = {
 _PRIMARY_KEYS = {
     _DRIVER_AGGREGATION: ("service_area", "year_month", "version", "driver_id"),
     _DRIVER_CAR_SUGGESTION: (
-        "service_area", "year_month", "version", "driver_id"
+        "service_area", "year_month", "version", "driver_id",
+        "recommendation_algorithm_version_id", "threshold",
     ),
     _SILVER_LINEAGE: ("service_area", "year_month", "version"),
 }
@@ -62,6 +64,26 @@ def _create_table_sql(table: str) -> str:
         f"CREATE TABLE IF NOT EXISTS {table} (\n    "
         + ",\n    ".join(columns)
         + f",\n    PRIMARY KEY ({primary_key})\n)"
+    )
+
+
+def _create_version_table_sql() -> str:
+    return f"""CREATE TABLE IF NOT EXISTS {_GOLD_LOAD_VERSIONS} (
+    service_area TEXT NOT NULL,
+    year_month TEXT NOT NULL,
+    version INTEGER NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (service_area, year_month, version)
+)"""
+
+
+def _record_gold_version(
+    cursor, service_area: str, year_month: str, version: int
+) -> None:
+    cursor.execute(
+        f"INSERT INTO {_GOLD_LOAD_VERSIONS} "
+        "(service_area, year_month, version) VALUES (%s, %s, %s)",
+        (service_area, year_month, version),
     )
 
 
@@ -164,6 +186,7 @@ def write_gold_to_postgres(
             with conn.cursor() as cursor:
                 for table in TABLES:
                     cursor.execute(_create_table_sql(table))
+                cursor.execute(_create_version_table_sql())
 
                 version = _next_version(cursor, service_area, year_month)
                 logger.info(
@@ -188,6 +211,9 @@ def write_gold_to_postgres(
                     logger.info("Gold 적재: table=%s rows=%d", table, len(rows))
                 _validate_written_rows(
                     cursor, written, service_area, year_month, version
+                )
+                _record_gold_version(
+                    cursor, service_area, year_month, version
                 )
         return written
     finally:

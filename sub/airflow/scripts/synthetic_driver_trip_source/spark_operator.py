@@ -133,7 +133,7 @@ def emr_build() -> EmrServerlessStartJobOperator:
         },
         configuration_overrides={
             "monitoringConfiguration": {
-                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/emr-logs/"}
+                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/logs/emr-serverless/"}
             }
         },
         aws_conn_id="aws_default",

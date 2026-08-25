@@ -605,6 +605,14 @@ def test_운영_Fuel은_옛_파일명에_SUCCESS가_있어도_완료본으로_�
         )
 
 
+def test_build_gold는_thresholds_파라미터를_job에_넘긴다():
+    """#997 — RevenueFirstAlgorithm이 스윕할 threshold를 job.py에 배선한다."""
+    build_gold = GOLD_DAG.get_task("build_gold")
+
+    assert "--thresholds" in build_gold.bash_command
+    assert "{{ params.thresholds }}" in build_gold.bash_command
+
+
 def test_Gold검증_성공태스크만_Slack완료알림을_보낸다():
     validate_gold = GOLD_DAG.get_task("validate_gold")
 
@@ -621,7 +629,12 @@ def _write_gold(root: Path, year_month: str, service_area: str) -> None:
             [{"driver_id": "D1", "year_month": year_month, "monthly_net_profit": 100.0, "monthly_lease_fee": 400.0}]
         ),
         "driver_car_suggestion": pd.DataFrame(
-            [{"driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
+            [{
+                "driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1",
+                "manufacturer": "KIA", "model_name": "FORTE",
+                "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감",
+                "recommendation_algorithm_version_id": 1, "threshold": -1,
+            }]
         ),
     }
     for dataset, frame in frames.items():
