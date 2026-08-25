@@ -506,7 +506,7 @@ def test_운영은_EMR_Serverless_로_제출하고_완료까지_기다린다(mon
         operator.configuration_overrides["monitoringConfiguration"][
             "s3MonitoringConfiguration"
         ]["logUri"]
-        == "s3://test-lake/emr-logs/"
+        == "s3://test-lake/logs/emr-serverless/"
     )
 
 

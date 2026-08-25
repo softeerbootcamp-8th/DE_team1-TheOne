@@ -122,7 +122,7 @@ def test_운영은_팀변수로_EMR_Serverless_job을_제출하고_완료까지_
     assert "prod" in spark_submit["entryPointArguments"]
     assert operator.configuration_overrides["monitoringConfiguration"][
         "s3MonitoringConfiguration"
-    ]["logUri"] == "s3://test-lake/emr-logs/"
+    ]["logUri"] == "s3://test-lake/logs/emr-serverless/"
 
 
 def test_운영_EMR_필수변수가_없으면_누락된_이름으로_실패한다(monkeypatch):
