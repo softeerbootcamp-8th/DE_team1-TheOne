@@ -31,6 +31,11 @@ VERSION_SEGMENT_PATTERN = re.compile(
 )
 
 
+def _audit(layer: str, event: str, *, level=logging.INFO, **fields) -> None:
+    details = " ".join(f"{key}={value}" for key, value in fields.items())
+    logger.log(level, "%s_lifecycle %s %s", layer, event, details)
+
+
 def _version_time(token: str) -> datetime:
     return datetime.strptime(token, "%Y%m%dT%H%M%S%fZ").replace(
         tzinfo=timezone.utc
@@ -113,6 +118,11 @@ def _cleanup_plan(client, bucket: str, cutoff: datetime) -> list[tuple[str, list
     for prefix, state in versions.items():
         markers = state["markers"]
         if markers == {SUCCESS_FILE, QUARANTINE_FILE}:
+            _audit(
+                "s3", "decision", level=logging.ERROR, decision="error",
+                reason="conflicting_markers", prefix=f"s3://{bucket}/{prefix}/",
+                markers=",".join(sorted(markers)),
+            )
             raise ValueError(
                 f"성공 marker와 격리 marker가 동시에 존재합니다: {prefix}"
             )
@@ -125,29 +135,63 @@ def _cleanup_plan(client, bucket: str, cutoff: datetime) -> list[tuple[str, list
         max(completed_versions)[1]
         for completed_versions in completed_by_partition.values()
     }
+    _audit(
+        "s3", "scan_complete", bucket=bucket, versions=len(versions),
+        partitions=len({state["partition_prefix"] for state in versions.values()}),
+        protected_latest=len(protected),
+    )
     candidates: list[tuple[str, list[str]]] = []
     for prefix, state in versions.items():
         markers = state["markers"]
-        expired_success = (
-            SUCCESS_FILE in markers
-            and prefix not in protected
-            and state["created_at"] <= cutoff
-        )
-        expired_quarantine = False
-        if QUARANTINE_FILE in markers:
+        decision = "keep"
+        reason = "no_marker"
+        age_reference = state["created_at"]
+        is_candidate = False
+        if prefix in protected:
+            decision = "protect"
+            reason = "latest_success"
+        elif SUCCESS_FILE in markers and state["created_at"] <= cutoff:
+            decision = "delete_candidate"
+            reason = "expired_success"
+            is_candidate = True
+        elif SUCCESS_FILE in markers:
+            reason = "retention_active_success"
+        elif QUARANTINE_FILE in markers:
             marker_key = f"{prefix}/{QUARANTINE_FILE}"
-            expired_quarantine = (
-                _quarantine_failed_at(client, bucket, marker_key) <= cutoff
-            )
-        if expired_success or expired_quarantine:
+            age_reference = _quarantine_failed_at(client, bucket, marker_key)
+            if age_reference <= cutoff:
+                decision = "delete_candidate"
+                reason = "expired_quarantine"
+                is_candidate = True
+            else:
+                reason = "retention_active_quarantine"
+        _audit(
+            "s3", "decision", decision=decision, reason=reason,
+            prefix=f"s3://{bucket}/{prefix}/",
+            age_reference=age_reference.isoformat(),
+            markers=",".join(sorted(markers)) or "none", objects=len(state["keys"]),
+        )
+        if is_candidate:
             candidates.append((prefix, sorted(state["keys"])))
     return sorted(candidates)
 
 
-def _delete_keys(client, bucket: str, keys: list[str]) -> int:
+def _delete_keys(
+    client,
+    bucket: str,
+    version_prefix: str,
+    keys: list[str],
+) -> int:
     deleted = 0
+    batch_count = (len(keys) + DELETE_BATCH_SIZE - 1) // DELETE_BATCH_SIZE
     for start in range(0, len(keys), DELETE_BATCH_SIZE):
         batch = keys[start : start + DELETE_BATCH_SIZE]
+        batch_number = start // DELETE_BATCH_SIZE + 1
+        _audit(
+            "s3", "delete_batch_start",
+            prefix=f"s3://{bucket}/{version_prefix}/",
+            batch=f"{batch_number}/{batch_count}", objects=len(batch),
+        )
         response = client.delete_objects(
             Bucket=bucket,
             Delete={
@@ -157,17 +201,28 @@ def _delete_keys(client, bucket: str, keys: list[str]) -> int:
         )
         errors = response.get("Errors", [])
         if errors:
+            _audit(
+                "s3", "delete_batch_failed", level=logging.ERROR,
+                prefix=f"s3://{bucket}/{version_prefix}/",
+                batch=f"{batch_number}/{batch_count}",
+                errors=json.dumps(errors, ensure_ascii=False, sort_keys=True),
+            )
             raise RuntimeError(
                 "S3 객체 일부를 삭제하지 못했습니다: "
                 + json.dumps(errors, ensure_ascii=False, sort_keys=True)
             )
         deleted += len(batch)
+        _audit(
+            "s3", "delete_batch_complete",
+            prefix=f"s3://{bucket}/{version_prefix}/",
+            batch=f"{batch_number}/{batch_count}", deleted_objects=len(batch),
+        )
     return deleted
 
 
 def _retention_cutoff(now: datetime | None, retention_days: int) -> datetime:
-    if retention_days < 1:
-        raise ValueError("retention_days는 1 이상이어야 합니다")
+    if retention_days < 0:
+        raise ValueError("retention_days는 0 이상이어야 합니다")
     reference = now or datetime.now(timezone.utc)
     if reference.tzinfo is None:
         raise ValueError("now에는 시간대가 필요합니다")
@@ -185,38 +240,54 @@ def cleanup_expired_versions(
     """파티션별 최신 정상본은 남기고 만료된 버전 폴더를 삭제합니다."""
     cutoff = _retention_cutoff(now, retention_days)
     s3 = client or boto3.client("s3")
+    _audit(
+        "s3", "start", bucket=bucket, retention_days=retention_days,
+        cutoff=cutoff.isoformat(), dry_run=dry_run,
+        scan_prefixes=",".join(SCAN_PREFIXES),
+    )
     plan = _cleanup_plan(s3, bucket, cutoff)
     candidate_prefixes = [prefix for prefix, _ in plan]
     candidate_object_count = sum(len(keys) for _, keys in plan)
 
-    logger.info(
-        "데이터 보존 기간 정리 계획: bucket=%s cutoff=%s dry_run=%s "
-        "versions=%d objects=%d",
-        bucket,
-        cutoff.isoformat(),
-        dry_run,
-        len(plan),
-        candidate_object_count,
-    )
+    for prefix, keys in plan:
+        _audit(
+            "s3", "plan", prefix=f"s3://{bucket}/{prefix}/",
+            objects=len(keys), dry_run=dry_run,
+        )
     if dry_run:
-        for prefix in candidate_prefixes:
-            logger.info("dry-run 삭제 후보: s3://%s/%s/", bucket, prefix)
-        return {
+        result = {
             "candidate_version_prefixes": candidate_prefixes,
             "deleted_version_prefixes": [],
             "candidate_object_count": candidate_object_count,
             "deleted_object_count": 0,
         }
-
-    deleted_objects = sum(
-        _delete_keys(s3, bucket, keys) for _, keys in plan
+    else:
+        deleted_objects = 0
+        for prefix, keys in plan:
+            _audit(
+                "s3", "delete_start", prefix=f"s3://{bucket}/{prefix}/",
+                objects=len(keys),
+            )
+            deleted_for_version = _delete_keys(s3, bucket, prefix, keys)
+            deleted_objects += deleted_for_version
+            _audit(
+                "s3", "delete_complete", prefix=f"s3://{bucket}/{prefix}/",
+                deleted_objects=deleted_for_version,
+            )
+        result = {
+            "candidate_version_prefixes": candidate_prefixes,
+            "deleted_version_prefixes": candidate_prefixes,
+            "candidate_object_count": candidate_object_count,
+            "deleted_object_count": deleted_objects,
+        }
+    _audit(
+        "s3", "complete",
+        candidate_versions=len(result["candidate_version_prefixes"]),
+        candidate_objects=result["candidate_object_count"],
+        deleted_versions=len(result["deleted_version_prefixes"]),
+        deleted_objects=result["deleted_object_count"], dry_run=dry_run,
     )
-    return {
-        "candidate_version_prefixes": candidate_prefixes,
-        "deleted_version_prefixes": candidate_prefixes,
-        "candidate_object_count": candidate_object_count,
-        "deleted_object_count": deleted_objects,
-    }
+    return result
 
 
 def cleanup_expired_gold_versions(
@@ -229,6 +300,10 @@ def cleanup_expired_gold_versions(
 ) -> dict:
     """RDS Gold의 지역·월별 최신본을 제외한 만료 버전을 삭제합니다."""
     cutoff = _retention_cutoff(now, retention_days)
+    _audit(
+        "gold", "start", retention_days=retention_days,
+        cutoff=cutoff.isoformat(), dry_run=dry_run, tables=",".join(GOLD_TABLES),
+    )
     connection = connect(dsn)
     try:
         with connection:
@@ -252,6 +327,10 @@ def cleanup_expired_gold_versions(
                 )
                 missing_metadata = cursor.fetchone()[0]
                 if missing_metadata:
+                    _audit(
+                        "gold", "decision", level=logging.ERROR, decision="error",
+                        reason="missing_metadata", missing_versions=missing_metadata,
+                    )
                     raise RuntimeError(
                         "Gold 버전 생성 시각이 누락되었습니다. "
                         "RDS 메타데이터 마이그레이션을 먼저 실행해야 합니다: "
@@ -259,7 +338,10 @@ def cleanup_expired_gold_versions(
                     )
                 cursor.execute(
                     f"""
-                    SELECT service_area, year_month, version
+                    SELECT service_area, year_month, version, created_at,
+                           latest_version,
+                           version < latest_version AND created_at <= %s
+                               AS is_delete_candidate
                     FROM (
                         SELECT service_area, year_month, version, created_at,
                                MAX(version) OVER (
@@ -267,54 +349,93 @@ def cleanup_expired_gold_versions(
                                ) AS latest_version
                         FROM {GOLD_VERSION_TABLE}
                     ) history
-                    WHERE version < latest_version AND created_at <= %s
                     ORDER BY service_area, year_month, version
                     """,
                     (cutoff,),
                 )
-                candidates = [tuple(row) for row in cursor.fetchall()]
-                logger.info(
-                    "Gold 보존 기간 정리 계획: cutoff=%s dry_run=%s versions=%d",
-                    cutoff.isoformat(),
-                    dry_run,
-                    len(candidates),
+                history_rows = [tuple(row) for row in cursor.fetchall()]
+                candidates = []
+                for area, month, version, created_at, latest_version, expired in history_rows:
+                    if version == latest_version:
+                        decision = "protect"
+                        reason = "latest_version"
+                    elif expired:
+                        decision = "delete_candidate"
+                        reason = "expired_old_version"
+                        candidates.append((area, month, version))
+                    else:
+                        decision = "keep"
+                        reason = "retention_active"
+                    _audit(
+                        "gold", "decision", decision=decision, reason=reason,
+                        service_area=area, year_month=month, version=version,
+                        created_at=created_at.isoformat(), latest_version=latest_version,
+                    )
+                _audit(
+                    "gold", "scan_complete", history_versions=len(history_rows),
+                    candidate_versions=len(candidates),
                 )
+                for area, month, version in candidates:
+                    _audit(
+                        "gold", "plan", service_area=area, year_month=month,
+                        version=version, dry_run=dry_run,
+                    )
                 if dry_run:
-                    for area, month, version in candidates:
-                        logger.info(
-                            "dry-run Gold 삭제 후보: service_area=%s "
-                            "year_month=%s version=%s",
-                            area,
-                            month,
-                            version,
-                        )
-                    return {
+                    result = {
                         "candidate_versions": candidates,
                         "deleted_versions": [],
                         "deleted_row_count": 0,
                     }
-
-                deleted_rows = 0
-                for candidate in candidates:
-                    for table in GOLD_TABLES:
+                else:
+                    deleted_rows = 0
+                    for candidate in candidates:
+                        area, month, version = candidate
+                        _audit(
+                            "gold", "delete_start", service_area=area,
+                            year_month=month, version=version,
+                        )
+                        candidate_deleted_rows = 0
+                        for table in GOLD_TABLES:
+                            cursor.execute(
+                                f"DELETE FROM {table} "
+                                "WHERE service_area = %s AND year_month = %s "
+                                "AND version = %s",
+                                candidate,
+                            )
+                            candidate_deleted_rows += cursor.rowcount
+                            _audit(
+                                "gold", "delete_table", service_area=area,
+                                year_month=month, version=version, table=table,
+                                deleted_rows=cursor.rowcount,
+                            )
                         cursor.execute(
-                            f"DELETE FROM {table} "
+                            f"DELETE FROM {GOLD_VERSION_TABLE} "
                             "WHERE service_area = %s AND year_month = %s "
                             "AND version = %s",
                             candidate,
                         )
-                        deleted_rows += cursor.rowcount
-                    cursor.execute(
-                        f"DELETE FROM {GOLD_VERSION_TABLE} "
-                        "WHERE service_area = %s AND year_month = %s "
-                        "AND version = %s",
-                        candidate,
-                    )
-                return {
-                    "candidate_versions": candidates,
-                    "deleted_versions": candidates,
-                    "deleted_row_count": deleted_rows,
-                }
+                        _audit(
+                            "gold", "delete_metadata", service_area=area,
+                            year_month=month, version=version,
+                            table=GOLD_VERSION_TABLE, deleted_rows=cursor.rowcount,
+                        )
+                        deleted_rows += candidate_deleted_rows
+                        _audit(
+                            "gold", "delete_complete", service_area=area,
+                            year_month=month, version=version,
+                            deleted_rows=candidate_deleted_rows,
+                        )
+                    result = {
+                        "candidate_versions": candidates,
+                        "deleted_versions": candidates,
+                        "deleted_row_count": deleted_rows,
+                    }
+        _audit(
+            "gold", "complete", candidate_versions=len(result["candidate_versions"]),
+            deleted_versions=len(result["deleted_versions"]),
+            deleted_rows=result["deleted_row_count"], dry_run=dry_run,
+        )
+        return result
     finally:
         connection.close()
 

@@ -37,7 +37,7 @@ default_args = {
         "retention_days": Param(
             DEFAULT_RETENTION_DAYS,
             type="integer",
-            minimum=1,
+            minimum=0,
         ),
         "dry_run": Param(False, type="boolean"),
     },
