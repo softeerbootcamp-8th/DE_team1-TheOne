@@ -447,6 +447,55 @@ def test_S3_Bronze_추가컬럼은_GX_Data_Docs_기록을_활성화한다(monkey
     assert calls[0]["record_extra_columns"] is True
 
 
+def test_INT96_타임스탬프도_GX_까지_통과한다(monkeypatch):
+    """상류 Spark 가 타임스탬프를 INT96 으로 써서 PyArrow 가 `ns` 로 읽습니다.
+
+    예전에는 스키마 검사만 `schema/bronze` 의 `us` 로 맞추고 GX 는 파일을 다시
+    읽어서, 스키마는 통과하는데 GX 가 떨어졌습니다.
+
+        gx_validation failed layer=bronze column=type_mismatch_columns
+        observed_value=['snapshot_created_at:timestamp[ns]!=timestamp[us]']
+
+    두 검사가 같은 정규화를 거치는지 확인합니다.
+    """
+    location = task_module.S3Location(
+        "de-theone",
+        "bronze/driver_vehicle_monthly_snapshot/service_area=TX/"
+        "year_month=2026-01/collected_at=20260825T090906998387Z/data.parquet",
+    )
+    ns_schema = pa.schema(
+        [
+            field.with_type(pa.timestamp("ns"))
+            if field.name == "snapshot_created_at"
+            else field
+            for field in BRONZE_SCHEMA
+        ]
+    )
+    ns_table = pa.Table.from_pylist(_rows(), schema=ns_schema)
+    assert ns_table.schema.field("snapshot_created_at").type == pa.timestamp("ns")
+
+    seen = []
+    monkeypatch.setattr(task_module, "read_parquet", lambda path: ns_table)
+    monkeypatch.setattr(
+        task_module,
+        "validate_monthly_parquet_bronze",
+        lambda *args, **kwargs: (location, None),
+    )
+    monkeypatch.setattr(
+        task_module,
+        "run_table_gx_validation",
+        lambda table, *args, **kwargs: seen.append(table.schema),
+    )
+
+    task_module._validate_bronze(
+        {"result": _raw_result()}, {"silver_dir": "/silver"}, {}
+    )
+
+    expected = BRONZE_SCHEMA.field("snapshot_created_at").type
+    assert seen, "GX 가 호출되지 않았습니다"
+    assert seen[0].field("snapshot_created_at").type == expected
+
+
 def test_Silver_검증이_실패하면_산출물을_보존하고_격리한다(tmp_path, monkeypatch):
     final = tmp_path / "year_month=2026-08" / SOURCE_VERSION
     part = final / "data.parquet"

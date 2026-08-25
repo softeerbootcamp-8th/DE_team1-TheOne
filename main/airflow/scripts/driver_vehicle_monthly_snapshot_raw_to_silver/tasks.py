@@ -144,7 +144,7 @@ def _validate_bronze(
         )
     if isinstance(path, S3Location):
         run_table_gx_validation(
-            read_parquet(path),
+            _read_bronze_table(path),
             BRONZE_SCHEMA,
             BRONZE_REQUIRED,
             dataset=DATASET,
@@ -166,6 +166,41 @@ def _validate_bronze(
     }
 
 
+def _read_bronze_table(path: Path | S3Location) -> pa.Table:
+    """기대 스키마가 `us` 인 타임스탬프를 `us` 로 맞춰 읽습니다.
+
+    상류 Spark 가 타임스탬프를 **INT96** 으로 씁니다. PyArrow 는 그걸 `ns` 로 읽고
+    Bronze 는 원본 바이트를 보존하므로 적재 쪽에서 고칠 수 없습니다. INT96 저장은
+    `shared/spark/common/session.py` 가 타임존 처리를 그 위에 세워 둔 값이라
+    바꾸면 Gold 조인이 밀립니다.
+
+    ★ 반드시 한 번만 읽어 두 검사에 같은 테이블을 넘깁니다. 예전에는 스키마 검사만
+      `ns`→`us` 로 고치고 GX 는 파일을 다시 읽어서, 스키마는 통과하는데 GX 가
+      `snapshot_created_at:timestamp[ns]!=timestamp[us]` 로 떨어졌습니다.
+    """
+    table = read_parquet(path)
+    fields = []
+    changed = False
+    for field in table.schema:
+        expected_index = BRONZE_SCHEMA.get_field_index(field.name)
+        if expected_index < 0:
+            fields.append(field)
+            continue
+        expected = BRONZE_SCHEMA.field(expected_index).type
+        if (
+            pa.types.is_timestamp(field.type)
+            and pa.types.is_timestamp(expected)
+            and field.type != expected
+        ):
+            fields.append(field.with_type(expected))
+            changed = True
+        else:
+            fields.append(field)
+    if not changed:
+        return table
+    return table.cast(pa.schema(fields))
+
+
 def _validate_bronze_result(
     result: dict,
     base_dir: str | Path,
@@ -177,18 +212,9 @@ def _validate_bronze_result(
         base_dir=base_dir,
         service_area=service_area,
     )
-    actual_schema = read_parquet(path).schema
-    snapshot_index = actual_schema.get_field_index("snapshot_created_at")
-    if snapshot_index >= 0:
-        snapshot_field = actual_schema.field(snapshot_index)
-        if snapshot_field.type == pa.timestamp("ns"):
-            actual_schema = actual_schema.set(
-                snapshot_index,
-                snapshot_field.with_type(
-                    BRONZE_SCHEMA.field("snapshot_created_at").type
-                ),
-            )
-    schema_result = validate_parquet_schema(actual_schema, BRONZE_SCHEMA)
+    schema_result = validate_parquet_schema(
+        _read_bronze_table(path).schema, BRONZE_SCHEMA
+    )
     return path, schema_result
 
 
