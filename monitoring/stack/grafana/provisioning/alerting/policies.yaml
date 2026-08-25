@@ -12,3 +12,11 @@ policies:
     group_by: [alertname, instance_name]
     # 같은 알림이 계속 켜져 있으면 4시간마다 한 번만 다시 알립니다.
     repeat_interval: 4h
+    # 이벤트 카운트형(실패 건수·스로틀)은 해소가 무의미해 해소를 끈 수신처로 보냅니다.
+    # 라벨로 가르는 이유: 규칙이 늘어도 정책을 안 고칩니다.
+    routes:
+      - receiver: slack-fire-only
+        object_matchers:
+          - ['notify', '=', 'fire_only']
+        group_by: [alertname, instance_name]
+        repeat_interval: 4h

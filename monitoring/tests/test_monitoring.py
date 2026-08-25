@@ -466,6 +466,80 @@ def test_슬랙_템플릿이_없는_라벨을_비워두지_않는다():
     assert "{{ with .Labels.instance_name }}" in text
 
 
+EVENT_COUNT_METRICS = {"FailedJobs", "Errors", "Throttles"}
+
+
+def _rules():
+    for name in ("emr-rules.yaml", "lambda-rules.yaml", "rules.yaml"):
+        path = ALERTING / name
+        if not path.exists():
+            continue
+        for group in yaml.safe_load(path.read_text())["groups"]:
+            yield from group["rules"]
+
+
+def test_이벤트_카운트형만_해소를_끈다():
+    """`FailedJobs`·`Errors`·`Throttles` 는 "그때 몇 건" 이지 상태가 아닙니다.
+    0 으로 돌아온 건 "새 실패 없음" 이고 실패한 건은 그대로라, 해소 알림에 쓸
+    내용이 없습니다 — "굳이 안 와도 될 것 같다" 는 지적을 받았습니다.
+
+    반대로 용량·호스트 임계는 상태형이라 해소가 "여유 생김"·"정상 복귀" 로 읽힙니다.
+    그건 살려야 하므로, 수신처를 갈라 라벨로 보냅니다.
+    """
+    for rule in _rules():
+        metrics = {
+            q["model"]["metricName"]
+            for q in rule["data"]
+            if q["model"].get("metricName")
+        }
+        fire_only = rule["labels"].get("notify") == "fire_only"
+        if metrics & EVENT_COUNT_METRICS:
+            assert fire_only, f"{rule['title']}: 해소가 무의미한데 보내고 있습니다"
+        else:
+            assert not fire_only, f"{rule['title']}: 상태형인데 해소를 껐습니다"
+
+
+def test_해소를_끈_수신처가_같은_문구를_쓴다():
+    """수신처를 복제했으므로 `settings` 가 갈리면 알림 모양이 규칙마다 달라집니다."""
+    points = {
+        cp["name"]: cp["receivers"][0]
+        for cp in _alerting("contact-points.yaml")["contactPoints"]
+    }
+
+    assert points["slack"].get("disableResolveMessage") is not True
+    assert points["slack-fire-only"]["disableResolveMessage"] is True
+    assert points["slack"]["settings"] == points["slack-fire-only"]["settings"]
+
+
+def test_해소를_끈_규칙이_실제로_그_수신처로_간다():
+    """라벨만 붙이고 정책에 경로가 없으면 라벨이 아무 일도 하지 않습니다."""
+    policy = _alerting("policies.yaml")["policies"][0]
+
+    route = next(
+        r for r in policy["routes"] if r["receiver"] == "slack-fire-only"
+    )
+    assert ["notify", "=", "fire_only"] in route["object_matchers"]
+
+
+def test_해소_알림에_발생_시점_문구를_쓰지_않는다():
+    """`summary` 는 조건이 참일 때 기준으로 쓰여 있습니다 — "작업이 실패했습니다".
+
+    해소 알림에 그대로 내보내면 `✅ EMR 작업 실패 / 작업이 실패했습니다` 로 읽혀
+    성공했는데 실패 알림이 온 것으로 오해합니다. 실제로 그 지적을 받았습니다.
+    """
+    settings = _alerting("contact-points.yaml")["contactPoints"][0]["receivers"][0][
+        "settings"
+    ]
+
+    for field in ("title", "text"):
+        assert '.Status' in settings[field], f"{field}: 상태로 갈라야 합니다"
+
+    body = settings["text"]
+    summary = body.index("{{ .Annotations.summary }}")
+    branch = body.index('{{ if eq .Status "resolved" }}')
+    assert branch < summary, "summary 는 발생(firing) 가지 안에만 있어야 합니다"
+
+
 def test_용량_알림의_근거가_대시보드에_보인다():
     """알림은 `CPUAllocated`(할당)를 보는데 패널이 `WorkerCpuUsed`(사용)만 그리면,
     알림이 와도 화면에 근거가 없어 사람이 오탐으로 판단합니다 — 실제로 그랬습니다.

@@ -110,6 +110,7 @@ groups:
     for: 0m
     labels:
       severity: critical
+      notify: fire_only
     annotations:
       summary: EMR Serverless 작업이 실패했습니다. Airflow 태스크 알림도 함께 옵니다.
   - uid: theone-emr-capacity-full
