@@ -104,12 +104,14 @@ def test_두_테이블_모두_PK에_지역이_들어간다():
         assert "PRIMARY KEY (service_area," in postgres_loader._create_table_sql(table)
 
 
-def test_최종추천_PK는_기사당_한행이다():
+def test_최종추천_PK는_기사당_알고리즘_threshold별_한행이다():
     assert postgres_loader._PRIMARY_KEYS["driver_car_suggestion"] == (
         "service_area",
         "year_month",
         "version",
         "driver_id",
+        "recommendation_algorithm_version_id",
+        "threshold",
     )
 
 

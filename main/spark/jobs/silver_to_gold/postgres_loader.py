@@ -39,7 +39,8 @@ _TABLE_MODELS = {
 _PRIMARY_KEYS = {
     _DRIVER_AGGREGATION: ("service_area", "year_month", "version", "driver_id"),
     _DRIVER_CAR_SUGGESTION: (
-        "service_area", "year_month", "version", "driver_id"
+        "service_area", "year_month", "version", "driver_id",
+        "recommendation_algorithm_version_id", "threshold",
     ),
     _SILVER_LINEAGE: ("service_area", "year_month", "version"),
 }
