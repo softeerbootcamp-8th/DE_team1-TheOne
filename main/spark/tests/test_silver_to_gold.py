@@ -98,6 +98,68 @@ def test_매출_기여가_없는_차량은_순수익이_더_높아도_추천에�
     assert assigned == {"D1": "A"}
 
 
+def test_v1과_v2를_함께_돌리면_job이_하는_것처럼_union하고_검증을_통과한다(spark):
+    """job.py가 하는 것과 같은 조합 — ProfitFirstAlgorithm + RevenueFirstAlgorithm(threshold
+    스윕)을 union한 결과가 validate_gold_business_invariants를 그대로 통과해야 한다."""
+    from functools import reduce
+
+    from pyspark.sql import DataFrame
+
+    from main.spark.jobs.silver_to_gold.recommendation_algorithm import (
+        RevenueFirstAlgorithm,
+    )
+
+    driver_metrics = spark.createDataFrame(
+        [
+            ("D1", "2026-01", "NYC", False, False, "T1", "A", "MAKE", "A", 2024, 30.0, 1000.0, 1000.0, 0.0, 100.0, 200.0, 700.0, 3000.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+            ("D2", "2026-01", "NYC", False, False, "T2", "A", "MAKE", "A", 2024, 30.0, 1000.0, 1000.0, 0.0, 20.0, 200.0, 780.0, 600.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+        ],
+        [
+            "driver_id", "year_month", "service_area", "comfort_eligible",
+            "extra_comfort_eligible", "taxi_id", "vehicle_model_id", "manufacturer",
+            "model_name", "model_year", "fuel_efficiency", "monthly_mileage",
+            "monthly_driver_pay", "monthly_tips", "monthly_fuel_cost",
+            "monthly_lease_fee", "monthly_net_profit", "_gas_price_miles", "_ev_price_miles",
+            "_monthly_driver_pay_if_comfort", "_monthly_driver_pay_if_extra_comfort",
+            "_monthly_driver_pay_if_both", "_lease_weeks_in_month",
+        ],
+    )
+    inventory = spark.createDataFrame(
+        [
+            ("A", "MAKE", "A", 2024, "GAS", 30.0, False, False, 50.0, 2),
+            ("B", "MAKE", "B", 2024, "GAS", 60.0, False, False, 50.0, 2),
+        ],
+        [
+            "vehicle_model_id", "manufacturer", "model_name", "model_year",
+            "fuel_type", "fuel_efficiency", "comfort_eligible",
+            "extra_comfort_eligible", "weekly_lease_fee", "stock",
+        ],
+    )
+    driver_snapshot = driver_metrics.select("driver_id", "taxi_id", "vehicle_model_id")
+    driver_profit = gold_transformer.build_driver_monthly_profit(driver_metrics)
+
+    thresholds = (50, 100)
+    recommendation = reduce(
+        DataFrame.unionByName,
+        (
+            algorithm.recommend(driver_metrics, inventory)
+            for algorithm in (
+                ProfitFirstAlgorithm(),
+                RevenueFirstAlgorithm(thresholds=thresholds),
+            )
+        ),
+    )
+
+    gold_transformer.validate_gold_business_invariants(
+        driver_profit, recommendation, driver_snapshot, inventory
+    )
+
+    rows = recommendation.collect()
+    assert len(rows) == 2 * (1 + len(thresholds))  # 기사 2명 x (v1 1개 + v2 threshold 2개)
+    assert {row["recommendation_algorithm_version_id"] for row in rows} == {1, 2}
+    assert {row["threshold"] for row in rows} == {-1, 50, 100}
+
+
 def test_현재보유량이_전체재고를_넘으면_실패한다(spark):
     snapshot = spark.createDataFrame(
         [("D1", "T1", "A"), ("D2", "T2", "A")],

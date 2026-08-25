@@ -14,11 +14,17 @@ output: driver_aggregation, driver_car_suggestion, silver_lineage (Gold)
       --year 2026 --month 1 --service_area NYC --output_dir ../data/gold
 
 `--*_path` 4개를 직접 주면 `--env` 기본 경로 대신 그 값을 그대로 씁니다.
+
+driver_car_suggestion은 ProfitFirstAlgorithm(v1)과 RevenueFirstAlgorithm(v2, threshold
+스윕)을 함께 계산해 알고리즘·threshold별 리포트를 쌓는다. `--thresholds`로 v2가 스윕할
+값을 JSON 배열 문자열로 덮어쓸 수 있다(예: `--thresholds '[100,200,300]'`).
 """
 
 import argparse
+import json
 import logging
 import os
+from functools import reduce
 from pathlib import Path
 from urllib.parse import urlsplit
 from uuid import uuid4
@@ -32,7 +38,11 @@ from main.spark.jobs.service_area_path import (
     service_area_prefix,
     service_area_root,
 )
-from main.spark.jobs.silver_to_gold.recommendation_algorithm import ProfitFirstAlgorithm
+from main.spark.jobs.silver_to_gold.recommendation_algorithm import (
+    DEFAULT_THRESHOLDS,
+    ProfitFirstAlgorithm,
+    RevenueFirstAlgorithm,
+)
 from main.spark.jobs.silver_to_gold.transformer import (
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
@@ -259,7 +269,17 @@ def main(args_list: list[str] | None = None) -> None:
         "--gold_dsn", default=os.getenv("GOLD_DATABASE_URL"),
         help="--env prod일 때 Gold 2종을 적재할 PostgreSQL DSN (기본 GOLD_DATABASE_URL 환경변수)",
     )
+    parser.add_argument(
+        "--thresholds", default=None,
+        help=(
+            "RevenueFirstAlgorithm(v2)이 스윕할 기사 순수익 증가 threshold 목록, "
+            f"JSON 배열 문자열 (예: '[100,200,300,400,500]'). 비우면 기본값 {list(DEFAULT_THRESHOLDS)}"
+        ),
+    )
     args = parser.parse_args(args_list)
+    thresholds = (
+        tuple(json.loads(args.thresholds)) if args.thresholds else DEFAULT_THRESHOLDS
+    )
 
     year_month = f"{args.year:04d}-{args.month:02d}"
 
@@ -317,8 +337,17 @@ def main(args_list: list[str] | None = None) -> None:
             enriched, year_month, args.service_area
         ).persist()
         driver_profit = build_driver_monthly_profit(driver_metrics)
-        recommendation = ProfitFirstAlgorithm().recommend(
-            driver_metrics, inventory
+        # v1(기사 순수익 우선)과 v2(회사 매출 우선, threshold 스윕)를 한 실행에서
+        # 함께 계산해 driver_car_suggestion에 알고리즘·threshold별로 쌓는다(#997).
+        recommendation = reduce(
+            DataFrame.unionByName,
+            (
+                algorithm.recommend(driver_metrics, inventory)
+                for algorithm in (
+                    ProfitFirstAlgorithm(),
+                    RevenueFirstAlgorithm(thresholds=thresholds),
+                )
+            ),
         ).persist()
         validate_gold_business_invariants(
             driver_profit,

@@ -450,47 +450,80 @@ def validate_gold_business_invariants(
     driver_snapshot: DataFrame,
     inventory: DataFrame,
 ) -> None:
-    """Gold 저장 전에 기사 보존과 모델별 재고 한도를 검증합니다."""
-    counts = {}
+    """Gold 저장 전에 기사 보존과 모델별 재고 한도를 검증합니다.
+
+    recommendation 은 (recommendation_algorithm_version_id, threshold) 조합마다
+    독립적인 "이 알고리즘·임계값을 쓰면 이렇게 배정된다"는 가정의 리포트를 담습니다
+    (#997) — 여러 조합이 동시에 실제 재고를 나눠 쓰는 게 아니라 서로 다른 시나리오라,
+    기사 보존과 재고 한도는 조합별로 따로 확인합니다.
+    """
+    driver_stats = {}
     for name, frame in (
         ("driver_aggregation", driver_profit),
-        ("driver_car_suggestion", recommendation),
         ("driver_snapshot", driver_snapshot),
     ):
         stats = frame.agg(
             F.count(F.lit(1)).alias("rows"),
             F.countDistinct("driver_id").alias("drivers"),
         ).first()
-        counts[name] = stats["rows"]
+        driver_stats[name] = stats["rows"]
         if stats["rows"] != stats["drivers"]:
             raise ValueError(f"{name}의 driver_id가 null이거나 중복입니다")
 
-    if len(set(counts.values())) != 1:
-        raise ValueError(f"Gold 기사 수 불일치: {counts}")
+    if len(set(driver_stats.values())) != 1:
+        raise ValueError(f"Gold 기사 수 불일치: {driver_stats}")
+    driver_count = driver_stats["driver_aggregation"]
 
-    assigned = recommendation.groupBy("vehicle_model_id").agg(
-        F.count(F.lit(1)).alias("assigned")
-    )
-    overstocked = assigned.join(
-        F.broadcast(inventory.select("vehicle_model_id", "stock")),
-        "vehicle_model_id",
-        "left",
-    ).filter(F.col("stock").isNull() | (F.col("assigned") > F.col("stock")))
-    samples = [
-        row.asDict(recursive=True) for row in overstocked.limit(5).collect()
-    ]
-    if samples:
-        raise ValueError(f"Gold 모델별 재고 초과: sample={samples}")
-
-    negative_samples = [
-        row.asDict(recursive=True)
-        for row in recommendation.filter(F.col("expected_net_profit_increase") < 0)
-        .select("driver_id", "vehicle_model_id", "expected_net_profit_increase")
-        .limit(5)
+    combos = [
+        (row["recommendation_algorithm_version_id"], row["threshold"])
+        for row in recommendation.select(
+            "recommendation_algorithm_version_id", "threshold"
+        )
+        .distinct()
         .collect()
     ]
-    if negative_samples:
-        raise ValueError(
-            f"Gold 예상 순수익 증가액이 음수입니다: sample={negative_samples}"
+    for algorithm_version_id, threshold in combos:
+        group = recommendation.filter(
+            (F.col("recommendation_algorithm_version_id") == algorithm_version_id)
+            & (F.col("threshold") == threshold)
         )
+        label = f"driver_car_suggestion(algorithm={algorithm_version_id}, threshold={threshold})"
+
+        group_stats = group.agg(
+            F.count(F.lit(1)).alias("rows"),
+            F.countDistinct("driver_id").alias("drivers"),
+        ).first()
+        if group_stats["rows"] != group_stats["drivers"]:
+            raise ValueError(f"{label}의 driver_id가 null이거나 중복입니다")
+        if group_stats["rows"] != driver_count:
+            raise ValueError(
+                "Gold 기사 수 불일치: "
+                f"driver_aggregation={driver_count} {label}={group_stats['rows']}"
+            )
+
+        assigned = group.groupBy("vehicle_model_id").agg(
+            F.count(F.lit(1)).alias("assigned")
+        )
+        overstocked = assigned.join(
+            F.broadcast(inventory.select("vehicle_model_id", "stock")),
+            "vehicle_model_id",
+            "left",
+        ).filter(F.col("stock").isNull() | (F.col("assigned") > F.col("stock")))
+        samples = [
+            row.asDict(recursive=True) for row in overstocked.limit(5).collect()
+        ]
+        if samples:
+            raise ValueError(f"{label} 모델별 재고 초과: sample={samples}")
+
+        negative_samples = [
+            row.asDict(recursive=True)
+            for row in group.filter(F.col("expected_net_profit_increase") < 0)
+            .select("driver_id", "vehicle_model_id", "expected_net_profit_increase")
+            .limit(5)
+            .collect()
+        ]
+        if negative_samples:
+            raise ValueError(
+                f"{label} 예상 순수익 증가액이 음수입니다: sample={negative_samples}"
+            )
 

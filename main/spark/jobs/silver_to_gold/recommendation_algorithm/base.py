@@ -3,6 +3,12 @@
 from pyspark.sql import Column, DataFrame, Window
 from pyspark.sql import functions as F
 
+from main.spark.jobs.silver_to_gold.transformer import (
+    KWH_PER_GALLON_EQUIVALENT,
+    _columns,
+)
+from schema.gold import DriverCarSuggestion
+
 # threshold를 쓰지 않는 알고리즘이 DriverCarSuggestion.threshold에 채우는 sentinel.
 # 실제 threshold는 항상 0 이상이라 이 값과 구분됩니다.
 NO_THRESHOLD = -1
@@ -25,6 +31,142 @@ class VehicleRecommendationAlgorithm:
 
     def recommend(self, driver_metrics: DataFrame, inventory: DataFrame) -> DataFrame:
         raise NotImplementedError
+
+
+def build_recommendation_candidates(
+    driver_metrics: DataFrame, inventory: DataFrame
+) -> DataFrame:
+    """기사 N × 재고 모델 M 후보를 만들고 예상 비용·순수익·매출 증가·추천 사유를
+    계산합니다. 알고리즘마다 배정 우선순위·적격 필터는 다르지만 이 계산 자체는
+    같습니다."""
+    available = inventory.select(
+        F.col("vehicle_model_id").alias("_candidate_vehicle_model_id"),
+        F.col("manufacturer").alias("_candidate_manufacturer"),
+        F.col("model_name").alias("_candidate_model_name"),
+        F.col("model_year").alias("_candidate_model_year"),
+        F.col("fuel_type").alias("_candidate_fuel_type"),
+        F.col("fuel_efficiency").alias("_candidate_fuel_efficiency"),
+        F.col("comfort_eligible").alias("_candidate_comfort_eligible"),
+        F.col("extra_comfort_eligible").alias("_candidate_extra_comfort_eligible"),
+        F.col("weekly_lease_fee").alias("_candidate_weekly_lease_fee"),
+        F.col("stock").alias("_candidate_stock"),
+    )
+    if available.isEmpty():
+        raise ValueError("추천할 수 있는 재고 차량이 없습니다")
+
+    candidates = driver_metrics.crossJoin(F.broadcast(available)).withColumn(
+        "_is_current",
+        F.col("vehicle_model_id") == F.col("_candidate_vehicle_model_id"),
+    )
+    expected_fuel_cost = F.when(
+        F.col("_candidate_fuel_type") == "EV",
+        F.col("_ev_price_miles")
+        * F.lit(KWH_PER_GALLON_EQUIVALENT)
+        / F.col("_candidate_fuel_efficiency"),
+    ).otherwise(F.col("_gas_price_miles") / F.col("_candidate_fuel_efficiency"))
+    expected_lease_fee = F.when(
+        F.col("_is_current"), F.col("monthly_lease_fee")
+    ).otherwise(
+        F.col("_candidate_weekly_lease_fee")
+        * F.col("_lease_weeks_in_month")
+    )
+    gains_comfort = (
+        ~F.col("comfort_eligible") & F.col("_candidate_comfort_eligible")
+    )
+    gains_extra_comfort = (
+        ~F.col("extra_comfort_eligible")
+        & F.col("_candidate_extra_comfort_eligible")
+    )
+    expected_driver_pay = (
+        F.when(
+            gains_comfort & gains_extra_comfort,
+            F.col("_monthly_driver_pay_if_both"),
+        )
+        .when(gains_comfort, F.col("_monthly_driver_pay_if_comfort"))
+        .when(
+            gains_extra_comfort,
+            F.col("_monthly_driver_pay_if_extra_comfort"),
+        )
+        .otherwise(F.col("monthly_driver_pay"))
+    )
+    candidates = (
+        candidates.withColumn("expected_monthly_fuel_cost", expected_fuel_cost)
+        .withColumn("recommended_monthly_lease_fee", expected_lease_fee)
+        .withColumn(
+            "expected_monthly_net_profit",
+            expected_driver_pay
+            + F.col("monthly_tips")
+            - F.col("expected_monthly_fuel_cost")
+            - F.col("recommended_monthly_lease_fee"),
+        )
+        .withColumn(
+            "expected_net_profit_increase",
+            F.col("expected_monthly_net_profit") - F.col("monthly_net_profit"),
+        )
+        .withColumn(
+            "expected_revenue_increase",
+            F.col("recommended_monthly_lease_fee") - F.col("monthly_lease_fee"),
+        )
+    )
+    eligible_tiers = F.concat_ws(
+        ", ",
+        F.when(
+            ~F.col("comfort_eligible") & F.col("_candidate_comfort_eligible"),
+            F.lit("Comfort(Uber)"),
+        ),
+        F.when(
+            ~F.col("extra_comfort_eligible")
+            & F.col("_candidate_extra_comfort_eligible"),
+            F.lit("Extra Comfort(Lyft)"),
+        ),
+    )
+    reasons = F.concat_ws(
+        ", ",
+        F.when(
+            F.col("recommended_monthly_lease_fee") < F.col("monthly_lease_fee"),
+            F.lit("렌트비 절감"),
+        ),
+        F.when(
+            F.col("expected_monthly_fuel_cost") < F.col("monthly_fuel_cost"),
+            F.lit("연료비 절감"),
+        ),
+        F.when(
+            F.length(eligible_tiers) > 0,
+            F.concat(eligible_tiers, F.lit(" 등급 가능")),
+        ),
+    )
+    return candidates.withColumn("_reasons", reasons).withColumn(
+        "recommendation_reason",
+        F.when(F.col("_is_current"), F.lit("현재 차량 유지"))
+        .when(F.length("_reasons") > 0, F.col("_reasons"))
+        .otherwise(F.lit("예상 순수익 개선")),
+    )
+
+
+def _finalize_recommendation_output(
+    rows: DataFrame, algorithm_version_id: int, threshold: int
+) -> DataFrame:
+    """배정 결과를 확정된 `DriverCarSuggestion` 스키마로 정리합니다."""
+    return rows.select(
+        "driver_id",
+        "year_month",
+        "service_area",
+        F.col("_candidate_comfort_eligible").alias("comfort_eligible"),
+        F.col("_candidate_extra_comfort_eligible").alias("extra_comfort_eligible"),
+        F.col("_candidate_vehicle_model_id").alias("vehicle_model_id"),
+        F.col("_candidate_manufacturer").alias("manufacturer"),
+        F.col("_candidate_model_name").alias("model_name"),
+        F.col("_candidate_model_year").alias("model_year"),
+        "recommendation_reason",
+        F.col("_candidate_fuel_efficiency").alias("fuel_efficiency"),
+        "recommended_monthly_lease_fee",
+        "expected_monthly_fuel_cost",
+        "expected_monthly_net_profit",
+        "expected_net_profit_increase",
+        "expected_revenue_increase",
+        F.lit(algorithm_version_id).alias("recommendation_algorithm_version_id"),
+        F.lit(threshold).alias("threshold"),
+    ).select(*_columns(DriverCarSuggestion))
 
 
 def _validate_candidate_grain(
