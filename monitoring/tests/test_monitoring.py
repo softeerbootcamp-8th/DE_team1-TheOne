@@ -483,11 +483,7 @@ def test_용량_알림의_근거가_대시보드에_보인다():
         if "용량" in r["title"] and q["model"].get("metricName")
     }
 
-    drawn = {
-        t.get("metricName")
-        for title, p in panels.items() if "사용" in title
-        for t in p["targets"]
-    }
+    drawn = {t.get("metricName") for p in panels.values() for t in p["targets"]}
     assert alerted <= drawn, f"알림이 보는데 안 그리는 지표: {alerted - drawn}"
 
 
@@ -561,6 +557,29 @@ def test_패널에_깨진_외부_링크가_남지_않는다():
             assert all(prop["value"] == [] for prop in cleared), (
                 f"{name}:{panel['title']}: 링크를 비워야 합니다"
             )
+
+
+def test_사용_패널은_할당을_그리지_않는다():
+    """`MemoryAllocated` 는 애플리케이션 단위, `WorkerMemoryUsed` 는 워커 단위라
+    갱신 주기가 어긋납니다. 워커가 막 뜬 분에는 사용량이 130 MB 로 찍히는데 할당은
+    0 GB 라, "할당이 없는데 어떻게 쓰이냐" 는 질문을 받았습니다.
+
+    메모리에는 알림이 없어 이 선이 뒷받침할 것도 없으므로 뺍니다. CPU 는 다릅니다 —
+    `CPUAllocated` 는 용량 알림이 비교하는 값이라 남깁니다.
+    """
+    panels = {
+        p["title"]: p
+        for p in json.loads((DASHBOARDS / "emr.json").read_text())["panels"]
+    }
+
+    memory = {t["metricName"] for t in panels["메모리 사용 (GB)"]["targets"]}
+    assert "MemoryAllocated" not in memory, "0 GB 로 찍혀 오해를 삽니다"
+
+    cpu = {t["metricName"] for t in panels["CPU 사용 (vCPU)"]["targets"]}
+    assert "CPUAllocated" not in cpu, "0 으로 떨어져 사용량 곡선을 방해합니다"
+
+    evidence = {t["metricName"] for t in panels["용량 상한 도달 (알림 근거)"]["targets"]}
+    assert "CPUAllocated" in evidence, "알림 근거는 전용 패널에 남겨야 합니다"
 
 
 def test_알림이_없는_패널을_알림이_있는_것처럼_적지_않는다():

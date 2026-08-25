@@ -227,7 +227,7 @@
       "id": 2,
       "type": "timeseries",
       "title": "메모리 사용 (GB)",
-      "description": "워커가 실제로 쓴 메모리(Spark_Driver·Spark_Executor), EMR 이 잡아둔 할당량, 그리고 애플리케이션 용량 상한. 할당이 상한에 닿으면 새 워커가 못 뜹니다. 메모리에는 알림이 없습니다 — 용량 알림은 CPU 만 봅니다.",
+      "description": "워커가 실제로 쓴 메모리(Spark_Driver·Spark_Executor)와 애플리케이션 용량 상한. EMR 이 잡아둔 '할당' 은 뺐습니다 — 애플리케이션 단위라 워커 단위 사용량과 갱신 주기가 어긋나, 워커가 막 뜬 분에는 사용량이 130 MB 인데 할당이 0 GB 로 찍힙니다. 메모리에는 알림이 없습니다 — 용량 알림은 CPU 만 봅니다.",
       "datasource": {
         "type": "cloudwatch",
         "uid": "theone-cloudwatch"
@@ -271,26 +271,6 @@
           "matchExact": true,
           "region": "default",
           "label": "용량 상한",
-          "metricQueryType": 0,
-          "metricEditorMode": 0,
-          "period": "60"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "cloudwatch",
-            "uid": "theone-cloudwatch"
-          },
-          "namespace": "AWS/EMRServerless",
-          "metricName": "MemoryAllocated",
-          "statistic": "Maximum",
-          "dimensions": {
-            "ApplicationId": "${EMR_APPLICATION_ID}",
-            "ApplicationName": "*"
-          },
-          "matchExact": true,
-          "region": "default",
-          "label": "할당 (EMR 이 잡아둔 양)",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -369,7 +349,7 @@
       "id": 3,
       "type": "timeseries",
       "title": "CPU 사용 (vCPU)",
-      "description": "워커가 실제로 쓴 CPU, EMR 이 잡아둔 할당량, 그리고 용량 상한. CPU 는 양이 아니라 속도입니다 — 코어 N개를 쉬지 않고 돌리는 만큼. ★ 'EMR 용량 상한 도달' 알림은 이 패널의 '할당' 이 '용량 상한' 에 15분 닿을 때 옵니다.",
+      "description": "워커가 실제로 쓴 CPU 와 용량 상한. CPU 는 양이 아니라 속도입니다 — 코어 N개를 쉬지 않고 돌리는 만큼. EMR 이 잡아둔 '할당' 은 '용량 상한 도달 (알림 근거)' 패널로 옮겼습니다 — 0 으로 자주 떨어져 사용량 곡선과 같이 두면 읽기 어렵습니다.",
       "datasource": {
         "type": "cloudwatch",
         "uid": "theone-cloudwatch"
@@ -413,26 +393,6 @@
           "matchExact": true,
           "region": "default",
           "label": "용량 상한",
-          "metricQueryType": 0,
-          "metricEditorMode": 0,
-          "period": "60"
-        },
-        {
-          "refId": "C",
-          "datasource": {
-            "type": "cloudwatch",
-            "uid": "theone-cloudwatch"
-          },
-          "namespace": "AWS/EMRServerless",
-          "metricName": "CPUAllocated",
-          "statistic": "Maximum",
-          "dimensions": {
-            "ApplicationId": "${EMR_APPLICATION_ID}",
-            "ApplicationName": "*"
-          },
-          "matchExact": true,
-          "region": "default",
-          "label": "할당 (EMR 이 잡아둔 양)",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -559,6 +519,132 @@
           "matchExact": true,
           "region": "default",
           "label": "생성 대기",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "pluginVersion": "11.5.0",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": []
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 6,
+      "type": "timeseries",
+      "title": "용량 상한 도달 (알림 근거)",
+      "description": "'EMR 용량 상한 도달' 알림이 비교하는 두 값. 할당이 상한에 닿으면 새 워커가 못 뜹니다. 할당은 EMR 이 워커에 잡아둔 vCPU 로, 노는 몫까지 포함하며 과금 대상입니다 — 워커가 실제로 태운 양은 'CPU 사용' 패널을 보세요. 이 지표는 애플리케이션 단위라 값이 없는 분에 0 으로 내려옵니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 18
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "CPUAllocated",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "할당 (EMR 이 워커에 잡아둔 vCPU)",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MaxCPUAllowed",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "용량 상한",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
