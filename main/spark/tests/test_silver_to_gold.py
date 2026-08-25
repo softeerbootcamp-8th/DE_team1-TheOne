@@ -62,6 +62,46 @@ def test_현재보유차량을_차감하고_재고0은_skip한다(spark):
     assert "candidate_vehicle_model_id" not in recommendation.columns
 
 
+def test_기존_보유자의_재고는_신규_스위처에게_뺏기지_않는다(spark):
+    """말리부 재고가 D3가 지금 타는 딱 1대뿐이면, D1·D2가 말리부로 바꾸는 게 더
+    이득이어도 그 1대를 가져갈 수 없고 D3는 자기 차를 그대로 유지해야 한다.
+    `_allocate_candidates_by_stock`의 occupied_stock이 기존 보유자 몫을
+    스위처 경쟁에서 먼저 빼두기 때문."""
+    driver_metrics = spark.createDataFrame(
+        [
+            ("D1", "2026-01", "NYC", False, False, "T1", "A", "MAKE", "A", 2024, 30.0, 1000.0, 1000.0, 0.0, 100.0, 200.0, 700.0, 3000.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+            ("D2", "2026-01", "NYC", False, False, "T2", "A", "MAKE", "A", 2024, 30.0, 1000.0, 1000.0, 0.0, 100.0, 200.0, 700.0, 3000.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+            ("D3", "2026-01", "NYC", False, False, "T3", "M", "MAKE", "MALIBU", 2024, 30.0, 1000.0, 1000.0, 0.0, 100.0, 200.0, 700.0, 3000.0, 50.0, 1000.0, 1000.0, 1000.0, 4.0),
+        ],
+        [
+            "driver_id", "year_month", "service_area", "comfort_eligible",
+            "extra_comfort_eligible", "taxi_id", "vehicle_model_id", "manufacturer",
+            "model_name", "model_year", "fuel_efficiency", "monthly_mileage",
+            "monthly_driver_pay", "monthly_tips", "monthly_fuel_cost",
+            "monthly_lease_fee", "monthly_net_profit", "_gas_price_miles", "_ev_price_miles",
+            "_monthly_driver_pay_if_comfort", "_monthly_driver_pay_if_extra_comfort",
+            "_monthly_driver_pay_if_both", "_lease_weeks_in_month",
+        ],
+    )
+    inventory = spark.createDataFrame(
+        [
+            ("A", "MAKE", "A", 2024, "GAS", 30.0, False, False, 50.0, 5),
+            # 말리부 재고 딱 1대 — 지금 D3가 타는 그 1대뿐, 여유 없음.
+            ("M", "MAKE", "MALIBU", 2024, "GAS", 60.0, False, False, 50.0, 1),
+        ],
+        [
+            "vehicle_model_id", "manufacturer", "model_name", "model_year",
+            "fuel_type", "fuel_efficiency", "comfort_eligible",
+            "extra_comfort_eligible", "weekly_lease_fee", "stock",
+        ],
+    )
+
+    recommendation = ProfitFirstAlgorithm().recommend(driver_metrics, inventory)
+    assigned = {row.driver_id: row.vehicle_model_id for row in recommendation.collect()}
+
+    assert assigned == {"D1": "A", "D2": "A", "D3": "M"}
+
+
 def test_매출_기여가_없는_차량은_순수익이_더_높아도_추천에서_제외한다(spark):
     """이슈 #955 — 회사 매출(리스료)이 늘지 않는 교체는 순수익이 더 좋아도 추천 안 함."""
     driver_metrics = spark.createDataFrame(
