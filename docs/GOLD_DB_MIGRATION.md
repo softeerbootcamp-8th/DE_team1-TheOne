@@ -139,6 +139,18 @@ PK가
 | 2026-08-24 | 추가 SQL 없음 | 기존 추천 테이블을 다시 적재하고 Gold 출력을 집계·추천 2종으로 축소 | #927 |
 | 2026-08-25 | `2026-08-25_add_recommendation_algorithm_version.sql` | `driver_car_suggestion`에 `recommendation_algorithm_version_id` 추가, PK 확장. `recommendation_algorithm` 마스터 테이블 신설·시드 | #986 |
 | 2026-08-25 | `2026-08-25_add_threshold_to_driver_car_suggestion.sql` | `driver_car_suggestion`에 `threshold` 추가, PK 확장. 지원 인덱스를 threshold 포함해 재생성 | #997 |
+| 2026-08-25 | `2026-08-25_add_gold_version_retention_metadata.sql` | Gold 3종의 버전 생성 시각 기록과 기존 버전 백필 | #1010 |
+
+### 2026-08-25 주의사항
+
+기존 Gold 테이블에는 버전 생성 시각이 없었다. 마이그레이션은 기존 버전의 `created_at`을 실행 시각으로 기록한다. 따라서 기존 구버전은 배포 직후 삭제하지 않고 마이그레이션 시점부터 90일을 더 보존한다.
+
+정리 작업은 `gold_load_versions`가 없거나 기존 버전의 메타데이터가 빠진 경우 실패한다. 위 스크립트를 코드 배포 전에 실행해야 한다.
+
+```bash
+psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f main/spark/jobs/silver_to_gold/migrations/2026-08-25_add_gold_version_retention_metadata.sql
+```
 
 ### 추천 후보 확장 이력
 

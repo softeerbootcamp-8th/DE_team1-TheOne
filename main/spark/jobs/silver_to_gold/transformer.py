@@ -526,4 +526,3 @@ def validate_gold_business_invariants(
             raise ValueError(
                 f"{label} 예상 순수익 증가액이 음수입니다: sample={negative_samples}"
             )
-
