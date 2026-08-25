@@ -116,3 +116,33 @@ def test_임계치_미만의_잘못된_등급_행만_제거한다(spark):
     )
 
     assert result.count() == 19
+
+
+def test_제외_건수를_밖으로_내보낸다(spark):
+    """Airflow 가 Bronze·Silver 행 수와 맞대볼 수 있도록 변환기가 센 값을 남긴다.
+
+    `invalid` 는 사유별 합이 아니라 `total - valid` 다 — 한 행이 여러 사유에 걸릴 수
+    있어 사유별로 더하면 중복 집계된다.
+    """
+    rows = [
+        _row(),                                   # 통과
+        _row(taxi_id="taxi-2", trip_miles=None),   # 필수값 NULL
+        _row(taxi_id="taxi-3", trip_miles=5000.0),  # 값 범위 밖
+        _row(taxi_id="taxi-4", estimated_service_tier="Lux"),  # 등급 밖
+    ]
+
+    transformer = MonthlyTaxiTripCleanTransformer(error_threshold=0.9)
+    result = transformer.transform(spark.createDataFrame(rows, schema=BRONZE_INPUT_SCHEMA))
+
+    recon = transformer.recon
+    assert recon is not None, "변환기가 센 값을 남기지 않으면 대조할 수 없습니다"
+    assert recon.total == 4
+    assert recon.valid == result.count() == 1
+    assert recon.invalid == 3
+    assert recon.invalid == recon.total - recon.valid, "사유별 합이 아니라 total-valid"
+    assert recon.as_payload()["invalid"] == 3
+
+
+def test_변환_전에는_센_값이_없다():
+    """`transform()` 전에는 셀 대상이 없다 — Loader 가 콜러블로 받는 이유다."""
+    assert MonthlyTaxiTripCleanTransformer().recon is None
