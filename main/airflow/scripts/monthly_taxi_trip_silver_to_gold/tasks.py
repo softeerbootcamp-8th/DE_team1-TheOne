@@ -297,7 +297,38 @@ def validate_gold_outputs(
         logger.info("Gold 검증 통과: %s rows=%d", dataset, len(frame))
 
 
-@task(task_id="validate_inputs", outlets=[assets.GOLD_INPUTS_READY])
+def validate_triggering_asset_partitions(
+    triggering_asset_events, service_area: str, year_month: str
+) -> None:
+    """소비된 Asset 이벤트가 Gold 실행 대상 지역·연월과 같은지 확인합니다."""
+    expected = (service_area, year_month)
+    if not triggering_asset_events:
+        raise ValueError(
+            f"Gold 입력 Asset 이벤트가 없습니다: expected={service_area}:{year_month}"
+        )
+
+    for asset, events in triggering_asset_events.items():
+        asset_name = getattr(asset, "name", str(asset))
+        if not events:
+            raise ValueError(f"Gold 입력 Asset 이벤트가 없습니다: asset={asset_name}")
+        for event in events:
+            partition_key = getattr(event, "partition_key", None)
+            try:
+                actual = parse_partition_key(partition_key)
+            except ValueError as exc:
+                raise ValueError(
+                    f"Gold 입력 Asset 파티션이 잘못됐습니다: "
+                    f"asset={asset_name} partition_key={partition_key!r}"
+                ) from exc
+            if actual != expected:
+                raise ValueError(
+                    "Gold 입력 Asset 파티션 불일치: "
+                    f"asset={asset_name} expected={service_area}:{year_month} "
+                    f"actual={partition_key}"
+                )
+
+
+@task(task_id="validate_inputs")
 def validate_inputs_task(**context) -> dict:
     params = context["params"]
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
@@ -317,6 +348,10 @@ def validate_inputs_task(**context) -> dict:
         service_area,
         partition_key,
     )
+    if partition_key:
+        validate_triggering_asset_partitions(
+            context.get("triggering_asset_events"), service_area, year_month
+        )
     logger.info("Gold 대상: service_area=%s year_month=%s", service_area, year_month)
     try:
         if job_env == "prod":
@@ -342,16 +377,10 @@ def validate_inputs_task(**context) -> dict:
             ) from exc
         raise
 
-    assets.publish_month_partition(
-        context.get("outlet_events"),
-        assets.GOLD_INPUTS_READY,
-        year_month,
-        service_area,
-    )
     return resolved
 
 
-@task(task_id="validate_gold")
+@task(task_id="validate_gold", outlets=[assets.GOLD_INPUTS_READY])
 def validate_gold_task(**context) -> None:
     resolved = context["task_instance"].xcom_pull(task_ids="validate_inputs")
     if os.getenv("SPARK_JOB_ENV", "local") == "prod":
@@ -370,4 +399,10 @@ def validate_gold_task(**context) -> None:
         resolved["service_area"],
         resolved["year_month"],
         datetime.now(timezone.utc),
+    )
+    assets.publish_month_partition(
+        context.get("outlet_events"),
+        assets.GOLD_INPUTS_READY,
+        resolved["year_month"],
+        resolved["service_area"],
     )

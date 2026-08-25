@@ -2,7 +2,7 @@
 
 1. Gold는 같은 키의 API READY와 Fuel이 처음 모이면 실행, 이후 하나만 갱신돼도 재실행
 2. API Silver 3종은 개별 Asset을 발행하지 않고 Fuel만 검증 후 발행
-3. Asset 으로 실행된 Gold 는 해당 파티션 키를 대상 월로 사용
+3. Asset 으로 실행된 Gold 는 소비한 모든 이벤트의 지역·연월 일치 확인
 4. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
 5. Asset 실행은 같은 월 Silver가 덜 준비되면 skip, 수동 실행은 실패
 6. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
@@ -10,7 +10,7 @@
 8. Gold 2종은 지역 경로만 검증하며 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 9. API Silver는 최신 collected_at 파일만 선택
 10. Asset skip 시 Slack skip 알림을 직접 호출
-11. Gold 검증 성공 뒤 지역·월 성공 상태를 기록
+11. Gold 검증 성공 뒤 지역·월 성공 상태와 READY Asset 기록
 12. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
 13. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
 14. Fuel Silver는 최신 완료 `input_version`의 `ny_fuel.parquet`만 Gold 입력으로 선택
@@ -20,6 +20,7 @@
 import importlib
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -78,6 +79,23 @@ def _params(root: Path, **overrides) -> dict:
 
 def _logical_date(year: int, month: int) -> datetime:
     return datetime(year, month, 13, tzinfo=timezone.utc)
+
+
+def _triggering_events(api_key: str, fuel_key: str | None = None) -> dict:
+    return {
+        assets.API_SILVER_REFRESH_READY: [SimpleNamespace(partition_key=api_key)],
+        assets.FUEL_PRICE_SILVER: [
+            SimpleNamespace(partition_key=fuel_key or api_key)
+        ],
+    }
+
+
+class _PartitionRecorder:
+    def __init__(self):
+        self.keys = set()
+
+    def add_partitions(self, key):
+        self.keys.add(key)
 
 
 def _write_inputs(
@@ -380,6 +398,7 @@ def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp
             params=_params(tmp_path),
             logical_date=_logical_date(2026, 5),
             dag_run=dag_run,
+            triggering_asset_events=_triggering_events("NYC:2026-05"),
         )
 
 
@@ -395,6 +414,7 @@ def test_skip시_Slack_skip_알림을_직접_호출한다(tmp_path, monkeypatch)
             params=_params(tmp_path),
             logical_date=_logical_date(2026, 5),
             dag_run=dag_run,
+            triggering_asset_events=_triggering_events("NYC:2026-05"),
         )
 
     assert len(calls) == 1
@@ -412,33 +432,77 @@ def test_정상실행에서는_Slack_skip_알림을_호출하지_않는다(tmp_p
         params=_params(tmp_path),
         logical_date=_logical_date(2026, 5),
         dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
+        triggering_asset_events=_triggering_events("NYC:2026-05"),
     )
 
     assert calls == []
 
 
-def test_Gold_입력검증은_같은_지역월의_READY_파티션을_남긴다(tmp_path):
-    class Recorder:
-        def __init__(self):
-            self.keys = set()
+def test_Gold_입력Asset은_모두_실행대상_지역월과_같아야한다():
+    dag_module.validate_triggering_asset_partitions(
+        _triggering_events("NYC:2026-05"), "NYC", "2026-05"
+    )
 
-        def add_partitions(self, key):
-            self.keys.add(key)
 
-    _write_inputs(tmp_path, "2026-05")
-    recorder = Recorder()
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        ({}, "이벤트가 없습니다"),
+        (_triggering_events("NYC:2026-05", "TX:2026-05"), "파티션 불일치"),
+        (_triggering_events("NYC:2026-05", "NYC:2026-06"), "파티션 불일치"),
+    ],
+)
+def test_Gold_입력Asset의_지역월이_빠지거나_다르면_실패한다(events, expected):
+    with pytest.raises(ValueError, match=expected):
+        dag_module.validate_triggering_asset_partitions(
+            events, "NYC", "2026-05"
+        )
 
-    dag_module.validate_inputs_task.function(
-        params=_params(tmp_path),
-        logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
+
+def test_Gold_최종검증이_성공해야_READY_파티션을_남긴다(monkeypatch):
+    recorder = _PartitionRecorder()
+    monkeypatch.setattr(dag_module, "validate_gold_outputs", lambda *args: None)
+    monkeypatch.setattr(dag_module, "record_success", lambda *args: None)
+    task_instance = type(
+        "TaskInstance",
+        (),
+        {"xcom_pull": lambda self, task_ids: {"year_month": "2026-05", "service_area": "NYC"}},
+    )()
+
+    dag_module.validate_gold_task.function(
+        params={"output_dir": "/gold"},
+        task_instance=task_instance,
         outlet_events={assets.GOLD_INPUTS_READY: recorder},
     )
 
-    assert [outlet.name for outlet in GOLD_DAG.get_task("validate_inputs").outlets] == [
+    assert not GOLD_DAG.get_task("validate_inputs").outlets
+    assert [outlet.name for outlet in GOLD_DAG.get_task("validate_gold").outlets] == [
         assets.GOLD_INPUTS_READY.name
     ]
     assert recorder.keys == {"NYC:2026-05"}
+
+
+def test_Gold_최종검증이_실패하면_READY를_남기지않는다(monkeypatch):
+    recorder = _PartitionRecorder()
+
+    def fail_validation(*args):
+        raise ValueError("Gold 검증 실패")
+
+    monkeypatch.setattr(dag_module, "validate_gold_outputs", fail_validation)
+    task_instance = type(
+        "TaskInstance",
+        (),
+        {"xcom_pull": lambda self, task_ids: {"year_month": "2026-05", "service_area": "NYC"}},
+    )()
+
+    with pytest.raises(ValueError, match="Gold 검증 실패"):
+        dag_module.validate_gold_task.function(
+            params={"output_dir": "/gold"},
+            task_instance=task_instance,
+            outlet_events={assets.GOLD_INPUTS_READY: recorder},
+        )
+
+    assert recorder.keys == set()
 
 
 def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
@@ -673,6 +737,7 @@ def test_validate_inputs는_대상지역을_함께_반환한다(tmp_path):
         params=_params(tmp_path),
         logical_date=_logical_date(2026, 5),
         dag_run=type("DagRun", (), {"partition_key": "TX:2026-05"})(),
+        triggering_asset_events=_triggering_events("TX:2026-05"),
     )
 
     assert result["service_area"] == "TX"
