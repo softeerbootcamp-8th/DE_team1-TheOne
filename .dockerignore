@@ -8,3 +8,5 @@ graphify-out/
 **/__pycache__/
 **/.pytest_cache/
 *.png
+# 대시보드 로고는 이미지 자체에 필요한 런타임 에셋이라 위 전역 제외에서 다시 뺀다.
+!main/dashboard/assets/*.png
