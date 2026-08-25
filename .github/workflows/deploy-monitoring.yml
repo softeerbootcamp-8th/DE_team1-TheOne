@@ -56,6 +56,8 @@ jobs:
         id: ssm
         env:
           INSTANCE: ${{ vars.MONITORING_INSTANCE_ID }}
+          # 프로비저닝 파일의 ${EMR_APPLICATION_ID} 를 여기서 채웁니다.
+          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
           # Airflow 알림과 같은 웹훅입니다. 채널을 하나로 두려는 것이고, 로테이션할 때
           # 고칠 곳도 이 Secret 하나입니다.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -63,7 +65,7 @@ jobs:
           set -euo pipefail
           # 셸 따옴표로 JSON 을 조립하면 깨지기 쉬워 파일로 만들어 넘깁니다.
           python3 - <<'PY' > /tmp/params.json
-          import base64, json, os, pathlib
+          import base64, json, os, pathlib, re
           root = pathlib.Path("monitoring/stack")
           files = {
               "prometheus.yml": root / "prometheus.yml",
@@ -92,8 +94,21 @@ jobs:
           cmds = ["set -eu", "cd /home/ec2-user/monitoring",
                   "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting "
                   "grafana/provisioning/dashboards"]
+          # ★ 치환하고 나서 보냅니다. 프로비저닝 파일은 base64 로 그대로 복사되므로
+          #   여기서 안 바꾸면 Grafana 가 `${EMR_APPLICATION_ID}` 를 **문자열 그대로**
+          #   질의에 넣습니다. 대시보드는 정상으로 뜨고 패널만 비어서, 사람이 열어보기
+          #   전까지 아무도 모릅니다 — 실제로 그렇게 당했습니다.
+          values = {"EMR_APPLICATION_ID": os.environ["EMR_APPLICATION_ID"]}
           for dest, src in files.items():
-              blob = base64.b64encode(src.read_bytes()).decode()
+              text = src.read_text(encoding="utf-8")
+              for key, value in values.items():
+                  text = text.replace("${" + key + "}", value)
+              # 치환하지 못한 것이 남으면 배포를 멈춥니다. 그대로 보내면 조용히 빈
+              # 패널이 되고, 배포는 초록불이라 드러나지 않습니다.
+              leftover = set(re.findall(r"\$\{[A-Z_]+\}", text))
+              if leftover:
+                  raise SystemExit(f"치환되지 않은 플레이스홀더 {sorted(leftover)} in {dest}")
+              blob = base64.b64encode(text.encode("utf-8")).decode()
               cmds.append(f"echo {blob} | base64 -d > {dest}")
           cmds += [
               # 웹훅은 저장소 파일이 아니라 여기서만 씁니다. compose 가 같은 디렉터리의
