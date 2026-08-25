@@ -2,7 +2,7 @@
 
 1. 필수값은 컬럼 셀이 아니라 하나라도 비어 있는 레코드 비율로 계산
 2. 데이터셋 정책에 따라 필수값 0% 또는 1%/5%를 적용
-3. 선택 컬럼 NULL 50%부터 경고만 발생
+3. 선택 컬럼의 존재·타입·NULL은 판정하지 않음
 4. 필수 컬럼 누락·타입 불일치는 비율과 무관하게 하드 실패
 5. Data Docs는 실제 데이터 파티션을 보존한 S3 prefix에 발행
 """
@@ -32,7 +32,7 @@ DATA = S3Location(
 )
 
 
-def _table(rows: int, *, invalid_rows: int = 0, optional_null_rows: int = 0):
+def _table(rows: int, *, invalid_rows: int = 0):
     records = []
     for index in range(rows):
         records.append(
@@ -40,7 +40,7 @@ def _table(rows: int, *, invalid_rows: int = 0, optional_null_rows: int = 0):
                 "driver_id": None if index < invalid_rows else f"D{index}",
                 # 같은 행에서 필수값 두 개가 깨져도 레코드 한 건이어야 합니다.
                 "weekly_fee": None if index < invalid_rows else 100.0,
-                "note": None if index < optional_null_rows else "ok",
+                "note": None,
             }
         )
     return pa.Table.from_pylist(records, schema=SCHEMA)
@@ -89,17 +89,14 @@ def test_필수값_불량레코드_1퍼센트부터경고_5퍼센트부터실패
     assert bool(sent) is warns
 
 
-def test_선택컬럼_NULL_50퍼센트는_경고만하고_통과한다(monkeypatch):
+def test_선택컬럼은_누락되어도_품질지표에서_제외한다(monkeypatch):
     monkeypatch.setenv("GX_DATA_DOCS_ENABLED", "false")
-    sent = []
-    monkeypatch.setattr(
-        validation,
-        "send_gx_quality_warning",
-        lambda context, **values: sent.append(values),
-    )
+    table = pa.table({"driver_id": ["D1"], "weekly_fee": [100.0]})
+    summary = table_quality_summary(table, SCHEMA, REQUIRED)
 
+    assert "note_null_ratio" not in summary.columns
     run_table_gx_validation(
-        _table(10, optional_null_rows=5),
+        table,
         SCHEMA,
         REQUIRED,
         dataset="sample",
@@ -109,8 +106,6 @@ def test_선택컬럼_NULL_50퍼센트는_경고만하고_통과한다(monkeypat
         required_warning_ratio=0.01,
         required_error_ratio=0.05,
     )
-
-    assert sent and "note_null_ratio" in sent[0]["warnings"][0]
 
 
 def test_필수값_경고임계치는_실패임계치보다_작아야한다():

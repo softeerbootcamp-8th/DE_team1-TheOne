@@ -45,7 +45,6 @@ _DEFAULT_DATA_DOCS_DIR = _PROJECT_ROOT / "data" / "gx_data_docs"
 S3_SCHEME = "s3://"
 REQUIRED_NULL_WARNING_RATIO = 0.01
 REQUIRED_NULL_ERROR_RATIO = 0.05
-OPTIONAL_NULL_WARNING_RATIO = 0.50
 
 
 @dataclass(frozen=True)
@@ -476,12 +475,13 @@ def table_quality_summary(
         raise ValueError(f"기대 스키마에 없는 필수 컬럼: {sorted(unknown_required)}")
 
     actual = {field.name: field.type for field in table.schema}
-    missing = sorted(expected_names - set(actual))
-    extra = sorted(set(actual) - expected_names)
+    missing = sorted(set(required_non_null) - set(actual))
     mismatched = sorted(
         f"{field.name}:{actual[field.name]}!={field.type}"
         for field in expected_schema
-        if field.name in actual and actual[field.name] != field.type
+        if field.name in required_non_null
+        and field.name in actual
+        and actual[field.name] != field.type
     )
     structurally_valid = not missing and not mismatched
 
@@ -507,28 +507,17 @@ def table_quality_summary(
             invalid = pc.or_(invalid, column_invalid)
         invalid_count = int(pc.sum(pc.cast(invalid, pa.int64())).as_py() or 0)
 
-    optional = sorted(expected_names - set(required_non_null))
-    optional_ratios = {
-        f"{name}_null_ratio": (
-            table[name].null_count / table.num_rows
-            if table.num_rows and name in actual and actual[name] == expected_schema.field(name).type
-            else None
-        )
-        for name in optional
-    }
     return pd.DataFrame(
         [{
             "row_count": table.num_rows,
             "missing_columns": ",".join(missing),
             "type_mismatch_columns": ",".join(mismatched),
-            "extra_columns": ",".join(extra),
             "required_invalid_record_count": invalid_count,
             "required_invalid_record_ratio": (
                 invalid_count / table.num_rows
                 if table.num_rows and structurally_valid
                 else None
             ),
-            **optional_ratios,
         }]
     )
 
@@ -565,9 +554,6 @@ def run_table_gx_validation(
         gx.expectations.ExpectColumnValuesToBeInSet(
             column="type_mismatch_columns", value_set=[""]
         ),
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="extra_columns", value_set=[""], meta={"severity": "warning"}
-        ),
     ]
     if summary["required_invalid_record_ratio"].notna().all():
         if required_warning_ratio is not None:
@@ -588,18 +574,6 @@ def run_table_gx_validation(
                 strict_max=required_error_ratio > 0,
             )
         )
-    for column in summary.columns:
-        if column.endswith("_null_ratio") and summary[column].notna().all():
-            expectations.append(
-                gx.expectations.ExpectColumnValuesToBeBetween(
-                    column=column,
-                    min_value=0,
-                    max_value=OPTIONAL_NULL_WARNING_RATIO,
-                    strict_max=True,
-                    meta={"severity": "warning"},
-                )
-            )
-
     docs = gx_data_docs_location(data_location, layer=layer, dataset=dataset)
     warnings = run_gx_validation(
         summary,
