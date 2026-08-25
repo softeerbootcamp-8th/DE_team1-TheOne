@@ -466,6 +466,25 @@ def test_슬랙_템플릿이_없는_라벨을_비워두지_않는다():
     assert "{{ with .Labels.instance_name }}" in text
 
 
+def test_해소_알림에_발생_시점_문구를_쓰지_않는다():
+    """`summary` 는 조건이 참일 때 기준으로 쓰여 있습니다 — "작업이 실패했습니다".
+
+    해소 알림에 그대로 내보내면 `✅ EMR 작업 실패 / 작업이 실패했습니다` 로 읽혀
+    성공했는데 실패 알림이 온 것으로 오해합니다. 실제로 그 지적을 받았습니다.
+    """
+    settings = _alerting("contact-points.yaml")["contactPoints"][0]["receivers"][0][
+        "settings"
+    ]
+
+    for field in ("title", "text"):
+        assert '.Status' in settings[field], f"{field}: 상태로 갈라야 합니다"
+
+    body = settings["text"]
+    summary = body.index("{{ .Annotations.summary }}")
+    branch = body.index('{{ if eq .Status "resolved" }}')
+    assert branch < summary, "summary 는 발생(firing) 가지 안에만 있어야 합니다"
+
+
 def test_용량_알림의_근거가_대시보드에_보인다():
     """알림은 `CPUAllocated`(할당)를 보는데 패널이 `WorkerCpuUsed`(사용)만 그리면,
     알림이 와도 화면에 근거가 없어 사람이 오탐으로 판단합니다 — 실제로 그랬습니다.

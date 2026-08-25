@@ -6,6 +6,14 @@
 # 웹훅 URL 은 파일에 두지 않습니다. compose 가 `SLACK_WEBHOOK_URL` 을 컨테이너
 # 환경변수로 넘기고, Grafana 가 `$__env{}` 로 읽습니다. Airflow 가 쓰는 것과 같은
 # GitHub Secret 이라 채널도 같습니다.
+#
+# ★ 해소 알림에 발생 시점 문구를 쓰지 않습니다
+#
+#   `summary` 는 조건이 참일 때를 기준으로 쓰여 있습니다("작업이 실패했습니다").
+#   해소 알림에도 그대로 내보내면 `✅ EMR 작업 실패 / 작업이 실패했습니다` 처럼
+#   읽혀서 성공했는데 실패 알림이 온 것으로 오해합니다 — 실제로 그런 지적을
+#   받았습니다. `.Status` 로 갈라 해소일 때는 별도 문구를 씁니다.
+#
 apiVersion: 1
 
 contactPoints:
@@ -16,8 +24,8 @@ contactPoints:
         type: slack
         settings:
           url: $__env{SLACK_WEBHOOK_URL}
-          title: '{{ if eq .Status "firing" }}🔥{{ else }}✅{{ end }} {{ .CommonLabels.alertname }}'
+          title: '{{ if eq .Status "firing" }}🔥 {{ .CommonLabels.alertname }}{{ else }}✅ 해소 · {{ .CommonLabels.alertname }}{{ end }}'
           text: |
-            {{ range .Alerts }}{{ with .Labels.instance_name }}*{{ . }}* — {{ end }}{{ .Annotations.summary }}
-            상태 `{{ .Status }}` · 심각도 `{{ .Labels.severity }}`
+            {{ range .Alerts }}{{ with .Labels.instance_name }}*{{ . }}* — {{ end }}{{ if eq .Status "resolved" }}조건이 더 이상 참이 아닙니다. 조치하지 않아도 됩니다.{{ else }}{{ .Annotations.summary }}
+            심각도 `{{ .Labels.severity }}`{{ end }}
             {{ end }}
