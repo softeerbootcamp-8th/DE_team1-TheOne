@@ -51,13 +51,33 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 60,
             "stacking": {
               "mode": "normal"
             },
-            "lineWidth": 1
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           }
         },
         "overrides": []
@@ -68,13 +88,15 @@
           "placement": "right",
           "calcs": [
             "sum"
-          ]
+          ],
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "pluginVersion": "11.5.0"
     },
     {
       "id": 2,
@@ -114,13 +136,33 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 60,
             "stacking": {
               "mode": "normal"
             },
-            "lineWidth": 1
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           }
         },
         "overrides": []
@@ -131,13 +173,15 @@
           "placement": "right",
           "calcs": [
             "sum"
-          ]
+          ],
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "pluginVersion": "11.5.0"
     },
     {
       "id": 3,
@@ -177,13 +221,33 @@
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "bars",
             "fillOpacity": 60,
             "stacking": {
               "mode": "normal"
             },
-            "lineWidth": 1
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           }
         },
         "overrides": []
@@ -194,13 +258,15 @@
           "placement": "right",
           "calcs": [
             "sum"
-          ]
+          ],
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "pluginVersion": "11.5.0"
     },
     {
       "id": 4,
@@ -240,13 +306,33 @@
       "fieldConfig": {
         "defaults": {
           "unit": "ms",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "line",
             "fillOpacity": 10,
             "stacking": {
               "mode": "none"
             },
-            "lineWidth": 1
+            "lineWidth": 1,
+            "showPoints": "never",
+            "spanNulls": true,
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           }
         },
         "overrides": []
@@ -257,13 +343,15 @@
           "placement": "right",
           "calcs": [
             "max"
-          ]
+          ],
+          "showLegend": true
         },
         "tooltip": {
           "mode": "multi",
           "sort": "desc"
         }
-      }
+      },
+      "pluginVersion": "11.5.0"
     }
   ]
 }

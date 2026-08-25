@@ -17,11 +17,11 @@
       "id": 1,
       "type": "stat",
       "title": "작업 상태",
+      "description": "지금 도는 작업과 최근 결과. 실패가 0이 아니면 Slack 알림도 함께 옵니다.",
       "datasource": {
         "type": "cloudwatch",
         "uid": "theone-cloudwatch"
       },
-      "description": "지금 도는 작업과 최근 결과. 실패가 0이 아니면 Slack 알림도 함께 옵니다.",
       "gridPos": {
         "h": 4,
         "w": 24,
@@ -44,6 +44,7 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "Running",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -63,6 +64,7 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "Pending",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -82,6 +84,7 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "Failed",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -101,27 +104,45 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "Success",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
         }
       ],
+      "pluginVersion": "11.5.0",
       "fieldConfig": {
         "defaults": {
-          "unit": "short"
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
         },
         "overrides": []
       },
       "options": {
         "reduceOptions": {
+          "values": false,
           "calcs": [
-            "sum"
+            "lastNotNull"
           ],
-          "fields": "",
-          "values": false
+          "fields": ""
         },
+        "orientation": "auto",
         "textMode": "value_and_name",
-        "colorMode": "value"
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
       }
     },
     {
@@ -171,18 +192,48 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "용량 상한",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
         }
       ],
+      "pluginVersion": "11.5.0",
       "fieldConfig": {
         "defaults": {
           "unit": "decgbytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "line",
+            "lineWidth": 2,
             "fillOpacity": 10,
-            "lineWidth": 2
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           }
         },
         "overrides": []
@@ -191,6 +242,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
+          "showLegend": true,
           "calcs": [
             "max",
             "lastNotNull"
@@ -249,18 +301,48 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "용량 상한",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
         }
       ],
+      "pluginVersion": "11.5.0",
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "line",
+            "lineWidth": 2,
             "fillOpacity": 10,
-            "lineWidth": 2
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           }
         },
         "overrides": []
@@ -269,6 +351,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
+          "showLegend": true,
           "calcs": [
             "max",
             "lastNotNull"
@@ -311,6 +394,7 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "Running",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
@@ -330,18 +414,48 @@
           },
           "matchExact": true,
           "region": "default",
+          "label": "생성 대기",
           "metricQueryType": 0,
           "metricEditorMode": 0,
           "period": "60"
         }
       ],
+      "pluginVersion": "11.5.0",
       "fieldConfig": {
         "defaults": {
           "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
           "custom": {
             "drawStyle": "line",
+            "lineWidth": 2,
             "fillOpacity": 10,
-            "lineWidth": 2
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
           }
         },
         "overrides": []
@@ -350,6 +464,7 @@
         "legend": {
           "displayMode": "table",
           "placement": "right",
+          "showLegend": true,
           "calcs": [
             "max",
             "lastNotNull"
