@@ -14,6 +14,7 @@ Silver는 검증 성공 시 `_SUCCESS`, 실패 시 `_QUARANTINED.json`으로 전
 격리 버전은 데이터 파일을 보존하되 후속 reader가 읽지 않습니다(#945).
 """
 
+import hashlib
 import io
 import json
 from datetime import datetime, timezone
@@ -26,6 +27,7 @@ import pytest
 from dags import monthly_taxi_trip_raw_to_silver_dag as dag_module
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver import tasks as task_module
 from shared.airflow.common.slack_quality_warning import build_quality_warning
+from shared.common.bronze_manifest import bronze_manifest_bytes, build_bronze_manifest
 
 DAG = dag_module.monthly_taxi_trip_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
@@ -78,10 +80,37 @@ def write_bronze(
     records = bronze_rows(rows, schema) if records is None else records
     dataset_root = Path(base_dir) / "monthly_taxi_trip"
     dataset_root /= f"service_area={service_area}"
-    path = dataset_root / f"year_month={year_month}" / "20260811T085354000000Z.parquet"
+    path = (
+        dataset_root
+        / f"year_month={year_month}"
+        / "collected_at=20260811T085354000000Z"
+        / "data.parquet"
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records, schema=schema), path)
+    _write_manifest(path, year_month, service_area, len(records))
     return str(path)
+
+
+def _write_manifest(
+    path: Path, year_month: str, service_area: str, row_count: int
+) -> None:
+    content = path.read_bytes()
+    manifest = build_bronze_manifest(
+        {
+            "dataset": "monthly_taxi_trip",
+            "year_month": year_month,
+            "collected_at": "2026-08-11T08:53:54.000000Z",
+            "content": content,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "api_base_url": "http://source.example",
+            "source_etag": '"source-etag"',
+            "source_last_modified": "Tue, 11 Aug 2026 08:53:54 GMT",
+        },
+        service_area=service_area,
+        row_count=row_count,
+    )
+    (path.parent / "manifest.json").write_bytes(bronze_manifest_bytes(manifest))
 
 
 def write_directory_bronze(
@@ -101,6 +130,7 @@ def write_directory_bronze(
         pa.Table.from_pylist(bronze_rows(rows, task_module.SCHEMA), schema=task_module.SCHEMA),
         path,
     )
+    _write_manifest(path, year_month, service_area, rows)
     return str(path)
 
 
@@ -151,6 +181,33 @@ def test_정상_적재는_통과한다(tmp_path):
     validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
+def test_Bronze_manifest가_없으면_공개하지않는다(tmp_path):
+    path = Path(write_bronze(tmp_path))
+    (path.parent / "manifest.json").unlink()
+
+    with pytest.raises(ValueError, match="manifest가 없습니다"):
+        validate_bronze(result_for(str(path)), params=bronze_params(tmp_path))
+
+    assert (path.parent / "_QUARANTINED.json").is_file()
+    assert not (path.parent / "_SUCCESS").exists()
+
+
+def test_Bronze_manifest_SHA256이_원본과_다르면_공개하지않는다(tmp_path):
+    path = Path(write_bronze(tmp_path))
+    manifest_path = path.parent / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    manifest["sha256"] = "0" * 64
+    manifest_path.write_text(json.dumps(manifest))
+
+    with pytest.raises(ValueError, match="manifest와 원본이 다릅니다"):
+        validate_bronze(result_for(str(path)), params=bronze_params(tmp_path))
+
+    quarantine = json.loads((path.parent / "_QUARANTINED.json").read_text())
+    assert quarantine["layer"] == "bronze"
+    assert "sha256" in quarantine["reason"]
+    assert not (path.parent / "_SUCCESS").exists()
+
+
 def test_TX_Bronze를_검증하고_같은지역의_Silver경로를_만든다(
     tmp_path, monkeypatch
 ):
@@ -187,10 +244,10 @@ def test_collected_at_디렉터리_Bronze도_검증을_통과한다(tmp_path):
 def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, monkeypatch):
     local_path = write_bronze(tmp_path)
     payload = Path(local_path).read_bytes()
+    manifest = (Path(local_path).parent / "manifest.json").read_bytes()
     s3_path = (
         "s3://de-theone/bronze/monthly_taxi_trip/service_area=NYC/"
-        "year_month=2026-07/"
-        "20260811T085354000000Z.parquet"
+        "year_month=2026-07/collected_at=20260811T085354000000Z/data.parquet"
     )
     result = result_for(local_path)
     result["locations"] = [s3_path]
@@ -201,6 +258,10 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
     monkeypatch.setattr(
         "shared.airflow.common.validation.get_object_bytes",
         lambda bucket, key: payload,
+    )
+    monkeypatch.setattr(
+        "main.airflow.common.monthly_bronze.get_object_bytes",
+        lambda bucket, key: manifest if key.endswith("manifest.json") else payload,
     )
 
     summary = task_module._bronze_quality_result(
@@ -244,7 +305,7 @@ def test_동일한_Bronze도_감시DAG가_호출하면_Silver처리한다(tmp_pa
 
     assert validate_bronze(result, params=bronze_params(tmp_path))[
         "silver_version_path"
-    ].endswith(f"source_collected_at={Path(path).stem}")
+    ].endswith("source_collected_at=20260811T085354000000Z")
 
 
 def test_Bronze_변경여부_신호가_없어도_감시DAG호출이면_처리한다(tmp_path):
@@ -254,7 +315,7 @@ def test_Bronze_변경여부_신호가_없어도_감시DAG호출이면_처리한
 
     assert validate_bronze(result, params=bronze_params(tmp_path))[
         "silver_version_path"
-    ].endswith(f"source_collected_at={Path(path).stem}")
+    ].endswith("source_collected_at=20260811T085354000000Z")
 
 
 def test_필수컬럼보다_컬럼이_많으면_경고후_통과한다(tmp_path, monkeypatch):

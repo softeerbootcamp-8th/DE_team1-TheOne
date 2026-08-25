@@ -5,6 +5,8 @@
 3. service_area가 로컬·S3 Bronze 경로의 year_month 바로 위에 들어감
 """
 
+import hashlib
+import json
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -23,6 +25,8 @@ DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/driver_vehicle_monthly_s
 S3_BUCKET = "test-de-theone"
 S3_REGION = "ap-northeast-2"
 COLLECTED_AT = datetime(2026, 8, 20, 10, 15, 31, 123456, tzinfo=timezone.utc)
+ETAG = '"snapshot-etag"'
+LAST_MODIFIED = "Thu, 20 Aug 2026 10:00:00 GMT"
 ROWS = [
     {
         "snapshot_month": YEAR_MONTH,
@@ -57,6 +61,7 @@ CONTENT = _parquet_bytes()
 class Response:
     url = DATASET_URL
     content = CONTENT
+    headers = {"ETag": ETAG, "Last-Modified": LAST_MODIFIED}
 
     def raise_for_status(self):
         return None
@@ -103,6 +108,10 @@ def test_기사차량스냅샷Parquet만_직접받아_footer행수와함께_Bron
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 2
     assert result["source_changed"] is True
     assert "sha256" not in result and "marker_location" not in result
+    manifest = json.loads((path.parent / "manifest.json").read_text())
+    assert manifest["sha256"] == hashlib.sha256(CONTENT).hexdigest()
+    assert manifest["source_etag"] == ETAG
+    assert manifest["service_area"] == "TX"
 
 
 def test_service_area를_S3_Bronze_경로에_적용한다(monkeypatch):
@@ -133,3 +142,9 @@ def test_service_area를_S3_Bronze_경로에_적용한다(monkeypatch):
         )
         assert result["locations"] == [f"s3://{S3_BUCKET}/{key}"]
         assert client.get_object(Bucket=S3_BUCKET, Key=key)["Body"].read() == CONTENT
+        manifest_key = key.rsplit("/", 1)[0] + "/manifest.json"
+        manifest = json.loads(
+            client.get_object(Bucket=S3_BUCKET, Key=manifest_key)["Body"].read()
+        )
+        assert manifest["sha256"] == hashlib.sha256(CONTENT).hexdigest()
+        assert manifest["source_etag"] == ETAG

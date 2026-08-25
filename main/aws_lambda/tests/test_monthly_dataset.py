@@ -1,5 +1,7 @@
 """월별 Parquet Bronze Loader의 로컬·S3 수집 이력 계약."""
 
+import hashlib
+
 import boto3
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -35,6 +37,10 @@ def _payload(content: bytes, collected_at: str = FIRST_COLLECTED_AT) -> dict:
         "dataset": DATASET,
         "collected_at": collected_at,
         "content": content,
+        "sha256": hashlib.sha256(content).hexdigest(),
+        "api_base_url": "https://source.example",
+        "source_etag": '"source-etag"',
+        "source_last_modified": "Tue, 25 Aug 2026 00:00:00 GMT",
     }
 
 
@@ -80,9 +86,17 @@ def test_S3_loader는_변경된_원본을_수집시각_키로_append한다(s3_cl
     assert first.location == f"s3://{S3_BUCKET}/{prefix}{FIRST_KEY}"
     assert second.location == f"s3://{S3_BUCKET}/{prefix}{SECOND_KEY}"
     assert loader.source_changed is True
-    assert keys == [f"{prefix}{FIRST_KEY}", f"{prefix}{SECOND_KEY}"]
+    assert keys == [
+        f"{prefix}{FIRST_KEY}",
+        f"{prefix}collected_at=20260820T101530123456Z/manifest.json",
+        f"{prefix}{SECOND_KEY}",
+        f"{prefix}collected_at=20260820T112205654321Z/manifest.json",
+    ]
     assert (
-        s3_client.get_object(Bucket=S3_BUCKET, Key=keys[-1])["Body"].read()
+        s3_client.get_object(
+            Bucket=S3_BUCKET,
+            Key=f"{prefix}{SECOND_KEY}",
+        )["Body"].read()
         == second_content
     )
 
@@ -112,10 +126,12 @@ def test_S3_loader는_동일한_최신원본을_재사용한다(s3_client):
             f"year_month={YEAR_MONTH}/"
         ),
     )
-    assert response["KeyCount"] == 2
+    assert response["KeyCount"] == 3
 
 
-def test_S3_loader는_기존_flat파일도_동일원본이면_재사용한다(s3_client):
+def test_S3_loader는_manifest위치가_없는_기존_flat파일을_새구조로_이관한다(
+    s3_client,
+):
     content = _parquet_bytes()
     prefix = f"bronze/{DATASET}/service_area={SERVICE_AREA}/year_month={YEAR_MONTH}/"
     legacy_key = f"{prefix}20260820T101530123456Z.parquet"
@@ -127,10 +143,10 @@ def test_S3_loader는_기존_flat파일도_동일원본이면_재사용한다(s3
 
     result = loader.write(_payload(content, SECOND_COLLECTED_AT))
 
-    assert result.location == f"s3://{S3_BUCKET}/{legacy_key}"
-    assert loader.payload["collected_at"] == FIRST_COLLECTED_AT
-    assert loader.source_changed is False
-    assert s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)["KeyCount"] == 2
+    assert result.location == f"s3://{S3_BUCKET}/{prefix}{SECOND_KEY}"
+    assert loader.payload["collected_at"] == SECOND_COLLECTED_AT
+    assert loader.source_changed is True
+    assert s3_client.list_objects_v2(Bucket=S3_BUCKET, Prefix=prefix)["KeyCount"] == 4
 
 
 def test_local_loader는_collected_at_디렉터리에_data파일을_쓴다(tmp_path):
@@ -147,9 +163,12 @@ def test_local_loader는_collected_at_디렉터리에_data파일을_쓴다(tmp_p
     )
     assert result.location == str(path)
     assert path.is_file()
+    assert (path.parent / "manifest.json").is_file()
 
 
-def test_local_loader는_기존_flat파일도_동일원본이면_재사용한다(tmp_path):
+def test_local_loader는_manifest위치가_없는_기존_flat파일을_새구조로_이관한다(
+    tmp_path,
+):
     content = _parquet_bytes()
     partition = (
         tmp_path / DATASET / f"service_area={SERVICE_AREA}" / f"year_month={YEAR_MONTH}"
@@ -162,10 +181,12 @@ def test_local_loader는_기존_flat파일도_동일원본이면_재사용한다
 
     result = loader.write(_payload(content, SECOND_COLLECTED_AT))
 
-    assert result.location == str(legacy)
-    assert loader.payload["collected_at"] == FIRST_COLLECTED_AT
-    assert loader.source_changed is False
-    assert len(list(partition.rglob("*.parquet"))) == 1
+    expected = partition / SECOND_KEY
+    assert result.location == str(expected)
+    assert loader.payload["collected_at"] == SECOND_COLLECTED_AT
+    assert loader.source_changed is True
+    assert len(list(partition.rglob("*.parquet"))) == 2
+    assert (expected.parent / "manifest.json").is_file()
 
 
 def test_S3_loader는_dataset이_다르면_실패한다(s3_client):

@@ -55,7 +55,7 @@
 - **조건부 HTTP (ETag/Last-Modified)** — `main/airflow/scripts/source_api_refresh/`.
   HVFHV(monthly_taxi_trip), 기사-차량 스냅샷, 리스 차량 인벤토리 3종이 대상.
   `check_and_should_refresh_task`가 원천에 HEAD 요청을 보내 ETag/Last-Modified를
-  직전 처리 상태(`Variable("source_api_processed__{dataset}")`)와 비교하고,
+  최신 정상 Bronze의 `manifest.json`에 저장한 validator와 비교하고,
   바뀌지 않았으면 `@task.short_circuit`으로 다운로드 자체를 건너뛴다.
 - **콘텐츠 해시 비교** — EIA 가스·전력 수집 Lambda(`main/aws_lambda/functions/
   eia_gas_price_raw_to_bronze/loader.py`, `eia_electricity_price_raw_to_bronze/loader.py`).
@@ -471,7 +471,7 @@ transfer였다. #912 이후 해당 copy 경로 자체가 제거됐다.
 
 | # | 지점 | 지역 2개일 때 벌어지는 일 |
 |---|---|---|
-| 1 | `source_api_refresh/tasks.py:26,178,208` — dedup 상태 키가 `source_api_processed__{dataset}` | **지역이 서로를 굶긴다.** NYC가 ETag 기록 → TX가 304 수신 → Bronze 존재 확인(`:34-53`)마저 지역을 안 봐서 NYC 파티션을 자기 것으로 착각 → **수집 통째로 skip.** 실패가 아니라 성공적 skip이라 알림도 없다. 그다음엔 TX가 키를 덮어써서 NYC가 굶는다 |
+| 1 | ~~Airflow Variable 기반 dedup 상태~~ → 지역별 최신 정상 Bronze manifest | **해결됨.** 처리 상태 Variable을 제거하고 `service_area/year_month/collected_at` 아래 검증된 manifest에서 HTTP validator를 복원한다. 다른 지역 Bronze를 자기 상태로 오인하지 않는다. |
 | 2 | `assets.py:18-26` `publish_month_partition` — 생산자가 bare `year_month` 발행 (`source_api_refresh/tasks.py:234`, `eia_fuel_price_silver/tasks.py:209`) | Gold가 `"NYC:2026-08"`을 기다리는데 생산자가 `"2026-08"`을 발행하면 **Gold가 영원히 트리거되지 않는다.** 에러도 없는 완전한 무음. 소비자 쪽만 고치면 파이프라인 전체가 멈춘 채 초록불 |
 | 3 | `postgres_loader.py:32-35,58-71,74-104` — `_next_version`·`_PRIMARY_KEYS`·`_validate_written_rows` 전부 `year_month`만 봄 | 버전이 지역 간 공유 카운터가 된다(TX 첫 적재가 v2). **셋을 반드시 같이 고쳐야 한다** — PK만 빼면 IntegrityError, 검증만 빼면 다른 지역 행을 세서 매번 롤백. *일부만 고치면 안 고친 것보다 나쁘다* |
 | 4 | `dashboard/datasource.py:47-52` — `MAX(version) WHERE year_month = t.year_month` 상관 서브쿼리 | NYC v3, TX v1이면 서브쿼리가 둘 다 3을 반환 → **TX 행이 대시보드에서 전부 사라진다.** `:67`이 컬럼을 dataclass에서 자동 유도하므로 컬럼 추가만으론 에러도 안 난다 |
@@ -741,9 +741,8 @@ EMR 잡 이름도 문제다 — `monthly_taxi_trip_raw_to_silver_dag.py:136`은
 3. [ ] **생산자 쪽 파티션 키 발행**(`publish_month_partition`)과 **소비자 쪽
        파싱**(`resolve_target_year_month`)을 **같은 커밋에서** 변경 — 한쪽만
        바꾸면 Gold가 조용히 안 돈다
-4. [ ] **dedup 상태 키에 `service_area` 추가**(`source_api_processed__`) +
-       `_bronze_partition_exists` 경로 + `trigger_run_id` — 이걸 안 하면 지역이
-       서로를 굶기므로 데이터 자체가 안 들어온다
+4. [x] **dedup 상태 Variable 제거** + 지역별 Bronze manifest +
+       `trigger_run_id` 지역 포함 — 지역 간 상태 공유와 상호 굶김을 함께 제거
 5. [ ] **Gold Postgres 3함수 동시 수정**(`_next_version`, `_PRIMARY_KEYS`,
        `_validate_written_rows`) + 마이그레이션 SQL 런북 — *일부만 고치면 안 고친
        것보다 나쁘다*

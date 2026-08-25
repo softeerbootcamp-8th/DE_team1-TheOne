@@ -131,6 +131,7 @@ def test_latest_partition_file은_신구구조중_최신수집본을_반환한�
     latest.touch()
     (partition / "_SUCCESS").touch()
     (latest.parent / "_SUCCESS").touch()
+    (latest.parent / "manifest.json").write_text("{}")
 
     assert job.latest_partition_file(str(tmp_path), "2024-01", SERVICE_AREA) == str(latest)
 
@@ -248,6 +249,11 @@ def test_latest_partition_file은_S3_신구구조중_최신수집본을_반환�
         Bucket=S3_BUCKET,
         Key=f"{prefix}/collected_at=20240820T112205654321Z/_SUCCESS",
         Body=b"",
+    )
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{prefix}/collected_at=20240820T112205654321Z/manifest.json",
+        Body=b"{}",
     )
 
     result = job.latest_partition_file(

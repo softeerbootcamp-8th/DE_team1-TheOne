@@ -8,6 +8,7 @@
 6. service_area가 수집·정제 Lambda와 Bronze·Silver 경로에 반영됨
 """
 
+import hashlib
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from dags import driver_vehicle_monthly_snapshot_raw_to_silver_dag as dag_module
 from schema.bronze import DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as BRONZE_SCHEMA
 from schema.silver import CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SCHEMA
 from main.airflow.scripts.driver_vehicle_monthly_snapshot_raw_to_silver import tasks as task_module
+from shared.common.bronze_manifest import bronze_manifest_bytes, build_bronze_manifest
 
 
 DAG = dag_module.driver_vehicle_monthly_snapshot_raw_to_silver_dag
@@ -67,6 +69,25 @@ def _rows():
             "snapshot_created_at": datetime(2026, 8, 1),
         }
     ]
+
+
+def _write_manifest(path: Path, service_area: str) -> None:
+    content = path.read_bytes()
+    manifest = build_bronze_manifest(
+        {
+            "dataset": "driver_vehicle_monthly_snapshot",
+            "year_month": "2026-08",
+            "collected_at": "2026-08-21T12:34:56.123456Z",
+            "content": content,
+            "sha256": hashlib.sha256(content).hexdigest(),
+            "api_base_url": "http://source",
+            "source_etag": '"snapshot-etag"',
+            "source_last_modified": "Fri, 21 Aug 2026 12:34:56 GMT",
+        },
+        service_area=service_area,
+        row_count=pq.ParquetFile(path).metadata.num_rows,
+    )
+    (path.parent / "manifest.json").write_bytes(bronze_manifest_bytes(manifest))
 
 
 def _silver_file(tmp_path: Path, rows: list[dict]) -> dict:
@@ -239,6 +260,7 @@ def test_Bronze검증과_Silver경로는_service_area_파라미터를_따른다(
     )
     bronze.parent.mkdir(parents=True)
     pq.write_table(pa.Table.from_pylist(_rows(), schema=SCHEMA), bronze)
+    _write_manifest(bronze, "TX")
 
     validated = DAG.get_task("validate_bronze").python_callable(
         {
@@ -330,10 +352,12 @@ def test_Bronze_타입이_다르면_원본을_보존하고_격리한다(tmp_path
         / "driver_vehicle_monthly_snapshot"
         / "service_area=NYC"
         / "year_month=2026-08"
-        / FILE_NAME
+        / "collected_at=20260821T123456123456Z"
+        / "data.parquet"
     )
     bronze.parent.mkdir(parents=True)
     pq.write_table(pa.Table.from_pylist(rows, schema=schema), bronze)
+    _write_manifest(bronze, "NYC")
     monkeypatch.setattr(task_module, "run_quality_gate", real_run_quality_gate)
 
     with pytest.raises(ValueError, match="타입 불일치"):

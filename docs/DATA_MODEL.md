@@ -74,13 +74,17 @@
 원천 API의 월별 Bronze 3종은 데이터 기준 월 아래에 실제 수집 시각 디렉터리를 append합니다. 같은 월을 다시 받아도 원본 이력이 유지됩니다.
 
 ```text
-data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/data.parquet
-data/bronze/<dataset>/year_month=YYYY-MM/collected_at=YYYYMMDDTHHMMSSffffffZ/{_SUCCESS|_QUARANTINED.json}
+data/bronze/<dataset>/service_area=<지역>/year_month=YYYY-MM/
+└── collected_at=YYYYMMDDTHHMMSSffffffZ/
+    ├── data.parquet
+    ├── manifest.json
+    └── {_SUCCESS|_QUARANTINED.json}
 ```
 
 writer는 최종 디렉터리에 원본을 쓰고 Airflow 검증 성공 시 `_SUCCESS`, 품질 실패 시
 `_QUARANTINED.json`을 기록합니다. 둘은 상호 배타적이며 downstream은 `_SUCCESS`가
-있는 버전만 대상으로 합니다.
+있는 버전만 대상으로 합니다. manifest는 데이터 SHA-256·크기·행 수·HTTP validator와
+계보를 저장하고 `_SUCCESS`는 내용 없는 공개 marker로 유지합니다.
 
 원천 API 3종의 Silver는 Bronze 수집 시각을 `source_collected_at` 자연 키로 보존합니다.
 

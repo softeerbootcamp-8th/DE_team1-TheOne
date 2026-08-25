@@ -35,6 +35,8 @@
 Content-Type: application/vnd.apache.parquet
 Content-Length: <바이트 수>
 Content-Disposition: attachment; filename="<dataset>.parquet"
+ETag: "<원본 식별자>"
+Last-Modified: <HTTP date>
 ```
 
 500MB급 파일도 청크 단위로 스트리밍하므로 서버가 파일 전체를 메모리에 올리지 않습니다.
