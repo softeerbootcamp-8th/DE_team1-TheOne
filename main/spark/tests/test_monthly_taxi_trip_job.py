@@ -14,6 +14,7 @@
 12. Spark writer는 쓰기 전 기존 `_SUCCESS`를 지우고 자동 marker를 남기지 않음
 """
 
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -565,3 +566,84 @@ def test_end만_주고_start를_안_주면_ValueError(tmp_path):
             "--output_path", str(tmp_path / "silver"),
             "--end_year_month", "2024-01",
         ])
+
+
+def test_로컬_Loader가_제외_건수를_sidecar로_남긴다(tmp_path):
+    """Airflow 는 다른 프로세스라 반환값을 못 받는다 — 파일로 넘겨야 대조가 된다."""
+    final = tmp_path / "year_month=2026-07" / "source_collected_at=20260811T085354000000Z"
+    final.mkdir(parents=True)
+    order = []
+
+    class FakeWriter:
+        def mode(self, value):
+            return self
+
+        def parquet(self, path):
+            order.append("parquet")
+
+    class FakeDataFrame:
+        write = FakeWriter()
+
+        def count(self):
+            return 7
+
+    counts = {"total": 10, "valid": 7, "invalid": 3,
+              "missing_or_type_mismatch": 2, "invalid_value": 1,
+              "invalid_service_tier": 0}
+    loader = job.SilverVersionDirectoryLoader(str(final), recon=lambda: counts)
+    loader.write(FakeDataFrame())
+
+    sidecar = final / "_RECON.json"
+    assert sidecar.is_file()
+    assert json.loads(sidecar.read_text()) == counts
+    # parquet 을 다 쓴 뒤에 놓여야 한다 — 뒤집히면 데이터 없이 대조 결과가 먼저 놓인다.
+    assert order == ["parquet"]
+
+
+def test_sidecar는_이전_실행_것을_먼저_지운다(tmp_path):
+    """재처리 때 옛 대조 결과가 남으면 새 데이터를 옛 숫자로 판정한다."""
+    final = tmp_path / "year_month=2026-07" / "source_collected_at=20260811T085354000000Z"
+    final.mkdir(parents=True)
+    (final / "_RECON.json").write_text('{"invalid": 999}')
+
+    class FakeWriter:
+        def mode(self, value):
+            return self
+
+        def parquet(self, path):
+            pass
+
+    class FakeDataFrame:
+        write = FakeWriter()
+
+        def count(self):
+            return 1
+
+    job.SilverVersionDirectoryLoader(str(final), recon=lambda: {"invalid": 0}).write(
+        FakeDataFrame()
+    )
+
+    assert json.loads((final / "_RECON.json").read_text()) == {"invalid": 0}
+
+
+def test_recon이_없으면_sidecar를_쓰지_않는다(tmp_path):
+    """`--output_version` 없이 도는 백필 경로는 대조 대상이 아니다."""
+    final = tmp_path / "year_month=2026-07" / "source_collected_at=20260811T085354000000Z"
+    final.mkdir(parents=True)
+
+    class FakeWriter:
+        def mode(self, value):
+            return self
+
+        def parquet(self, path):
+            pass
+
+    class FakeDataFrame:
+        write = FakeWriter()
+
+        def count(self):
+            return 1
+
+    job.SilverVersionDirectoryLoader(str(final)).write(FakeDataFrame())
+
+    assert not (final / "_RECON.json").exists()

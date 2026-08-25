@@ -1,9 +1,10 @@
 import argparse
+import json
 import logging
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 import boto3
@@ -17,6 +18,8 @@ from shared.common.success_marker import (
     marker_path,
     quarantine_marker_key,
     quarantine_marker_path,
+    recon_key,
+    recon_path,
 )
 from shared.spark.common.io import SparkParquetExtractor, SparkParquetLoader
 from shared.spark.common.session import get_or_create_spark_session
@@ -98,10 +101,32 @@ def resolve_path(path_str: str) -> str:
 
 
 class SilverVersionDirectoryLoader(Loader):
-    """최종 버전 디렉터리에 Spark part 파일을 그대로 씁니다."""
+    """최종 버전 디렉터리에 Spark part 파일을 그대로 씁니다.
 
-    def __init__(self, path: str):
+    `recon` 은 변환이 몇 건을 걸렀는지 돌려주는 콜러블입니다. 값이 아니라 콜러블인
+    이유 — Loader 는 `transform()` 전에 만들어지고, 그때는 아직 센 값이 없습니다.
+
+    쓰는 순서가 중요합니다: parquet -> `_RECON.json`. 뒤집으면 데이터가 없는데
+    대조 결과가 먼저 놓입니다. `_SUCCESS` 는 Airflow 가 대조를 통과시킨 뒤에
+    `run_quality_gate` 가 붙입니다.
+    """
+
+    def __init__(self, path: str, recon: Callable[[], dict] | None = None):
         self._path = path
+        self._recon = recon
+
+    def _publish_recon(self, payload: dict) -> None:
+        body = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        if is_s3_path(self._path):
+            parsed = urlsplit(self._path)
+            boto3.client("s3").put_object(
+                Bucket=parsed.netloc,
+                Key=recon_key(parsed.path.lstrip("/")),
+                Body=body.encode("utf-8"),
+            )
+        else:
+            recon_path(self._path).write_text(body, encoding="utf-8")
+        logger.info("reconciliation sidecar 기록: %s", body)
 
     def write(self, data) -> WriteResult:
         payload = _silver_file_payload(data)
@@ -117,10 +142,19 @@ class SilverVersionDirectoryLoader(Loader):
                 Bucket=parsed.netloc,
                 Key=quarantine_marker_key(parsed.path.lstrip("/")),
             )
+            client.delete_object(
+                Bucket=parsed.netloc,
+                Key=recon_key(parsed.path.lstrip("/")),
+            )
         else:
             marker_path(self._path).unlink(missing_ok=True)
             quarantine_marker_path(self._path).unlink(missing_ok=True)
+            recon_path(self._path).unlink(missing_ok=True)
         payload.write.mode("overwrite").parquet(self._path)
+        if self._recon is not None:
+            counts = self._recon()
+            if counts is not None:
+                self._publish_recon(counts)
         return WriteResult(location=self._path, row_count=row_count)
 
 
@@ -336,12 +370,15 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     )
 
     extractor = SparkParquetExtractor(spark, target_input_path)
+    transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
     loader = (
-        SilverVersionDirectoryLoader(output_version)
+        SilverVersionDirectoryLoader(
+            output_version,
+            recon=lambda: transformer.recon.as_payload() if transformer.recon else None,
+        )
         if output_version
         else SparkParquetLoader(output_path, partition_by=["year_month"])
     )
-    transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
 
     result = Pipeline(extractor, loader, transformer=transformer).run()
     logger.info("Monthly Taxi Trip Bronze to Silver Pipeline completed: %s", result)

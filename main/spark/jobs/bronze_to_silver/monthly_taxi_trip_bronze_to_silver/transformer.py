@@ -1,6 +1,7 @@
 """원천 API의 월별 택시 운행을 Silver 계약으로 정제합니다."""
 
 import logging
+from dataclasses import asdict, dataclass
 
 from pipeline_core.transformer import Transformer
 from pyspark.sql import DataFrame
@@ -26,11 +27,34 @@ _STRING_COLUMNS = (
 )
 
 
+@dataclass(frozen=True)
+class ReconCounts:
+    """변환이 몇 건을 받아 몇 건을 남겼는지, 무엇 때문에 걸렀는지.
+
+    `invalid` 는 사유별 합이 아니라 `total - valid` 다. 한 행이 여러 사유에 걸릴 수
+    있어 사유별 건수를 더하면 중복 집계된다 — 사유별 값은 원인을 좁히는 참고용이고
+    보존식에 쓰는 건 `invalid` 뿐이다.
+    """
+
+    total: int
+    valid: int
+    invalid: int
+    missing_or_type_mismatch: int
+    invalid_value: int
+    invalid_service_tier: int
+
+    def as_payload(self) -> dict:
+        return asdict(self)
+
+
 class MonthlyTaxiTripCleanTransformer(Transformer):
     """타입·필수값·운행 등급을 검증하고 원천 등급을 그대로 전달합니다."""
 
     def __init__(self, error_threshold: float = 0.05):
         self._error_threshold = error_threshold
+        # `transform()` 이 센 값을 Loader 가 sidecar 로 내보낸다. 로그로만 흘리면
+        # Airflow 가 Bronze·Silver 행 수와 맞대볼 수 없다.
+        self.recon: ReconCounts | None = None
 
     def transform(self, df: DataFrame) -> DataFrame:
         missing = [name for name in REQUIRED_COLUMNS if name not in df.columns]
@@ -77,6 +101,14 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
         valid_count = int(stats["valid_count"] or 0)
         invalid_count = total_count - valid_count
 
+        self.recon = ReconCounts(
+            total=total_count,
+            valid=valid_count,
+            invalid=invalid_count,
+            missing_or_type_mismatch=int(stats["missing_or_type_mismatch"] or 0),
+            invalid_value=int(stats["invalid_value"] or 0),
+            invalid_service_tier=int(stats["invalid_service_tier"] or 0),
+        )
         if invalid_count:
             logger.warning(
                 "불합격 사유별 행 수: NULL/타입=%d 값 범위=%d 등급=%d",

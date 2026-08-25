@@ -6,6 +6,9 @@ from pathlib import Path, PurePosixPath
 
 SUCCESS_FILE = "_SUCCESS"
 QUARANTINE_FILE = "_QUARANTINED.json"
+# 변환이 몇 건을 걸렀는지 남기는 sidecar. 계산한 쪽(Spark)과 센 쪽(Airflow)이
+# 다른 프로세스라, 이 파일이 없으면 둘의 숫자를 맞대볼 자리가 없다.
+RECON_FILE = "_RECON.json"
 
 
 def marker_path(directory: str | Path) -> Path:
@@ -22,6 +25,14 @@ def quarantine_marker_path(directory: str | Path) -> Path:
 
 def quarantine_marker_key(prefix: str) -> str:
     return f"{prefix.rstrip('/')}/{QUARANTINE_FILE}"
+
+
+def recon_path(directory: str | Path) -> Path:
+    return Path(directory) / RECON_FILE
+
+
+def recon_key(prefix: str) -> str:
+    return f"{prefix.rstrip('/')}/{RECON_FILE}"
 
 
 def data_path_is_complete(path: Path) -> bool:
