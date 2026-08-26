@@ -38,7 +38,6 @@ from schema.source import DRIVER_VEHICLE_MONTHLY_SNAPSHOT_REQUIRED_NON_NULL as B
 
 logger = logging.getLogger(__name__)
 DATASET = "driver_vehicle_monthly_snapshot"
-DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 DEFAULT_BRONZE_DIR = os.getenv(
     "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
 )
@@ -93,7 +92,7 @@ def raw_to_bronze_task(**context) -> dict:
 
 def _collect_bronze(params: dict) -> dict:
     event = {
-        "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
+        "api_base_url": params["api_base_url"],
         "year": params.get("year"),
         "month": params.get("month"),
         "service_area": resolve_service_area(params),

@@ -119,8 +119,8 @@ def test_DAG는_HVFHV와_분리되어_기사차량스냅샷만_Silver까지_처�
     assert DAG.get_task("validate_silver").retries == 0
 
 
-def test_기본_API_주소는_내부_제공서버를_사용한다():
-    assert DAG.params["api_base_url"] == "http://10.0.10.81:8091"
+def test_API_주소는_환경변수_설정값을_사용한다():
+    assert DAG.params["api_base_url"] == "http://source-api.test:8091"
 
 
 def test_수집task는_제공주소를_수집핸들러에_전달한다(monkeypatch):

@@ -20,7 +20,7 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: airflow
-      POSTGRES_PASSWORD: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:-airflow}
       POSTGRES_DB: airflow
     volumes:
       - postgres-db:/var/lib/postgresql/data
@@ -48,7 +48,7 @@ services:
         condition: service_healthy
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:-airflow}@postgres/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       # 기본값 300초(5분). 로컬 개발에서 DAG 고치고 5분 기다리긴 불편하므로 10초로.
@@ -57,6 +57,7 @@ services:
       # 로그인 화면을 없애서 매번 `docker compose logs | grep password` 하는 걸 방지합니다.
       # 인증된 모든 요청을 admin 으로 취급 — 로컬 1인 개발 전용. 운영 배포 시 반드시 제거하세요.
       AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "true"
+      SOURCE_API_URL: ${SOURCE_API_URL:-http://host.docker.internal:8091}
       PYTHONPATH: /opt/airflow/project-root
     ports:
       # 8080 이 다른 프로젝트에 물려 있으면 AIRFLOW_PORT=8090 docker compose up -d

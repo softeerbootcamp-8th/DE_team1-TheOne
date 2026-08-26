@@ -10,7 +10,7 @@ output: driver_aggregation, driver_car_suggestion, silver_lineage (Gold)
 
 사용 예 (S3, --env prod):
     cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
-      --env prod --bucket de-theone \
+      --env prod --bucket "$DATA_LAKE_S3_BUCKET" \
       --year 2026 --month 1 --service_area NYC --output_dir ../data/gold
 
 `--*_path` 4개를 직접 주면 `--env` 기본 경로 대신 그 값을 그대로 씁니다.

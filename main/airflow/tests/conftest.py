@@ -11,6 +11,7 @@ _TEST_HOME = tempfile.TemporaryDirectory(prefix="tlc-airflow-test-")
 os.environ["AIRFLOW_HOME"] = _TEST_HOME.name
 os.environ["AIRFLOW__CORE__DAGS_FOLDER"] = str(_AIRFLOW_ROOT / "dags")
 os.environ["AIRFLOW__CORE__LOAD_EXAMPLES"] = "False"
+os.environ["SOURCE_API_URL"] = "http://source-api.test:8091"
 os.environ["AIRFLOW__DATABASE__SQL_ALCHEMY_CONN"] = (
     f"sqlite:///{Path(_TEST_HOME.name) / 'airflow.db'}"
 )
