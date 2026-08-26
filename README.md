@@ -163,6 +163,13 @@
 </details>
 
 <details>
+<summary><a href="/docs/pipeline_design_and_data_quality/GOLD_RECOMMENDATION_LOGIC.md">Gold 추천 로직 (v1/v2)</a></summary>
+
+- v1(ProfitFirst) : 기사 순수익 기준 배정, 회사 매출에 기여 못 하는 교체만 제외
+- v2(RevenueFirst, threshold별) : 회사 매출 기준 배정, 순수익증가가 threshold 미만인 교체만 제외
+</details>
+
+<details>
 <summary><a href="/docs/pipeline_design_and_data_quality/DATA_QUALITY_AND_LINEAGE.md">스키마 검증·품질 게이트·계보 추적</a></summary>
 
 - 스키마 : 계층별 `pyarrow.Schema`(`schema/`)를 기준으로 컬럼 누락·타입 불일치를 진단
