@@ -76,6 +76,7 @@ def _local_build_gold() -> BashOperator:
             + "\"{{ task_instance.xcom_pull(task_ids='validate_inputs')['fuel_price_path'] }}\" "
             + f"{common_tail} "
             + "--output_dir {{ params.output_dir }} "
+            + "--airflow_run_id \"{{ run_id }}\" "
             + "--thresholds \"{{ params.thresholds }}\""
         ),
         # BashOperator 가 띄우는 별도 프로세스는 DAG 파싱 때의 sys.path 를 물려받지
@@ -115,6 +116,7 @@ def _emr_build_gold() -> EmrServerlessStartJobOperator:
                     "--year", f"{{{{ {xcom}['year'] }}}}",
                     "--month", f"{{{{ {xcom}['month'] }}}}",
                     "--service_area", f"{{{{ {xcom}['service_area'] }}}}",
+                    "--airflow_run_id", "{{ run_id }}",
                     "--thresholds", "{{ params.thresholds }}",
                 ],
                 "sparkSubmitParameters": EMR_SPARK_SUBMIT_PARAMETERS,

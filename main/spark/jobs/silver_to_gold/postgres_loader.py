@@ -9,6 +9,7 @@ PostgreSQL에 원자적으로, 버전을 붙여 적재합니다.
 import hashlib
 import json
 import logging
+from collections.abc import Iterable, Mapping
 from dataclasses import fields
 
 import pandas as pd
@@ -104,27 +105,27 @@ def _record_gold_version(
     )
 
 
-def _gold_load_fingerprint(
-    frames: dict[str, pd.DataFrame], service_area: str, year_month: str
+def gold_config_hash(
+    service_area: str,
+    year_month: str,
+    silver_inputs: Mapping[str, object],
+    recommendation_parameters: Iterable[tuple[int, int]],
 ) -> str:
-    """같은 입력 버전과 추천 설정을 같은 Gold 계산으로 식별합니다.
+    """Silver 입력과 추천 설정을 정렬 직렬화한 Gold 설정 SHA-256입니다.
 
-    출력 전체를 해시하면 결과 크기만큼 직렬화 비용이 다시 듭니다. 대신 입력으로 읽은
-    Silver 4종의 버전 경로와 실제 결과에 태그된 알고리즘·threshold 조합을 정렬해
-    해시합니다. 알고리즘 구현을 바꾸면 기존 규칙대로 알고리즘 버전도 올려야 합니다.
+    job.py가 SilverLineage.config_hash를 만들고 이 적재기가 멱등성 fingerprint를
+    검증할 때 같은 함수를 씁니다. 둘이 서로 다른 정규화 규칙을 가지면 같은 실행이
+    새 버전으로 쌓이거나, 반대로 다른 설정이 기존 버전을 재사용할 수 있습니다.
     """
-    lineage = frames[_SILVER_LINEAGE].iloc[0]
     combinations = {
         (int(algorithm_version_id), int(threshold))
-        for algorithm_version_id, threshold in frames[_DRIVER_CAR_SUGGESTION][
-            ["recommendation_algorithm_version_id", "threshold"]
-        ].itertuples(index=False, name=None)
+        for algorithm_version_id, threshold in recommendation_parameters
     }
     payload = {
         "service_area": service_area,
         "year_month": year_month,
         "silver_inputs": {
-            column: str(lineage[column]) for column in _LINEAGE_COLUMNS
+            column: str(silver_inputs[column]) for column in _LINEAGE_COLUMNS
         },
         "recommendation_parameters": [
             {
@@ -138,6 +139,22 @@ def _gold_load_fingerprint(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _gold_load_fingerprint(
+    frames: dict[str, pd.DataFrame], service_area: str, year_month: str
+) -> str:
+    """실제 적재 프레임에서 재실행 멱등성 fingerprint를 계산합니다."""
+    lineage = frames[_SILVER_LINEAGE].iloc[0]
+    recommendation_parameters = frames[_DRIVER_CAR_SUGGESTION][
+        ["recommendation_algorithm_version_id", "threshold"]
+    ].itertuples(index=False, name=None)
+    return gold_config_hash(
+        service_area,
+        year_month,
+        lineage,
+        recommendation_parameters,
+    )
 
 
 def _existing_gold_version(
@@ -297,6 +314,12 @@ def write_gold_to_postgres(
         raise ValueError(f"frames에 테이블이 빠졌습니다: {sorted(missing)}")
     _validate_frame_grains(frames)
     load_fingerprint = _gold_load_fingerprint(frames, service_area, year_month)
+    recorded_config_hash = str(frames[_SILVER_LINEAGE].iloc[0]["config_hash"])
+    if recorded_config_hash != load_fingerprint:
+        raise ValueError(
+            "Gold config_hash가 실제 입력·추천 설정과 일치하지 않습니다: "
+            f"recorded={recorded_config_hash} actual={load_fingerprint}"
+        )
 
     conn = psycopg2.connect(dsn)
     try:

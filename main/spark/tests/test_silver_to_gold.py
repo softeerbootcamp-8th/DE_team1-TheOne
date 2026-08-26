@@ -4,6 +4,7 @@
 2. 재고 0 후보는 건너뛰고 모든 기사는 한 개의 최종 차량을 받음
 3. 프리미엄 배수는 5개 거리 구간별 실측값을 각 운행에 적용
 4. Gold 파일은 집계와 최종 추천 2종만 함께 교체
+5. Gold 실행은 Airflow run·Spark code·안정적 config hash를 계보에 기록
 """
 
 from calendar import monthrange
@@ -354,6 +355,104 @@ def test_실패해도_임시_파일을_남기지_않는다(tmp_path, monkeypatch
         job._write_all_csv(_frames("x"), str(tmp_path), "2026-01", "NYC")
 
     assert not list(tmp_path.rglob("*.tmp"))
+
+
+def test_Gold_job은_실행코드설정_식별자를_계보에_기록한다(monkeypatch):
+    import pandas as pd
+
+    from main.spark.jobs.silver_to_gold import job, postgres_loader
+
+    class FakeFrame:
+        def __init__(self, pandas_frame=None):
+            self.pandas_frame = (
+                pandas_frame if pandas_frame is not None else pd.DataFrame()
+            )
+
+        def persist(self):
+            return self
+
+        def unpersist(self):
+            return None
+
+        def toPandas(self):
+            return self.pandas_frame.copy()
+
+    class FakeReader:
+        def parquet(self, path):
+            return FakeFrame()
+
+    class FakeSpark:
+        read = FakeReader()
+
+    aggregation = FakeFrame(pd.DataFrame([{"driver_id": "D1"}]))
+    suggestion = FakeFrame(pd.DataFrame([
+        {"driver_id": "D1", "recommendation_algorithm_version_id": 1, "threshold": -1},
+        {"driver_id": "D1", "recommendation_algorithm_version_id": 2, "threshold": 100},
+        {"driver_id": "D1", "recommendation_algorithm_version_id": 2, "threshold": 200},
+    ]))
+
+    class Profit:
+        ALGORITHM_VERSION_ID = 1
+
+        def recommend(self, driver_metrics, inventory):
+            return suggestion
+
+    class Revenue:
+        ALGORITHM_VERSION_ID = 2
+
+        def __init__(self, thresholds):
+            self.thresholds = thresholds
+
+        def recommend(self, driver_metrics, inventory):
+            return suggestion
+
+    captured = {}
+    monkeypatch.setattr(job, "get_or_create_spark_session", lambda *a, **k: FakeSpark())
+    monkeypatch.setattr(job, "enrich_trips_with_fuel_cost", lambda *a: FakeFrame())
+    monkeypatch.setattr(job, "build_driver_monthly_aggregation", lambda *a: aggregation)
+    monkeypatch.setattr(job, "reconcile_gold_control_totals", lambda *a: None)
+    monkeypatch.setattr(job, "build_driver_monthly_profit", lambda frame: aggregation)
+    monkeypatch.setattr(job, "ProfitFirstAlgorithm", Profit)
+    monkeypatch.setattr(job, "RevenueFirstAlgorithm", Revenue)
+    monkeypatch.setattr(job, "reduce", lambda function, frames: next(iter(frames)))
+    monkeypatch.setattr(job, "validate_gold_business_invariants", lambda *a: None)
+    monkeypatch.setattr(
+        job,
+        "write_gold_to_postgres",
+        lambda frames, *args: captured.update(frames=frames) or {},
+    )
+
+    paths = {
+        "monthly_taxi_trip": "s3://lake/trips/v1.parquet",
+        "driver_vehicle_monthly_snapshot": "s3://lake/drivers/v1.parquet",
+        "lease_vehicle_inventory": "s3://lake/inventory/v1.parquet",
+        "fuel_price": "s3://lake/fuel/v1.parquet",
+    }
+    job.main([
+        "--env", "prod",
+        "--gold_dsn", "postgresql://gold",
+        "--year", "2026",
+        "--month", "5",
+        "--service_area", "NYC",
+        "--monthly_taxi_trip_path", paths["monthly_taxi_trip"],
+        "--driver_vehicle_monthly_snapshot_path", paths["driver_vehicle_monthly_snapshot"],
+        "--lease_vehicle_inventory_path", paths["lease_vehicle_inventory"],
+        "--fuel_price_path", paths["fuel_price"],
+        "--thresholds", "[100, 200]",
+        "--airflow_run_id", "scheduled__2026-05-01T00:00:00+00:00",
+        "--code_sha", "abc1234",
+    ])
+
+    lineage = captured["frames"]["silver_lineage"].iloc[0]
+    assert lineage["airflow_run_id"] == "scheduled__2026-05-01T00:00:00+00:00"
+    assert lineage["code_sha"] == "abc1234"
+    assert lineage["config_hash"] == postgres_loader.gold_config_hash(
+        "NYC",
+        "2026-05",
+        lineage,
+        [(1, -1), (2, 100), (2, 200)],
+    )
+    assert len(lineage["config_hash"]) == 64
 
 
 def _valid_gold_inputs(spark, year_month: str):

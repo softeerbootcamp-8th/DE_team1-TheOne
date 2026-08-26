@@ -24,6 +24,7 @@ import argparse
 import json
 import logging
 import os
+import subprocess
 from functools import reduce
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -32,7 +33,10 @@ from uuid import uuid4
 import pandas as pd
 from pyspark.sql import DataFrame
 
-from main.spark.jobs.silver_to_gold.postgres_loader import write_gold_to_postgres
+from main.spark.jobs.silver_to_gold.postgres_loader import (
+    gold_config_hash,
+    write_gold_to_postgres,
+)
 from main.spark.jobs.service_area_path import (
     gold_csv_path,
     service_area_prefix,
@@ -40,6 +44,7 @@ from main.spark.jobs.service_area_path import (
 )
 from main.spark.jobs.silver_to_gold.recommendation_algorithm import (
     DEFAULT_THRESHOLDS,
+    NO_THRESHOLD,
     ProfitFirstAlgorithm,
     RevenueFirstAlgorithm,
 )
@@ -73,6 +78,22 @@ DEFAULT_LOCAL_SILVER_BASE = {
     "lease_vehicle_inventory": "data/silver/lease_vehicle_inventory",
     "fuel_price": "data/silver/gas_ev_price",
 }
+
+
+def resolve_code_sha(explicit: str | None) -> str:
+    """배포 이미지의 SHA를 우선하고, 로컬 실행은 현재 checkout을 식별합니다."""
+    if explicit and explicit.strip():
+        return explicit.strip()
+    try:
+        return subprocess.run(
+            ["git", "rev-parse", "--short", "HEAD"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        return "unknown"
 
 def _is_s3_path(path: str) -> bool:
     return path.startswith("s3://") or path.startswith("s3a://")
@@ -277,12 +298,24 @@ def main(args_list: list[str] | None = None) -> None:
             f"JSON 배열 문자열 (예: '[100,200,300,400,500]'). 비우면 기본값 {list(DEFAULT_THRESHOLDS)}"
         ),
     )
+    parser.add_argument(
+        "--airflow_run_id",
+        default=os.getenv("AIRFLOW_CTX_DAG_RUN_ID"),
+        help="이 Gold 버전을 요청한 Airflow run_id (직접 실행은 고유 manual ID 생성)",
+    )
+    parser.add_argument(
+        "--code_sha",
+        default=os.getenv("CODE_SHA"),
+        help="실행 코드 Git SHA (운영 Spark 이미지의 CODE_SHA, 로컬은 현재 checkout)",
+    )
     args = parser.parse_args(args_list)
     thresholds = (
         tuple(json.loads(args.thresholds)) if args.thresholds else DEFAULT_THRESHOLDS
     )
 
     year_month = f"{args.year:04d}-{args.month:02d}"
+    airflow_run_id = args.airflow_run_id or f"manual__{uuid4().hex}"
+    code_sha = resolve_code_sha(args.code_sha)
 
     given_paths = {
         "monthly_taxi_trip": args.monthly_taxi_trip_path,
@@ -368,14 +401,30 @@ def main(args_list: list[str] | None = None) -> None:
         frames = {name: frame.toPandas() for name, frame in outputs.items()}
         # driver_aggregation·driver_car_suggestion 은 같은 실행에서 같은 Silver 4종을
         # 함께 읽으므로, 행마다 경로를 반복하는 대신 실행당 한 행으로 따로 적재한다.
-        frames["silver_lineage"] = pd.DataFrame([{
+        lineage = {
             "service_area": args.service_area,
             "year_month": year_month,
             "silver_monthly_taxi_trip_s3_link": monthly_taxi_trip_path,
             "silver_driver_vehicle_monthly_snapshot_s3_link": driver_vehicle_monthly_snapshot_path,
             "silver_lease_vehicle_inventory_s3_link": lease_vehicle_inventory_path,
             "silver_gas_ev_price_s3_link": fuel_price_path,
-        }])
+        }
+        recommendation_parameters = [
+            (ProfitFirstAlgorithm.ALGORITHM_VERSION_ID, NO_THRESHOLD),
+            *(
+                (RevenueFirstAlgorithm.ALGORITHM_VERSION_ID, threshold)
+                for threshold in thresholds
+            ),
+        ]
+        lineage["airflow_run_id"] = airflow_run_id
+        lineage["code_sha"] = code_sha
+        lineage["config_hash"] = gold_config_hash(
+            args.service_area,
+            year_month,
+            lineage,
+            recommendation_parameters,
+        )
+        frames["silver_lineage"] = pd.DataFrame([lineage])
         if args.env == "prod":
             if not args.gold_dsn:
                 raise ValueError(

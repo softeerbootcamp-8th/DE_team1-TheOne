@@ -6,6 +6,8 @@
 4. 검증·버전·PK가 모두 지역으로 좁혀진다 — 하나라도 빠지면 안 고친 것보다 나쁘다
 5. 집계와 최종 추천은 모두 기사당 한 행
 6. 커밋된 실행을 재시도하면 같은 버전을 재사용하고, 입력·설정이 바뀌면 새 버전을 쓴다
+7. 실행·코드·설정 계보는 중앙 스키마와 적재 설정 hash가 일치해야 한다
+8. 기존 silver_lineage 행은 migration에서 legacy 식별자로 백필한다
 """
 
 from dataclasses import fields
@@ -14,7 +16,7 @@ import pytest
 import pandas as pd
 
 from main.spark.jobs.silver_to_gold import postgres_loader
-from schema.gold import DriverCarSuggestion
+from schema.gold import DriverCarSuggestion, SilverLineage
 
 
 class _CountCursor:
@@ -145,7 +147,7 @@ def test_최종추천은_내부후보와_재고컬럼을_내보내지_않는다(
 
 
 def _grain_frames(suggestion_rows):
-    return {
+    frames = {
         "driver_aggregation": pd.DataFrame({"driver_id": ["D1", "D2"]}),
         "driver_car_suggestion": pd.DataFrame(
             suggestion_rows,
@@ -154,6 +156,8 @@ def _grain_frames(suggestion_rows):
         "silver_lineage": pd.DataFrame({
             "service_area": ["NYC"],
             "year_month": ["2026-05"],
+            "airflow_run_id": ["scheduled__2026-05-01T00:00:00+00:00"],
+            "code_sha": ["abc1234"],
             "silver_monthly_taxi_trip_s3_link": ["s3://silver/trips/v1"],
             "silver_driver_vehicle_monthly_snapshot_s3_link": [
                 "s3://silver/drivers/v1"
@@ -162,6 +166,10 @@ def _grain_frames(suggestion_rows):
             "silver_gas_ev_price_s3_link": ["s3://silver/fuel/v1"],
         }),
     }
+    frames["silver_lineage"]["config_hash"] = postgres_loader._gold_load_fingerprint(
+        frames, "NYC", "2026-05"
+    )
+    return frames
 
 
 def test_최종추천은_조합별로_기사당_한행을_적재한다():
@@ -199,6 +207,16 @@ def test_한_조합에서만_기사가_빠지면_적재전에_실패한다():
 def test_Gold_3종_스키마에_service_area_컬럼이_있다():
     for table in postgres_loader.TABLES:
         assert "service_area TEXT NOT NULL" in postgres_loader._create_table_sql(table)
+
+
+def test_SilverLineage_중앙스키마와_DDL에_실행코드설정_식별자가_있다():
+    columns = {field.name for field in fields(SilverLineage)}
+    expected = {"airflow_run_id", "code_sha", "config_hash"}
+
+    assert expected <= columns
+    sql = postgres_loader._create_table_sql("silver_lineage")
+    for column in expected:
+        assert f"{column} TEXT NOT NULL" in sql
 
 
 def test_Gold_버전_메타데이터는_생성시각과_멱등성_제약을_가진다():
@@ -251,6 +269,23 @@ def test_입력버전이나_추천설정이_바뀌면_fingerprint도_바뀐다()
     assert original != postgres_loader._gold_load_fingerprint(
         changed_setting, "NYC", "2026-05"
     )
+
+
+def test_기록한_config_hash가_실제입력추천설정과_다르면_적재전에_실패한다(
+    monkeypatch,
+):
+    frames = _grain_frames([("D1", 1, -1), ("D2", 1, -1)])
+    frames["silver_lineage"].loc[0, "config_hash"] = "wrong"
+    monkeypatch.setattr(
+        postgres_loader.psycopg2,
+        "connect",
+        lambda dsn: pytest.fail("config_hash 검증 전에 DB에 연결했습니다"),
+    )
+
+    with pytest.raises(ValueError, match="config_hash.*일치하지 않습니다"):
+        postgres_loader.write_gold_to_postgres(
+            frames, "postgresql://gold", "NYC", "2026-05"
+        )
 
 
 def test_Gold_적재가_성공한_버전만_메타데이터에_기록한다():
@@ -434,6 +469,11 @@ def test_커밋후_같은실행을_재시도하면_기존버전을_재사용한�
     changed_input["silver_lineage"].loc[
         0, "silver_monthly_taxi_trip_s3_link"
     ] = "s3://silver/trips/v2"
+    changed_input["silver_lineage"].loc[
+        0, "config_hash"
+    ] = postgres_loader._gold_load_fingerprint(
+        changed_input, "NYC", "2026-05"
+    )
     postgres_loader.write_gold_to_postgres(
         changed_input, "postgresql://gold", "NYC", "2026-05"
     )
@@ -452,3 +492,17 @@ def test_기존_Gold_버전은_legacy_key로_백필한뒤_unique_제약을_건�
     assert "ALTER COLUMN load_fingerprint SET NOT NULL" in migration
     assert "gold_load_versions_load_fingerprint_key" in migration
     assert "UNIQUE (service_area, year_month, load_fingerprint)" in migration
+
+
+def test_기존_SilverLineage는_legacy식별자로_백필한뒤_NOT_NULL을_건다():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "jobs/silver_to_gold/migrations/2026-08-26_add_gold_lineage_execution_metadata.sql"
+    ).read_text()
+
+    for column in ("airflow_run_id", "code_sha", "config_hash"):
+        assert f"ADD COLUMN IF NOT EXISTS {column} TEXT" in migration
+        assert f"ALTER COLUMN {column} SET NOT NULL" in migration
+    assert "legacy__' || service_area" in migration
+    assert "code_sha = 'legacy-unknown'" in migration
+    assert "config_hash = 'legacy-config:'" in migration

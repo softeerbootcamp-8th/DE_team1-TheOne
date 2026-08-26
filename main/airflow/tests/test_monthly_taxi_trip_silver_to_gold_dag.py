@@ -16,6 +16,7 @@
 14. Fuel Silver는 최신 완료 `input_version`의 `fuel.parquet`만 Gold 입력으로 선택
 15. 운영 수동 실행도 S3 Silver 4종 완료본이 실제로 있어야 통과
 16. 경로 파라미터가 없어도 로컬 기본 경로로 입력을 해석
+17. 로컬·EMR Gold job 모두 Airflow run_id를 실행 계보 인자로 전달
 """
 
 import importlib
@@ -62,6 +63,9 @@ def test_운영_Gold_EMR은_배포재시작에_안전하게_대기한다(monkeyp
         operator.waiter_delay * operator.waiter_max_attempts
         < operator.execution_timeout.total_seconds()
     )
+    arguments = operator.job_driver["sparkSubmit"]["entryPointArguments"]
+    run_id_index = arguments.index("--airflow_run_id")
+    assert arguments[run_id_index + 1] == "{{ run_id }}"
 
 
 def _params(root: Path, **overrides) -> dict:
@@ -637,6 +641,12 @@ def test_build_gold는_thresholds_파라미터를_job에_넘긴다():
 
     assert "--thresholds" in build_gold.bash_command
     assert "{{ params.thresholds }}" in build_gold.bash_command
+
+
+def test_로컬_build_gold는_Airflow_run_id를_job에_넘긴다():
+    build_gold = GOLD_DAG.get_task("build_gold")
+
+    assert '--airflow_run_id "{{ run_id }}"' in build_gold.bash_command
 
 
 def test_Gold검증_성공태스크만_Slack완료알림을_보낸다():

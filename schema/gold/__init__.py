@@ -154,6 +154,15 @@ class SilverLineage:
     year_month: str
     """집계 대상 월 (YYYY-MM)"""
 
+    airflow_run_id: str
+    """이 Gold 버전을 만든 Airflow DAG 실행 식별자"""
+
+    code_sha: str
+    """Gold Spark 이미지에 포함된 코드의 Git commit SHA"""
+
+    config_hash: str
+    """Silver 입력 경로와 추천 알고리즘·threshold 설정의 안정적 SHA-256"""
+
     silver_monthly_taxi_trip_s3_link: str
     """이 실행이 읽은 월별 택시 운행 기록 Silver 파티션의 S3 경로"""
 
