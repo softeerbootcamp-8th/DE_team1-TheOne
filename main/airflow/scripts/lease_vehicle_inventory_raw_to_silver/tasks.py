@@ -17,20 +17,14 @@ from shared.airflow.common.validation import (
     run_quality_gate,
     run_table_gx_validation,
 )
-from shared.aws_lambda.common.schema_validator import (
-    SchemaValidationResult,
-    validate_parquet_schema,
-)
 from main.airflow.common.monthly_bronze import (
     silver_version_path,
     validate_monthly_parquet_bronze,
 )
-from schema.bronze import LEASE_VEHICLE_INVENTORY_SCHEMA as BRONZE_SCHEMA
 from schema.silver import (
     CLEAN_LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as SILVER_REQUIRED,
     CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SILVER_SCHEMA,
 )
-from schema.source import LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL as BRONZE_REQUIRED
 
 
 logger = logging.getLogger(__name__)
@@ -124,35 +118,12 @@ def _validate_bronze(
     result = state["result"]
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     service_area = params.get("service_area")
-    path, schema_result = _validate_bronze_result(result, base_dir, service_area)
-    if schema_result.missing_columns:
-        logger.warning(
-            "보유 차량 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집",
-            schema_result.missing_columns,
-        )
-        result = _collect_bronze(params)
-        state["result"] = result
-        path, schema_result = _validate_bronze_result(result, base_dir, service_area)
-    for warning in schema_result.warnings:
-        logger.warning("보유 차량 Bronze 스키마 확장: %s", warning)
-    if schema_result.errors:
-        raise ValueError(
-            "보유 차량 Bronze 스키마 불일치: "
-            + "; ".join(schema_result.errors)
-        )
-    if isinstance(path, S3Location):
-        run_table_gx_validation(
-            read_parquet(path),
-            BRONZE_SCHEMA,
-            BRONZE_REQUIRED,
-            dataset=DATASET,
-            layer="bronze",
-            data_location=path,
-            context=context or {},
-            required_warning_ratio=None,
-            required_error_ratio=0,
-            record_extra_columns=True,
-        )
+    validate_monthly_parquet_bronze(
+        result,
+        dataset_dir=DATASET,
+        base_dir=base_dir,
+        service_area=service_area,
+    )
     version_path = silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
         result,
@@ -162,21 +133,6 @@ def _validate_bronze(
         **result,
         "silver_version_path": str(version_path),
     }
-
-
-def _validate_bronze_result(
-    result: dict,
-    base_dir: str | Path,
-    service_area: str,
-) -> tuple[Path | S3Location, SchemaValidationResult]:
-    path, _ = validate_monthly_parquet_bronze(
-        result,
-        dataset_dir=DATASET,
-        base_dir=base_dir,
-        service_area=service_area,
-    )
-    schema_result = validate_parquet_schema(read_parquet(path).schema, BRONZE_SCHEMA)
-    return path, schema_result
 
 
 @task(task_id="bronze_to_silver")

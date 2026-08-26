@@ -466,6 +466,69 @@ _GX_REQUIRED_RECORD_VALID = "__gx_required_record_valid"
 _GX_EXTRA_COLUMNS = "__gx_extra_columns"
 
 
+def table_quality_summary(
+    table: pa.Table,
+    expected_schema: pa.Schema,
+    required_non_null: set[str] | frozenset[str],
+):
+    """작은 Arrow 적재 결과를 관측용 한 행 지표로 요약합니다."""
+    import pandas as pd
+
+    expected_names = set(expected_schema.names)
+    unknown_required = set(required_non_null) - expected_names
+    if unknown_required:
+        raise ValueError(f"기대 스키마에 없는 필수 컬럼: {sorted(unknown_required)}")
+
+    actual = {field.name: field.type for field in table.schema}
+    extra = sorted(set(actual) - expected_names)
+    missing = sorted(set(required_non_null) - set(actual))
+    mismatched = sorted(
+        f"{field.name}:{actual[field.name]}!={field.type}"
+        for field in expected_schema
+        if field.name in required_non_null
+        and field.name in actual
+        and actual[field.name] != field.type
+    )
+    structurally_valid = not missing and not mismatched
+
+    invalid_count = 0
+    if table.num_rows and structurally_valid:
+        invalid = pa.array([False] * table.num_rows)
+        for name in sorted(required_non_null):
+            values = table[name].combine_chunks()
+            column_invalid = pc.is_null(values)
+            if pa.types.is_string(values.type):
+                column_invalid = pc.or_(
+                    column_invalid,
+                    pc.fill_null(
+                        pc.equal(pc.utf8_trim_whitespace(values), ""),
+                        False,
+                    ),
+                )
+            elif pa.types.is_floating(values.type):
+                column_invalid = pc.or_(
+                    column_invalid,
+                    pc.fill_null(pc.is_nan(values), False),
+                )
+            invalid = pc.or_(invalid, column_invalid)
+        invalid_count = int(pc.sum(pc.cast(invalid, pa.int64())).as_py() or 0)
+
+    return pd.DataFrame(
+        [{
+            "row_count": table.num_rows,
+            "extra_columns": ",".join(extra),
+            "missing_columns": ",".join(missing),
+            "type_mismatch_columns": ",".join(mismatched),
+            "required_invalid_record_count": invalid_count,
+            "required_invalid_record_ratio": (
+                invalid_count / table.num_rows
+                if table.num_rows and structurally_valid
+                else None
+            ),
+        }]
+    )
+
+
 def _minimum_valid_ratio(max_invalid_ratio: float) -> float:
     if max_invalid_ratio == 0:
         return 1.0
@@ -509,7 +572,11 @@ def run_table_gx_validation(
     required_error_ratio: float,
     record_extra_columns: bool = False,
 ) -> None:
-    """운영 S3의 작은 Parquet 실제 행에 공통 GX 품질 정책을 적용합니다."""
+    """운영 S3의 작은 Parquet 전체 레코드에 공통 품질 정책을 적용합니다.
+
+    ``table_quality_summary`` 는 로그용 관측 지표일 뿐 GX 판정 입력이 아닙니다.
+    GX에는 실제 Silver 레코드와 레코드별 필수값 판정 컬럼을 전달합니다.
+    """
     import great_expectations as gx
 
     if not 0 <= required_error_ratio <= 1 or (
@@ -541,6 +608,14 @@ def run_table_gx_validation(
     )
     if mismatched:
         raise ValueError(f"type_mismatch_columns={','.join(mismatched)}")
+
+    summary = table_quality_summary(table, expected_schema, required_non_null)
+    logger.info(
+        "table_quality_summary dataset=%s layer=%s metrics=%s",
+        dataset,
+        layer,
+        summary.to_json(orient="records"),
+    )
 
     frame = table.append_column(
         _GX_REQUIRED_RECORD_VALID,

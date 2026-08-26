@@ -369,6 +369,7 @@ def test_잠정값도_검증을_통과한다(tmp_path):
 
 def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     seen = []
+    gx = []
     year, month = 2024, 3
     rows = [
         {
@@ -387,6 +388,11 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
         "read_parquet",
         lambda path: seen.append(path) or table,
     )
+    monkeypatch.setattr(
+        silver_tasks,
+        "run_table_gx_validation",
+        lambda table, *args, **kwargs: gx.append((table, kwargs)),
+    )
 
     silver_tasks.validate_silver(
         {
@@ -402,6 +408,9 @@ def test_S3_통합_Silver_경로를_로컬_Path로_변환하지_않는다(monkey
     )
 
     assert isinstance(seen[0], silver_tasks.S3Location)
+    assert gx[0][0].num_rows == 31
+    assert gx[0][1]["required_warning_ratio"] == 0.01
+    assert gx[0][1]["required_error_ratio"] == 0.05
 
 
 # --- validate-then-publish (#912) --------------------------------------------

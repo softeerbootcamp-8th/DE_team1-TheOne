@@ -7,6 +7,7 @@
 5. 필수 컬럼 누락·타입 불일치는 비율과 무관하게 하드 실패
 6. Data Docs는 실제 데이터 파티션을 보존한 S3 prefix에 발행
 7. 추가 컬럼은 GX 경고로 기록하되 Slack 알림은 보내지 않음
+8. summary는 관측 지표이며 성공·실패 판정에 관여하지 않음
 """
 
 import pandas as pd
@@ -83,6 +84,49 @@ def test_GX는_요약한행이_아니라_실제적재행을_검증한다(monkeyp
         for expectation in captured["expectations"]
         if hasattr(expectation, "column")
     )
+
+
+def test_GX는_1행summary가_아니라_전체레코드를_직접_판정한다(monkeypatch):
+    table = _table(3)
+    seen = {}
+    monkeypatch.setattr(
+        validation,
+        "table_quality_summary",
+        lambda *args, **kwargs: pd.DataFrame(
+            [{"row_count": 0, "required_invalid_record_ratio": 1.0}]
+        ),
+    )
+    monkeypatch.setattr(
+        validation,
+        "run_gx_validation",
+        lambda dataframe, expectations, **kwargs: seen.update(
+            dataframe=dataframe.copy(), expectations=expectations
+        )
+        or (),
+    )
+
+    run_table_gx_validation(
+        table,
+        SCHEMA,
+        REQUIRED,
+        dataset="sample",
+        layer="silver",
+        data_location=S3Location(
+            "de-theone",
+            "silver/sample/service_area=NYC/year_month=2026-08/"
+            "source_collected_at=20260825T010203123456Z/data.parquet",
+        ),
+        context={},
+        required_warning_ratio=None,
+        required_error_ratio=0,
+    )
+
+    dataframe = seen["dataframe"]
+    assert len(dataframe) == 3
+    assert dataframe["driver_id"].tolist() == ["D0", "D1", "D2"]
+    assert "row_count" not in dataframe.columns
+    assert "required_invalid_record_ratio" not in dataframe.columns
+    assert dataframe["__gx_required_record_valid"].tolist() == [True] * 3
 
 
 @pytest.mark.parametrize(
