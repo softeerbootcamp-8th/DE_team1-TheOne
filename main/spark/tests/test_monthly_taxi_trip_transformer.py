@@ -7,6 +7,7 @@
 5. `on_scene_datetime` 없는 입력을 정상 처리하고 출력 계약에서도 제외
 6. GX Spark가 필터 전 전체 레코드의 NULL·타입·범위·등급을 판정
 7. 경고 임계치는 관측하고 실패 임계치부터 작업을 중단
+8. 원천 추가 컬럼을 GX까지 전달해 reconciliation에 보존
 """
 
 import inspect
@@ -234,3 +235,15 @@ def test_운영_GX검증은_collect와_toPandas를_사용하지_않는다():
 
     assert ".collect(" not in source
     assert ".toPandas(" not in source
+
+
+def test_원천_추가컬럼을_GX와_reconciliation에_남긴다(spark):
+    from pyspark.sql.functions import lit
+
+    dataframe = spark.createDataFrame([_row()]).withColumn("airport_fee", lit(2.5))
+    transformer = MonthlyTaxiTripCleanTransformer(error_threshold=0.05)
+
+    result = transformer.transform(dataframe)
+
+    assert "airport_fee" not in result.columns
+    assert transformer.recon.extra_columns == ("airport_fee",)

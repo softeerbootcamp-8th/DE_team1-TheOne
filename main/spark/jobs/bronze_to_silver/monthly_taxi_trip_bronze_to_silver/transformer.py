@@ -46,6 +46,7 @@ class ReconCounts:
     missing_or_type_mismatch: int
     invalid_value: int
     invalid_service_tier: int
+    extra_columns: tuple[str, ...]
     invalid_ratio: float
     warning: bool
     warning_threshold: float
@@ -62,9 +63,13 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
         self,
         error_threshold: float = 0.05,
         warning_threshold: float = 0.01,
+        gx_data_docs_location: str | None = None,
+        gx_summary_location: str | None = None,
     ):
         self._error_threshold = error_threshold
         self._warning_threshold = warning_threshold
+        self._gx_data_docs_location = gx_data_docs_location
+        self._gx_summary_location = gx_summary_location
         # `transform()` 이 센 값을 Loader 가 sidecar 로 내보낸다. 로그로만 흘리면
         # Airflow 가 Bronze·Silver 행 수와 맞대볼 수 없다.
         self.recon: ReconCounts | None = None
@@ -74,11 +79,13 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
         if missing:
             raise ValueError(f"원천 데이터에 필수 컬럼이 누락되었습니다: {missing}")
 
+        extra_columns = tuple(sorted(set(df.columns) - set(REQUIRED_COLUMNS)))
         typed = df.select(
             *(
                 col(name).cast(_SILVER_TYPES[name]).alias(name)
                 for name in REQUIRED_COLUMNS
-            )
+            ),
+            *(col(name) for name in extra_columns),
         )
         present = lit(True)
         for name in REQUIRED_NON_NULL_COLUMNS:
@@ -121,6 +128,8 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
             candidates,
             warning_threshold=self._warning_threshold,
             error_threshold=self._error_threshold,
+            data_docs_location=self._gx_data_docs_location,
+            summary_location=self._gx_summary_location,
         )
 
         self.recon = ReconCounts(
@@ -130,6 +139,7 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
             missing_or_type_mismatch=counts.missing_or_type_mismatch,
             invalid_value=counts.invalid_value,
             invalid_service_tier=counts.invalid_service_tier,
+            extra_columns=counts.extra_columns,
             invalid_ratio=counts.invalid_ratio,
             warning=counts.warning,
             warning_threshold=counts.warning_threshold,
@@ -142,6 +152,8 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
                 counts.invalid_value,
                 counts.invalid_service_tier,
             )
+        if counts.extra_columns:
+            logger.warning("원천 추가 컬럼: %s", ",".join(counts.extra_columns))
 
         transformed = candidates.filter(col(quality.RECORD_VALID_COLUMN)).withColumn(
             "year_month", date_format(col("pickup_datetime"), "yyyy-MM")

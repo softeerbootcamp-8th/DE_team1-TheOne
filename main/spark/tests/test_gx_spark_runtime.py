@@ -4,7 +4,7 @@
 2. GX Spark Datasource가 기존 SparkSession의 SparkContext를 재사용
 3. 전체 Spark DataFrame Batch에 최소 Expectation을 실행
 
-Data Docs와 Monthly Taxi Trip 품질 규칙은 후속 #1108에서 검증한다.
+Monthly Taxi Trip 품질 규칙은 #1108, Data Docs·Airflow 노출은 #1117에서 검증한다.
 """
 
 import tomllib

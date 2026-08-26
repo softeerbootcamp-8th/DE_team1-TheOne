@@ -6,11 +6,13 @@
 4. 로컬은 Bash Spark, 운영은 공용 EMR Serverless에 같은 Spark job을 제출
 5. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
 6. 운영 필수 환경변수가 없으면 DAG 구성이 즉시 실패
+7. Spark 성공·실패 뒤 GX 보고 task가 항상 실행되고 Silver 공개 전 완료
 """
 
 from datetime import timedelta
 
 import pytest
+from airflow.task.trigger_rule import TriggerRule
 
 from shared.airflow.common import lambda_invoke
 from dags import monthly_taxi_trip_raw_to_silver_dag as dag_module
@@ -26,16 +28,23 @@ def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다(
         "raw_to_bronze",
         "validate_bronze",
         "bronze_to_silver",
+        "report_gx_validation",
         "validate_silver",
     }
     assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
     assert DAG.get_task("validate_bronze").downstream_task_ids == {
         "bronze_to_silver",
+        "report_gx_validation",
         "validate_silver",
     }
     assert DAG.get_task("bronze_to_silver").downstream_task_ids == {
+        "report_gx_validation",
         "validate_silver"
     }
+    assert DAG.get_task("report_gx_validation").downstream_task_ids == {
+        "validate_silver"
+    }
+    assert DAG.get_task("report_gx_validation").trigger_rule == TriggerRule.ALL_DONE
     assert DAG.get_task("raw_to_bronze").retries == 2
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0

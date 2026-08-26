@@ -1,10 +1,18 @@
-"""Monthly Taxi Trip Silver 후보 전체를 GX Spark로 검증합니다."""
+"""Monthly Taxi Trip Silver 후보 전체를 GX Spark로 검증하고 결과를 발행합니다."""
 
+import json
 import logging
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 
+import boto3
 import great_expectations as gx
 from pyspark.sql import DataFrame
+
+from schema.silver.monthly_taxi_trip import REQUIRED_COLUMNS
+from shared.common.gx_data_docs import data_docs_config, upload_data_docs
+from shared.common.s3_reader import parse_s3_uri
 
 
 logger = logging.getLogger(__name__)
@@ -19,6 +27,15 @@ _RULE_INVALID_VALUE = "invalid_value"
 _RULE_INVALID_SERVICE_TIER = "invalid_service_tier"
 _RULE_RECORD_WARNING = "record_warning"
 _RULE_RECORD_ERROR = "record_error"
+_RULE_EXTRA_COLUMNS = "extra_columns"
+
+_EXPECTED_COLUMNS = (
+    *REQUIRED_COLUMNS,
+    MISSING_OR_TYPE_VALID_COLUMN,
+    VALUE_VALID_COLUMN,
+    SERVICE_TIER_VALID_COLUMN,
+    RECORD_VALID_COLUMN,
+)
 
 
 @dataclass(frozen=True)
@@ -29,6 +46,7 @@ class SparkGXCounts:
     missing_or_type_mismatch: int
     invalid_value: int
     invalid_service_tier: int
+    extra_columns: tuple[str, ...]
     invalid_ratio: float
     warning: bool
     warning_threshold: float
@@ -68,6 +86,11 @@ def _expectations(
             min_value=1,
             meta={"quality_rule": "row_count", "severity": "error"},
         ),
+        gx.expectations.ExpectTableColumnsToMatchSet(
+            column_set=list(_EXPECTED_COLUMNS),
+            exact_match=True,
+            meta={"quality_rule": _RULE_EXTRA_COLUMNS, "severity": "warning"},
+        ),
         _record_expectation(
             column=MISSING_OR_TYPE_VALID_COLUMN,
             mostly=error_mostly,
@@ -97,29 +120,71 @@ def _expectations(
     ]
 
 
-def _validate_gx_batch(dataframe: DataFrame, expectations: list):
-    """기존 SparkSession의 DataFrame을 GX에 그대로 넘겨 Suite를 실행합니다."""
-    context = gx.get_context(mode="ephemeral")
-    context.variables.progress_bars = {"globally": False}
-    batch_definition = (
-        context.data_sources.add_spark(name="monthly_taxi_trip_silver_source")
-        .add_dataframe_asset(name="monthly_taxi_trip_silver_asset")
-        .add_batch_definition_whole_dataframe("monthly_taxi_trip_silver_batch")
-    )
-    suite = context.suites.add_or_update(
-        gx.ExpectationSuite(
-            name="monthly_taxi_trip_silver_suite",
-            expectations=expectations,
+def _validate_gx_batch(
+    dataframe: DataFrame,
+    expectations: list,
+    *,
+    data_docs_location: str | None = None,
+):
+    """기존 SparkSession의 DataFrame을 검증하고 같은 결과로 Data Docs를 만듭니다."""
+    temporary_docs = tempfile.TemporaryDirectory() if data_docs_location else None
+    docs_root = Path(temporary_docs.name) if temporary_docs else None
+    try:
+        context = gx.get_context(
+            mode="ephemeral",
+            project_config=data_docs_config(docs_root) if docs_root else None,
         )
-    )
-    return gx.ValidationDefinition(
-        name="monthly_taxi_trip_silver_validation",
-        data=batch_definition,
-        suite=suite,
-    ).run(
-        batch_parameters={"dataframe": dataframe},
-        result_format="SUMMARY",
-    )
+        context.variables.progress_bars = {"globally": False}
+        batch_definition = (
+            context.data_sources.add_spark(name="monthly_taxi_trip_silver_source")
+            .add_dataframe_asset(name="monthly_taxi_trip_silver_asset")
+            .add_batch_definition_whole_dataframe("monthly_taxi_trip_silver_batch")
+        )
+        suite = context.suites.add_or_update(
+            gx.ExpectationSuite(
+                name="monthly_taxi_trip_silver_suite",
+                expectations=expectations,
+            )
+        )
+        validation = gx.ValidationDefinition(
+            name="monthly_taxi_trip_silver_validation",
+            data=batch_definition,
+            suite=suite,
+        ).run(
+            batch_parameters={"dataframe": dataframe},
+            result_format="SUMMARY",
+        )
+        if docs_root and data_docs_location:
+            context.build_data_docs(site_names=["local_site"])
+            bucket, prefix = parse_s3_uri(data_docs_location)
+            upload_data_docs(docs_root, bucket=bucket, prefix=prefix)
+            logger.info("gx_data_docs updated path=%s", data_docs_location)
+        return validation
+    finally:
+        if temporary_docs:
+            temporary_docs.cleanup()
+
+
+def _write_validation_summary(location: str | None, payload: dict) -> None:
+    """GX 실패 전에도 ALL_DONE Airflow task가 읽을 결과를 남깁니다.
+
+    Loader의 ``_RECON.json``은 transform 성공 뒤에만 작성되므로 대신할 수 없습니다.
+    """
+    if not location:
+        return
+    body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    if location.startswith(("s3://", "s3a://")):
+        bucket, key = parse_s3_uri(location)
+        boto3.client("s3").put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=body,
+            ContentType="application/json",
+        )
+        return
+    path = Path(location)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
 
 
 def _result_by_rule(validation) -> dict:
@@ -135,6 +200,7 @@ def _result_by_rule(validation) -> dict:
         _RULE_INVALID_SERVICE_TIER,
         _RULE_RECORD_WARNING,
         _RULE_RECORD_ERROR,
+        _RULE_EXTRA_COLUMNS,
     }
     missing = sorted(required - results.keys())
     if missing:
@@ -157,6 +223,8 @@ def validate_monthly_taxi_trip_records(
     *,
     warning_threshold: float,
     error_threshold: float,
+    data_docs_location: str | None = None,
+    summary_location: str | None = None,
 ) -> SparkGXCounts:
     """전체 Spark DataFrame을 GX로 검사하고 행 단위 위반 건수를 반환합니다."""
     warning_threshold, error_threshold = _thresholds(
@@ -165,6 +233,7 @@ def validate_monthly_taxi_trip_records(
     validation = _validate_gx_batch(
         dataframe,
         _expectations(warning_threshold, error_threshold),
+        data_docs_location=data_docs_location,
     )
     results = _result_by_rule(validation)
     record_result = results[_RULE_RECORD_ERROR]
@@ -174,6 +243,9 @@ def validate_monthly_taxi_trip_records(
 
     invalid = _unexpected_count(record_result)
     invalid_ratio = invalid / total
+    extra_columns = tuple(
+        sorted(set(dataframe.columns) - set(_EXPECTED_COLUMNS))
+    )
     counts = SparkGXCounts(
         total=total,
         valid=total - invalid,
@@ -185,10 +257,31 @@ def validate_monthly_taxi_trip_records(
         invalid_service_tier=_unexpected_count(
             results[_RULE_INVALID_SERVICE_TIER]
         ),
+        extra_columns=extra_columns,
         invalid_ratio=invalid_ratio,
         warning=invalid > 0 and invalid_ratio >= warning_threshold,
         warning_threshold=warning_threshold,
         error_threshold=error_threshold,
+    )
+    _write_validation_summary(
+        summary_location,
+        {
+            "dataset": "monthly_taxi_trip",
+            "layer": "silver",
+            "success": invalid_ratio < error_threshold,
+            "total": counts.total,
+            "valid": counts.valid,
+            "invalid": counts.invalid,
+            "invalid_ratio": counts.invalid_ratio,
+            "missing_or_type_mismatch": counts.missing_or_type_mismatch,
+            "invalid_value": counts.invalid_value,
+            "invalid_service_tier": counts.invalid_service_tier,
+            "extra_columns": list(counts.extra_columns),
+            "warning": counts.warning or bool(counts.extra_columns),
+            "warning_threshold": counts.warning_threshold,
+            "error_threshold": counts.error_threshold,
+            "data_docs_path": data_docs_location,
+        },
     )
     logger.info(
         "GX Spark 전체 레코드 검증: total=%d valid=%d invalid=%d ratio=%.4f",

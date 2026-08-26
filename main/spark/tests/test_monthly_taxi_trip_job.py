@@ -12,6 +12,7 @@
 10. `--env local|prod`로 기본 입출력 경로를 고름, `prod`인데 버킷이 없으면 ValueError
 11. Silver 버전은 최종 source_collected_at 디렉터리에 part 파일로 적재
 12. Spark writer는 쓰기 전 기존 `_SUCCESS`를 지우고 자동 marker를 남기지 않음
+13. GX Data Docs는 Silver 버전 파티션을 S3 로그 경로에 그대로 미러링
 """
 
 import json
@@ -198,6 +199,31 @@ def test_is_s3_path는_s3_s3a_스킴만_참이다(scheme):
 
 def test_resolve_path는_S3_경로를_그대로_둔다():
     assert job.resolve_path("s3://de-theone/bronze/monthly_taxi_trip") == "s3://de-theone/bronze/monthly_taxi_trip"
+
+
+def test_GX_Data_Docs는_Silver_버전_파티션을_로그경로에_미러링한다():
+    version = (
+        "s3://de-theone/silver/monthly_taxi_trip/service_area=NYC/"
+        "year_month=2026-08/source_collected_at=20260811T085354000000Z"
+    )
+
+    docs, summary = job.gx_observability_locations(version)
+
+    assert docs == (
+        "s3://de-theone/logs/gx-data-docs/silver/monthly_taxi_trip/"
+        "service_area=NYC/year_month=2026-08/"
+        "source_collected_at=20260811T085354000000Z"
+    )
+    assert summary == f"{version}/_GX_VALIDATION.json"
+
+
+def test_로컬_GX는_S3문서없이_검증요약만_버전경로에_남긴다(tmp_path):
+    version = tmp_path / "year_month=2026-08/source_collected_at=x"
+
+    docs, summary = job.gx_observability_locations(str(version))
+
+    assert docs is None
+    assert summary == str(version / "_GX_VALIDATION.json")
 
 
 def test_명시한_Bronze_파일도_SUCCESS가_없으면_읽지_않는다(tmp_path):
@@ -400,6 +426,7 @@ def test_버전_loader는_기존_SUCCESS를_지우고_최종디렉터리에_쓴�
     final.mkdir(parents=True)
     (final / "_SUCCESS").touch()
     (final / "_QUARANTINED.json").write_text("{}")
+    (final / "_GX_VALIDATION.json").write_text('{"success": true}')
     calls = []
 
     class FakeWriter:
@@ -423,6 +450,7 @@ def test_버전_loader는_기존_SUCCESS를_지우고_최종디렉터리에_쓴�
     assert result.row_count == 7
     assert not (final / "_SUCCESS").exists()
     assert not (final / "_QUARANTINED.json").exists()
+    assert (final / "_GX_VALIDATION.json").is_file()
 
 
 def test_main은_Spark_자동_SUCCESS_생성을_비활성화한다(tmp_path, monkeypatch):
@@ -565,6 +593,11 @@ def test_S3_버전은_기존_SUCCESS를_지우고_최종_prefix에_part를_남�
         Key=f"{final_key}/_QUARANTINED.json",
         Body=b"{}",
     )
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"{final_key}/_GX_VALIDATION.json",
+        Body=b'{"success": true}',
+    )
 
     class FakeWriter:
         def mode(self, value):
@@ -585,9 +618,9 @@ def test_S3_버전은_기존_SUCCESS를_지우고_최종_prefix에_part를_남�
         def count(self):
             return 7
 
-    result = job.SilverVersionDirectoryLoader(
-        f"s3://{S3_BUCKET}/{final_key}"
-    ).write(FakeDataFrame())
+    loader = job.SilverVersionDirectoryLoader(f"s3://{S3_BUCKET}/{final_key}")
+    loader.invalidate_gx_summary()
+    result = loader.write(FakeDataFrame())
     keys = job.list_keys(S3_BUCKET, "silver/monthly_taxi_trip/")
 
     assert keys == [f"{final_key}/part-00000.parquet"]
