@@ -13,6 +13,8 @@ Bronze 원본 검증은 여기 없습니다 — `test_eia_raw_to_bronze_validati
 7. 비지역 예전 경로의 CLEAN은 대상 지역 데이터로 사용하지 않음
 8. 통합 Silver 검증과 공개는 `input_version=<상류조합>/fuel.parquet` 경로를 사용
 9. 경로 파라미터가 없으면 로컬 기본 Silver 경로 사용
+10. 상류 두 DAG 의 `validate_silver` 성공을 센서로 기다림 (#1086) — 실행 시각이 달라도
+    같은 달 실행을 잡도록 논리 날짜를 상류 시각으로 맞춤
 
 Lambda 핸들러는 부르지 않습니다 — 파일을 직접 놓고 검증 함수만 확인합니다.
 """
@@ -120,10 +122,49 @@ def _local_storage(monkeypatch):
 def test_DAG는_월간_스케줄로_확인_통합_검증을_순서대로_처리한다():
     assert DAG.dag_id == "eia_fuel_price_silver_pipeline"
     assert DAG.schedule == "0 3 1 * *"
-    assert set(DAG.task_ids) == {"check_clean_silver", "combine_silver", "validate_silver"}
+    assert set(DAG.task_ids) == {
+        "wait_gas_silver",
+        "wait_electricity_silver",
+        "check_clean_silver",
+        "combine_silver",
+        "validate_silver",
+    }
+    assert DAG.get_task("wait_gas_silver").downstream_task_ids == {"check_clean_silver"}
+    assert DAG.get_task("wait_electricity_silver").downstream_task_ids == {
+        "check_clean_silver"
+    }
     assert DAG.get_task("check_clean_silver").downstream_task_ids == {"combine_silver"}
     assert DAG.get_task("combine_silver").downstream_task_ids == {"validate_silver"}
     assert DAG.catchup is False and DAG.max_active_runs == 3
+
+
+def test_상류_두_DAG의_validate_silver_성공을_기다린다():
+    """스케줄 오프셋만으로는 상류 재시도와 겹칠 수 있으므로 완료를 보장한다 (#1086)."""
+    gas = DAG.get_task("wait_gas_silver")
+    electricity = DAG.get_task("wait_electricity_silver")
+
+    assert (gas.external_dag_id, electricity.external_dag_id) == (
+        "eia_gas_price_raw_to_silver_pipeline",
+        "eia_electricity_price_raw_to_silver_pipeline",
+    )
+    for task in (gas, electricity):
+        assert task.external_task_ids == ["validate_silver"]
+        assert task.allowed_states == ["success"]
+        assert task.mode == "reschedule"
+
+
+def test_센서는_상류_실행시각으로_논리날짜를_맞춰_본다():
+    """같은 달 1일이어도 실행 시각이 달라 논리 날짜가 어긋나므로 보정한다 (#1086)."""
+    logical_date = datetime(2026, 8, 1, 3, 0)
+
+    assert (
+        DAG.get_task("wait_gas_silver").execution_date_fn(logical_date)
+        == datetime(2026, 8, 1, 1, 0)
+    )
+    assert (
+        DAG.get_task("wait_electricity_silver").execution_date_fn(logical_date)
+        == datetime(2026, 8, 1, 2, 0)
+    )
 
 
 def test_통합만_재시도하고_확인과_검증은_재시도하지_않는다():
