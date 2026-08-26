@@ -151,6 +151,12 @@
 ### 데이터 프로덕트의 완성도
 > 핵심 기능 구현, E2E 동작 완성도, 결과물 형태 관련 문서
 
+<details>
+<summary><a href="/docs/data_product_completeness/README.md">데이터 프로덕트 완성도</a></summary>
+
+- 사용자 문제와 핵심 기능, 원천→Bronze→Silver→Gold→대시보드 E2E 흐름과 실행·검증 절차, 구현 완료·제약·후속 과제를 실제 산출물 예시와 함께 정리했습니다.
+</details>
+
 ### 파이프라인 설계 및 코드 품질
 > 파이프라인 설계 및 데이터 품질 관리
  
