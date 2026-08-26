@@ -1,64 +1,207 @@
-# 02. E2E 파이프라인 — 원천부터 대시보드까지
+# 02. 원천부터 대시보드까지 어떻게 도는가
+
+- 요약
+  - 원천 API 와 공공 데이터에서 매일·매월 수집한 것이 다섯 단계를 지나 대시보드까지 간다
+  - 단계 경계마다 "다음 단계가 이 데이터를 읽어도 되는가"를 판정하는 지점을 뒀다
+  - 70만 건이 2,000행으로 줄어드는 구간에서 금액 합계가 보존됐는지 대조한다
 
 ![메인 데이터 파이프라인 아키텍처](../../assets/main_data_product_architecture.png)
 
-## 계층별 흐름
+## 다섯 단계
 
-| 단계 | 런타임 | 하는 일 | 적재 위치 | 실행 DAG |
-| --- | --- | --- | --- | --- |
-| **원천** | `sub/` 파이프라인 + 외부 사이트 | TLC HVFHV 실데이터에 taxi_id·driver_id 결정적 배정, API 공개 / EIA 파일 다운로드 | 원천 시스템 | `source_api_refresh_dag`(원천 갱신) |
-| **Bronze** | AWS Lambda (VPC 내) | 원본 그대로 적재 + 수집 품질 검증. 월 데이터는 `year_month=…/collected_at=…` 버전 디렉터리로 쌓고 `_SUCCESS` 마커로 완료 표시 | S3 | `monthly_taxi_trip_raw_to_silver_dag`, `eia_gas_price_raw_to_silver_dag`, `eia_electricity_price_raw_to_silver_dag`, `driver_vehicle_monthly_snapshot_raw_to_silver_dag`, `lease_vehicle_inventory_raw_to_silver_dag` |
-| **Silver** | Lambda 또는 Spark(EMR) | 원본별 정제(컬럼 필터·타입·범위·퇴사 기사 제외), 스키마 계약 검증. EIA 두 종은 일별로 펼쳐 통합 연료비(`gas_ev_price`)로 합침 | S3 | 위 DAG 후반부 + `eia_fuel_price_silver_dag` (상류 2개의 `validate_silver` 성공을 ExternalTaskSensor 로 대기) |
-| **Gold** | Spark on EMR Serverless | Silver 4종 조인, control total·비즈니스 불변식 검증, 추천 알고리즘 v1/v2 계산, RDS 버전 적재(fingerprint 멱등성 + advisory lock) | RDS PostgreSQL | `monthly_taxi_trip_silver_to_gold_dag` (Silver asset 파티션 의존) |
-| **대시보드** | Streamlit on EC2 | Gold 최신 버전 조회 → 필터·지표·차트·추천 테이블 | — | 상시 서비스(Nginx 리버스 프록시) |
+데이터를 세 층으로 나눠 보관합니다. 이후로는 괄호 안 이름 대신 우리말 쪽을 씁니다.
 
-수집 규모와 버전 계보 개요는 [README INPUT/OUTPUT 표](../../README.md#데이터-파이프라인) 참고.
+- **수집한 원본**(Bronze) — 받은 그대로. 손대지 않습니다.
+- **정제된 데이터**(Silver) — 컬럼·타입·범위를 맞추고 쓸 수 없는 행을 걸러낸 것.
+- **대시보드가 읽는 최종 데이터**(Gold) — 기사별로 집계하고 추천까지 계산한 것.
 
-## 검증 장치 (계층별)
+| 단계 | 무엇으로 | 하는 일 | 어디에 |
+| --- | --- | --- | --- |
+| 원천 | 별도 파이프라인 · 공공 데이터 | 뉴욕시 공개 운행 데이터에 기사·차량 식별자를 붙여 API 로 내보냄 / 에너지 가격 파일 게시 | 원천 시스템 |
+| 수집 | AWS Lambda | 받은 원본을 그대로 저장 | S3 |
+| 정제 | Lambda 또는 Spark | 컬럼·타입·범위 정리, 퇴사한 기사 제외. 휘발유·전기 요금 두 종류를 날짜로 붙여 하나의 연료비 표로 합침 | S3 |
+| 집계·추천 | Spark (AWS EMR Serverless) | 정제 데이터 4종을 합쳐 기사별 순수익을 계산하고 추천 알고리즘을 돌림 | PostgreSQL |
+| 제공 | Streamlit (EC2) | 최신 회차만 조회해 화면에 표시 | — |
 
-| 계층 | 장치 | 실패 시 동작 |
-| --- | --- | --- |
-| Bronze | Lambda 내 수집 품질 검증 + Airflow 태스크에서 Great Expectations 표 검증 (`shared/airflow/common/validation.py`, 데이터독스 `data/gx_data_docs/`) | DAG 실패 + Slack 품질 경보(`send_gx_quality_warning`) |
-| Silver | parquet 물리 스키마 계약 대조, `_SUCCESS` 없는 미완료 버전은 하류가 읽지 않음, 검증 실패 산출물은 격리(`_QUARANTINED.json`) 후 `_SUCCESS` 미발행 | 하류 DAG 가 파일 부재로 명확히 실패 |
-| Gold | 운행 합계 control total 대조(`reconcile_gold_control_totals`), 차원 유일성·재고 한도·음수 증가액 불변식(`validate_gold_business_invariants`), 커밋 전 행수 대조(`_validate_written_rows`) | 적재 전 ValueError 로 중단, 부분 커밋 없음 |
-| 전 구간 | 태스크별 Slack 실패·재시도 알림(`shared/airflow/common/slack_failure_callback.py`) | 온콜 인지 |
+저장 경로는 **운영 지역 / 대상 월 / 수집 시각** 세 계층입니다. 수집 시각이 회차 구분이 되므로 같은 달을 다시 수집해도 이전 것을 덮지 않습니다.
 
-## 실행 절차
-
-### 전체 로컬 (docker compose)
-
-```bash
-make sync          # 런타임별 uv sync + tesseract
-docker compose up -d   # postgres / airflow / postgres-db
-# Airflow UI(http://localhost:8080) 에서 monthly_taxi_trip_raw_to_silver_dag 등 트리거
+```
+정제된데이터/기사차량스냅샷/지역=NYC/대상월=2026-08/수집시각=20260826T0915.../
+    데이터 파일
+    완료 표시           ← 이게 있어야 다음 단계가 읽습니다
+    걸러낸 건수 기록     ← 몇 건을 왜 걸렀는지
 ```
 
-### 단계별 수동 실행
+### 한 달치가 줄어드는 폭
+
+| 단계 | 행 수 | 한 행 |
+| --- | --- | --- |
+| 수집한 원본 | 월 70–90만 | 운행 1건 (원본 그대로) |
+| 정제된 데이터 | 불합격분 제외 | 운행 1건 (분석용 컬럼만) |
+| 기사별 한 달 실적 | 약 2,000 | 기사 1명 |
+
+70만 건이 2,000행으로 줄어드는 구간이라, 여기서 금액이 새면 아무도 모릅니다. 그래서 합치기 전과 후의 운행거리·정산액·팁 합계를 맞대 봅니다.
+
+## 언제 무엇이 도는가
+
+Airflow DAG 9개가 굴립니다.
+
+| 하는 일 | 언제 | DAG 이름 |
+| --- | --- | --- |
+| 원천 API 3종의 변경 감지 → 수집 DAG 트리거 → 셋 다 끝나면 준비 완료 신호 발행 | 매일 03:00 | `source_api_refresh_pipeline` |
+| 운행 기록 수집 → 정제 (정제는 Spark) | 위가 트리거 | `monthly_taxi_trip_raw_to_silver_pipeline` |
+| 기사 차량 스냅샷 수집 → 정제 | 위가 트리거 | `driver_vehicle_monthly_snapshot_raw_to_silver_pipeline` |
+| 보유 차량 목록 수집 → 정제 | 위가 트리거 | `lease_vehicle_inventory_raw_to_silver_pipeline` |
+| 휘발유 주간 소매가 → 일별 단가 | 매월 1일 01:00 | `eia_gas_price_raw_to_silver_pipeline` |
+| 전기 요금 → 일별 충전 단가 | 매월 1일 02:00 | `eia_electricity_price_raw_to_silver_pipeline` |
+| 위 둘을 하나의 연료비 표로 합침 | 매월 1일 03:00 | `eia_fuel_price_silver_pipeline` |
+| 정제 데이터 4종 → 기사별 집계·추천 | 입력이 준비되면 | `monthly_taxi_trip_silver_to_gold_pipeline` |
+| 90일 지난 구버전 정리 | 매일 03:00 | `data_lifecycle_cleanup` |
+
+**수집 DAG 3개에 시간표가 없는 것은 의도입니다.** 원천이 실제로 바뀌었을 때만 돌게 감시 DAG 가 앞에서 막습니다. 매일 무조건 돌리면 안 바뀐 원천으로 결과 회차만 쌓입니다.
+
+**연료비 두 종류는 시간표 간격(01→02→03시)만으로 순서를 맞추지 않습니다.** 상류가 재시도로 늦어지면 합치는 쪽이 빈 데이터를 읽고 실패하므로, 상류 DAG 의 검증 태스크가 성공했는지 센서로 직접 기다립니다.
+
+### 집계·추천은 언제 도는가
+
+시간표가 아니라 **입력이 준비됐는지**로 판단합니다.
+
+- 같은 지역·월의 두 입력(원천 API 3종 / 연료비)이 **처음** 다 모이면 실행합니다.
+- 성공하면 "이 지역·월은 한 번 계산됐다"는 신호를 남깁니다.
+- 그다음부터는 둘 중 **하나만** 갱신돼도 다시 실행합니다.
+
+지역과 월은 `"NYC:2026-08"` 처럼 한 문자열로 합쳐 씁니다. Airflow 에 두 축을 나눠 다루는 기능이 없어서인데, 덕분에 지역이 늘어도 DAG 를 복제하지 않고 `"TX:2026-08"` 이 뉴욕과 따로 돌아갑니다.
+
+## 잘못된 데이터가 내려가지 않게 막는 지점
+
+| 어디 | 무엇을 확인 | 걸리면 |
+| --- | --- | --- |
+| 수집 직후 | 받은 데이터의 컬럼·타입·빈 값 검사. 검사 이력은 HTML 로 남겨 열어볼 수 있음 | DAG 실패 + Slack 알림 |
+| 정제 후 | 저장된 파일의 실제 스키마를 계약과 대조. 필수값이 비었거나 숫자가 아닌 값이 섞였는지 확인 | 격리 폴더로 보내고 완료 표시를 안 남김 |
+| 정제 후 | 걸러낸 비율이 5% 를 넘는지 (실측 불합격률은 1% 미만) | 원천이 바뀐 것으로 보고 중단 |
+| 정제 후 | **변환한 쪽이 센 건수와 검증하는 쪽이 센 건수를 맞댐** | 숫자가 안 맞으면 실패 |
+| 집계 전 | 계산 대상 지역·월이 준비 완료 신호와 일치하는지 | 엉뚱한 달을 계산하기 전에 중단 |
+| 집계 후 | 합치기 전과 후의 운행거리·정산액·팁 합계 (허용 오차 상대 1e-9) | 저장 전에 중단 |
+| 집계 후 | 기사 수 일치, 기사 중복 없음, 모델별 재고 초과 없음, 증가액이 음수인 행 없음 | 저장 전에 중단 |
+| 저장 시 | 커밋 직전 행 수 대조. 세 결과를 한 트랜잭션으로 묶음 | 전체 롤백 |
+| 전 구간 | 태스크 실패·재시도 | Slack 알림 |
+
+완료 표시가 없는 폴더는 다음 단계가 읽지 않습니다. 검증에 걸린 데이터가 조용히 아래로 흐르는 대신, 하류 DAG 가 "파일이 없다"고 명확히 실패합니다.
+
+**걸러낸 건수를 따로 기록하는 이유**는 변환한 쪽(Spark)과 검증하는 쪽(Airflow)이 다른 프로세스이기 때문입니다. Spark 가 자기 숫자를 자기가 검사하면 통과는 하지만 아무것도 증명하지 못합니다.
+
+## 두 번 돌려도 같은 결과가 나오게
+
+| 장치 | 내용 |
+| --- | --- |
+| 같은 내용 재수집 무시 | 받은 파일의 해시가 기존과 같으면 새 회차를 만들지 않음 |
+| 저장 위치 설정 누락 시 중단 | 운영 환경에서 저장 위치가 비어 있으면 로컬로 떨어지지 않고 즉시 실패. 배포는 초록불인데 데이터가 없어지는 상황을 막음 |
+| 같은 입력·설정 재실행 무시 | 입력 파일의 **내용 해시** + 알고리즘 버전 + 하한 목록 + 계산 상수를 묶어 지문을 만들고, 같은 지문이면 기존 결과를 그대로 씀. 경로가 같아도 내용이 바뀌면 새 회차 |
+| 동시 실행 직렬화 | 같은 지역·월을 두 실행이 동시에 건드리면 회차 번호가 겹칠 수 있어, 데이터베이스 잠금으로 한 번에 하나만 통과 |
+| 최신 회차만 조회 | 대시보드와 하류는 항상 마지막으로 성공한 회차만 읽음 |
+
+## 화면이 계속 떠 있게 하는 것
+
+최종 데이터가 정확해도 화면이 안 뜨면 담당자는 아무것도 못 합니다.
+
+| 장치 | 내용 |
+| --- | --- |
+| 데이터베이스 연결 재수립 | 유휴로 끊긴 연결을 감지해 한 번 다시 맺고 재시도. 없을 때는 연결이 한 번 끊기면 컨테이너를 재시작할 때까지 화면이 계속 죽었음 |
+| 조회 캐시 30초 | 4종을 전부 읽는 데 실측 1.9초. 필터를 만질 때마다 그 비용을 다시 내지 않음. 결과는 월 단위로 갱신되므로 30초면 충분 |
+| 조회 속도 | 최신 회차를 행마다 다시 계산하던 것을 한 번에 판정하게 바꿔 **5.4초에서 약 85% 단축**. 기본키에 컬럼이 추가된 뒤 인덱스를 놓쳐 30초까지 늘어졌던 조회도 인덱스를 다시 타게 복구 ([기록 1](../troubleshooting/etc/DASHBOARD_LATEST_VERSION_SEQSCAN.md) · [기록 2](../troubleshooting/etc/DASHBOARD_QUERY_SLOW.md)) |
+| 접근 경로 | 앱은 내부망에 두고 리버스 프록시만 외부에 노출 |
+
+## 실행과 검증
+
+### 전체 로컬
 
 ```bash
-# Bronze/Silver: Lambda 함수 로컬 실행
-cd main/aws_lambda && PYTHONPATH=".:../.." uv run --frozen python -m functions.<함수명>.handler
+make sync              # 런타임별 의존성 설치
+make bootstrap         # DAG 가 만들지 않는 로컬 파생 데이터 생성
+docker compose up -d   # PostgreSQL + Airflow (http://localhost:8080)
+```
 
-# Gold: 로컬 CSV 산출(data/gold)
+`source_api_refresh_pipeline` 을 트리거하면 수집 3종이 연쇄됩니다. 연료비 데이터까지 있으면 집계·추천은 자동으로 돕니다.
+
+### 집계·추천만 따로
+
+```bash
+# 로컬 CSV 로 산출
 cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
   --year 2026 --month 1 --service_area NYC
 
-# 대시보드
-cd main/dashboard && DASHBOARD_DATA_SOURCE=local uv run --frozen streamlit run app.py
+# 운영 (S3 입력 → 데이터베이스 적재)
+cd main/spark && PYTHONPATH=../.. uv run --frozen python -m main.spark.jobs.silver_to_gold.job \
+  --env prod --bucket <버킷> --gold_dsn <접속문자열> \
+  --year 2026 --month 5 --service_area NYC
 ```
 
-### 검증
+데이터베이스 스키마가 바뀌었으면 [마이그레이션 절차](../GOLD_DB_MIGRATION.md)를 **먼저** 적용해야 합니다.
+
+### 대시보드
 
 ```bash
-make lint    # ruff (F·E9)
-make test    # 런타임별 pytest (main 4개 + libs/pipeline_core + sub/shared)
-make check   # uv lock --check
+cd main/dashboard && PYTHONPATH=../.. uv run --frozen streamlit run app.py
 ```
 
-CI(GitHub Actions)는 PR 마다 `make test` 를 돌려 통과해야 머지됩니다.
+`PYTHONPATH=../..` 를 빼면 `ModuleNotFoundError: No module named 'schema'` 가 납니다. 프로젝트 설정의 경로 지정은 테스트 실행 전용이라 앱 실행에는 적용되지 않습니다.
 
-## 운영 관측
+### 테스트
 
-- EC2 호스트 4대 — Prometheus + Grafana ([docs/MONITORING.md](../MONITORING.md))
-- EMR Serverless — CloudWatch 지표·로그
-- 파이프라인 실패·재시도 — Slack 알림
+```bash
+make lint    # 문법 오류·미사용 변수 등 버그 냄새
+make test    # 전체 1,722개
+make check   # 의존성 잠금 파일 드리프트
+```
+
+**CI 는 `make test` 를 그대로 돌리지 않습니다.** 바뀐 프로젝트의 테스트만 골라 돌립니다. PR 이 초록불이어도 전체가 돈 것은 아니므로, 여러 곳을 건드린 변경은 로컬에서 한 번 전체를 돌리는 편이 안전합니다. 스위트별 실측은 [03 구현 현황](./03_implementation_status.md#테스트-현황)에 있습니다.
+
+## 실패했을 때
+
+| 상황 | 절차 |
+| --- | --- |
+| 특정 월 다시 처리 | DAG 트리거 시 연도와 월을 각각 지정. 자동 백필은 없음 |
+| 검증에 걸려 격리됨 | 격리 폴더의 사유 파일로 원인을 확인해 고친 뒤 그 달을 다시 실행. 완료 표시가 다시 남을 때까지 하류는 돌지 않음 |
+| 잘못 계산해 저장됨 | 다시 실행하면 새 회차로 쌓이고 대시보드는 최신 회차만 보므로 그것으로 회복. 과거 회차는 남아 있어 대조 가능 |
+| Spark 작업 실패 | CloudWatch 로그로 원인 확인 후 태스크를 초기화하면 재시도 |
+
+## 운영 중 실제로 겪은 것
+
+위 장치들은 대부분 **처음부터 있던 게 아니라 터진 뒤에 생겼습니다.**
+
+| 무슨 일이 있었나 | 어떻게 됐나 |
+| --- | --- |
+| 집계·추천 작업이 워커 메모리를 넘겨 죽음 (exit 137) | 원인 분석 후 파티션·메모리 설정 조정 ([기록](../troubleshooting/pipeline/SILVER_TO_GOLD_EMR_OOM.md)) |
+| 입력 준비 신호가 한 번 소비된 뒤 집계가 더는 갱신되지 않음 | 완료 신호를 다시 발행하는 구조로 바꿈 — 지금의 트리거 조건이 여기서 나왔음 ([기록](../troubleshooting/pipeline/ASSET_EVENT_CONSUMPTION_STOPS_GOLD_REFRESH.md)) |
+| 원천 3종이 따로 갱신되며 같은 달 집계가 중복 실행 | 감시 DAG 가 셋을 묶어 준비 완료를 한 번만 발행 ([기록 1](../troubleshooting/pipeline/SOURCE_API_REFRESH_DUPLICATE_GOLD.md) · [기록 2](../troubleshooting/pipeline/SOURCE_API_REFRESH_COORDINATES_GOLD.md)) |
+| 원천이 "변경 없음"을 반환해 데이터가 비는 경우 | 원본이 바뀔 수 있다는 전제로 복구 경로를 다시 설계 ([기록](../troubleshooting/pipeline/SOURCE_API_304_MISSING_DATA_RECOVERY.md)) |
+| 정리 작업 단계에서 삭제 권한이 없어 실패 | 권한을 리소스 단위로 다시 정리 ([기록](../troubleshooting/aws/S3_DELETE_PERMISSION_DAG.md)) |
+
+인프라·배포 쪽을 포함한 전체 12건은 [docs/troubleshooting/](../troubleshooting/) 에 있습니다.
+
+## 무엇을 보고 있나
+
+**화면은 Grafana 하나이고, 그 뒤에 지표 저장소가 둘 있습니다.** 감시 대상의 성격이 달라 수집 방식만 나눴습니다.
+
+| 저장소 | 감시 대상 | 수집 방식 |
+| --- | --- | --- |
+| Prometheus | EC2 서버 4대 (Airflow · 대시보드 · 모니터링 · 원천 API) | 각 서버의 지표 수집기를 15초 주기로 긁어옴 |
+| CloudWatch | Spark 작업 · Lambda | Grafana 가 AWS 에 직접 질의. 자격증명은 서버 역할에서 받아 파일에 두지 않음 |
+
+Spark 작업과 Lambda 는 서버에 수집기를 심을 수 없어 지표를 AWS 가 갖고 있습니다. 그래서 **CloudWatch 는 저장소로 두고 화면만 Grafana 로 모았습니다.** 콘솔과 Grafana 를 번갈아 볼 일이 없습니다.
+
+알림도 전부 Grafana 에서 Slack 으로 나갑니다. Airflow 태스크 실패는 별도 콜백이 보냅니다.
+
+세부는 [모니터링 구축](../MONITORING.md), 스택 구성은 [monitoring/README.md](../../monitoring/README.md).
+
+## 참고
+
+| 항목 | 위치 |
+| --- | --- |
+| DAG 정의 | `main/airflow/dags/` |
+| 입력 준비 신호와 지역·월 키 규약 | `main/airflow/common/assets.py` |
+| 검증 공통 함수 (스키마 대조 · 격리 · 검사 이력) | `shared/airflow/common/validation.py` |
+| 금액 합계·재고 검증 | `main/spark/jobs/silver_to_gold/transformer.py` |
+| 데이터베이스 적재 (트랜잭션 · 잠금 · 지문) | `main/spark/jobs/silver_to_gold/postgres_loader.py` |
+| 걸러낸 비율 상한 | `main/airflow/scripts/monthly_taxi_trip_raw_to_silver/tasks.py` |
+| 모니터링 설정 | `monitoring/stack/` |
