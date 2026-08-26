@@ -26,8 +26,8 @@ from datasource import (
     build_data_source,
 )
 from schema.gold import (
+    DriverAggregation,
     DriverCarSuggestion,
-    DriverMonthlyProfit,
     RecommendationAlgorithm,
     SilverLineage,
 )
@@ -120,7 +120,7 @@ def _driver_aggregation_row(driver_id: str, version: int, **overrides) -> dict:
 
 
 def test_RDS_소스는_컬럼을_스키마에서_자동생성한다(monkeypatch):
-    columns = [field.name for field in fields(DriverMonthlyProfit)]
+    columns = [field.name for field in fields(DriverAggregation)]
     conn = _sqlite_conn_with(
         "driver_aggregation",
         columns,
@@ -135,7 +135,7 @@ def test_RDS_소스는_컬럼을_스키마에서_자동생성한다(monkeypatch)
 
 
 def test_RDS_소스는_지역과_year_month별_최신_버전만_읽는다(monkeypatch):
-    columns = [field.name for field in fields(DriverMonthlyProfit)]
+    columns = [field.name for field in fields(DriverAggregation)]
     conn = _sqlite_conn_with(
         "driver_aggregation",
         columns,
@@ -161,7 +161,7 @@ def test_RDS_소스는_지역과_year_month별_최신_버전만_읽는다(monkey
 
 
 def test_RDS_소스는_같은_버전_안의_여러_행을_모두_읽는다(monkeypatch):
-    columns = [field.name for field in fields(DriverMonthlyProfit)]
+    columns = [field.name for field in fields(DriverAggregation)]
     conn = _sqlite_conn_with(
         "driver_aggregation",
         columns,
@@ -343,7 +343,7 @@ def test_연결이_끊기면_다시_맺어_이어간다(monkeypatch):
     """
     import psycopg2
 
-    columns = [field.name for field in fields(DriverMonthlyProfit)]
+    columns = [field.name for field in fields(DriverAggregation)]
     conns = [
         _sqlite_conn_with("driver_aggregation", columns,
                           [_driver_aggregation_row("D1", 1)]),
