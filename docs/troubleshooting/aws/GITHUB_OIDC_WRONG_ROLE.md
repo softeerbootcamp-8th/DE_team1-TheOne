@@ -1,32 +1,28 @@
-# GitHub Actions OIDC가 "Not authorized"로 계속 실패함 — 원인은 트러스트 정책이 아니었음
+# 자동 배포가 엉뚱한 권한 역할을 가리켜 인증에 실패한 문제
 
-> GitHub 레포 Variable이 EC2용 IAM role을 가리키고 있어 OIDC assume이 거부됨.
-> GitHub Actions 배포 전용 role ARN으로 교체해 해결.
+- 요약
+  - 대시보드 자동 배포가 AWS 인증 단계에서 계속 실패
+  - 배포 설정값이 실제로는 서버(EC2)용 권한 역할을 가리키고 있었음
+  - GitHub Actions 배포 전용 역할 주소로 바꿔 해결
 
-## 증상
+## 문제
 
-`deploy-dashboard.yml`의 "AWS 임시 자격증명 취득 (OIDC)" 단계가 `Assuming role with
-OIDC`를 여러 번 반복하다 결국 실패.
+대시보드를 자동으로 배포하는 스크립트가 AWS에 접속하기 위한 임시 인증(OIDC) 단계에서 계속 실패했다.
 
 ```
 Error: Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
 ```
 
-## 원인
+## 접근과 해결
 
-두 개의 이름이 비슷한 IAM 역할이 있었다.
+AWS에는 "누가 어떤 권한을 쓸 수 있는지" 정하는 권한 역할이 여러 개 있는데, 이름이 비슷한 역할 두 개가 있었다.
 
-- `theone-dashboard-role` — 대시보드 **EC2 인스턴스**에 붙인 역할(`ec2.amazonaws.com`
-  신뢰, ECR pull용)
-- `theone-github-actions-dashboard-deploy` — **GitHub Actions**가 assume해야 하는
-  역할(`token.actions.githubusercontent.com` OIDC 신뢰)
+- 하나는 대시보드를 실행하는 서버(EC2)에 붙여둔 역할
+- 하나는 GitHub의 자동 배포가 사용해야 하는 역할
 
-GitHub 레포 Variable `AWS_ROLE_ARN_DASHBOARD`가 앞의 것(EC2용)을 가리키고 있었다.
-EC2용 역할은 GitHub의 OIDC 자격증명을 신뢰하지 않으니 당연히 assume이 거부된다.
-두 역할 다 "대시보드" 배포 작업 중 거의 동시에 만들다 보니 변수에 엉뚱한 ARN이
-들어갔다.
+배포 설정값(`AWS_ROLE_ARN_DASHBOARD`)이 앞의 것(서버용 역할)을 가리키고 있었다. 서버용 역할은 GitHub의 인증 요청을 받아들이도록 설정돼 있지 않으니 인증이 거부된 것이었다. 두 역할을 같은 작업 중에 거의 동시에 만들다 보니 설정값에 다른 역할 주소가 들어갔다.
 
-## 해결
+배포 설정값을 GitHub Actions 전용 역할 주소로 교체했다.
 
 ```bash
 gh variable set AWS_ROLE_ARN_DASHBOARD \
