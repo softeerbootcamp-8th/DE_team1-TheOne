@@ -42,8 +42,8 @@ def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다(
     assert DAG.get_task("validate_silver").retries == 0
 
 
-def test_기본_API_주소는_내부_제공서버를_사용한다():
-    assert DAG.params["api_base_url"] == "http://10.0.10.81:8091"
+def test_API_주소는_환경변수_설정값을_사용한다():
+    assert DAG.params["api_base_url"] == "http://source-api.test:8091"
 
 
 def test_기본_서비스지역은_NYC다():

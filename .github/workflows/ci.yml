@@ -340,6 +340,8 @@ jobs:
     needs: changes
     if: needs.changes.outputs.dags == 'true'
     runs-on: ubuntu-latest
+    env:
+      SOURCE_API_URL: http://source-api.test:8091
     steps:
       - uses: actions/checkout@v4
 

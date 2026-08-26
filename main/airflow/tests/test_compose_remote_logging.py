@@ -38,7 +38,8 @@ def test_로그_접두사는_데이터_계층과_같은_층의_logs_아래다():
     bucket, _, key = folder.removeprefix("s3://").partition("/")
 
     assert folder.startswith("s3://")
-    assert bucket == env["DATA_LAKE_S3_BUCKET"]
+    assert bucket == "${DATA_LAKE_S3_BUCKET}"
+    assert str(env["DATA_LAKE_S3_BUCKET"]).startswith("${DATA_LAKE_S3_BUCKET:?")
     assert key.split("/")[0] == "logs"
     assert key.split("/")[0] not in _DATA_LAYER_PREFIXES
 

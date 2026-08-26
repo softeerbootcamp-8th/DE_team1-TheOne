@@ -20,9 +20,7 @@ services:
     image: postgres:16
     environment:
       POSTGRES_USER: airflow
-      # TODO: 평문입니다. private 서브넷의 컨테이너 사이 통신이라 당장 노출은 없지만
-      #       .env 나 Secrets Manager 로 빼야 합니다.
-      POSTGRES_PASSWORD: airflow
+      POSTGRES_PASSWORD: ${AIRFLOW_DB_PASSWORD:?~/airflow/.env 의 AIRFLOW_DB_PASSWORD가 필요합니다}
       POSTGRES_DB: airflow
     volumes:
       - postgres-db:/var/lib/postgresql/data
@@ -34,16 +32,13 @@ services:
     restart: unless-stopped
 
   airflow:
-    # 기본값은 검증된 배포 태그입니다. 개발 중에는 AIRFLOW_IMAGE 로 다른 태그를 지정하세요.
-    #   AIRFLOW_IMAGE=<레지스트리>/theone-airflow:dev \
-    #     docker compose -f docker-compose.ec2.yml up -d --pull always airflow
-    image: ${AIRFLOW_IMAGE:-572660899671.dkr.ecr.ap-northeast-2.amazonaws.com/theone-airflow:01c60a0}
+    image: ${AIRFLOW_IMAGE:?~/airflow/.env 의 AIRFLOW_IMAGE가 필요합니다}
     depends_on:
       postgres:
         condition: service_healthy
     environment:
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD:?~/airflow/.env 의 AIRFLOW_DB_PASSWORD가 필요합니다}@postgres/airflow
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
       AIRFLOW__CORE__DAGS_FOLDER: /opt/airflow/dags
       # ★ 이 값을 고정하지 않으면 배포마다 Connection 을 읽을 수 없게 됩니다.
@@ -104,7 +99,8 @@ services:
       #   않습니다. 되돌아가면 격리한 줄 알았는데 아닌 상태가 되어서입니다.
       LAMBDA_INVOKE: remote
       SPARK_JOB_ENV: prod
-      DATA_LAKE_S3_BUCKET: de-theone
+      SOURCE_API_URL: ${SOURCE_API_URL:?~/airflow/.env 의 SOURCE_API_URL이 필요합니다}
+      DATA_LAKE_S3_BUCKET: ${DATA_LAKE_S3_BUCKET:?~/airflow/.env 의 DATA_LAKE_S3_BUCKET이 필요합니다}
       EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:?~/airflow/.env 의 EMR_APPLICATION_ID가 필요합니다}
       EMR_EXECUTION_ROLE_ARN: ${EMR_EXECUTION_ROLE_ARN:?~/airflow/.env 의 EMR_EXECUTION_ROLE_ARN이 필요합니다}
       GOLD_DATABASE_URL: ${GOLD_DATABASE_URL:?~/airflow/.env 의 GOLD_DATABASE_URL이 필요합니다}
@@ -130,7 +126,7 @@ services:
       AIRFLOW__LOGGING__REMOTE_LOGGING: "true"
       # 데이터 계층(source/ bronze/ silver/)과 같은 층에 logs/ 를 둡니다. 그 아래
       # airflow/ 한 단계는 나중에 EMR·Lambda 로그를 같은 접두사로 모을 자리입니다.
-      AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: s3://de-theone/logs/airflow
+      AIRFLOW__LOGGING__REMOTE_BASE_LOG_FOLDER: s3://${DATA_LAKE_S3_BUCKET}/logs/airflow
       # put_object 에 ServerSideEncryption=AES256 을 붙입니다. 버킷 기본 암호화와
       # 별개로 객체마다 명시되므로 버킷 기본값이 바뀌어도 로그는 암호화된 채 올라갑니다.
       AIRFLOW__LOGGING__ENCRYPT_S3_LOGS: "true"

@@ -121,8 +121,8 @@ def test_보유차량은_기사계약과_분리된_DAG에서_Silver까지_처리
     assert DAG.get_task("validate_silver").retries == 0
 
 
-def test_기본_API_주소는_내부_제공서버를_사용한다():
-    assert DAG.params["api_base_url"] == "http://10.0.10.81:8091"
+def test_API_주소는_환경변수_설정값을_사용한다():
+    assert DAG.params["api_base_url"] == "http://source-api.test:8091"
 
 
 def test_보유차량_DAG는_NYC를_기본_서비스지역으로_사용한다():

@@ -18,7 +18,6 @@ from main.airflow.common.assets import (
     MAX_ACTIVE_SERVICE_AREA_RUNS,
 )
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
-    DEFAULT_API_BASE_URL,
     DEFAULT_SILVER_DIR,
     MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
     PROJECT_ROOT,
@@ -80,8 +79,9 @@ default_args = {
             description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
         ),
         "api_base_url": Param(
-            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.environ["SOURCE_API_URL"],
             type="string",
+            minLength=1,
             description="월별 택시 운행 데이터 제공 주소",
         ),
         # 기본값을 Variable(hvfhv_error_threshold)에서 가져옵니다 — DAG 파싱

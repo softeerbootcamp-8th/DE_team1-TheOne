@@ -58,6 +58,10 @@ jobs:
           INSTANCE: ${{ vars.MONITORING_INSTANCE_ID }}
           # 프로비저닝 파일의 ${EMR_APPLICATION_ID} 를 여기서 채웁니다.
           EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
+          PROMETHEUS_AIRFLOW_TARGET: ${{ vars.PROMETHEUS_AIRFLOW_TARGET }}
+          PROMETHEUS_SOURCE_API_TARGET: ${{ vars.PROMETHEUS_SOURCE_API_TARGET }}
+          PROMETHEUS_DASHBOARD_TARGET: ${{ vars.PROMETHEUS_DASHBOARD_TARGET }}
+          PROMETHEUS_GATEWAY_TARGET: ${{ vars.PROMETHEUS_GATEWAY_TARGET }}
           # Airflow 알림과 같은 웹훅입니다. 채널을 하나로 두려는 것이고, 로테이션할 때
           # 고칠 곳도 이 Secret 하나입니다.
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
@@ -98,7 +102,16 @@ jobs:
           #   여기서 안 바꾸면 Grafana 가 `${EMR_APPLICATION_ID}` 를 **문자열 그대로**
           #   질의에 넣습니다. 대시보드는 정상으로 뜨고 패널만 비어서, 사람이 열어보기
           #   전까지 아무도 모릅니다 — 실제로 그렇게 당했습니다.
-          values = {"EMR_APPLICATION_ID": os.environ["EMR_APPLICATION_ID"]}
+          values = {
+              key: os.environ[key]
+              for key in (
+                  "EMR_APPLICATION_ID",
+                  "PROMETHEUS_AIRFLOW_TARGET",
+                  "PROMETHEUS_SOURCE_API_TARGET",
+                  "PROMETHEUS_DASHBOARD_TARGET",
+                  "PROMETHEUS_GATEWAY_TARGET",
+              )
+          }
           for dest, src in files.items():
               text = src.read_text(encoding="utf-8")
               for key, value in values.items():

@@ -59,7 +59,6 @@ DEFAULT_SILVER_DIR = os.getenv(
 # 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
 MONTHLY_TAXI_TRIP_ERROR_THRESHOLD = 0.05
 MONTHLY_TAXI_TRIP_WARNING_THRESHOLD = 0.01
-DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 
 
 def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> str:
@@ -266,7 +265,7 @@ def raw_to_bronze_task(**context) -> dict:
 
 def _collect_bronze(params: dict) -> dict:
     event = {
-        "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
+        "api_base_url": params["api_base_url"],
         "year": params.get("year"),
         "month": params.get("month"),
     }
