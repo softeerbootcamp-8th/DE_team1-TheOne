@@ -1,13 +1,15 @@
-"""Gold RDS 3종 적재 검증. 이슈 #746, #809, #927.
+"""Gold RDS 3종 적재 검증. 이슈 #746, #809, #927, #1054.
 
 1. 저장된 행수가 기대치와 같으면 통과한다
 2. 저장된 행수가 기대치보다 적거나 많으면 커밋 전에 실패한다
 3. 저장된 행수가 0이면 기대치도 0이어도 실패한다
 4. 검증·버전·PK가 모두 지역으로 좁혀진다 — 하나라도 빠지면 안 고친 것보다 나쁘다
 5. 집계와 최종 추천은 모두 기사당 한 행
+6. 커밋된 실행을 재시도하면 같은 버전을 재사용하고, 입력·설정이 바뀌면 새 버전을 쓴다
 """
 
 from dataclasses import fields
+from pathlib import Path
 import pytest
 import pandas as pd
 
@@ -129,7 +131,16 @@ def _grain_frames(suggestion_rows):
             suggestion_rows,
             columns=["driver_id", "recommendation_algorithm_version_id", "threshold"],
         ),
-        "silver_lineage": pd.DataFrame({"service_area": ["NYC"]}),
+        "silver_lineage": pd.DataFrame({
+            "service_area": ["NYC"],
+            "year_month": ["2026-05"],
+            "silver_monthly_taxi_trip_s3_link": ["s3://silver/trips/v1"],
+            "silver_driver_vehicle_monthly_snapshot_s3_link": [
+                "s3://silver/drivers/v1"
+            ],
+            "silver_lease_vehicle_inventory_s3_link": ["s3://silver/inventory/v1"],
+            "silver_gas_ev_price_s3_link": ["s3://silver/fuel/v1"],
+        }),
     }
 
 
@@ -170,11 +181,56 @@ def test_Gold_3종_스키마에_service_area_컬럼이_있다():
         assert "service_area TEXT NOT NULL" in postgres_loader._create_table_sql(table)
 
 
-def test_Gold_버전_메타데이터는_생성시각과_지역월별_PK를_가진다():
+def test_Gold_버전_메타데이터는_생성시각과_멱등성_제약을_가진다():
     sql = postgres_loader._create_version_table_sql()
 
     assert "created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP" in sql
     assert "PRIMARY KEY (service_area, year_month, version)" in sql
+    assert "load_fingerprint TEXT NOT NULL" in sql
+    assert "gold_load_versions_load_fingerprint_key" in sql
+    assert "UNIQUE (service_area, year_month, load_fingerprint)" in sql
+
+
+def test_같은_입력과_추천설정은_행순서가_달라도_같은_fingerprint다():
+    frames = _grain_frames([
+        ("D1", 1, -1), ("D2", 1, -1),
+        ("D1", 2, 100), ("D2", 2, 100),
+    ])
+    reordered = {name: frame.copy() for name, frame in frames.items()}
+    reordered["driver_car_suggestion"] = reordered[
+        "driver_car_suggestion"
+    ].iloc[::-1]
+
+    first = postgres_loader._gold_load_fingerprint(frames, "NYC", "2026-05")
+    second = postgres_loader._gold_load_fingerprint(reordered, "NYC", "2026-05")
+
+    assert first == second
+    assert len(first) == 64
+
+
+def test_입력버전이나_추천설정이_바뀌면_fingerprint도_바뀐다():
+    frames = _grain_frames([
+        ("D1", 1, -1), ("D2", 1, -1),
+        ("D1", 2, 100), ("D2", 2, 100),
+    ])
+    changed_input = {name: frame.copy() for name, frame in frames.items()}
+    changed_input["silver_lineage"].loc[
+        0, "silver_monthly_taxi_trip_s3_link"
+    ] = "s3://silver/trips/v2"
+    changed_setting = {name: frame.copy() for name, frame in frames.items()}
+    changed_setting["driver_car_suggestion"].loc[
+        changed_setting["driver_car_suggestion"]["threshold"] == 100,
+        "threshold",
+    ] = 200
+
+    original = postgres_loader._gold_load_fingerprint(frames, "NYC", "2026-05")
+
+    assert original != postgres_loader._gold_load_fingerprint(
+        changed_input, "NYC", "2026-05"
+    )
+    assert original != postgres_loader._gold_load_fingerprint(
+        changed_setting, "NYC", "2026-05"
+    )
 
 
 def test_Gold_적재가_성공한_버전만_메타데이터에_기록한다():
@@ -186,13 +242,16 @@ def test_Gold_적재가_성공한_버전만_메타데이터에_기록한다():
             self.executions.append((" ".join(sql.split()), parameters))
 
     cursor = Cursor()
-    postgres_loader._record_gold_version(cursor, "NYC", "2026-05", 3)
+    postgres_loader._record_gold_version(
+        cursor, "NYC", "2026-05", 3, "fingerprint"
+    )
 
     assert cursor.executions == [
         (
             "INSERT INTO gold_load_versions "
-            "(service_area, year_month, version) VALUES (%s, %s, %s)",
-            ("NYC", "2026-05", 3),
+            "(service_area, year_month, version, load_fingerprint) "
+            "VALUES (%s, %s, %s, %s)",
+            ("NYC", "2026-05", 3, "fingerprint"),
         )
     ]
 
@@ -252,3 +311,114 @@ def test_Gold_행과_버전_메타데이터를_같은_트랜잭션에_기록한�
         sql.startswith("INSERT INTO gold_load_versions")
         for sql, _ in connection.cursor_instance.executions
     )
+
+
+def test_커밋후_같은실행을_재시도하면_기존버전을_재사용한다(monkeypatch):
+    """첫 호출의 commit 뒤 성공 응답만 유실된 상황은 DB에 성공 상태가 남은 것과 같다.
+    같은 요청을 다시 호출해 bulk insert가 늘지 않는지 확인한다."""
+    class Database:
+        def __init__(self):
+            self.versions = {}
+            self.latest_versions = {}
+            self.bulk_insert_calls = 0
+
+    class Cursor:
+        def __init__(self, database):
+            self.database = database
+            self.result = None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def execute(self, sql, parameters=None):
+            normalized = " ".join(sql.split())
+            self.result = None
+            if normalized.startswith("SELECT version FROM gold_load_versions"):
+                self.result = self.database.versions.get(parameters)
+            elif normalized.startswith("SELECT version FROM driver_aggregation"):
+                self.result = self.database.latest_versions.get(parameters)
+            elif normalized.startswith("SELECT COUNT"):
+                self.result = 1 if "FROM silver_lineage" in normalized else 2
+            elif normalized.startswith("INSERT INTO gold_load_versions"):
+                service_area, year_month, version, fingerprint = parameters
+                self.database.versions[
+                    (service_area, year_month, fingerprint)
+                ] = version
+                self.database.latest_versions[(service_area, year_month)] = version
+
+        def fetchone(self):
+            return (self.result,) if self.result is not None else None
+
+    class Connection:
+        def __init__(self, database):
+            self.database = database
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return False
+
+        def cursor(self):
+            return Cursor(self.database)
+
+        def close(self):
+            pass
+
+    database = Database()
+    monkeypatch.setattr(
+        postgres_loader.psycopg2,
+        "connect",
+        lambda dsn: Connection(database),
+    )
+
+    def record_bulk_insert(*args):
+        database.bulk_insert_calls += 1
+
+    monkeypatch.setattr(
+        postgres_loader.psycopg2.extras,
+        "execute_values",
+        record_bulk_insert,
+    )
+    frames = _grain_frames([("D1", 1, -1), ("D2", 1, -1)])
+
+    first = postgres_loader.write_gold_to_postgres(
+        frames, "postgresql://gold", "NYC", "2026-05"
+    )
+    retry = postgres_loader.write_gold_to_postgres(
+        frames, "postgresql://gold", "NYC", "2026-05"
+    )
+
+    assert retry == first == {
+        "driver_aggregation": 2,
+        "driver_car_suggestion": 2,
+        "silver_lineage": 1,
+    }
+    assert database.bulk_insert_calls == 3
+    assert list(database.versions.values()) == [1]
+
+    changed_input = {name: frame.copy() for name, frame in frames.items()}
+    changed_input["silver_lineage"].loc[
+        0, "silver_monthly_taxi_trip_s3_link"
+    ] = "s3://silver/trips/v2"
+    postgres_loader.write_gold_to_postgres(
+        changed_input, "postgresql://gold", "NYC", "2026-05"
+    )
+
+    assert database.bulk_insert_calls == 6
+    assert sorted(database.versions.values()) == [1, 2]
+
+
+def test_기존_Gold_버전은_legacy_key로_백필한뒤_unique_제약을_건다():
+    migration = (
+        Path(__file__).resolve().parents[1]
+        / "jobs/silver_to_gold/migrations/2026-08-26_add_gold_load_fingerprint.sql"
+    ).read_text()
+
+    assert "SET load_fingerprint = 'legacy-version:' || version::TEXT" in migration
+    assert "ALTER COLUMN load_fingerprint SET NOT NULL" in migration
+    assert "gold_load_versions_load_fingerprint_key" in migration
+    assert "UNIQUE (service_area, year_month, load_fingerprint)" in migration

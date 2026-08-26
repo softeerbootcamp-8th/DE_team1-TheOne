@@ -6,6 +6,8 @@ PostgreSQL에 원자적으로, 버전을 붙여 적재합니다.
 반영되지 않아야 하므로 하나의 트랜잭션으로 묶습니다.
 """
 
+import hashlib
+import json
 import logging
 from dataclasses import fields
 
@@ -22,6 +24,13 @@ _DRIVER_CAR_SUGGESTION = "driver_car_suggestion"
 _SILVER_LINEAGE = "silver_lineage"
 TABLES = (_DRIVER_AGGREGATION, _DRIVER_CAR_SUGGESTION, _SILVER_LINEAGE)
 _GOLD_LOAD_VERSIONS = "gold_load_versions"
+
+_LINEAGE_COLUMNS = (
+    "silver_monthly_taxi_trip_s3_link",
+    "silver_driver_vehicle_monthly_snapshot_s3_link",
+    "silver_lease_vehicle_inventory_s3_link",
+    "silver_gas_ev_price_s3_link",
+)
 
 _TABLE_MODELS = {
     _DRIVER_AGGREGATION: DriverMonthlyProfit,
@@ -72,19 +81,97 @@ def _create_version_table_sql() -> str:
     service_area TEXT NOT NULL,
     year_month TEXT NOT NULL,
     version INTEGER NOT NULL,
+    load_fingerprint TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (service_area, year_month, version)
+    PRIMARY KEY (service_area, year_month, version),
+    CONSTRAINT gold_load_versions_load_fingerprint_key
+        UNIQUE (service_area, year_month, load_fingerprint)
 )"""
 
 
 def _record_gold_version(
-    cursor, service_area: str, year_month: str, version: int
+    cursor,
+    service_area: str,
+    year_month: str,
+    version: int,
+    load_fingerprint: str,
 ) -> None:
     cursor.execute(
         f"INSERT INTO {_GOLD_LOAD_VERSIONS} "
-        "(service_area, year_month, version) VALUES (%s, %s, %s)",
-        (service_area, year_month, version),
+        "(service_area, year_month, version, load_fingerprint) "
+        "VALUES (%s, %s, %s, %s)",
+        (service_area, year_month, version, load_fingerprint),
     )
+
+
+def _gold_load_fingerprint(
+    frames: dict[str, pd.DataFrame], service_area: str, year_month: str
+) -> str:
+    """같은 입력 버전과 추천 설정을 같은 Gold 계산으로 식별합니다.
+
+    출력 전체를 해시하면 결과 크기만큼 직렬화 비용이 다시 듭니다. 대신 입력으로 읽은
+    Silver 4종의 버전 경로와 실제 결과에 태그된 알고리즘·threshold 조합을 정렬해
+    해시합니다. 알고리즘 구현을 바꾸면 기존 규칙대로 알고리즘 버전도 올려야 합니다.
+    """
+    lineage = frames[_SILVER_LINEAGE].iloc[0]
+    combinations = {
+        (int(algorithm_version_id), int(threshold))
+        for algorithm_version_id, threshold in frames[_DRIVER_CAR_SUGGESTION][
+            ["recommendation_algorithm_version_id", "threshold"]
+        ].itertuples(index=False, name=None)
+    }
+    payload = {
+        "service_area": service_area,
+        "year_month": year_month,
+        "silver_inputs": {
+            column: str(lineage[column]) for column in _LINEAGE_COLUMNS
+        },
+        "recommendation_parameters": [
+            {
+                "recommendation_algorithm_version_id": algorithm_version_id,
+                "threshold": threshold,
+            }
+            for algorithm_version_id, threshold in sorted(combinations)
+        ],
+    }
+    canonical = json.dumps(
+        payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _existing_gold_version(
+    cursor, service_area: str, year_month: str, load_fingerprint: str
+) -> int | None:
+    cursor.execute(
+        f"SELECT version FROM {_GOLD_LOAD_VERSIONS} "
+        "WHERE service_area = %s AND year_month = %s AND load_fingerprint = %s",
+        (service_area, year_month, load_fingerprint),
+    )
+    row = cursor.fetchone()
+    return row[0] if row else None
+
+
+def _written_rows_for_version(
+    cursor, service_area: str, year_month: str, version: int
+) -> dict[str, int]:
+    """이미 성공한 실행이 적재한 행 수를 다시 읽어 기존 반환 형식을 유지합니다."""
+    written: dict[str, int] = {}
+    for table in TABLES:
+        cursor.execute(
+            f"SELECT COUNT(*) FROM {table} "
+            "WHERE service_area = %s AND year_month = %s AND version = %s",
+            (service_area, year_month, version),
+        )
+        rows = cursor.fetchone()[0]
+        if rows <= 0:
+            raise ValueError(
+                "기존 Gold 적재 메타데이터와 데이터가 일치하지 않습니다: "
+                f"table={table} service_area={service_area} "
+                f"year_month={year_month} version={version} rows={rows}"
+            )
+        written[table] = rows
+    return written
 
 
 def _next_version(cursor, service_area: str, year_month: str) -> int:
@@ -194,6 +281,7 @@ def write_gold_to_postgres(
     if missing:
         raise ValueError(f"frames에 테이블이 빠졌습니다: {sorted(missing)}")
     _validate_frame_grains(frames)
+    load_fingerprint = _gold_load_fingerprint(frames, service_area, year_month)
 
     conn = psycopg2.connect(dsn)
     try:
@@ -203,12 +291,30 @@ def write_gold_to_postgres(
                     cursor.execute(_create_table_sql(table))
                 cursor.execute(_create_version_table_sql())
 
+                existing_version = _existing_gold_version(
+                    cursor, service_area, year_month, load_fingerprint
+                )
+                if existing_version is not None:
+                    logger.info(
+                        "동일한 Gold 실행 재사용: service_area=%s year_month=%s "
+                        "version=%d load_fingerprint=%s",
+                        service_area,
+                        year_month,
+                        existing_version,
+                        load_fingerprint,
+                    )
+                    return _written_rows_for_version(
+                        cursor, service_area, year_month, existing_version
+                    )
+
                 version = _next_version(cursor, service_area, year_month)
                 logger.info(
-                    "Gold 적재 버전 결정: service_area=%s year_month=%s version=%d",
+                    "Gold 적재 버전 결정: service_area=%s year_month=%s "
+                    "version=%d load_fingerprint=%s",
                     service_area,
                     year_month,
                     version,
+                    load_fingerprint,
                 )
 
                 written: dict[str, int] = {}
@@ -228,7 +334,11 @@ def write_gold_to_postgres(
                     cursor, written, service_area, year_month, version
                 )
                 _record_gold_version(
-                    cursor, service_area, year_month, version
+                    cursor,
+                    service_area,
+                    year_month,
+                    version,
+                    load_fingerprint,
                 )
         return written
     finally:
