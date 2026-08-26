@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 from airflow.sdk import Variable
 
-from main.airflow.common.assets import build_partition_key
+from main.airflow.common.assets import build_partition_key, parse_partition_key
 
 
 logger = logging.getLogger(__name__)
@@ -65,10 +65,23 @@ def record_success(
 ) -> dict:
     """Gold 검증 성공 뒤 해당 지역의 최신 성공 파티션과 시각을 기록합니다."""
     completed_at = _utc(completed_at)
+    partition_key = build_partition_key(service_area, year_month)
     previous = load_state(service_area) or {}
+    previous_partition_key = previous.get("partition_key")
+    if previous_partition_key:
+        _, previous_year_month = parse_partition_key(previous_partition_key)
+        if year_month < previous_year_month:
+            logger.info(
+                "Gold 과거 파티션 성공은 freshness를 갱신하지 않습니다: "
+                "service_area=%s partition=%s watermark=%s",
+                service_area,
+                year_month,
+                previous_year_month,
+            )
+            return previous
     state = {
         "service_area": service_area,
-        "partition_key": build_partition_key(service_area, year_month),
+        "partition_key": partition_key,
         "watch_started_at": previous.get(
             "watch_started_at", completed_at.isoformat()
         ),
