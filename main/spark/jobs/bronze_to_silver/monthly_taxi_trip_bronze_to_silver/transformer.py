@@ -5,7 +5,11 @@ from dataclasses import asdict, dataclass
 
 from pipeline_core.transformer import Transformer
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, count, date_format, lit, trim, when
+from pyspark.sql.functions import coalesce, col, date_format, lit, trim
+
+from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver import (
+    quality,
+)
 
 from schema.silver.monthly_taxi_trip import (
     FINAL_SCHEMA,
@@ -42,6 +46,10 @@ class ReconCounts:
     missing_or_type_mismatch: int
     invalid_value: int
     invalid_service_tier: int
+    invalid_ratio: float
+    warning: bool
+    warning_threshold: float
+    error_threshold: float
 
     def as_payload(self) -> dict:
         return asdict(self)
@@ -50,8 +58,13 @@ class ReconCounts:
 class MonthlyTaxiTripCleanTransformer(Transformer):
     """타입·필수값·운행 등급을 검증하고 원천 등급을 그대로 전달합니다."""
 
-    def __init__(self, error_threshold: float = 0.05):
+    def __init__(
+        self,
+        error_threshold: float = 0.05,
+        warning_threshold: float = 0.01,
+    ):
         self._error_threshold = error_threshold
+        self._warning_threshold = warning_threshold
         # `transform()` 이 센 값을 Loader 가 sidecar 로 내보낸다. 로그로만 흘리면
         # Airflow 가 Bronze·Silver 행 수와 맞대볼 수 없다.
         self.recon: ReconCounts | None = None
@@ -88,42 +101,49 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
             (col("hvfhs_license_num") == "HV0005")
             & col("estimated_service_tier").isin("Standard", "Extra Comfort")
         )
-        valid = present & valid_time & valid_range & valid_service_tier
-
-        stats = typed.select(
-            count(lit(1)).alias("total_count"),
-            count(when(valid, 1)).alias("valid_count"),
-            count(when(~present, 1)).alias("missing_or_type_mismatch"),
-            count(when(~(valid_time & valid_range), 1)).alias("invalid_value"),
-            count(when(~valid_service_tier, 1)).alias("invalid_service_tier"),
-        ).first()
-        total_count = int(stats["total_count"] or 0)
-        valid_count = int(stats["valid_count"] or 0)
-        invalid_count = total_count - valid_count
+        missing_or_type_valid = coalesce(present, lit(False))
+        value_valid = coalesce(valid_time & valid_range, lit(False))
+        service_tier_valid = coalesce(valid_service_tier, lit(False))
+        valid = missing_or_type_valid & value_valid & service_tier_valid
+        candidates = (
+            typed.withColumn(
+                quality.MISSING_OR_TYPE_VALID_COLUMN,
+                missing_or_type_valid,
+            )
+            .withColumn(quality.VALUE_VALID_COLUMN, value_valid)
+            .withColumn(
+                quality.SERVICE_TIER_VALID_COLUMN,
+                service_tier_valid,
+            )
+            .withColumn(quality.RECORD_VALID_COLUMN, valid)
+        )
+        counts = quality.validate_monthly_taxi_trip_records(
+            candidates,
+            warning_threshold=self._warning_threshold,
+            error_threshold=self._error_threshold,
+        )
 
         self.recon = ReconCounts(
-            total=total_count,
-            valid=valid_count,
-            invalid=invalid_count,
-            missing_or_type_mismatch=int(stats["missing_or_type_mismatch"] or 0),
-            invalid_value=int(stats["invalid_value"] or 0),
-            invalid_service_tier=int(stats["invalid_service_tier"] or 0),
+            total=counts.total,
+            valid=counts.valid,
+            invalid=counts.invalid,
+            missing_or_type_mismatch=counts.missing_or_type_mismatch,
+            invalid_value=counts.invalid_value,
+            invalid_service_tier=counts.invalid_service_tier,
+            invalid_ratio=counts.invalid_ratio,
+            warning=counts.warning,
+            warning_threshold=counts.warning_threshold,
+            error_threshold=counts.error_threshold,
         )
-        if invalid_count:
+        if counts.invalid:
             logger.warning(
                 "불합격 사유별 행 수: NULL/타입=%d 값 범위=%d 등급=%d",
-                stats["missing_or_type_mismatch"],
-                stats["invalid_value"],
-                stats["invalid_service_tier"],
-            )
-        if total_count and invalid_count / total_count >= self._error_threshold:
-            ratio = invalid_count / total_count
-            raise ValueError(
-                f"불합격 비율이 {ratio:.2%}로 임계치"
-                f"({self._error_threshold:.2%}) 이상입니다"
+                counts.missing_or_type_mismatch,
+                counts.invalid_value,
+                counts.invalid_service_tier,
             )
 
-        transformed = typed.filter(valid).withColumn(
+        transformed = candidates.filter(col(quality.RECORD_VALID_COLUMN)).withColumn(
             "year_month", date_format(col("pickup_datetime"), "yyyy-MM")
         )
         return transformed.select(

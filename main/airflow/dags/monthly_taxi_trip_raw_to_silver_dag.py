@@ -98,7 +98,7 @@ default_args = {
                 )
             ),
             type="number",
-            description="Bronze 불합격 행 허용 비율. 넘으면 원천이 바뀐 것으로 보고 멈춤",
+            description="Spark Silver 후보 불합격 행 허용 비율. 이상이면 적재 중단",
         ),
     },
 )
