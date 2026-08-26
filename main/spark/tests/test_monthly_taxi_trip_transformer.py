@@ -5,8 +5,11 @@
 3. 누락 컬럼과 잘못된 license·등급 조합을 실패 처리
 4. 임계치 미만의 잘못된 행만 제거
 5. `on_scene_datetime` 없는 입력을 정상 처리하고 출력 계약에서도 제외
+6. GX Spark가 필터 전 전체 레코드의 NULL·타입·범위·등급을 판정
+7. 경고 임계치는 관측하고 실패 임계치부터 작업을 중단
 """
 
+import inspect
 from datetime import datetime
 
 import pytest
@@ -14,6 +17,9 @@ import pytest
 from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver.transformer import (
     FINAL_SCHEMA,
     MonthlyTaxiTripCleanTransformer,
+)
+from main.spark.jobs.bronze_to_silver.monthly_taxi_trip_bronze_to_silver import (
+    quality as quality_module,
 )
 from pyspark.sql.types import StructType
 from shared.spark.common.session import get_or_create_spark_session
@@ -146,3 +152,85 @@ def test_제외_건수를_밖으로_내보낸다(spark):
 def test_변환_전에는_센_값이_없다():
     """`transform()` 전에는 셀 대상이 없다 — Loader 가 콜러블로 받는 이유다."""
     assert MonthlyTaxiTripCleanTransformer().recon is None
+
+
+def test_GX는_필터전_전체_Spark_DataFrame을_직접_검증한다(
+    spark, monkeypatch
+):
+    rows = [
+        _row(taxi_id=f"taxi-{index}", trip_miles=float(index + 1))
+        for index in range(100)
+    ]
+    rows[-1]["pickup_datetime"] = None
+    rows[-1]["trip_miles"] = -1.0
+    captured = {}
+    original = quality_module._validate_gx_batch
+
+    def capture(dataframe, expectations):
+        captured["rows"] = dataframe.count()
+        captured["columns"] = set(dataframe.columns)
+        return original(dataframe, expectations)
+
+    monkeypatch.setattr(quality_module, "_validate_gx_batch", capture)
+    transformer = MonthlyTaxiTripCleanTransformer(
+        warning_threshold=0.01,
+        error_threshold=0.05,
+    )
+
+    result = transformer.transform(
+        spark.createDataFrame(rows, schema=BRONZE_INPUT_SCHEMA)
+    )
+
+    assert captured["rows"] == 100
+    assert {
+        quality_module.MISSING_OR_TYPE_VALID_COLUMN,
+        quality_module.VALUE_VALID_COLUMN,
+        quality_module.SERVICE_TIER_VALID_COLUMN,
+        quality_module.RECORD_VALID_COLUMN,
+    } <= captured["columns"]
+    assert result.count() == 99
+    assert transformer.recon.invalid == 1
+    assert transformer.recon.missing_or_type_mismatch == 1
+    assert transformer.recon.invalid_value == 1
+    assert transformer.recon.warning is True
+
+
+def test_타입변환실패도_GX_NULL타입규칙으로_집계한다(spark):
+    rows = []
+    for index in range(20):
+        row = {
+            key: str(value) if not isinstance(value, datetime) else value.isoformat()
+            for key, value in _row(taxi_id=f"taxi-{index}").items()
+        }
+        rows.append(row)
+    rows[-1]["trip_miles"] = "not-a-number"
+    transformer = MonthlyTaxiTripCleanTransformer(
+        warning_threshold=0.01,
+        error_threshold=0.1,
+    )
+
+    result = transformer.transform(spark.createDataFrame(rows))
+
+    assert result.count() == 19
+    assert transformer.recon.missing_or_type_mismatch == 1
+
+
+def test_불량률이_실패임계치와_같으면_GX가_작업을_중단한다(spark):
+    rows = [
+        _row(taxi_id=f"taxi-{index}", trip_miles=float(index + 1))
+        for index in range(20)
+    ]
+    rows[-1]["estimated_service_tier"] = "Lux"
+
+    with pytest.raises(ValueError, match="불합격 비율.*5.00%.*이상"):
+        MonthlyTaxiTripCleanTransformer(
+            warning_threshold=0.01,
+            error_threshold=0.05,
+        ).transform(spark.createDataFrame(rows, schema=BRONZE_INPUT_SCHEMA))
+
+
+def test_운영_GX검증은_collect와_toPandas를_사용하지_않는다():
+    source = inspect.getsource(quality_module)
+
+    assert ".collect(" not in source
+    assert ".toPandas(" not in source
