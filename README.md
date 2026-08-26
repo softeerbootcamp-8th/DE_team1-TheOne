@@ -29,9 +29,6 @@
 ### 해결방안
 - 차량 교체 권장 고객 및 제안 차량 추천 대시보드
   - 대시보드 조건 : 차량 변경 시 '기사 순수익 월 500$ 이상 증가 & 리스 업체 렌탈 객단가 상승'
-### 결과 이미지
-![대시보드 이미지](assets/dashboard_reference.png)
-
 
 ### 기대 효과
 
@@ -41,7 +38,20 @@
 | **고객 우선순위** | 수천명 중 누구에게 전화할지 불명확 | 순수익 증가폭 순 정렬 |
 | **비즈니스 효과** | 수익 증가 기회 놓침 | 기사 만족도 향상, 객단가 증가 |
 
+
+### 결과 이미지
+<details>
+<summary>대시보드 이미지 확인</summary>
+![대시보드 이미지](assets/dashboard_reference.png)
+</details>
+
+
+
+<br/>
+
 [목차로 이동](#목차)
+
+<br/>
 
 ## 데이터 파이프라인
 
@@ -50,8 +60,8 @@
 | 출처 | 수집 대상 | 수집 방식 | 수집 주기 | 규모 |
 | --- | --- | --- | --- | --- |
 | 회사 가상 원천 DB | 월별 택시 운행 기록 | API 요청 | 일 1회 | 월 **70-90만 행** |
-| 회사 가상 원천 DB | 렌탈 차종, 등급, 제원, 주간 렌트료 등 | API 요청 | 주 1회 | 12종 |
-| 회사 가상 원천 DB | 월별 기사-택시 테이블 | API 요청 | 월 1회 | 약 2000 행 |
+| 회사 가상 원천 DB | 렌탈 차종, 등급, 제원, 주간 렌트료 등 | API 요청 | 일 1회 | 12종 |
+| 회사 가상 원천 DB | 월별 기사-택시 테이블 | API 요청 | 일 1회 | 약 2000 행 |
 | **EIA** | 뉴욕주 휘발유 주간 소매가 | XLS 다운로드 | 월 1회 | 월 1행 |
 | **EIA** | 뉴욕주 전기 요금 | XLSX 다운로드 | 월 1회 | 월 1행 |
 
@@ -62,7 +72,6 @@
 | 기사 현재 예상 순수익 | 기사의 현재 운행 예상 수익 | 수익 - 주간 유류비 + 주간 렌트료 |
 | 기사별 차량 교체시 예상 수익 | 기사-차량 조합별 예상 수익 | 현재 운행 예상 수익 산식을 각 차량에 적용 |
 | 월간 리포트 요약 정보 | 골드 데이터 버전, 추천 대상 기사 수, 기사 평균 순수익 증가액/매출 증가액, 기사 매출 증가액 합계 | 위 두 테이블을 기반으로 변경 시 값 계산 |
-
 
 ### 3. 파이프라인
 ![메인 데이터 파이프라인 아키텍처](assets/main_data_product_architecture.png)
@@ -87,6 +96,8 @@
     - 외부 사용자는 NginX를 통해서만 접근
   - **모니터링 대시보드** : 외부망 노출 X (내부 전용)
 
+<br/>
+
 <details>
 <summary>원천 DB 파이프라인</summary>
 
@@ -105,9 +116,9 @@
 #### 2. OUTPUT
 | 데이터 | 한 행 | 규모 | 생성 방식 | 공개 |
 | --- | --- | --- | --- | --- |
-| `월별 택시 운행 기록` | 운행 1건 | 월 **70-90만 행** | TLC 실데이터에 `taxi_id` 를 시공간 제약하에 배정 | **API** |
+| `월별 택시 운행 기록` | 운행 1건 | 월 **2,040만 행** | TLC 실데이터에 `taxi_id` 를 시공간 제약하에 배정 | **API** |
 | `기사-택시 마스터 데이터` | 기사 1명 | 2,000행 | 내부 원장에서 파생 | **API** |
-| `리스 업체 보유 차량 데이터` | 차량 1대 | 12행 | 내부 원장에서 파생 | **API** |
+| `리스 업체 보유 차량 데이터` | 차량 1대 | 2,000행 | 내부 원장에서 파생 | **API** |
 
 #### 3. 배정 알고리즘 (데이터 합성)
 - 목표 : 현실적인 기사 데이터 배정
@@ -127,6 +138,8 @@
 | **Published** | 해당 원천 시스템에서 제공하는 데이터 |
 
 </details>
+
+<br/>
 
 [목차로 이동](#목차)
 
@@ -214,7 +227,7 @@
 </details>
 
 ### 운영 용이성 및 안정성
-
+> 파이프라인 운영 안정성과 관련된 문서
 <details>
 <summary><a href="/docs/product_stability/PIPELINE_FAILURE_CAUSE_AND_ALERTING.md">EMR 실패 원인이 Slack 알림으로 표시되도록 구성(트러블슈팅)</a></summary>
 
@@ -250,33 +263,6 @@
   - 결과: `Type: String` + `AllowedPattern`으로 교체해 해결했습니다.
 </details>
 
-<details>
-<summary><a href="/docs/troubleshooting/aws/GITHUB_OIDC_WRONG_ROLE.md">GitHub Actions OIDC가 "Not authorized"로 계속 실패함</a></summary>
-
-- GitHub 레포 Variable이 EC2용 IAM role을 가리키고 있어 OIDC assume이 거부됐습니다.
-  - 결과: GitHub Actions 배포 전용 role ARN으로 교체해 해결했습니다.
-</details>
-
-<details>
-<summary><a href="/docs/troubleshooting/aws/LETSENCRYPT_AMAZONAWS_DOMAIN.md">Let's Encrypt가 AWS 기본 제공 도메인엔 인증서를 안 줌</a></summary>
-
-- `*.amazonaws.com` 공유 도메인은 정책상 인증서 발급이 차단되어 있었습니다.
-  - 결과: 무료 와일드카드 DNS `sslip.io`로 전환해 해결했습니다.
-</details>
-
-<details>
-<summary><a href="/docs/troubleshooting/aws/RDS_PRIVATE_SUBNET.md">RDS 생성 마법사에 서브넷(VPC) 선택 화면이 안 나옴</a></summary>
-
-- 표준 PostgreSQL 생성 흐름에서는 서브넷 그룹을 고르는 화면 자체가 빠져 있었습니다.
-  - 결과: 서브넷 그룹을 CLI로 먼저 만들고 지정해 인스턴스를 생성했습니다.
-</details>
-
-<details>
-<summary><a href="/docs/troubleshooting/aws/S3_DELETE_PERMISSION_DAG.md">S3 DeleteObject 권한 누락</a></summary>
-
-- Airflow DAG가 직접 `DeleteObject`를 호출하는 주체라는 걸 놓쳐 권한이 빠져 있었습니다.
-  - 결과: `theone-airflow-role`에 `s3:DeleteObject`를 추가해 해결했습니다.
-</details>
 
 ### 기타
 > 위 분류에 속하지 않는 트러블슈팅
@@ -288,18 +274,13 @@
   - 결과: 서브쿼리 조건에 `service_area`를 추가해 PK 선두 컬럼과 일치시켜 인덱스를 다시 타도록 했습니다.
 </details>
 
-<details>
-<summary><a href="/docs/troubleshooting/etc/DASHBOARD_LATEST_VERSION_SEQSCAN.md">대시보드 최신 버전 조회가 행마다 MAX(version)을 반복 계산해 5.4초 걸림</a></summary>
-
-- 상관 서브쿼리가 매 행마다 `MAX(version)`을 다시 계산해 `Seq Scan`이 386,704회 반복됐습니다.
-  - 결과: 윈도우 함수로 재작성해 `MAX(version)`을 파티션당 한 번만 계산하도록 바꿔 실행 시간이 5423.773ms에서 812.079ms로 줄었습니다.
-</details>
-
 ### [의사결정 문서](./docs/decision_making/README.md)
 > 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
 
+<br/>
 
 [목차로 이동](#목차)
+<br/>
 
 ## 기술 스택
 
@@ -307,7 +288,6 @@
 
 ### Data Processing
 ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![PySpark](https://img.shields.io/badge/PySpark-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white)
 ![Pandas](https://img.shields.io/badge/Pandas-150458?style=for-the-badge&logo=pandas&logoColor=white)
 
 ### Storage
@@ -350,8 +330,11 @@
 
 
 </div>
+<br/>
 
 [목차로 이동](#목차)
+<br/>
+<br/>
 
 ## 팀원
 
@@ -375,5 +358,6 @@
     <td align="center"><b>DE</b></td>
   </tr>
 </table>
+<br/>
 
 [목차로 이동](#목차)
