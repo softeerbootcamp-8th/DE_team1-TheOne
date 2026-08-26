@@ -99,6 +99,10 @@ def _latest_partition_file(bronze_dir: str, year_month: str) -> str | None:
     return files[-1] if files else None
 
 
+# 부트스트랩 풀이 보는 컬럼 전부입니다. 원천에는 25개가 있고 나머지는 읽지 않습니다.
+BOOTSTRAP_COLUMNS = ["trip_miles", "trip_time", "driver_pay"]
+
+
 def load_bootstrap_pools(
     *,
     bronze_dir: str,
@@ -131,7 +135,9 @@ def load_bootstrap_pools(
         if latest is None:
             continue
 
-        df = read_parquet_uri(latest)[["trip_miles", "trip_time", "driver_pay"]]
+        # 컬럼을 읽은 뒤 자르면 안 됩니다 — 25개 전부 pandas 로 올라가고, 그중
+        # 문자열 8개가 object dtype 으로 폭증해 드라이버가 OOM 으로 죽었습니다 (#894).
+        df = read_parquet_uri(latest, columns=BOOTSTRAP_COLUMNS)
         valid = (
             df["trip_miles"].notna() & (df["trip_miles"] > 0) & (df["trip_miles"] <= 1000)
             & df["trip_time"].notna() & (df["trip_time"] > 0) & (df["trip_time"] <= 86400)

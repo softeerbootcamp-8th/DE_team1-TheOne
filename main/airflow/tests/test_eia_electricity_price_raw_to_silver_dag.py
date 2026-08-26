@@ -4,6 +4,7 @@
 2. 수집 2회, 변환 1회, 검증 0회의 장애 유형별 재시도 유지
 3. 지정이 없으면 공개 지연 3개월 전, 수동 year_month가 있으면 지정한 달 사용
 4. Silver 스키마·행 수·날짜 완결성 검증 유지
+5. 경로 파라미터가 없으면 로컬 기본 Bronze/Silver 경로 사용
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -15,10 +16,12 @@ import pytest
 from dags import eia_electricity_price_raw_to_silver_dag as dag_module
 from main.airflow.scripts.eia_electricity_price_bronze_to_silver import tasks as task_module
 from schema.silver import CLEAN_EV_CHARGING_PRICE_SCHEMA as SCHEMA
+from shared.airflow.common import lambda_invoke
 from shared.airflow.common.validation import S3Location
 
 
 DAG = dag_module.eia_electricity_price_raw_to_silver_dag
+SOURCE_COLLECTED_AT = "2026-08-17T12:34:56.123456Z"
 
 
 def _write(path, rows, schema=SCHEMA):
@@ -28,14 +31,19 @@ def _write(path, rows, schema=SCHEMA):
 
 def _march(day_count=31):
     return [
-        {"date": date(2024, 3, day), "ev_price": 0.28}
+        {
+            "date": date(2024, 3, day),
+            "ev_price": 0.28,
+            "bronze_collected_date": date(2026, 8, 17),
+            "ev_price_status": "Final",
+        }
         for day in range(1, day_count + 1)
     ]
 
 
 def test_DAG는_월간_스케줄로_Raw부터_Silver까지_네_task를_순서대로_처리한다():
     assert DAG.dag_id == "eia_electricity_price_raw_to_silver_pipeline"
-    assert DAG.schedule == "0 6 1 * *"
+    assert DAG.schedule == "0 2 1 * *"
     assert set(DAG.task_ids) == {
         "raw_to_bronze",
         "validate_bronze",
@@ -45,7 +53,7 @@ def test_DAG는_월간_스케줄로_Raw부터_Silver까지_네_task를_순서대
     assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
     assert DAG.get_task("validate_bronze").downstream_task_ids == {"bronze_to_silver"}
     assert DAG.get_task("bronze_to_silver").downstream_task_ids == {"validate_silver"}
-    assert DAG.catchup is False and DAG.max_active_runs == 1
+    assert DAG.catchup is False and DAG.max_active_runs == 3
 
 
 def test_수집과_변환만_장애유형에_맞게_재시도한다():
@@ -60,6 +68,65 @@ def test_수집과_변환만_장애유형에_맞게_재시도한다():
 
     assert DAG.get_task("validate_bronze").retries == 0
     assert DAG.get_task("validate_silver").retries == 0
+
+
+def test_수집task는_경로param없이_기본경로와_지역을_람다에_보낸다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {"row_count": 1, "locations": ["/bronze/x.xlsx"]}
+
+    monkeypatch.setattr(
+        lambda_invoke,
+        "lambda_handler_for",
+        lambda name, **_: handlers.append(name) or handler,
+    )
+    dag_run = type(
+        "DagRun", (), {"start_date": datetime(2026, 8, 17, 12, 34, 56, tzinfo=timezone.utc)}
+    )()
+    DAG.get_task("raw_to_bronze").python_callable(
+        params={"service_area": "TX"},
+        dag_run=dag_run,
+    )
+    assert handlers == ["eia_electricity_price_raw_to_bronze"]
+    assert called == {
+        "service_area": "TX",
+        "collected_at": "2026-08-17T12:34:56.000000Z",
+        "base_dir": task_module.BRONZE_DIR,
+    }
+
+
+def test_정제task는_경로param없이_기본경로와_년월을_람다에_보낸다(monkeypatch):
+    called = {}
+    handlers = []
+
+    def handler(*, event):
+        called.update(event)
+        return {"row_count": 31, "locations": ["/silver/x.parquet"]}
+
+    monkeypatch.setattr(
+        lambda_invoke,
+        "lambda_handler_for",
+        lambda name, **_: handlers.append(name) or handler,
+    )
+    DAG.get_task("bronze_to_silver").python_callable(
+        params={
+            "year": "2024",
+            "month": "3",
+            "markup": 0.15,
+            "service_area": "TX",
+        },
+    )
+    assert handlers == ["eia_electricity_price_bronze_to_silver"]
+    assert called == {
+        "year_month": "2024-03",
+        "service_area": "TX",
+        "markup": 0.15,
+        "bronze_dir": task_module.BRONZE_DIR,
+        "silver_dir": task_module.SILVER_DIR,
+    }
 
 
 @pytest.mark.parametrize(
@@ -93,17 +160,22 @@ def test_연도와_월중_하나만_지정하면_실패한다(params):
 
 
 def test_검증은_그달_전_일수가_있어야_통과한다(tmp_path):
-    path = task_module.silver_file(str(tmp_path), "2024-03")
+    path = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     _write(path, _march())
 
     task_module.validate_silver(
-        {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
+        {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(path)]},
+        "NYC",
     )
 
 
 @pytest.mark.parametrize("violation", ["missing_day", "duplicate_day", "schema"])
 def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, violation):
-    path = task_module.silver_file(str(tmp_path), "2024-03")
+    path = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     if violation == "missing_day":
         _write(path, _march(30))
     elif violation == "duplicate_day":
@@ -116,25 +188,35 @@ def test_일수부족_중복일자_스키마불일치는_실패한다(tmp_path, 
 
     with pytest.raises(ValueError):
         task_module.validate_silver(
-            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
+            {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(path)]},
+            "NYC",
         )
 
 
 def test_산출물이_없으면_실패한다(tmp_path):
-    path = task_module.silver_file(str(tmp_path), "2024-03")
+    path = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
     with pytest.raises(FileNotFoundError, match="충전 단가 Silver"):
         task_module.validate_silver(
-            {"year_month": "2024-03", "row_count": 31, "locations": [str(path)]}
+            {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(path)]},
+            "NYC",
         )
 
 
 def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     seen = []
+    gx = []
     table = pa.Table.from_pylist(_march(), schema=SCHEMA)
     monkeypatch.setattr(
         task_module,
         "read_parquet",
         lambda path: seen.append(path) or table,
+    )
+    monkeypatch.setattr(
+        task_module,
+        "run_table_gx_validation",
+        lambda table, *args, **kwargs: gx.append((table, kwargs)),
     )
 
     task_module.validate_silver(
@@ -142,10 +224,68 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
             "year_month": "2024-03",
             "row_count": 31,
             "locations": [
-                "s3://data-lake/silver/eia_electricity_price/"
-                "year_month=2024-03/eia_electricity_price.parquet"
+                "s3://data-lake/silver/eia_electricity_price/service_area=NYC/"
+                "year_month=2024-03/source_collected_at=20260817T123456123456Z/"
+                "eia_electricity_price.parquet"
             ],
-        }
+            "source_collected_at": SOURCE_COLLECTED_AT,
+        },
+        "NYC",
     )
 
     assert isinstance(seen[0], S3Location)
+    assert gx[0][0].num_rows == 31
+    assert gx[0][1]["required_warning_ratio"] == 0.01
+    assert gx[0][1]["required_error_ratio"] == 0.05
+
+
+# --- validate-then-publish (#912) --------------------------------------------
+
+
+def _fake_task_instance(result: dict):
+    return type(
+        "TaskInstance", (), {"xcom_pull": lambda self, task_ids: result}
+    )()
+
+
+def test_검증_실패시_산출물을_보존하고_격리한다(tmp_path):
+    final = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
+    _write(final, _march(30))
+    task_instance = _fake_task_instance(
+        {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 30, "locations": [str(final)]}
+    )
+
+    with pytest.raises(ValueError, match="31일이어야"):
+        task_module.validate_silver_task.function(
+            task_instance=task_instance,
+            params={"service_area": "NYC", "silver_dir": str(tmp_path)},
+        )
+
+    assert final.is_file()
+    assert (final.parent / "_QUARANTINED.json").is_file()
+    assert '"layer": "silver"' in (
+        final.parent / "_QUARANTINED.json"
+    ).read_text()
+    assert not (final.parent / "_SUCCESS").exists()
+
+
+def test_검증_통과시_최종_경로에_SUCCESS를_공개한다(tmp_path):
+    final = task_module.silver_file(
+        str(tmp_path), "2024-03", SOURCE_COLLECTED_AT, "NYC"
+    )
+    _write(final, _march())
+    task_instance = _fake_task_instance(
+        {"year_month": "2024-03", "source_collected_at": SOURCE_COLLECTED_AT, "row_count": 31, "locations": [str(final)]}
+    )
+
+    task_module.validate_silver_task.function(
+        task_instance=task_instance,
+        params={"service_area": "NYC", "silver_dir": str(tmp_path)},
+    )
+
+    assert final.is_file()
+    assert (final.parent / "_SUCCESS").is_file()
+    assert not (final.parent / "_QUARANTINED.json").exists()
+    assert pq.ParquetFile(final).read().num_rows == 31

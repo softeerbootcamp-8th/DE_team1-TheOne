@@ -5,7 +5,7 @@ import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlsplit
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -13,11 +13,16 @@ import requests
 from pipeline_core.extractor import Extractor
 from pipeline_core.loader import Loader, WriteResult
 
-from shared.aws_lambda.common.atomic_write import atomic_write
+from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
 from shared.common.env import load_local_env
 from shared.aws_lambda.common.s3_loader import BUCKET_ENV_VAR, S3Loader, S3Object
+from shared.common.bronze_manifest import (
+    MANIFEST_FILE_NAME,
+    bronze_manifest_bytes,
+    build_bronze_manifest,
+)
 from shared.common.s3_reader import get_object_bytes, list_keys
-from shared.common.service_area_path import join_segments, service_area_segment
+from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 BRONZE_DATA_FILE_NAME = "data.parquet"
 COLLECTED_AT_DIR_PATTERN = re.compile(r"^collected_at=(\d{8}T\d{12}Z)$")
 TIMESTAMP_FILE_PATTERN = re.compile(r"^\d{8}T\d{12}Z\.parquet$")
@@ -26,6 +31,27 @@ YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-\d{2}$")
 DATASET_URL_PATTERN = re.compile(
     r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$"
 )
+SERVICE_AREA_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def service_area_segment(service_area: str) -> str:
+    if not SERVICE_AREA_PATTERN.fullmatch(service_area):
+        raise ValueError(
+            f"service_area 는 대문자 코드여야 합니다(예: NYC): {service_area!r}"
+        )
+    return f"service_area={service_area}"
+
+
+def join_segments(*segments: str | None) -> str:
+    return "/".join(segment for segment in segments if segment)
+
+
+def service_area_root(root: str | Path, service_area: str) -> Path:
+    return Path(root) / service_area_segment(service_area)
+
+
+def service_area_prefix(*head: str, service_area: str) -> str:
+    return join_segments(*head, service_area_segment(service_area))
 
 
 def collected_at_token(value: str) -> str:
@@ -105,20 +131,32 @@ class MonthlyParquetAPIExtractor(Extractor):
         dataset: str,
         year_month: str | None,
         *,
+        service_area: str | None = None,
         timeout: int = 180,
     ):
         self._api_base_url = api_base_url.rstrip("/")
         self._dataset = dataset
         self._year_month = year_month
+        self._service_area = service_area
+        service_area_segment(service_area)
         self._timeout = timeout
 
     def extract(self) -> dict:
         year_month = self._year_month or "latest"
         endpoint = f"v1/data/{year_month}/datasets/{self._dataset}"
+        params = {"service_area": self._service_area} if self._service_area else None
         response = requests.get(
-            urljoin(f"{self._api_base_url}/", endpoint), timeout=self._timeout
+            urljoin(f"{self._api_base_url}/", endpoint),
+            params=params,
+            timeout=self._timeout,
         )
         response.raise_for_status()
+        etag = response.headers.get("ETag")
+        last_modified = response.headers.get("Last-Modified")
+        if not etag or not last_modified:
+            raise ValueError(
+                f"{self._dataset} GET 응답에 ETag 또는 Last-Modified가 없습니다"
+            )
         collected_at = (
             _utc_now()
             .astimezone(timezone.utc)
@@ -130,6 +168,10 @@ class MonthlyParquetAPIExtractor(Extractor):
             "dataset": self._dataset,
             "collected_at": collected_at,
             "content": response.content,
+            "sha256": hashlib.sha256(response.content).hexdigest(),
+            "api_base_url": self._api_base_url,
+            "source_etag": etag,
+            "source_last_modified": last_modified,
         }
 
     def _response_year_month(self, response_url: str) -> str:
@@ -139,6 +181,13 @@ class MonthlyParquetAPIExtractor(Extractor):
         match = DATASET_URL_PATTERN.fullmatch(target.path.rstrip("/"))
         if not match or match.group(2) != self._dataset:
             raise ValueError(f"데이터셋 응답 URL이 올바르지 않습니다: {response_url}")
+        if self._service_area:
+            areas = parse_qs(target.query).get("service_area")
+            if areas != [self._service_area]:
+                raise ValueError(
+                    "데이터셋 응답 URL의 service_area가 요청과 다릅니다: "
+                    f"{response_url}"
+                )
         year_month = match.group(1)
         try:
             datetime.strptime(year_month, "%Y-%m")
@@ -159,13 +208,11 @@ class MonthlyParquetBronzeLoader(Loader):
         base_dir: str,
         dataset: str,
         dataset_dir: str,
-        service_area: str | None = None,
+        service_area: str,
     ):
         self._base_dir = Path(base_dir)
         self._dataset = dataset
         self._dataset_dir = dataset_dir
-        # None 이면 지역 계층 없이 지금과 같은 경로입니다 — 데이터셋별로 하나씩
-        # 켜기 위한 기본값(#840~#842). 규칙은 shared.common.service_area_path.
         self._service_area = service_area
         self.payload: dict = {}
         self.path: Path | None = None
@@ -181,7 +228,11 @@ class MonthlyParquetBronzeLoader(Loader):
         self.payload = payload
         self.path = self._data_path(payload)
         latest = self._latest_data_path(self.path.parent.parent)
-        if latest is not None and self._same_content(latest, content):
+        if (
+            latest is not None
+            and latest.name == BRONZE_DATA_FILE_NAME
+            and self._same_content(latest, content)
+        ):
             self.source_changed = False
             self.path = latest
             self.payload = {
@@ -190,11 +241,24 @@ class MonthlyParquetBronzeLoader(Loader):
                     bronze_collection_token(latest)
                 ),
             }
+            self._write_manifest(parquet.metadata.num_rows)
             return WriteResult(str(latest), parquet.metadata.num_rows)
 
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        invalidate_success_marker(self.path.parent)
         atomic_write(self.path, lambda temporary: temporary.write_bytes(content))
+        self._write_manifest(parquet.metadata.num_rows)
         return WriteResult(str(self.path), parquet.metadata.num_rows)
+
+    def _write_manifest(self, row_count: int) -> None:
+        manifest = build_bronze_manifest(
+            self.payload,
+            service_area=self._service_area,
+            row_count=row_count,
+        )
+        target = self.path.parent / MANIFEST_FILE_NAME
+        body = bronze_manifest_bytes(manifest)
+        atomic_write(target, lambda temporary: temporary.write_bytes(body))
 
     @staticmethod
     def _latest_data_path(partition_dir: Path) -> Path | None:
@@ -203,7 +267,11 @@ class MonthlyParquetBronzeLoader(Loader):
             *partition_dir.glob("collected_at=*/data.parquet"),
         )
         return max(
-            (path for path in candidates if bronze_collection_token(path)),
+            (
+                path
+                for path in candidates
+                if bronze_collection_token(path) and data_path_is_complete(path)
+            ),
             key=bronze_collection_token,
             default=None,
         )
@@ -218,7 +286,7 @@ class MonthlyParquetBronzeLoader(Loader):
         dataset_root = self._base_dir / self._dataset_dir
         area = service_area_segment(self._service_area)
         return (
-            (dataset_root / area if area else dataset_root)
+            (dataset_root / area)
             / f"year_month={payload['year_month']}"
             / _collected_at_dir_name(payload)
             / BRONZE_DATA_FILE_NAME
@@ -232,8 +300,8 @@ class S3MonthlyParquetBronzeLoader(Loader):
         self,
         dataset: str,
         dataset_dir: str,
+        service_area: str,
         bucket: str | None = None,
-        service_area: str | None = None,
     ):
         load_local_env()
         self._dataset = dataset
@@ -256,7 +324,11 @@ class S3MonthlyParquetBronzeLoader(Loader):
         latest_content = (
             get_object_bytes(self._bucket, latest) if latest is not None else None
         )
-        if latest is not None and _same_bytes(latest_content, content):
+        if (
+            latest is not None
+            and PurePosixPath(latest).name == BRONZE_DATA_FILE_NAME
+            and _same_bytes(latest_content, content)
+        ):
             self.source_changed = False
             self.payload = {
                 **payload,
@@ -264,13 +336,31 @@ class S3MonthlyParquetBronzeLoader(Loader):
                     bronze_collection_token(PurePosixPath(latest))
                 ),
             }
+            self._write_manifest(latest, parquet.metadata.num_rows)
             return WriteResult(
                 f"s3://{self._bucket}/{latest}", parquet.metadata.num_rows
             )
 
         key = f"{prefix}{_collected_at_dir_name(payload)}/{BRONZE_DATA_FILE_NAME}"
-        return S3Loader(key=key, bucket=self._bucket).write(
+        result = S3Loader(
+            key=key,
+            bucket=self._bucket,
+            invalidate_parent_success=True,
+        ).write(
             S3Object(body=content, row_count=parquet.metadata.num_rows)
+        )
+        self._write_manifest(key, parquet.metadata.num_rows)
+        return result
+
+    def _write_manifest(self, data_key: str, row_count: int) -> None:
+        manifest = build_bronze_manifest(
+            self.payload,
+            service_area=self._service_area,
+            row_count=row_count,
+        )
+        key = str(PurePosixPath(data_key).with_name(MANIFEST_FILE_NAME))
+        S3Loader(key=key, bucket=self._bucket).write(
+            S3Object(body=bronze_manifest_bytes(manifest))
         )
 
     def _partition_prefix(self, payload: dict) -> str:
@@ -285,9 +375,12 @@ class S3MonthlyParquetBronzeLoader(Loader):
         )
 
     def _latest_key(self, prefix: str) -> str | None:
+        keys = list_keys(self._bucket, prefix)
+        key_set = set(keys)
         candidates = (
             (key, bronze_collection_token(PurePosixPath(key)))
-            for key in list_keys(self._bucket, prefix)
+            for key in keys
+            if data_key_is_complete(key, key_set)
         )
         return max(
             ((key, token) for key, token in candidates if token),
@@ -301,8 +394,8 @@ def build_bronze_loader(
     base_dir: str,
     dataset: str,
     dataset_dir: str,
+    service_area: str,
     bucket: str | None = None,
-    service_area: str | None = None,
 ) -> Loader:
     if storage == "local":
         return MonthlyParquetBronzeLoader(

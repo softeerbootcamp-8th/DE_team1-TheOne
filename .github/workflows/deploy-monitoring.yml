@@ -1,0 +1,195 @@
+# Prometheus + Grafana 설정을 모니터링 인스턴스(theone-monitoring)에 배포합니다.
+#
+# 감시 대상 전체가 이 스택 하나로 모입니다 — 호스트 4대는 Prometheus 가 스크레이프하고,
+# EMR Serverless·Lambda 는 Grafana 의 CloudWatch 데이터소스가 직접 질의합니다. 알림도
+# 전부 Grafana 규칙이라 수신처가 Slack 하나입니다.
+#
+# CloudWatch 쪽은 걷어냈습니다 (942b90b, 2026-08-25)
+# --------------------------------------------------
+# 예전에는 이 워크플로가 CloudWatch 대시보드 1개 + SNS Topic 1개 + EventBridge rule 1개를
+# CLI 로 upsert 하는 job 을 하나 더 갖고 있었습니다. EMR 을 Grafana 로 옮기면서 그 job 을
+# 지웠습니다 — 감시 창구가 셋이었고, 그중 EMR 자원 쪽에는 알림이 아예 없었습니다.
+#
+# ★ 지운 것은 **배포 코드**입니다. put-dashboard·create-topic·put-rule 은 생성 명령이라,
+#   스텝을 지워도 AWS 에 만들어진 리소스는 남습니다. 아래 env 3개가 그 이름 기록입니다.
+#   EventBridge rule 은 지금도 EMR 실패 이벤트를 SNS 로 보내지만, 이메일 구독을 건 적이
+#   없어(subscribe 는 늘 수동 1회 작업이었습니다) SNS 가 메시지를 버립니다 — 중복 알림은
+#   오지 않습니다. 과금도 무료 한도 안이라 그대로 두고 있습니다.
+#
+# CloudFormation 을 쓰지 않았던 이유 (#886, #890)
+# ----------------------------------------------
+# 위 리소스 3개를 CFN 으로 관리하려 했다가 스택 상태 관리에 세 번 연속 막혔습니다.
+#   * 파라미터 타입 검증이 배포 자격증명으로 ec2:DescribeInstances 를 호출 → 거부
+#   * 실패한 CREATE 가 ROLLBACK_COMPLETE 로 남고 DeleteStack 권한이 없어 좌초
+#   * AWS::CloudWatch::Dashboard 핸들러가 기존 대시보드에 AlreadyExists 로 거부
+# 그래서 멱등 CLI 로 내려갔고, 지금은 그 CLI 들도 없습니다. 기록으로만 남깁니다.
+#
+# 예전 주석은 그 선택의 이유를 "인스턴스 role 의 IAM 변경이 불가" 로 적었지만 그렇지
+# 않습니다 — MFA 세션이면 iam:CreateRole·PutRolePolicy 가 통합니다(#898). 실제 이유는
+# 인스턴스 1대를 감수하고 호스트·컨테이너 가시성과 대시보드 자유도를 택한 것입니다.
+name: Deploy monitoring
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - 'monitoring/**'
+      - '.github/workflows/deploy-monitoring.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-monitoring
+  cancel-in-progress: false
+
+# 아래 3개는 어느 스텝도 참조하지 않습니다. 942b90b 이관 이후 배포에 쓰이지 않지만,
+# AWS 에 남아 있는 리소스의 이름을 적어둔 유일한 기록입니다 — 지우면 나중에 정리하려
+# 할 때 무엇을 찾아야 하는지 알 수 없습니다. 실제로 정리한 뒤에 함께 지우세요.
+#
+#   aws cloudwatch list-dashboards
+#   aws events list-rules --name-prefix theone
+#   aws sns list-subscriptions-by-topic --topic-arn <ARN>
+env:
+  DASHBOARD_NAME: theone-infrastructure-prod
+  TOPIC_NAME: theone-pipeline-alerts
+  RULE_NAME: theone-emr-job-failed-or-cancelled
+
+jobs:
+  stack:
+    name: Prometheus and Grafana
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: AWS 임시 자격증명 취득 (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN_MONITORING }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: 설정 배포와 재기동 (SSM)
+        id: ssm
+        env:
+          INSTANCE: ${{ vars.MONITORING_INSTANCE_ID }}
+          # 프로비저닝 파일의 ${EMR_APPLICATION_ID} 를 여기서 채웁니다.
+          EMR_APPLICATION_ID: ${{ vars.EMR_APPLICATION_ID }}
+          PROMETHEUS_AIRFLOW_TARGET: ${{ vars.PROMETHEUS_AIRFLOW_TARGET }}
+          PROMETHEUS_SOURCE_API_TARGET: ${{ vars.PROMETHEUS_SOURCE_API_TARGET }}
+          PROMETHEUS_DASHBOARD_TARGET: ${{ vars.PROMETHEUS_DASHBOARD_TARGET }}
+          PROMETHEUS_GATEWAY_TARGET: ${{ vars.PROMETHEUS_GATEWAY_TARGET }}
+          # Airflow 알림과 같은 웹훅입니다. 채널을 하나로 두려는 것이고, 로테이션할 때
+          # 고칠 곳도 이 Secret 하나입니다.
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          set -euo pipefail
+          # 셸 따옴표로 JSON 을 조립하면 깨지기 쉬워 파일로 만들어 넘깁니다.
+          python3 - <<'PY' > /tmp/params.json
+          import base64, json, os, pathlib, re
+          root = pathlib.Path("monitoring/stack")
+          files = {
+              "prometheus.yml": root / "prometheus.yml",
+              "docker-compose.yml": root / "docker-compose.yml",
+              "grafana/provisioning/datasources/prometheus.yml":
+                  root / "grafana/provisioning/datasources/prometheus.yml",
+              "grafana/provisioning/alerting/contact-points.yaml":
+                  root / "grafana/provisioning/alerting/contact-points.yaml",
+              "grafana/provisioning/alerting/policies.yaml":
+                  root / "grafana/provisioning/alerting/policies.yaml",
+              "grafana/provisioning/alerting/rules.yaml":
+                  root / "grafana/provisioning/alerting/rules.yaml",
+              "grafana/provisioning/alerting/lambda-rules.yaml":
+                  root / "grafana/provisioning/alerting/lambda-rules.yaml",
+              "grafana/provisioning/datasources/cloudwatch.yml":
+                  root / "grafana/provisioning/datasources/cloudwatch.yml",
+              "grafana/provisioning/dashboards/dashboards.yaml":
+                  root / "grafana/provisioning/dashboards/dashboards.yaml",
+              "grafana/provisioning/dashboards/lambda.json":
+                  root / "grafana/provisioning/dashboards/lambda.json",
+              "grafana/provisioning/dashboards/emr.json":
+                  root / "grafana/provisioning/dashboards/emr.json",
+              "grafana/provisioning/alerting/emr-rules.yaml":
+                  root / "grafana/provisioning/alerting/emr-rules.yaml",
+          }
+          cmds = ["set -eu", "cd /home/ec2-user/monitoring",
+                  "mkdir -p grafana/provisioning/datasources grafana/provisioning/alerting "
+                  "grafana/provisioning/dashboards"]
+          # ★ 치환하고 나서 보냅니다. 프로비저닝 파일은 base64 로 그대로 복사되므로
+          #   여기서 안 바꾸면 Grafana 가 `${EMR_APPLICATION_ID}` 를 **문자열 그대로**
+          #   질의에 넣습니다. 대시보드는 정상으로 뜨고 패널만 비어서, 사람이 열어보기
+          #   전까지 아무도 모릅니다 — 실제로 그렇게 당했습니다.
+          values = {
+              key: os.environ[key]
+              for key in (
+                  "EMR_APPLICATION_ID",
+                  "PROMETHEUS_AIRFLOW_TARGET",
+                  "PROMETHEUS_SOURCE_API_TARGET",
+                  "PROMETHEUS_DASHBOARD_TARGET",
+                  "PROMETHEUS_GATEWAY_TARGET",
+              )
+          }
+          for dest, src in files.items():
+              text = src.read_text(encoding="utf-8")
+              for key, value in values.items():
+                  text = text.replace("${" + key + "}", value)
+              # 치환하지 못한 것이 남으면 배포를 멈춥니다. 그대로 보내면 조용히 빈
+              # 패널이 되고, 배포는 초록불이라 드러나지 않습니다.
+              leftover = set(re.findall(r"\$\{[A-Z_]+\}", text))
+              if leftover:
+                  raise SystemExit(f"치환되지 않은 플레이스홀더 {sorted(leftover)} in {dest}")
+              blob = base64.b64encode(text.encode("utf-8")).decode()
+              cmds.append(f"echo {blob} | base64 -d > {dest}")
+          cmds += [
+              # 웹훅은 저장소 파일이 아니라 여기서만 씁니다. compose 가 같은 디렉터리의
+              # .env 를 자동으로 읽습니다.
+              f"echo SLACK_WEBHOOK_URL={os.environ['SLACK_WEBHOOK_URL']} > .env",
+              "chown -R ec2-user:ec2-user /home/ec2-user/monitoring",
+              "docker compose up -d --remove-orphans",
+              # 설정만 바뀐 경우 컨테이너가 그대로라 Prometheus 가 다시 읽게 신호를 줍니다.
+              "docker compose kill -s SIGHUP prometheus || true",
+              # ★ Grafana 는 프로비저닝을 **기동 시에만** 읽습니다. 그리고 SIGHUP
+              #   재적재를 지원하지 않습니다. 이미지도 compose 정의도 안 바뀌면
+              #   `up -d` 가 컨테이너를 그대로 두므로, 바인드 마운트된 파일만 새것이고
+              #   Grafana 안은 옛 설정 그대로입니다.
+              #
+              #   실제로 이렇게 당했습니다 — 배포는 초록불이고 파일도 인스턴스에 있는데
+              #   데이터소스와 알림 규칙이 16시간 동안 반영되지 않았습니다.
+              "docker compose restart grafana",
+          ]
+          print(json.dumps({"commands": cmds}))
+          PY
+          cid=$(aws ssm send-command \
+            --instance-ids "$INSTANCE" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy-monitoring stack ${{ github.sha }}" \
+            --parameters file:///tmp/params.json \
+            --query 'Command.CommandId' --output text)
+          echo "command_id=$cid" >> "$GITHUB_OUTPUT"
+          echo "CommandId=$cid"
+
+      - name: SSM 결과 확인
+        run: |
+          set -uo pipefail
+          sleep 5
+          aws ssm wait command-executed \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.MONITORING_INSTANCE_ID }}" || true
+          status=$(aws ssm get-command-invocation \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.MONITORING_INSTANCE_ID }}" \
+            --query Status --output text)
+          echo "상태: $status"
+          aws ssm get-command-invocation \
+            --command-id "${{ steps.ssm.outputs.command_id }}" \
+            --instance-id "${{ vars.MONITORING_INSTANCE_ID }}" \
+            --query StandardOutputContent --output text
+          if [ "$status" != "Success" ]; then
+            aws ssm get-command-invocation \
+              --command-id "${{ steps.ssm.outputs.command_id }}" \
+              --instance-id "${{ vars.MONITORING_INSTANCE_ID }}" \
+              --query StandardErrorContent --output text
+            echo "::error::모니터링 스택 배포가 실패했습니다."
+            exit 1
+          fi

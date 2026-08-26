@@ -18,10 +18,16 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_CURATED_DIR = os.getenv("CURATED_DIR", str(PROJECT_ROOT / "data" / "source" / "curated"))
 
+# 원천 4개가 모두 매월 1일 수집입니다. 한 달 주기에 보름 여유를 둔 값이라,
+# 정기 실행(4개가 갓 갱신된 직후)은 물론 월 중 수동 실행도 통과합니다.
+#
+# 주간이던 시절 3종은 14일이었습니다. 주기를 월간으로 바꾸면서 그대로 두면 정기
+# 실행은 통과하는데 월 중 수동 실행만 조용히 실패합니다 — 재실행하려는 순간
+# 막히는 셈이라 함께 올립니다.
 MAX_SOURCE_AGE_DAYS = {
-    "vehicle_catalog": 14,
-    "uber_eligible_vehicles": 14,
-    "lyft_eligible_vehicles": 14,
+    "vehicle_catalog": 45,
+    "uber_eligible_vehicles": 45,
+    "lyft_eligible_vehicles": 45,
     "fueleconomy_vehicle_specs": 45,
 }
 
@@ -54,7 +60,12 @@ def validate_curated_task(result: dict, **context) -> None:
     loader = importlib.import_module("sub.aws_lambda.functions.vehicle_master_curated_to_curated.loader")
 
     parsed = parse_handler_result(result)
+    # 적재 경로 검증용. 이제 실행일이 아니라 읽은 원천의 최신 수집일입니다.
     collected_date = parse_iso_date(result.get("collected_date"))
+    # ★ 낡음 판정은 `as_of`(읽기 상한, 보통 실행일) 로 해야 합니다.
+    #   `collected_date` 는 원천 날짜에서 나온 값이라 그걸 기준으로 재면 원천이
+    #   전부 반 년 낡아도 나이가 0 으로 나와 가드가 통째로 무력해집니다.
+    as_of = parse_iso_date(result.get("as_of") or result.get("collected_date"))
 
     total_rows = 0
     seen_cities: set[str] = set()
@@ -91,7 +102,7 @@ def validate_curated_task(result: dict, **context) -> None:
             f"{total_rows} != {parsed.row_count}"
         )
 
-    _require_fresh_sources(result.get("source_collected_dates"), collected_date)
+    _require_fresh_sources(result.get("source_collected_dates"), as_of)
     logger.info("Curated 검증 통과: cities=%d rows=%d", len(seen_cities), total_rows)
 
 

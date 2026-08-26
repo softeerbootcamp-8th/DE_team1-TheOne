@@ -6,6 +6,7 @@ import os
 from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
+from shared.aws_lambda.common.storage_config import resolve_storage
 from main.aws_lambda.common.monthly_dataset import YEAR_MONTH_PATTERN
 from .extractor import build_bronze_extractor
 from .loader import build_silver_loader
@@ -20,7 +21,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     year_month = str(event.get("year_month") or "")
     if not YEAR_MONTH_PATTERN.fullmatch(year_month):
         raise ValueError("year_month가 YYYY-MM 형식이 아닙니다")
-    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    storage = resolve_storage(event)
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_output_path = str(event.get("silver_output_path") or "")
@@ -28,7 +29,13 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
         raise ValueError("silver_output_path가 필요합니다")
 
     result = Pipeline(
-        build_bronze_extractor(storage, bronze_dir, bucket, year_month),
+        build_bronze_extractor(
+            storage,
+            bronze_dir,
+            bucket,
+            year_month,
+            service_area=event.get("service_area"),
+        ),
         build_silver_loader(
             storage,
             silver_output_path,

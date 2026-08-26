@@ -1,0 +1,597 @@
+{
+  "uid": "theone-emr",
+  "title": "EMR Serverless",
+  "tags": [
+    "theone",
+    "emr"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "1m",
+  "time": {
+    "from": "now-12h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "진행 중",
+      "description": "지금 돌고 있는 작업과 대기 중인 작업. 순간 상태라 마지막 값을 봅니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "RunningJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "Running",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "PendingJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "Pending",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "pluginVersion": "11.5.0",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": []
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "기간 결과 (합계)",
+      "description": "선택한 기간에 성공·실패한 작업 수. 이벤트 카운트라 합계를 봅니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 0
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "SuccessJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "Success",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "FailedJobs",
+          "statistic": "Sum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "Failed",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "pluginVersion": "11.5.0",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": []
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "reduceOptions": {
+          "values": false,
+          "calcs": [
+            "sum"
+          ],
+          "fields": ""
+        },
+        "orientation": "auto",
+        "textMode": "value_and_name",
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "auto"
+      }
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "메모리 사용 (GB)",
+      "description": "워커가 실제로 쓴 메모리(Spark_Driver·Spark_Executor)와 애플리케이션 용량 상한. EMR 이 잡아둔 '할당' 은 뺐습니다 — 애플리케이션 단위라 워커 단위 사용량과 갱신 주기가 어긋나, 워커가 막 뜬 분에는 사용량이 130 MB 인데 할당이 0 GB 로 찍힙니다. 메모리에는 알림이 없습니다 — 용량 알림은 CPU 만 봅니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "metricQueryType": 1,
+          "metricEditorMode": 1,
+          "sqlExpression": "SELECT SUM(WorkerMemoryUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "WorkerMemoryUsed",
+          "statistic": "Sum",
+          "dimensions": {},
+          "region": "default",
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MaxMemoryAllowed",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "용량 상한",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "pluginVersion": "11.5.0",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "decgbytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": []
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CPU 사용 (vCPU)",
+      "description": "워커가 실제로 쓴 CPU 와 용량 상한. CPU 는 양이 아니라 속도입니다 — 코어 N개를 쉬지 않고 돌리는 만큼. EMR 이 잡아둔 '할당' 은 그리지 않습니다 — 0 으로 자주 떨어져 사용량 곡선을 읽기 어렵게 만들고, 용량 알림이 그 수치를 본문에 실어 보냅니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 4
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "metricQueryType": 1,
+          "metricEditorMode": 1,
+          "sqlExpression": "SELECT SUM(WorkerCpuUsed) FROM \"AWS/EMRServerless\" WHERE ApplicationId = '${EMR_APPLICATION_ID}' GROUP BY WorkerType",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "WorkerCpuUsed",
+          "statistic": "Sum",
+          "dimensions": {},
+          "region": "default",
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MaxCPUAllowed",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "용량 상한",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "pluginVersion": "11.5.0",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": []
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "워커 수",
+      "description": "생성 대기가 계속 남으면 용량 상한에 막힌 것입니다.",
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "theone-cloudwatch"
+      },
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 12
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "RunningWorkerCount",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "Running",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "theone-cloudwatch"
+          },
+          "namespace": "AWS/EMRServerless",
+          "metricName": "PendingCreationWorkerCount",
+          "statistic": "Maximum",
+          "dimensions": {
+            "ApplicationId": "${EMR_APPLICATION_ID}",
+            "ApplicationName": "*"
+          },
+          "matchExact": true,
+          "region": "default",
+          "label": "생성 대기",
+          "metricQueryType": 0,
+          "metricEditorMode": 0,
+          "period": "60"
+        }
+      ],
+      "pluginVersion": "11.5.0",
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 2,
+            "fillOpacity": 10,
+            "showPoints": "never",
+            "spanNulls": true,
+            "axisPlacement": "auto",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*"
+            },
+            "properties": [
+              {
+                "id": "links",
+                "value": []
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true,
+          "calcs": [
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

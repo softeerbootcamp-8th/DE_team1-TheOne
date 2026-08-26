@@ -1,12 +1,39 @@
 from dataclasses import dataclass
+from datetime import datetime
+
+
+"""
+[Gold 적재 버전 메타데이터]
+input: Gold 적재 실행의 지역·월·입력 fingerprint
+output: PostgreSQL gold_load_versions
+"""
+
+
+@dataclass(frozen=True)
+class GoldLoadVersion:
+    service_area: str
+    """서비스 지역 코드"""
+
+    year_month: str
+    """집계 대상 월 (YYYY-MM)"""
+
+    version: int
+    """같은 지역·월 안에서 증가하는 Gold 적재 버전"""
+
+    load_fingerprint: str
+    """동일한 Silver 입력과 추천 설정을 식별하는 SHA-256 fingerprint"""
+
+    created_at: datetime
+    """PostgreSQL이 CURRENT_TIMESTAMP로 기록하는 생성 시각"""
+
 
 """
 [기사별 운행 순수익]
 input: schema/silver.py - CLEAN_MONTHLY_TAXI_TRIP_SCHEMA, CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA, CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA
-output: schema/gold.py - DriverMonthlyProfit
+output: schema/gold.py - DriverAggregation
 """
 @dataclass(frozen=True)
-class DriverMonthlyProfit:
+class DriverAggregation:
     version: int
     """ 골드 데이터 버전 """
 
@@ -67,12 +94,12 @@ class DriverMonthlyProfit:
 
 
 """
-[기사별 차량 교체시 예상 수익]
-input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA / schema/gold.py - DriverMonthlyProfit
-output: schema/gold.py - MonthlyVehicleRecommendation
+[재고를 반영한 기사별 차량 추천]
+input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA / schema/gold.py - DriverAggregation
+output: schema/gold.py - DriverCarSuggestion
 """
 @dataclass(frozen=True)
-class MonthlyVehicleRecommendation:
+class DriverCarSuggestion:
     version: int
     """ 골드 데이터 버전 """
     
@@ -89,6 +116,15 @@ class MonthlyVehicleRecommendation:
     빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
     """
 
+    recommendation_algorithm_version_id: int
+    """추천 계산에 쓰인 알고리즘 버전. 알고리즘 로직이 바뀔 때만 사람이 올린다 (적재 시점마다
+    바뀌는 `version`과 다른 축)"""
+
+    threshold: int
+    """회사 매출 증가를 1순위, 기사 순수익 증가가 이 값(USD) 이상인 것을 2순위로 배정하는
+    알고리즘(v2)이 스윕한 임계값. threshold를 쓰지 않는 알고리즘(v1)은 `-1`로 고정한다 —
+    실제 임계값은 항상 0 이상이라 `-1`은 "이 알고리즘엔 threshold 축이 없다"는 뜻으로 구분된다."""
+
     comfort_eligible: bool
     """Comfort 등급 대상 여부"""
 
@@ -96,7 +132,7 @@ class MonthlyVehicleRecommendation:
     """Extra Comfort 등급 대상 여부"""
 
     vehicle_model_id: str
-    """추천 차량 모델 ID"""
+    """배정한 차량 모델 ID"""
 
     manufacturer: str
     """추천 차량 제조사"""
@@ -123,46 +159,59 @@ class MonthlyVehicleRecommendation:
     """예상 월간 순수익 (USD) = monthly_driver_pay + monthly_tips - expected_monthly_fuel_cost - recommended_monthly_lease_fee"""
 
     expected_net_profit_increase: float
-    """예상 순수익 증가액 (USD) = expected_monthly_net_profit - DriverMonthlyProfit.monthly_net_profit"""
+    """예상 순수익 증가액 (USD) = expected_monthly_net_profit - DriverAggregation.monthly_net_profit"""
 
     expected_revenue_increase: float
-    """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverMonthlyProfit.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
+    """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverAggregation.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
 
 
 """
-[월간 리포트]
-input: schema/gold.py - MonthlyVehicleRecommendation
-output: schema/gold.py - MonthlyReport
+[Gold 실행이 읽은 Silver 4종의 계보]
+input: (경로 문자열 — 계산 없음)
+output: schema/gold.py - SilverLineage
 """
 @dataclass(frozen=True)
-class MonthlyReport:
+class SilverLineage:
     version: int
     """ 골드 데이터 버전 """
-    
-    year_month: str
-    """집계 대상 월 (YYYY-MM). PK"""
 
     service_area: str
-    """서비스 지역 코드 (예: NYC). AWS 리전이 아니라 운행 데이터의 지역 축입니다.
+    """서비스 지역 코드 (예: NYC)"""
 
-    driver_id 가 지역 간 유니크하지 않으므로(#805) 이 컬럼이 자연 키의 일부입니다 —
-    빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다.
-    """
+    year_month: str
+    """집계 대상 월 (YYYY-MM)"""
 
-    threshold_profit_increase: float
-    """차량 교체 추천 기준선 (USD)"""
+    airflow_run_id: str
+    """이 Gold 버전을 만든 Airflow DAG 실행 식별자"""
 
-    is_rerun: bool
-    """이 실행이 최초 완료가 아니라, 이미 완료된 대상월이 다시 계산된 재트리거인지"""
+    code_sha: str
+    """Gold Spark 이미지에 포함된 코드의 Git commit SHA"""
 
-    recommended_driver_count: int
-    """추천 대상 기사 수 (expected_net_profit_increase >= threshold_profit_increase, expected_revenue_increase >= 0)"""
+    config_hash: str
+    """Silver 입력 경로와 추천 알고리즘·threshold 설정의 안정적 SHA-256"""
 
-    avg_net_profit_increase_per_driver: float
-    """추천된 기사들의 평균 순수익 증가액 (USD)"""
+    silver_monthly_taxi_trip_s3_link: str
+    """이 실행이 읽은 월별 택시 운행 기록 Silver 파티션의 S3 경로"""
 
-    avg_revenue_increase_per_driver: float
-    """추천된 기사들의 평균 매출 증가액 (USD)"""
+    silver_driver_vehicle_monthly_snapshot_s3_link: str
+    """이 실행이 읽은 기사 차량 월 스냅샷 Silver 파티션의 S3 경로"""
 
-    total_revenue_increase: float
-    """추천된 기사들의 매출 증가액 합계 (USD)"""
+    silver_lease_vehicle_inventory_s3_link: str
+    """이 실행이 읽은 리스 업체 보유 차량 Silver 파티션의 S3 경로"""
+
+    silver_gas_ev_price_s3_link: str
+    """이 실행이 읽은 연료비 Silver 파티션의 S3 경로"""
+
+
+"""
+[추천 알고리즘 버전 설명]
+input: (사람이 직접 관리 — Gold 파이프라인이 적재하지 않음)
+output: schema/gold.py - RecommendationAlgorithm
+"""
+@dataclass(frozen=True)
+class RecommendationAlgorithm:
+    recommendation_algorithm_version_id: int
+    """추천 알고리즘 버전. DriverCarSuggestion.recommendation_algorithm_version_id 와 조인"""
+
+    description: str
+    """이 버전의 추천 로직 설명"""

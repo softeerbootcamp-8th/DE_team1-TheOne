@@ -1,9 +1,9 @@
 """DAG 가 넘기는 핸들러 이름이 실제로 import 되는지 확인합니다.
 
-각 데이터셋 실행 모듈은 `lambda_handler_for("<함수 디렉터리 이름>")` 로
-lambda/functions 아래 모듈을 동적으로 불러옵니다. `lambda` 가 파이썬 예약어라
-정적 import 가 안 돼 문자열로 넘기는데, **문자열이라 오타가 나도 import 시점까지
-아무도 모릅니다.**
+각 데이터셋 실행 모듈은 `invoke_lambda("<함수 디렉터리 이름>", ...)` (로컬 실행 시
+내부적으로 `lambda_handler_for` 를 부름) 로 lambda/functions 아래 모듈을 동적으로
+불러옵니다. `lambda` 가 파이썬 예약어라 정적 import 가 안 돼 문자열로 넘기는데,
+**문자열이라 오타가 나도 import 시점까지 아무도 모릅니다.**
 
 실제로 HVFHV DAG 가 데이터셋 이름(`"hvfhv"`)을 넘겨 `raw_to_bronze` 태스크가
 `ModuleNotFoundError` 로 죽었습니다(#322). 다른 DAG 테스트는 `lambda_handler_for`
@@ -69,8 +69,12 @@ def source_paths() -> list[Path]:
     return [*sorted(DAGS_DIR.glob("*.py")), *sorted(SCRIPTS_DIR.glob("**/*.py"))]
 
 
+HANDLER_CALL_NAMES = {"lambda_handler_for", "invoke_lambda"}
+
+
 def handler_names() -> list[tuple[str, str]]:
-    """DAG와 scripts에서 ``lambda_handler_for(...)`` 가 넘기는 이름을 뽑습니다."""
+    """DAG와 scripts에서 ``lambda_handler_for(...)``/``invoke_lambda(...)`` 가
+    넘기는 이름을 뽑습니다."""
     found: list[tuple[str, str]] = []
     for source_path in source_paths():
         tree = ast.parse(
@@ -81,7 +85,7 @@ def handler_names() -> list[tuple[str, str]]:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
-                and node.func.id == "lambda_handler_for"
+                and node.func.id in HANDLER_CALL_NAMES
                 and node.args
             ):
                 name = _handler_name(node.args[0], constants)
@@ -100,7 +104,7 @@ def test_핸들러를_부르는_실행_모듈을_실제로_찾았다():
     브랜치가 각자 같은 값으로 고치면 git 이 충돌 없이 합쳐 **병합 후에만** 숫자가
     틀립니다 (#516 에서 `assert 7 == 4` 로 터졌습니다).
     """
-    assert HANDLER_NAMES, "lambda_handler_for 호출을 한 건도 찾지 못했습니다"
+    assert HANDLER_NAMES, "lambda_handler_for/invoke_lambda 호출을 한 건도 찾지 못했습니다"
 
 
 def test_핸들러를_부르는_모듈이_하나도_빠지지_않았다():
@@ -112,7 +116,10 @@ def test_핸들러를_부르는_모듈이_하나도_빠지지_않았다():
     calling = {
         str(path.relative_to(AIRFLOW_DIR))
         for path in source_paths()
-        if "lambda_handler_for(" in path.read_text(encoding="utf-8")
+        if any(
+            f"{name}(" in path.read_text(encoding="utf-8")
+            for name in HANDLER_CALL_NAMES
+        )
     }
     extracted = {dag_file for dag_file, _ in HANDLER_NAMES}
     assert calling == extracted, f"이름을 뽑지 못한 모듈: {sorted(calling - extracted)}"

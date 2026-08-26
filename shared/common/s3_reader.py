@@ -56,20 +56,33 @@ def parse_s3_uri(uri: str) -> tuple[str, str]:
     return bucket, key
 
 
-def read_parquet_uri(uri: str):
+def read_parquet_uri(uri: str, columns: list[str] | None = None):
     """`s3://` 또는 로컬 경로의 Parquet 을 DataFrame 으로 읽습니다.
 
     `pd.read_parquet` 에 `s3://` 를 그대로 넘기지 않는 이유는 `s3fs` 가 필요하고,
     그것이 `aiobotocore` 를 끌고 와 런타임의 `boto3` 핀과 충돌하기 때문입니다.
+
+    `columns` 를 주면 그 컬럼만 pandas 로 올립니다. 몇 개만 쓰는데 전부 올리면
+    조용히 비싼 이유는 **parquet 과 pandas 의 표현 비용이 다르기** 때문입니다 —
+    문자열은 parquet 에서 dictionary 로 인코딩돼 몇 MiB 지만, pandas object dtype
+    이 되면 행마다 파이썬 str 객체가 생겨 컬럼당 GB 급으로 부풀어 오릅니다.
+    HVFHV 월별 원천(약 2천만 행)에서 실측한 비압축 크기가 근거입니다 (#894).
+
+        전체 25개 컬럼            548 MiB
+        실제로 쓰는 3개            106 MiB
+        그중 문자열 8개 컬럼(parquet)  3 MiB  ← pandas 에서 폭증하는 것들
+
+    객체 본문 자체는 여전히 통째로 내려받습니다. parquet 은 footer 랜덤 액세스가
+    필요해 `get_object_stream` 의 `StreamingBody` 로는 읽을 수 없습니다.
     """
     import io
 
     import pandas as pd
 
     if not is_s3_uri(uri):
-        return pd.read_parquet(uri)
+        return pd.read_parquet(uri, columns=columns)
     bucket, key = parse_s3_uri(uri)
-    return pd.read_parquet(io.BytesIO(get_object_bytes(bucket, key)))
+    return pd.read_parquet(io.BytesIO(get_object_bytes(bucket, key)), columns=columns)
 
 
 def parent_uri(uri: str, levels: int = 1) -> str:

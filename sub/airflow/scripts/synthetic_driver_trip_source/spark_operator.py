@@ -14,10 +14,11 @@ DAG 파일이 아니라 여기 있는 이유 — `sub` 의 DAG 파일은 `@dag` 
 import os
 from datetime import timedelta
 
-from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 
-from sub.airflow.scripts.synthetic_driver_trip_source.tasks import ROOT
+# provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
+from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
+from sub.airflow.scripts.synthetic_driver_trip_source.tasks import DEFAULT_PATHS, ROOT
 
 JOB_ENV = os.getenv("SPARK_JOB_ENV", "local")
 
@@ -34,9 +35,15 @@ EMR_ENTRY_POINT = "/home/hadoop/sub/spark/jobs/driver_assignment/source_job.py"
 # 캐시를 제거했으므로 executor는 기존 성공 형상인 2 cores / 6 GB heap을 사용하고,
 # Python·Arrow용 overhead만 2 GB로 명시합니다. dynamic allocation 상한으로 한 Job이
 # 사용하는 executor 비용도 제한합니다.
+#
+# 드라이버만 heap 과 overhead 비율이 executor 와 반대입니다 (#894). `source_job.py`
+# 는 SparkSession 을 만들기 **전에** `prepare_monthly_state` 로 전월 상태 승계와
+# 부트스트랩 풀 로드를 pandas 로 끝냅니다. 그 시점에는 JVM 힙이 놀고, 일하는 것은
+# overhead 쪽 파이썬 프로세스입니다. 6g/2g 로는 그 파이썬이 굶어 ExitCode 137 로
+# 죽었습니다 — 컨테이너 총량 8g 를 그대로 두고 배분만 뒤집어 과금은 같습니다.
 EMR_SPARK_SUBMIT_PARAMETERS = (
-    "--conf spark.driver.cores=2 --conf spark.driver.memory=6g "
-    "--conf spark.driver.memoryOverhead=2g "
+    "--conf spark.driver.cores=2 --conf spark.driver.memory=3g "
+    "--conf spark.driver.memoryOverhead=5g "
     "--conf spark.executor.cores=2 --conf spark.executor.memory=6g "
     "--conf spark.executor.memoryOverhead=2g "
     "--conf spark.dynamicAllocation.minExecutors=1 "
@@ -59,6 +66,7 @@ def local_build() -> BashOperator:
     """컨테이너 안에서 직접 실행합니다. 입출력은 params 의 로컬 경로."""
     return BashOperator(
         task_id="build_source_release",
+        params=DEFAULT_PATHS,
         bash_command=(
             f"python {ROOT}/sub/spark/jobs/driver_assignment/source_job.py "
             + f"--hvfhv_input_path {{{{ {_XCOM}['hvfhv_input_path'] }}}} "
@@ -98,6 +106,7 @@ def emr_build() -> EmrServerlessStartJobOperator:
     data_bucket = f"{{{{ params.bucket if params.bucket else {bucket!r} }}}}"
     return EmrServerlessStartJobOperator(
         task_id="build_source_release",
+        params=DEFAULT_PATHS,
         application_id=application_id,
         execution_role_arn=execution_role_arn,
         name="synthetic-driver-trip-source-{{ ds_nodash }}",
@@ -126,7 +135,7 @@ def emr_build() -> EmrServerlessStartJobOperator:
         },
         configuration_overrides={
             "monitoringConfiguration": {
-                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/emr-logs/"}
+                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/logs/emr-serverless/"}
             }
         },
         aws_conn_id="aws_default",
@@ -134,8 +143,12 @@ def emr_build() -> EmrServerlessStartJobOperator:
         wait_for_completion=True,
         waiter_delay=60,
         waiter_max_attempts=180,
-        deferrable=False,
-        execution_timeout=timedelta(hours=3),
+        # EMR 대기는 triggerer로 넘겨 Airflow 이미지 배포로 task process가 종료돼도
+        # Job을 유지합니다. 사용자가 task를 취소할 때는 고아 Job 방지를 위해 함께 취소합니다.
+        deferrable=True,
+        cancel_on_kill=True,
+        # EMR waiter가 3시간에 먼저 종료·취소하고 Airflow timeout은 정리 여유를 둡니다.
+        execution_timeout=timedelta(hours=3, minutes=10),
     )
 
 

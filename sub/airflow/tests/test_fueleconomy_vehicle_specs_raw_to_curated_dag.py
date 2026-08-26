@@ -20,6 +20,7 @@ event 쪽은 다른 DAG 와 같은 규칙입니다. `collected_date` 는 Raw 가
 
 import pytest
 
+from shared.airflow.common import lambda_invoke
 from dags import fueleconomy_vehicle_specs_raw_to_curated_dag as dag_module
 from sub.airflow.scripts.fueleconomy_vehicle_specs_raw_to_curated import tasks as task_module
 
@@ -48,6 +49,10 @@ def events(monkeypatch):
         return handler
 
     monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
+    # `source_to_raw` 는 `invoke_lambda` 를 거칩니다. 그 함수는 자기 모듈의
+    # `lambda_handler_for` 를 쓰므로 위 패치가 닿지 않습니다 — 여기도 바꿔야
+    # 핸들러가 실제로 돌지 않습니다(제원은 20MB CSV, 자격은 외부 페이지).
+    monkeypatch.setattr(lambda_invoke, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 
@@ -149,8 +154,8 @@ def test_경로_파라미터가_비면_DAG_기본값을_쓴다(events):
     call_task("source_to_raw", params={})
     call_task("raw_to_curated", raw_result=RAW_RESULT, params={})
 
-    assert only_event(events, RAW_FUNCTION)["base_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert only_event(events, RAW_FUNCTION)["base_dir"] == task_module.DEFAULT_RAW_DIR
 
     silver = only_event(events, CURATED_FUNCTION)
-    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
-    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR
+    assert silver["raw_dir"] == task_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == task_module.DEFAULT_CURATED_DIR

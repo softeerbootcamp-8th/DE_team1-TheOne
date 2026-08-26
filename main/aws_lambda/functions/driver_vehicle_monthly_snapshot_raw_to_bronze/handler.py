@@ -6,6 +6,7 @@ import os
 from pipeline_core.pipeline import Pipeline
 
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
+from shared.aws_lambda.common.storage_config import resolve_storage
 from main.aws_lambda.common.monthly_dataset import requested_year_month
 from .extractor import DriverVehicleMonthlySnapshotExtractor
 from .loader import build_loader
@@ -20,11 +21,17 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not api_base_url:
         raise ValueError("api_base_url이 누락되었습니다")
     base_dir = event.get("base_dir") or os.getenv("BRONZE_DIR", "data/bronze")
-    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    storage = resolve_storage(event)
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
-    loader = build_loader(storage, base_dir, bucket=bucket)
+    loader = build_loader(
+        storage, base_dir, bucket=bucket, service_area=event["service_area"]
+    )
     result = Pipeline(
-        DriverVehicleMonthlySnapshotExtractor(api_base_url, requested_year_month(event)),
+        DriverVehicleMonthlySnapshotExtractor(
+            api_base_url,
+            requested_year_month(event),
+            service_area=event.get("service_area"),
+        ),
         loader,
     ).run()
     payload = loader.payload

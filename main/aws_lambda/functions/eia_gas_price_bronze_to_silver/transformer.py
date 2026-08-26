@@ -7,6 +7,7 @@
 
 import calendar
 import logging
+from bisect import bisect_left
 from datetime import date, datetime
 
 import xlrd
@@ -51,8 +52,8 @@ def parse_gas_weekly(body: bytes) -> list[tuple[date, float]]:
 def require_fresh_observations(year_month: str, weekly: list[tuple[date, float]]) -> None:
     """대상 월을 덮을 만큼 최근 관측이 있는지 봅니다.
 
-    `gas_price_for` 가 "그 날 이하 가장 최근 관측치"를 복제하는 forward-fill 이라,
-    관측이 몇 주 전에 끊겨도 한 달이 **같은 값 하나로** 채워지고 예외 없이 통과합니다.
+    `gas_price_for` 가 이력 끝을 가장 가까운 값으로 채우므로, 관측이 몇 주 전에
+    끊겨도 한 달이 **같은 값 하나로** 채워지고 예외 없이 통과합니다.
     수집이 실패해 직전 수집분이 그대로 쓰이는 경우가 여기에 해당합니다(#544).
 
     수집일(`bronze_collected_date`)로 재지 않는 이유는, `is_duplicate_of_newest` 가
@@ -74,19 +75,27 @@ def require_fresh_observations(year_month: str, weekly: list[tuple[date, float]]
 
 
 def gas_price_for(days: list[date], weekly: list[tuple[date, float]]) -> dict[date, float]:
-    """각 날짜에 **그 날 이하 가장 최근 주간 관측치**를 복제합니다.
+    """관측값 사이는 선형 보간하고 이력 양 끝은 가장 가까운 값으로 채웁니다."""
+    if not weekly:
+        raise ValueError("휘발유 관측치가 없습니다")
 
-    선형 보간하지 않는 이유는, EIA 주간값이 "그 주의 관측 평균"이라 다음 관측까지
-    유효한 값으로 보는 편이 원 데이터에 가깝기 때문입니다.
-    """
+    weekly = sorted(weekly)
+    observed_days = [observed for observed, _ in weekly]
     prices: dict[date, float] = {}
     for day in days:
-        earlier = [price for observed, price in weekly if observed <= day]
-        if not earlier:
-            raise ValueError(
-                f"{day} 이전의 휘발유 관측치가 없습니다 (원본 시작일 {weekly[0][0]} 이후여야 함)"
-            )
-        prices[day] = earlier[-1]
+        right = bisect_left(observed_days, day)
+        if right == 0:
+            prices[day] = weekly[0][1]
+        elif right == len(weekly):
+            prices[day] = weekly[-1][1]
+        elif weekly[right][0] == day:
+            prices[day] = weekly[right][1]
+        else:
+            left_day, left_price = weekly[right - 1]
+            right_day, right_price = weekly[right]
+            elapsed = (day - left_day).days
+            span = (right_day - left_day).days
+            prices[day] = left_price + (right_price - left_price) * elapsed / span
     return prices
 
 

@@ -17,7 +17,6 @@ FINAL_SCHEMA = StructType(
     [
         StructField("taxi_id", StringType(), False),
         StructField("hvfhs_license_num", StringType(), False),
-        StructField("on_scene_datetime", TimestampType(), True),
         StructField("pickup_datetime", TimestampType(), True),
         StructField("dropoff_datetime", TimestampType(), True),
         StructField("PULocationID", IntegerType(), True),
@@ -36,7 +35,6 @@ FINAL_SCHEMA = StructType(
 REQUIRED_COLUMNS = [
     "taxi_id",
     "hvfhs_license_num",
-    "on_scene_datetime",
     "pickup_datetime",
     "dropoff_datetime",
     "PULocationID",

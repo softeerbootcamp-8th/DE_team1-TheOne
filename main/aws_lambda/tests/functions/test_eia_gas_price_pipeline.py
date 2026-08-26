@@ -2,7 +2,7 @@
 
 1. 주간 이력을 오름차순으로 읽음 — 원본이 최신순이라 정렬을 빠뜨리면 아래 "그 날 이하
    가장 최근" 규칙이 엉뚱한 값을 집음
-2. 각 날짜에 그 날 이하 **가장 최근** 관측치를 복제. 선형 보간하지 않음
+2. 관측값 사이는 선형 보간하고 이력 양 끝은 가장 가까운 값을 복제
 3. 그 달 **전 일수**로 펼침. 하루라도 비면 하류 일자 조인에서 그 날이 통째로 빠지는데,
    실패가 아니라 조용히 줄어든 집계로 나타남
 4. 대상 월 첫날 이전 관측치가 없으면 실패
@@ -12,6 +12,8 @@
    채우고 일수·범위·중복 검사를 모두 통과해 버림 (#544)
 8. 그 달 마지막 주 관측이 있으면 통과. 월말 이후 관측은 기준이 아니라 과거 달
    백필도 막지 않음
+9. Bronze 읽기는 쓰기와 같은 service_area 여야 찾음 (#843)
+10. Silver 쓰기 경로에 service_area 가 반영되고 지역끼리 서로 겹치지 않음 (#843)
 """
 
 from datetime import date
@@ -34,6 +36,7 @@ from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.transformer import
 from schema.silver import CLEAN_GAS_PRICE_SCHEMA as SCHEMA
 
 COLLECTED = date(2026, 8, 17)
+COLLECTED_AT = "2026-08-17T12:34:56.123456Z"
 WEEKLY = [
     (date(2025, 4, 28), 3.0),
     (date(2025, 5, 5), 3.1),
@@ -62,13 +65,23 @@ def test_주간_이력을_오름차순으로_읽는다():
     assert parse_gas_weekly(_xls(list(reversed(WEEKLY)))) == WEEKLY
 
 
-def test_각_날짜에_그날_이하_가장_최근_관측치를_복제한다():
+def test_관측값_사이는_선형보간한다():
     days = [date(2025, 5, 4), date(2025, 5, 5), date(2025, 5, 25), date(2025, 5, 26)]
 
     prices = gas_price_for(days, WEEKLY)
 
-    # 5-04 는 아직 4-28 관측치, 5-05 부터 3.1, 5-26 부터 3.2
-    assert [prices[day] for day in days] == [3.0, 3.1, 3.1, 3.2]
+    assert prices[days[0]] == pytest.approx(3.0 + 0.1 * 6 / 7)
+    assert prices[days[1]] == pytest.approx(3.1)
+    assert prices[days[2]] == pytest.approx(3.1 + 0.1 * 20 / 21)
+    assert prices[days[3]] == pytest.approx(3.2)
+
+
+def test_관측이력_양끝은_가장가까운값으로_채운다():
+    days = [date(2025, 4, 1), date(2025, 6, 1)]
+
+    prices = gas_price_for(days, WEEKLY)
+
+    assert [prices[day] for day in days] == [3.0, 3.2]
 
 
 def test_월_전체를_일별로_펼친다():
@@ -76,8 +89,8 @@ def test_월_전체를_일별로_펼친다():
 
     assert len(rows) == 31
     assert [row["date"] for row in rows] == [date(2025, 5, d) for d in range(1, 32)]
-    # 5-01~04 는 4-28 관측치가 이어집니다.
-    assert rows[0]["gas_price"] == 3.0
+    # 5-01 은 4-28과 5-05 사이 3/7 지점입니다.
+    assert rows[0]["gas_price"] == pytest.approx(3.0 + 0.1 * 3 / 7)
     assert rows[-1]["gas_price"] == 3.2
 
 
@@ -89,9 +102,10 @@ def test_어느_수집분으로_만들었는지_모든_행에_남는다():
     assert {row["bronze_collected_date"] for row in rows} == {COLLECTED}
 
 
-def test_대상월_이전_관측치가_없으면_실패한다():
-    with pytest.raises(ValueError, match="이전의 휘발유 관측치가 없습니다"):
-        build_daily_prices("2025-03", _xls(WEEKLY), COLLECTED)
+def test_대상월이_첫관측보다_앞이면_첫값으로_채운다():
+    rows = build_daily_prices("2025-03", _xls(WEEKLY), COLLECTED)
+
+    assert {row["gas_price"] for row in rows} == {3.0}
 
 
 def test_단가가_허용범위_밖이면_실패한다():
@@ -114,9 +128,13 @@ def test_주간_계열_시트가_없으면_실패한다():
 def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
     rows = build_daily_prices("2025-05", _xls(WEEKLY), COLLECTED)
 
-    result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05").write(rows)
+    result = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(
+        {"rows": rows, "source_collected_at": COLLECTED_AT}
+    )
 
-    assert result.location == str(silver_file(str(tmp_path), "2025-05"))
+    assert result.location == str(
+        silver_file(str(tmp_path), "2025-05", COLLECTED_AT, "NYC")
+    )
     assert result.row_count == 31
     table = pq.ParquetFile(result.location).read()
     assert table.schema.names == SCHEMA.names
@@ -124,7 +142,7 @@ def test_적재는_CLEAN_스키마로_대상월_파티션에_쓴다(tmp_path):
 
 def test_빈_결과는_적재를_거부한다(tmp_path):
     with pytest.raises(ValueError, match="적재할"):
-        EiaGasPriceSilverLoader(str(tmp_path), "2025-05").write([])
+        EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write({"rows": []})
 
 
 # --- 원본 신선도 (#544) -------------------------------------------------------
@@ -187,18 +205,54 @@ from main.aws_lambda.common import eia_fuel_price_layout as layout  # noqa: E402
 def test_S3_키_목록에서도_가장_최신_수집분을_고른다():
     """electricity(#558)에서 검증한 dataset 파라미터화 규칙이 gas 에도 그대로 성립하는지 고정합니다."""
     keys = [
-        layout.gas_bronze_key(date(2025, 5, 10)),
-        layout.gas_bronze_key(COLLECTED),
+        layout.gas_bronze_key("2025-05-10T00:00:00.000000Z", "NYC"),
+        layout.gas_bronze_key(COLLECTED_AT, "NYC"),
     ]
+    keys.extend(f"{key.rsplit('/', 1)[0]}/_SUCCESS" for key in list(keys))
 
-    collected_date, key = layout.newest_bronze_s3_key(
-        keys, layout.GAS_DATASET, layout.GAS_FILE_NAME
+    collected_at, key = layout.newest_bronze_s3_key(
+        keys, layout.GAS_DATASET, layout.GAS_FILE_NAME, "NYC"
     )
 
-    assert collected_date == COLLECTED
-    assert key == layout.gas_bronze_key(COLLECTED)
+    assert collected_at == COLLECTED_AT
+    assert key == layout.gas_bronze_key(COLLECTED_AT, "NYC")
 
 
 def test_S3_키_목록이_비면_실패한다():
     with pytest.raises(FileNotFoundError, match="EIA Bronze S3 파티션이 없습니다"):
-        layout.newest_bronze_s3_key([], layout.GAS_DATASET, layout.GAS_FILE_NAME)
+        layout.newest_bronze_s3_key(
+            [], layout.GAS_DATASET, layout.GAS_FILE_NAME, "NYC"
+        )
+
+
+# --- 지역(service_area) 격리 (#843) -----------------------------------------
+
+from main.aws_lambda.functions.eia_gas_price_bronze_to_silver.extractor import (  # noqa: E402
+    EiaGasPriceBronzeExtractor,
+)
+
+
+def test_bronze_읽기는_쓰기와_같은_지역이어야_찾는다(tmp_path):
+    path = layout.gas_bronze_file(str(tmp_path), COLLECTED_AT, "TX")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(_xls(WEEKLY))
+    (path.parent / "_SUCCESS").touch()
+
+    result = EiaGasPriceBronzeExtractor(str(tmp_path), "2025-05", "TX").extract()
+
+    assert result["bronze_collected_date"] == COLLECTED
+    assert result["source_collected_at"] == COLLECTED_AT
+    with pytest.raises(FileNotFoundError):
+        EiaGasPriceBronzeExtractor(str(tmp_path), "2025-05", "NYC").extract()
+
+
+def test_silver_쓰기_경로에_지역이_반영되고_서로_겹치지_않는다(tmp_path):
+    rows = build_daily_prices("2025-05", _xls(WEEKLY), COLLECTED)
+
+    payload = {"rows": rows, "source_collected_at": COLLECTED_AT}
+    nyc = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "NYC").write(payload)
+    tx = EiaGasPriceSilverLoader(str(tmp_path), "2025-05", "TX").write(payload)
+
+    assert nyc.location != tx.location
+    assert "service_area=NYC" in nyc.location
+    assert "service_area=TX" in tx.location

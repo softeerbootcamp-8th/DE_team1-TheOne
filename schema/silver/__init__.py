@@ -9,7 +9,6 @@ CLEAN_MONTHLY_TAXI_TRIP_SCHEMA = pa.schema(
     [
         ("taxi_id", pa.string()),  # 운행한 택시 ID
         ("hvfhs_license_num", pa.string()),  # Uber or Lyft 구분 (HV0003: Uber, HV0005: Lyft)
-        ("on_scene_datetime", pa.timestamp("us")),  # 장소 도착 시각
         ("pickup_datetime", pa.timestamp("us")),  # 승차 시각
         ("dropoff_datetime", pa.timestamp("us")),  # 하차 시각
         ("PULocationID", pa.int32()),  # 승차 지역 ID
@@ -24,11 +23,8 @@ CLEAN_MONTHLY_TAXI_TRIP_SCHEMA = pa.schema(
     ]
 )
 
-# `on_scene_datetime` 은 원천이 채우지 않는 달이 있습니다(플랫폼에 따라 비어 있고,
-# 합성 원천도 `source_job` 에서 non-null 검사 대상이 아닙니다). 스키마에는 남기고
-# 필수값 검사에서만 뺍니다 — 기사 스냅샷의 `exit_date` 와 같은 취급입니다.
 CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL = frozenset(
-    set(CLEAN_MONTHLY_TAXI_TRIP_SCHEMA.names) - {"on_scene_datetime"}
+    CLEAN_MONTHLY_TAXI_TRIP_SCHEMA.names
 )
 
 """
@@ -108,6 +104,7 @@ CLEAN_EV_CHARGING_PRICE_SCHEMA = pa.schema(
         ("date", pa.date32()),
         ("ev_price", pa.float64()),
         ("bronze_collected_date", pa.date32()),
+        # EIA 확정 상태. 원천 월이 비어 보간한 경우 "Interpolated".
         ("ev_price_status", pa.string()),
     ]
 )
@@ -123,7 +120,8 @@ CLEAN_FUEL_PRICE_SCHEMA = pa.schema(
         ("ev_price", pa.float64()),
         ("price_source", pa.string()),  # 출처 (예: "eia")
         ("bronze_collected_date", pa.date32()),  # 수집 시점
-        ("ev_price_status", pa.string()),  # 전력값 확정 여부 ("Preliminary" / "Final")
+        # EIA 확정 상태. 원천 월이 비어 보간한 경우 "Interpolated".
+        ("ev_price_status", pa.string()),
     ]
 )
 

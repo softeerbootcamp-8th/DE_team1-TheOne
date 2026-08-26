@@ -1,27 +1,32 @@
-"""Silver → Gold DAG의 2개 실행 Asset 계약과 산출물 검증 시나리오.
+"""Silver → Gold DAG의 파티션별 실행 Asset 계약과 산출물 검증 시나리오.
 
-1. Gold 스케줄은 API 3종 완료 READY와 Fuel Silver의 OR Asset
+1. Gold는 같은 키의 API READY와 Fuel이 처음 모이면 실행, 이후 하나만 갱신돼도 재실행
 2. API Silver 3종은 개별 Asset을 발행하지 않고 Fuel만 검증 후 발행
-3. Asset 으로 실행된 Gold 는 해당 파티션 키를 대상 월로 사용
+3. Asset 으로 실행된 Gold 는 소비한 모든 이벤트의 지역·연월 일치 확인
 4. 대상 연월은 기준일 이하의 최신 HVFHV 파티션이며 수동 파라미터가 우선
 5. Asset 실행은 같은 월 Silver가 덜 준비되면 skip, 수동 실행은 실패
 6. 같은 월 Silver 4종이 모두 있어야 입력 경로 확정
 7. Gold 검증 성공 태스크에만 Slack 완료 알림 연결
-8. Gold 3종이 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
+8. Gold 2종은 지역 경로만 검증하며 비었거나 필수 컬럼이 없거나 다른 연월이면 실패
 9. API Silver는 최신 collected_at 파일만 선택
 10. Asset skip 시 Slack skip 알림을 직접 호출
-11. SLA 기준일 초과 시 Slack staleness 경고, 기준 이내면 조용히 통과
-12. SLA 기준일은 Param이 우선, 없으면 Variable, 그마저 없으면 기본값 31
-13. 경과일 계산에 실패해도(now가 None이거나 뺄셈이 안 되는 값) 예외 없이 None
-14. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
+11. Gold 검증 성공 뒤 지역·월 성공 상태와 READY Asset 기록
+12. 최초완료/재트리거 판정은 로컬은 기존 Gold 산출물, 운영은 서빙 DB 존재로 확인
+13. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
+14. Fuel Silver는 최신 완료 `input_version`의 `fuel.parquet`만 Gold 입력으로 선택
+15. 운영 수동 실행도 S3 Silver 4종 완료본이 실제로 있어야 통과
+16. 경로 파라미터가 없어도 로컬 기본 경로로 입력을 해석
+17. 로컬·EMR Gold job 모두 Airflow run_id를 실행 계보 인자로 전달
 """
 
 import importlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
+from airflow.assets.evaluation import AssetEvaluator
 from airflow.sdk.exceptions import AirflowSkipException
 from airflow.timetables.simple import IdentityMapper, PartitionedAssetTimetable
 
@@ -30,9 +35,37 @@ from main.airflow.scripts.monthly_taxi_trip_silver_to_gold import tasks as dag_m
 from shared.airflow.common.slack_failure_callback import slack_success_callback
 
 
-GOLD_DAG = importlib.import_module(
-    "dags.monthly_taxi_trip_silver_to_gold_dag"
-).monthly_taxi_trip_silver_to_gold_dag
+GOLD_DAG_MODULE = importlib.import_module("dags.monthly_taxi_trip_silver_to_gold_dag")
+GOLD_DAG = GOLD_DAG_MODULE.monthly_taxi_trip_silver_to_gold_dag
+FUEL_INPUT_VERSION = (
+    "input_version=gas-20260820T123456123456Z__ev-20260819T123456123456Z"
+)
+
+
+def test_운영_Gold_EMR은_배포재시작에_안전하게_대기한다(monkeypatch):
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv(
+        "EMR_EXECUTION_ROLE_ARN",
+        "arn:aws:iam::123456789012:role/theone-spark-emr-exec",
+    )
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+    monkeypatch.setenv(
+        "GOLD_DATABASE_URL",
+        "postgresql://airflow:secret@example.internal:5432/gold",
+    )
+
+    operator = GOLD_DAG_MODULE._emr_build_gold()
+
+    assert operator.wait_for_completion is True
+    assert operator.deferrable is True
+    assert operator.cancel_on_kill is True
+    assert (
+        operator.waiter_delay * operator.waiter_max_attempts
+        < operator.execution_timeout.total_seconds()
+    )
+    arguments = operator.job_driver["sparkSubmit"]["entryPointArguments"]
+    run_id_index = arguments.index("--airflow_run_id")
+    assert arguments[run_id_index + 1] == "{{ run_id }}"
 
 
 def _params(root: Path, **overrides) -> dict:
@@ -53,34 +86,78 @@ def _logical_date(year: int, month: int) -> datetime:
     return datetime(year, month, 13, tzinfo=timezone.utc)
 
 
-def _write_inputs(root: Path, year_month: str) -> None:
-    monthly_taxi_trip = root / "monthly_taxi_trip" / f"year_month={year_month}"
-    monthly_taxi_trip.mkdir(parents=True)
-    (monthly_taxi_trip / "part-00000.parquet").touch()
+def test_경로_파라미터가_없어도_로컬_기본경로를_쓴다(monkeypatch):
+    captured = {}
 
-    files = {
-        "driver_vehicle_monthly_snapshot": "driver_vehicle_monthly_snapshot.parquet",
-        "lease_vehicle_inventory": "lease_vehicle_inventory.parquet",
-        "gas_ev_price": "gas_ev_price.parquet",
+    def target_year_month(logical_date, params, path, service_area, partition_key):
+        captured["target"] = params.copy()
+        return "2026-05"
+
+    def input_paths(year_month, params, service_area):
+        captured["input"] = params.copy()
+        return {"year_month": year_month, "year": "2026", "month": "5"}
+
+    monkeypatch.setattr(dag_module, "resolve_target_year_month", target_year_month)
+    monkeypatch.setattr(dag_module, "resolve_input_paths", input_paths)
+
+    result = GOLD_DAG.get_task("validate_inputs").python_callable(
+        params={"year": None, "month": None, "service_area": "NYC"},
+        logical_date=_logical_date(2026, 5),
+        dag_run=SimpleNamespace(partition_key=None),
+    )
+
+    assert dag_module.DEFAULT_PATHS.items() <= captured["target"].items()
+    assert dag_module.DEFAULT_PATHS.items() <= captured["input"].items()
+    assert result["service_area"] == "NYC"
+
+
+def _triggering_events(api_key: str, fuel_key: str | None = None) -> dict:
+    return {
+        assets.API_SILVER_REFRESH_READY: [SimpleNamespace(partition_key=api_key)],
+        assets.FUEL_PRICE_SILVER: [
+            SimpleNamespace(partition_key=fuel_key or api_key)
+        ],
     }
-    for dataset, file_name in files.items():
-        partition = root / dataset / f"year_month={year_month}"
-        partition.mkdir(parents=True)
-        (partition / file_name).touch()
 
 
-def _write_version(root: Path, dataset: str, year_month: str, file_name: str) -> Path:
-    path = root / dataset / f"year_month={year_month}" / file_name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.touch()
-    return path
+class _PartitionRecorder:
+    def __init__(self):
+        self.keys = set()
+
+    def add_partitions(self, key):
+        self.keys.add(key)
+
+
+def _write_inputs(
+    root: Path, year_month: str, service_area: str = "NYC"
+) -> None:
+    token = "20260820T123456123456Z"
+    for dataset in (
+        "monthly_taxi_trip",
+        "driver_vehicle_monthly_snapshot",
+        "lease_vehicle_inventory",
+    ):
+        _write_completed_version(root, dataset, year_month, token, service_area)
+
+    version = (
+        root / "gas_ev_price" / f"service_area={service_area}"
+        / f"year_month={year_month}"
+        / FUEL_INPUT_VERSION
+    )
+    version.mkdir(parents=True)
+    (version / "fuel.parquet").touch()
+    (version / "_SUCCESS").touch()
 
 
 def _write_completed_version(
-    root: Path, dataset: str, year_month: str, token: str
+    root: Path,
+    dataset: str,
+    year_month: str,
+    token: str,
+    service_area: str = "NYC",
 ) -> Path:
     version = (
-        root / dataset / f"year_month={year_month}"
+        root / dataset / f"service_area={service_area}" / f"year_month={year_month}"
         / f"source_collected_at={token}"
     )
     version.mkdir(parents=True, exist_ok=True)
@@ -90,15 +167,58 @@ def _write_completed_version(
     return version
 
 
-def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된다():
+def _gold_condition_satisfied(*asset_names: str) -> bool:
+    timetable = GOLD_DAG.timetable
+    keys = {
+        asset.name: unique_key
+        for unique_key, asset in timetable.asset_condition.iter_assets()
+    }
+    return AssetEvaluator(None).run(
+        timetable.asset_condition,
+        {keys[name]: True for name in asset_names},
+    )
+
+
+@pytest.mark.parametrize(
+    ("asset_names", "expected"),
+    [
+        ((assets.API_SILVER_REFRESH_READY.name,), False),
+        ((assets.FUEL_PRICE_SILVER.name,), False),
+        (
+            (
+                assets.API_SILVER_REFRESH_READY.name,
+                assets.FUEL_PRICE_SILVER.name,
+            ),
+            True,
+        ),
+        (
+            (
+                assets.GOLD_INPUTS_READY.name,
+                assets.API_SILVER_REFRESH_READY.name,
+            ),
+            True,
+        ),
+        (
+            (
+                assets.GOLD_INPUTS_READY.name,
+                assets.FUEL_PRICE_SILVER.name,
+            ),
+            True,
+        ),
+        ((assets.GOLD_INPUTS_READY.name,), False),
+    ],
+)
+def test_Gold_DAG은_최초엔_두입력_이후엔_하나의_갱신으로_실행된다(
+    asset_names,
+    expected,
+):
+    assert _gold_condition_satisfied(*asset_names) is expected
+
+
+def test_Gold_DAG은_지역과_월이_같은_파티션만_결합한다():
     timetable = GOLD_DAG.timetable
 
     assert isinstance(timetable, PartitionedAssetTimetable)
-    assert type(timetable.asset_condition).__name__ == "SerializedAssetAny"
-    assert {item.name for item in timetable.asset_condition.objects} == {
-        assets.API_SILVER_REFRESH_READY.name,
-        assets.FUEL_PRICE_SILVER.name,
-    }
     assert isinstance(timetable.default_partition_mapper, IdentityMapper)
     # 복합 키(#674)를 그대로 통과시켜야 합니다. IdentityMapper 는 항등이라 코드를
     # 손댈 필요가 없다는 게 이 설계의 핵심 근거인데, 항등이라서 이 단정만으로는
@@ -107,7 +227,9 @@ def test_Gold_DAG은_API3종완료_READY와_Fuel중_어느_Asset이든_실행된
     mapper = timetable.default_partition_mapper
     assert mapper.to_downstream("NYC:2026-05") == "NYC:2026-05"
     assert mapper.to_downstream("TX:2026-05") == "TX:2026-05"
+    assert mapper.to_downstream("NYC:2026-06") == "NYC:2026-06"
     assert mapper.to_downstream("NYC:2026-05") != mapper.to_downstream("TX:2026-05")
+    assert mapper.to_downstream("NYC:2026-05") != mapper.to_downstream("NYC:2026-06")
 
 
 @pytest.mark.parametrize(
@@ -192,6 +314,7 @@ def test_생산자가_bare_월을_발행하면_소비자가_요란하게_실패�
             _logical_date(2026, 8),
             _params(tmp_path),
             str(tmp_path / "monthly_taxi_trip"),
+            "NYC",
             partition_key="2026-05",
         )
 
@@ -201,6 +324,7 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
         _logical_date(2026, 8),
         _params(tmp_path),
         str(tmp_path / "monthly_taxi_trip"),
+        "NYC",
         partition_key="NYC:2026-05",
     )
 
@@ -209,12 +333,16 @@ def test_Gold_대상월은_Asset_파티션키를_그대로_사용한다(tmp_path
 
 def test_대상연월은_기준일_이하_최신_HVFHV_파티션이다(tmp_path):
     for year_month in ("2026-03", "2026-05", "2026-09"):
-        partition = tmp_path / "monthly_taxi_trip" / f"year_month={year_month}"
-        partition.mkdir(parents=True)
-        (partition / "part-00000.parquet").touch()
+        _write_completed_version(
+            tmp_path,
+            "monthly_taxi_trip",
+            year_month,
+            "20260820T123456123456Z",
+        )
 
     resolved = dag_module.resolve_target_year_month(
-        _logical_date(2026, 6), _params(tmp_path), str(tmp_path / "monthly_taxi_trip")
+        _logical_date(2026, 6), _params(tmp_path),
+        str(tmp_path / "monthly_taxi_trip"), "NYC"
     )
 
     assert resolved == "2026-05"
@@ -225,6 +353,7 @@ def test_year_month_파라미터가_파티션보다_우선한다(tmp_path):
         _logical_date(2026, 6),
         _params(tmp_path, year="2025", month="7"),
         str(tmp_path / "monthly_taxi_trip"),
+        "NYC",
     )
 
     assert resolved == "2025-07"
@@ -233,40 +362,22 @@ def test_year_month_파라미터가_파티션보다_우선한다(tmp_path):
 def test_Silver_4종이_있으면_같은_월_경로를_확정한다(tmp_path):
     _write_inputs(tmp_path, "2026-05")
 
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
     assert resolved["year"] == "2026" and resolved["month"] == "5"
     assert resolved["monthly_taxi_trip_path"].endswith(
-        "monthly_taxi_trip/year_month=2026-05/part-*.parquet"
+        "year_month=2026-05/source_collected_at=20260820T123456123456Z"
     )
     assert resolved["driver_vehicle_monthly_snapshot_path"].endswith(
-        "year_month=2026-05/driver_vehicle_monthly_snapshot.parquet"
+        "year_month=2026-05/source_collected_at=20260820T123456123456Z"
     )
     assert resolved["lease_vehicle_inventory_path"].endswith(
-        "year_month=2026-05/lease_vehicle_inventory.parquet"
+        "year_month=2026-05/source_collected_at=20260820T123456123456Z"
     )
     assert resolved["fuel_price_path"].endswith(
-        "year_month=2026-05/gas_ev_price.parquet"
+        "service_area=NYC/year_month=2026-05/"
+        f"{FUEL_INPUT_VERSION}/fuel.parquet"
     )
-
-
-def test_API_Silver는_가장최신_collected_at_파일만_선택한다(tmp_path):
-    _write_inputs(tmp_path, "2026-05")
-    older = "20260820T123456123456Z.parquet"
-    latest = "20260821T123456123456Z.parquet"
-    for dataset in (
-        "monthly_taxi_trip",
-        "driver_vehicle_monthly_snapshot",
-        "lease_vehicle_inventory",
-    ):
-        _write_version(tmp_path, dataset, "2026-05", older)
-        _write_version(tmp_path, dataset, "2026-05", latest)
-
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
-
-    assert Path(resolved["monthly_taxi_trip_path"]).name == latest
-    assert Path(resolved["driver_vehicle_monthly_snapshot_path"]).name == latest
-    assert Path(resolved["lease_vehicle_inventory_path"]).name == latest
 
 
 def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp_path):
@@ -280,13 +391,13 @@ def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp
     ):
         _write_completed_version(tmp_path, dataset, "2026-05", completed_token)
         incomplete = (
-            tmp_path / dataset / "year_month=2026-05"
+            tmp_path / dataset / "service_area=NYC" / "year_month=2026-05"
             / f"source_collected_at={incomplete_token}"
         )
         incomplete.mkdir()
         (incomplete / "part-00000.parquet").touch()
 
-    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
     for key in (
         "monthly_taxi_trip_path",
@@ -298,10 +409,15 @@ def test_API_Silver는_SUCCESS가_있는_source_collected_at만_선택한다(tmp
 
 def test_Silver_입력이_빠지면_상류_DAG를_알려준다(tmp_path):
     _write_inputs(tmp_path, "2026-05")
-    (tmp_path / "gas_ev_price/year_month=2026-05/gas_ev_price.parquet").unlink()
+    data_file = (
+        tmp_path / "gas_ev_price/service_area=NYC/year_month=2026-05/"
+        f"{FUEL_INPUT_VERSION}/fuel.parquet"
+    )
+    data_file.unlink()
+    (data_file.parent / "gas_ev_price.parquet").touch()
 
     with pytest.raises(FileNotFoundError, match="eia_fuel_price_silver_pipeline"):
-        dag_module.resolve_input_paths("2026-05", _params(tmp_path))
+        dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
 
 
 def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp_path):
@@ -312,6 +428,7 @@ def test_Asset실행은_같은월_Silver입력이_덜준비되면_skip한다(tmp
             params=_params(tmp_path),
             logical_date=_logical_date(2026, 5),
             dag_run=dag_run,
+            triggering_asset_events=_triggering_events("NYC:2026-05"),
         )
 
 
@@ -327,6 +444,7 @@ def test_skip시_Slack_skip_알림을_직접_호출한다(tmp_path, monkeypatch)
             params=_params(tmp_path),
             logical_date=_logical_date(2026, 5),
             dag_run=dag_run,
+            triggering_asset_events=_triggering_events("NYC:2026-05"),
         )
 
     assert len(calls) == 1
@@ -344,9 +462,77 @@ def test_정상실행에서는_Slack_skip_알림을_호출하지_않는다(tmp_p
         params=_params(tmp_path),
         logical_date=_logical_date(2026, 5),
         dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
+        triggering_asset_events=_triggering_events("NYC:2026-05"),
     )
 
     assert calls == []
+
+
+def test_Gold_입력Asset은_모두_실행대상_지역월과_같아야한다():
+    dag_module.validate_triggering_asset_partitions(
+        _triggering_events("NYC:2026-05"), "NYC", "2026-05"
+    )
+
+
+@pytest.mark.parametrize(
+    ("events", "expected"),
+    [
+        ({}, "이벤트가 없습니다"),
+        (_triggering_events("NYC:2026-05", "TX:2026-05"), "파티션 불일치"),
+        (_triggering_events("NYC:2026-05", "NYC:2026-06"), "파티션 불일치"),
+    ],
+)
+def test_Gold_입력Asset의_지역월이_빠지거나_다르면_실패한다(events, expected):
+    with pytest.raises(ValueError, match=expected):
+        dag_module.validate_triggering_asset_partitions(
+            events, "NYC", "2026-05"
+        )
+
+
+def test_Gold_최종검증이_성공해야_READY_파티션을_남긴다(monkeypatch):
+    recorder = _PartitionRecorder()
+    monkeypatch.setattr(dag_module, "validate_gold_outputs", lambda *args: None)
+    monkeypatch.setattr(dag_module, "record_success", lambda *args: None)
+    task_instance = type(
+        "TaskInstance",
+        (),
+        {"xcom_pull": lambda self, task_ids: {"year_month": "2026-05", "service_area": "NYC"}},
+    )()
+
+    dag_module.validate_gold_task.function(
+        params={"output_dir": "/gold"},
+        task_instance=task_instance,
+        outlet_events={assets.GOLD_INPUTS_READY: recorder},
+    )
+
+    assert not GOLD_DAG.get_task("validate_inputs").outlets
+    assert [outlet.name for outlet in GOLD_DAG.get_task("validate_gold").outlets] == [
+        assets.GOLD_INPUTS_READY.name
+    ]
+    assert recorder.keys == {"NYC:2026-05"}
+
+
+def test_Gold_최종검증이_실패하면_READY를_남기지않는다(monkeypatch):
+    recorder = _PartitionRecorder()
+
+    def fail_validation(*args):
+        raise ValueError("Gold 검증 실패")
+
+    monkeypatch.setattr(dag_module, "validate_gold_outputs", fail_validation)
+    task_instance = type(
+        "TaskInstance",
+        (),
+        {"xcom_pull": lambda self, task_ids: {"year_month": "2026-05", "service_area": "NYC"}},
+    )()
+
+    with pytest.raises(ValueError, match="Gold 검증 실패"):
+        dag_module.validate_gold_task.function(
+            params={"output_dir": "/gold"},
+            task_instance=task_instance,
+            outlet_events={assets.GOLD_INPUTS_READY: recorder},
+        )
+
+    assert recorder.keys == set()
 
 
 def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
@@ -356,6 +542,111 @@ def test_수동실행은_Silver입력이_빠지면_실패한다(tmp_path):
             logical_date=_logical_date(2026, 5),
             dag_run=type("DagRun", (), {"partition_key": None})(),
         )
+
+
+def test_운영_수동실행은_S3에_대상월이_없으면_실패한다(tmp_path, monkeypatch):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+    monkeypatch.setattr(dag_module, "list_keys", lambda bucket, prefix: [], raising=False)
+
+    with pytest.raises(FileNotFoundError, match="2098-02"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path, year="2098", month="2"),
+            logical_date=_logical_date(2098, 2),
+            dag_run=type("DagRun", (), {"partition_key": None})(),
+        )
+
+
+def test_운영_수동실행은_S3_Silver_4종_완료본이_있으면_통과한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    def completed_keys(bucket, prefix):
+        if "gas_ev_price" in prefix:
+            version = (
+                f"{prefix}input_version=gas-20260824T123456123456Z"
+                "__ev-20260823T123456123456Z/"
+            )
+            return [f"{version}fuel.parquet", f"{version}_SUCCESS"]
+        version = f"{prefix}source_collected_at=20260824T123456123456Z/"
+        return [f"{version}data.parquet", f"{version}_SUCCESS"]
+
+    monkeypatch.setattr(dag_module, "list_keys", completed_keys, raising=False)
+
+    result = dag_module.validate_inputs_task.function(
+        params=_params(tmp_path, year="2098", month="2"),
+        logical_date=_logical_date(2098, 2),
+        dag_run=type("DagRun", (), {"partition_key": None})(),
+    )
+
+    assert result["year_month"] == "2098-02"
+
+
+def test_운영_수동실행은_S3_데이터만_있고_SUCCESS가_없으면_실패한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+    monkeypatch.setattr(
+        dag_module,
+        "list_keys",
+        lambda bucket, prefix: [
+            f"{prefix}input_version=gas-20260824T123456123456Z"
+            "__ev-20260823T123456123456Z/fuel.parquet"
+        ],
+        raising=False,
+    )
+
+    with pytest.raises(FileNotFoundError, match="완료본"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path, year="2098", month="2"),
+            logical_date=_logical_date(2098, 2),
+            dag_run=type("DagRun", (), {"partition_key": None})(),
+        )
+
+
+def test_운영_Fuel은_옛_파일명에_SUCCESS가_있어도_완료본으로_보지않는다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("SPARK_JOB_ENV", "prod")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    def keys_with_legacy_fuel(bucket, prefix):
+        version = (
+            f"{prefix}input_version=gas-20260824T123456123456Z"
+            "__ev-20260823T123456123456Z/"
+            if "gas_ev_price" in prefix
+            else f"{prefix}source_collected_at=20260824T123456123456Z/"
+        )
+        name = "data.parquet"
+        return [f"{version}{name}", f"{version}_SUCCESS"]
+
+    monkeypatch.setattr(
+        dag_module, "list_keys", keys_with_legacy_fuel, raising=False
+    )
+
+    with pytest.raises(FileNotFoundError, match="gas_ev_price"):
+        dag_module.validate_inputs_task.function(
+            params=_params(tmp_path, year="2098", month="2"),
+            logical_date=_logical_date(2098, 2),
+            dag_run=type("DagRun", (), {"partition_key": None})(),
+        )
+
+
+def test_build_gold는_thresholds_파라미터를_job에_넘긴다():
+    """#997 — RevenueFirstAlgorithm이 스윕할 threshold를 job.py에 배선한다."""
+    build_gold = GOLD_DAG.get_task("build_gold")
+
+    assert "--thresholds" in build_gold.bash_command
+    assert "{{ params.thresholds }}" in build_gold.bash_command
+
+
+def test_로컬_build_gold는_Airflow_run_id를_job에_넘긴다():
+    build_gold = GOLD_DAG.get_task("build_gold")
+
+    assert '--airflow_run_id "{{ run_id }}"' in build_gold.bash_command
 
 
 def test_Gold검증_성공태스크만_Slack완료알림을_보낸다():
@@ -368,28 +659,40 @@ def test_Gold검증_성공태스크만_Slack완료알림을_보낸다():
         )
 
 
-def _write_gold(root: Path, year_month: str) -> None:
+def _write_gold(root: Path, year_month: str, service_area: str) -> None:
     frames = {
         "driver_aggregation": pd.DataFrame(
             [{"driver_id": "D1", "year_month": year_month, "monthly_net_profit": 100.0, "monthly_lease_fee": 400.0}]
         ),
         "driver_car_suggestion": pd.DataFrame(
-            [{"driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1", "manufacturer": "KIA", "model_name": "FORTE", "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감"}]
-        ),
-        "monthly_report": pd.DataFrame(
-            [{"year_month": year_month, "threshold_profit_increase": 100.0, "is_rerun": False, "recommended_driver_count": 1, "avg_net_profit_increase_per_driver": 120.0}]
+            [{
+                "driver_id": "D1", "year_month": year_month, "vehicle_model_id": "MODEL1",
+                "manufacturer": "KIA", "model_name": "FORTE",
+                "expected_net_profit_increase": 120.0, "recommendation_reason": "연료비 절감",
+                "recommendation_algorithm_version_id": 1, "threshold": -1,
+            }]
         ),
     }
     for dataset, frame in frames.items():
-        path = root / dataset / f"year_month={year_month}" / f"{dataset}.csv"
+        path = (
+            root / dataset / f"service_area={service_area}"
+            / f"year_month={year_month}" / f"{dataset}.csv"
+        )
         path.parent.mkdir(parents=True)
         frame.to_csv(path, index=False)
 
 
-def test_정상_Gold_3종은_검증을_통과한다(tmp_path):
-    _write_gold(tmp_path, "2026-05")
+def test_정상_Gold_2종은_검증을_통과한다(tmp_path):
+    _write_gold(tmp_path, "2026-05", "NYC")
 
-    dag_module.validate_gold_outputs(str(tmp_path), "2026-05")
+    dag_module.validate_gold_outputs(str(tmp_path), "2026-05", "NYC")
+
+
+def test_Gold검증은_다른지역_산출물을_대신_보지_않는다(tmp_path):
+    _write_gold(tmp_path, "2026-05", "NYC")
+
+    with pytest.raises(FileNotFoundError, match="service_area=TX"):
+        dag_module.validate_gold_outputs(str(tmp_path), "2026-05", "TX")
 
 
 @pytest.mark.parametrize(
@@ -402,235 +705,55 @@ def test_정상_Gold_3종은_검증을_통과한다(tmp_path):
     ],
 )
 def test_Gold_산출물이_계약을_어기면_실패한다(tmp_path, violation, expected):
-    _write_gold(tmp_path, "2026-05")
-    target = tmp_path / "monthly_report/year_month=2026-05/monthly_report.csv"
+    _write_gold(tmp_path, "2026-05", "NYC")
+    target = tmp_path / "driver_car_suggestion/service_area=NYC/year_month=2026-05/driver_car_suggestion.csv"
 
     if violation == "missing":
         target.unlink()
     elif violation == "empty":
         pd.read_csv(target).iloc[0:0].to_csv(target, index=False)
     elif violation == "column":
-        pd.read_csv(target).drop(columns="recommended_driver_count").to_csv(target, index=False)
+        pd.read_csv(target).drop(columns="vehicle_model_id").to_csv(target, index=False)
     else:
         frame = pd.read_csv(target)
         frame["year_month"] = "2026-04"
         frame.to_csv(target, index=False)
 
     with pytest.raises((FileNotFoundError, ValueError), match=expected):
-        dag_module.validate_gold_outputs(str(tmp_path), "2026-05")
+        dag_module.validate_gold_outputs(str(tmp_path), "2026-05", "NYC")
 
 
-# --- staleness SLA ------------------------------------------------------------
-
-
-def test_직전성공기록이_없으면_경과일은_None이다():
-    assert dag_module.days_since_last_success(None, _logical_date(2026, 8)) is None
-
-
-def test_경과일은_직전성공_이후_일수다():
-    prev = _logical_date(2026, 7)
-    now = prev + timedelta(days=40)
-
-    assert dag_module.days_since_last_success(prev, now) == 40
-
-
-def test_now가_None이면_경과일은_None이다():
-    assert dag_module.days_since_last_success(_logical_date(2026, 7), None) is None
-
-
-def test_경과일_계산이_실패해도_예외없이_None을_반환한다(caplog):
-    class Unsubtractable:
-        pass
-
-    with caplog.at_level("WARNING"):
-        result = dag_module.days_since_last_success(Unsubtractable(), _logical_date(2026, 8))
-
-    assert result is None
-    assert "계산 실패" in caplog.text
-
-
-def test_이전_성공_DagRun이_없으면_Proxy로_감싸져도_경고없이_None이다(caplog):
-    """Airflow 3 TaskSDK는 이전 성공이 없어도 plain None이 아니라 None을 감싼
-    lazy_object_proxy.Proxy를 준다(`airflow/sdk/execution_time/task_runner.py`).
-    `is None` 검사가 이걸 못 걸러 매 첫 실행마다 TypeError 경고가 났었다(#760)."""
-    import lazy_object_proxy
-
-    proxy_wrapping_none = lazy_object_proxy.Proxy(lambda: None)
-
-    with caplog.at_level("WARNING"):
-        result = dag_module.days_since_last_success(proxy_wrapping_none, _logical_date(2026, 8))
-
-    assert result is None
-    assert "계산 실패" not in caplog.text
-
-
-def test_SLA기준일은_Param이_있으면_Variable을_보지_않는다(monkeypatch):
-    monkeypatch.setattr(
-        dag_module.Variable,
-        "get",
-        lambda *a, **k: (_ for _ in ()).throw(AssertionError("Variable을 조회하면 안 됩니다")),
-    )
-
-    assert dag_module.resolve_stale_sla_days({"gold_stale_sla_days": 10}) == 10
-
-
-def test_SLA기준일은_Param이_없으면_Variable값을_쓴다(monkeypatch):
-    monkeypatch.setattr(
-        dag_module.Variable, "get", lambda key, default=None: 45
-    )
-
-    assert dag_module.resolve_stale_sla_days({"gold_stale_sla_days": None}) == 45
-
-
-def test_SLA기준일은_Variable도_없으면_기본값_31이다(monkeypatch):
-    def fake_get(key, default=None):
-        return default  # 실제 Variable.get의 "미설정 시 default 반환" 동작
-
-    monkeypatch.setattr(dag_module.Variable, "get", fake_get)
-
-    assert dag_module.resolve_stale_sla_days({}) == dag_module.DEFAULT_STALE_SLA_DAYS
-    assert dag_module.DEFAULT_STALE_SLA_DAYS == 31
-
-
-def test_SLA기준일은_Variable조회_실패시에도_기본값으로_내려간다(monkeypatch):
-    def raising_get(*args, **kwargs):
-        raise RuntimeError("실행 컨텍스트 밖")
-
-    monkeypatch.setattr(dag_module.Variable, "get", raising_get)
-
-    assert dag_module.resolve_stale_sla_days({}) == dag_module.DEFAULT_STALE_SLA_DAYS
-
-
-def test_SLA초과시_staleness_Slack알림을_보낸다(tmp_path, monkeypatch):
+def test_validate_gold_task는_해석된_지역을_검증에_넘긴다(monkeypatch):
     calls = []
+    successes = []
     monkeypatch.setattr(
-        dag_module, "slack_stale_alert_callback", lambda context: calls.append(context)
+        dag_module,
+        "validate_gold_outputs",
+        lambda output_dir, year_month, service_area: calls.append(
+            (output_dir, year_month, service_area)
+        ),
     )
-    _write_inputs(tmp_path, "2026-05")
-    prev_success = datetime.now(timezone.utc) - timedelta(days=40)
-
-    dag_module.validate_inputs_task.function(
-        params=_params(tmp_path, gold_stale_sla_days=10),
-        logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
-        prev_end_date_success=prev_success,
-    )
-
-    assert len(calls) == 1
-    assert calls[0]["stale_days"] == 10
-    assert calls[0]["days_since_success"] > 10
-
-
-def test_SLA이내면_staleness_Slack알림을_보내지_않는다(tmp_path, monkeypatch):
-    calls = []
     monkeypatch.setattr(
-        dag_module, "slack_stale_alert_callback", lambda context: calls.append(context)
+        dag_module,
+        "record_success",
+        lambda service_area, year_month, completed_at: successes.append(
+            (service_area, year_month, completed_at)
+        ),
     )
-    _write_inputs(tmp_path, "2026-05")
+    monkeypatch.setenv("SPARK_JOB_ENV", "local")
+    task_instance = type(
+        "TaskInstance",
+        (),
+        {"xcom_pull": lambda self, task_ids: {"year_month": "2026-05", "service_area": "TX"}},
+    )()
 
-    dag_module.validate_inputs_task.function(
-        params=_params(tmp_path, gold_stale_sla_days=31),
-        logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
-        prev_end_date_success=datetime.now(timezone.utc) - timedelta(days=1),
-    )
-
-    assert calls == []
-
-
-# --- 최초완료/재트리거 판정 ----------------------------------------------------
-
-
-def test_로컬은_기존_monthly_report가_없으면_최초완료다(tmp_path):
-    assert dag_module.resolve_is_rerun(
-        "local", "2026-05", _params(tmp_path)
-    ) is False
-
-
-def test_로컬은_기존_monthly_report가_있으면_재트리거다(tmp_path):
-    params = _params(tmp_path)
-    path = Path(params["output_dir"]) / "monthly_report" / "year_month=2026-05" / "monthly_report.csv"
-    path.parent.mkdir(parents=True)
-    path.touch()
-
-    assert dag_module.resolve_is_rerun("local", "2026-05", params) is True
-
-
-def test_운영은_GOLD_DATABASE_URL이_없으면_최초완료로_간주한다(monkeypatch):
-    monkeypatch.delenv("GOLD_DATABASE_URL", raising=False)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
-
-
-def test_운영은_Postgres_조회_실패시에도_최초완료로_내려간다(monkeypatch):
-    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://unreachable")
-
-    def raising_connect(dsn):
-        raise RuntimeError("연결 실패")
-
-    monkeypatch.setattr(dag_module.psycopg2, "connect", raising_connect)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
-
-
-class _FakeCursor:
-    def __init__(self, row):
-        self.row = row
-        self.executed = None
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *exc_info):
-        return False
-
-    def execute(self, sql, parameters):
-        self.executed = (sql, parameters)
-
-    def fetchone(self):
-        return self.row
-
-
-class _FakeConnection:
-    def __init__(self, row):
-        self.cursor_obj = _FakeCursor(row)
-        self.closed = False
-
-    def cursor(self):
-        return self.cursor_obj
-
-    def close(self):
-        self.closed = True
-
-
-def test_운영은_기존_행이_있으면_재트리거다(monkeypatch):
-    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://gold")
-    fake_conn = _FakeConnection(row=(1,))
-    monkeypatch.setattr(dag_module.psycopg2, "connect", lambda dsn: fake_conn)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is True
-    assert fake_conn.cursor_obj.executed[1] == ("2026-05",)
-    assert fake_conn.closed is True
-
-
-def test_운영은_기존_행이_없으면_최초완료다(monkeypatch):
-    monkeypatch.setenv("GOLD_DATABASE_URL", "postgresql://gold")
-    fake_conn = _FakeConnection(row=None)
-    monkeypatch.setattr(dag_module.psycopg2, "connect", lambda dsn: fake_conn)
-
-    assert dag_module.resolve_is_rerun("prod", "2026-05", {}) is False
-
-
-def test_정상실행_결과에_최초완료_재트리거_판정이_실린다(tmp_path):
-    _write_inputs(tmp_path, "2026-05")
-
-    resolved = dag_module.validate_inputs_task.function(
-        params=_params(tmp_path),
-        logical_date=_logical_date(2026, 5),
-        dag_run=type("DagRun", (), {"partition_key": "NYC:2026-05"})(),
+    dag_module.validate_gold_task.function(
+        params={"output_dir": "/gold"}, task_instance=task_instance
     )
 
-    assert resolved["is_rerun"] is False
+    assert calls == [("/gold", "2026-05", "TX")]
+    assert successes[0][:2] == ("TX", "2026-05")
+    assert successes[0][2].tzinfo == timezone.utc
 
 
 def test_대상지역은_파티션키가_파라미터를_덮어쓴다():
@@ -657,12 +780,61 @@ def test_파티션키도_파라미터도_없으면_기본_지역을_쓴다():
 def test_validate_inputs는_대상지역을_함께_반환한다(tmp_path):
     """Spark 잡이 --service_area 로 받아 Gold 자연 키에 넣습니다(#805, #809).
     빠지면 두 지역의 같은 기사 ID 가 한 행으로 취급됩니다."""
-    _write_inputs(tmp_path, "2026-05")
+    _write_inputs(tmp_path, "2026-05", "TX")
 
     result = dag_module.validate_inputs_task.function(
         params=_params(tmp_path),
         logical_date=_logical_date(2026, 5),
         dag_run=type("DagRun", (), {"partition_key": "TX:2026-05"})(),
+        triggering_asset_events=_triggering_events("TX:2026-05"),
     )
 
     assert result["service_area"] == "TX"
+
+
+def _write_scoped_inputs(root: Path, year_month: str, service_area: str) -> None:
+    """지역 계층 아래에 Silver 4종을 씁니다."""
+    _write_inputs(root, year_month, service_area)
+
+
+def test_Gold_입력은_지역_계층_아래도_찾는다(tmp_path):
+    """#840~#845 가 데이터셋별로 writer 를 옮기는 중에도 Gold 가 찾아야 합니다(#851)."""
+    _write_scoped_inputs(tmp_path, "2026-05", "NYC")
+
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
+
+    for key in (
+        "monthly_taxi_trip_path",
+        "driver_vehicle_monthly_snapshot_path",
+        "lease_vehicle_inventory_path",
+        "fuel_price_path",
+    ):
+        assert "service_area=NYC" in resolved[key], key
+
+
+def test_Gold_입력은_비지역_경로로_폴백하지않는다(tmp_path):
+    legacy = tmp_path / "monthly_taxi_trip/year_month=2026-05"
+    legacy.mkdir(parents=True)
+    (legacy / "part-00000.parquet").touch()
+
+    with pytest.raises(FileNotFoundError, match="service_area=NYC"):
+        dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
+
+
+def test_Gold_입력은_지역_경로를_먼저_본다(tmp_path):
+    """지역 경로의 입력을 같은 지역의 Gold 입력으로 확정합니다."""
+    _write_scoped_inputs(tmp_path, "2026-05", "NYC")
+
+    resolved = dag_module.resolve_input_paths("2026-05", _params(tmp_path), "NYC")
+
+    assert "service_area=NYC" in resolved["monthly_taxi_trip_path"]
+
+
+def test_available_year_months는_지역_계층_아래도_센다(tmp_path):
+    """한 레벨 glob 만 보면 조용히 빈 목록이 되고, 수동 실행 폴백이 '파티션이
+    없습니다' 로 죽습니다."""
+    _write_scoped_inputs(tmp_path, "2026-05", "NYC")
+
+    assert dag_module.available_year_months(
+        tmp_path / "monthly_taxi_trip", "NYC"
+    ) == ["2026-05"]

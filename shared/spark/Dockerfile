@@ -3,6 +3,12 @@
 # ★ :latest 는 떠다니는 태그입니다. 운영 배포 전에 digest(@sha256:...)로 고정하세요.
 FROM public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest
 
+# Gold 실행 계보가 실제 Spark 이미지의 소스 revision을 기록합니다. Makefile이
+# 이미지 태그에 쓰는 것과 같은 짧은 Git SHA를 넘기며, 직접 docker build 할 때는
+# unknown으로 남겨 출처를 꾸며내지 않습니다.
+ARG CODE_SHA=unknown
+ENV CODE_SHA=${CODE_SHA}
+
 USER root
 
 # EMR 이 제공하지 않는 라이브러리만 설치 (pyspark 는 EMR 제공분을 씀).
@@ -38,6 +44,7 @@ USER hadoop
 # 같은 이유), 이미지도 나누지 않고 하나로 둡니다.
 COPY schema/ /home/hadoop/schema/
 COPY main/__init__.py /home/hadoop/main/__init__.py
+COPY main/common/ /home/hadoop/main/common/
 COPY main/spark/__init__.py /home/hadoop/main/spark/__init__.py
 COPY main/spark/jobs/ /home/hadoop/main/spark/jobs/
 COPY shared/__init__.py /home/hadoop/shared/__init__.py
@@ -52,7 +59,8 @@ COPY sub/config.py sub/run_context.py sub/seeds.py /home/hadoop/sub/
 # 생성 파라미터의 값 소유자. sub/config.py 의 DEFAULT_CONFIG_PATH 가 여기를 가리킵니다.
 COPY config/ /home/hadoop/config/
 
-# bronze_to_silver 가 S3 파티션 목록 조회에만 shared/common 의 list_keys 를 재사용합니다
-# (전용 파일 하나만 — env.py 는 spark 에 없는 dotenv 의존성을 끌고 옵니다).
-COPY shared/common/__init__.py /home/hadoop/shared/common/__init__.py
-COPY shared/common/s3_reader.py /home/hadoop/shared/common/s3_reader.py
+# shared/common 은 디렉터리째 넣습니다. 예전에는 쓰는 파일만 골라 COPY 했는데,
+# 새 모듈이 생기면 잡이 import 하는데 이미지에는 없어 런타임에 ModuleNotFoundError 로
+# 죽었습니다 (success_marker). 빌드도 CI 도 통과해서 잡을 돌려야만 보입니다.
+# 전부 표준 라이브러리·boto3 만 쓰고 합쳐서 10KB 도 안 되므로 고를 이유가 없습니다.
+COPY shared/common/ /home/hadoop/shared/common/

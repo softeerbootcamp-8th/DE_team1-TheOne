@@ -13,13 +13,12 @@
 4. 라우팅 거부 — 모르는 데이터셋·대문자·한 자리 월·datasets 없는 경로·루트
 5. manifest 상태 — 없으면 404, 깨졌으면 500
 6. `/health`·HEAD·쿼리스트링·트레일링 슬래시
-7. `S3DatasetStorage` — prod 저장소가 고정 키를 스트림으로 읽고, 없는 키는 None
+7. `S3DatasetStorage` — prod 저장소가 `published/NYC` 고정 키를 읽고, 없는 키는 None
 8. HEAD validator — ETag·Last-Modified 제공, 조건이 맞으면 본문 없이 304
 9. HEAD 감시는 파일 스트림을 열지 않고 S3는 object metadata를 그대로 사용
 
-공개 API 이름은 `monthly_taxi_trip`이지만, 생성 DAG(synthetic_driver_trip_source)가
-쓰는 manifest는 아직 예전 이름(`hvfhv_taxi_trips`)을 키로 씁니다 — `LocalDatasetStorage`가
-그 번역을 하므로, 이 파일의 manifest 픽스처도 실제 운영과 같은 이름을 그대로 씁니다.
+dataset 이름은 공개 API 경로·local manifest 키·S3 폴더명이 모두 같습니다(#859). 그래서
+이 파일의 manifest 픽스처도 `DATASETS` 이름을 그대로 씁니다.
 """
 
 import hashlib
@@ -33,15 +32,16 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from sub.source_api.server import DATASETS, LocalDatasetStorage, S3DatasetStorage, create_server
+from sub.source_api.server import (
+    DATASETS,
+    LocalDatasetStorage,
+    S3DatasetStorage,
+    create_server,
+    storage_from_env,
+)
 
 YEAR_MONTH = "2026-01"
 BODIES = {name: f"PAR1-{name}".encode() for name in sorted(DATASETS)}
-
-# 공개 API 이름 -> 생성 DAG가 실제로 manifest에 쓰는 키. LocalDatasetStorage의
-# 번역표와 대칭입니다 — 여기서만 다르고 나머지 두 데이터셋은 이름이 같습니다.
-MANIFEST_KEYS = {"monthly_taxi_trip": "hvfhv_taxi_trips"}
-
 
 @pytest.fixture
 def release_root(tmp_path):
@@ -49,13 +49,20 @@ def release_root(tmp_path):
     release.mkdir()
     manifest_datasets = {}
     for name, body in BODIES.items():
-        manifest_key = MANIFEST_KEYS.get(name, name)
-        (release / f"{manifest_key}.parquet").write_bytes(body)
-        manifest_datasets[manifest_key] = {
-            "file": f"{manifest_key}.parquet",
+        (release / f"{name}.parquet").write_bytes(body)
+        manifest_datasets[name] = {
+            "file": f"{name}.parquet",
             "sha256": hashlib.sha256(body).hexdigest(),
         }
     _write_manifest(release, manifest_datasets)
+    tx_release = tmp_path / "service_area=TX" / f"year_month={YEAR_MONTH}"
+    tx_release.mkdir(parents=True)
+    tx_body = b"PAR1-TX"
+    (tx_release / "monthly_taxi_trip.parquet").write_bytes(tx_body)
+    _write_manifest(tx_release, {"monthly_taxi_trip": {
+        "file": "monthly_taxi_trip.parquet",
+        "sha256": hashlib.sha256(tx_body).hexdigest(),
+    }})
     # 릴리스 **밖**의 파일 — 경로 탈출이 성공하면 이게 새어 나갑니다.
     (tmp_path.parent / "SECRET.txt").write_text("top secret")
     return tmp_path
@@ -139,6 +146,27 @@ def test_latest_는_실제_월_URL_로_리다이렉트한다(api):
     assert body == BODIES["monthly_taxi_trip"]
 
 
+def test_service_area는_latest_리다이렉트와_로컬_조회에_유지된다(api, release_root):
+    status, actual, final = get(
+        api,
+        "/v1/data/latest/datasets/monthly_taxi_trip?service_area=TX",
+    )
+
+    assert (status, actual) == (200, b"PAR1-TX")
+    assert final.endswith(
+        f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip?service_area=TX"
+    )
+
+
+def test_잘못된_service_area는_거부한다(api):
+    status, _, _ = get(
+        api,
+        f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip?service_area=tx",
+    )
+
+    assert status == 400
+
+
 def test_릴리스가_하나도_없으면_latest_는_404(tmp_path):
     server = create_server(LocalDatasetStorage(tmp_path), port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -163,7 +191,7 @@ def test_릴리스가_하나도_없으면_latest_는_404(tmp_path):
 def test_manifest_가_릴리스_밖을_가리켜도_내보내지_않는다(api, release_root, escape):
     """manifest 는 우리가 만들지만, 그게 뚫리면 릴리스 밖 파일이 새어 나갑니다."""
     _write_manifest(
-        release_root / f"year_month={YEAR_MONTH}", {"hvfhv_taxi_trips": {"file": escape}}
+        release_root / f"year_month={YEAR_MONTH}", {"monthly_taxi_trip": {"file": escape}}
     )
 
     status, body, _ = get(api, f"/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip")
@@ -332,7 +360,7 @@ S3_REGION = "ap-northeast-2"
 
 
 def _s3_key(dataset: str, year_month: str) -> str:
-    return f"source/published/{dataset}/year_month={year_month}/data.parquet"
+    return f"source/published/NYC/{dataset}/year_month={year_month}/data.parquet"
 
 
 @pytest.fixture
@@ -371,12 +399,23 @@ def test_S3저장소는_monthly_taxi_trip_키도_동일하게_읽는다(s3_clien
         Key=_s3_key("monthly_taxi_trip", YEAR_MONTH),
         Body=body,
     )
+    tx_body = b"PAR1-trip-TX"
+    s3_client.put_object(
+        Bucket=S3_BUCKET,
+        Key=f"source/published/TX/monthly_taxi_trip/year_month={YEAR_MONTH}/data.parquet",
+        Body=tx_body,
+    )
     storage = S3DatasetStorage(S3_BUCKET)
 
     stream, content_length = storage.open("monthly_taxi_trip", YEAR_MONTH)
     try:
         assert content_length == len(body)
         assert stream.read() == body
+    finally:
+        stream.close()
+    stream, _ = storage.open("monthly_taxi_trip", YEAR_MONTH, service_area="TX")
+    try:
+        assert stream.read() == tx_body
     finally:
         stream.close()
 
@@ -421,3 +460,16 @@ def test_S3저장소의_latest는_데이터가_없으면_None(s3_client):
     storage = S3DatasetStorage(S3_BUCKET)
 
     assert storage.latest_year_month("lease_vehicle_inventory") is None
+
+
+def test_prod_기본저장소는_빈_환경변수여도_NYC_prefix를_쓴다(monkeypatch):
+    monkeypatch.setenv("SOURCE_API_ENV", "prod")
+    monkeypatch.setenv("SOURCE_API_S3_BUCKET", S3_BUCKET)
+    monkeypatch.setenv("SOURCE_API_S3_PREFIX", "")
+
+    storage = storage_from_env()
+
+    assert isinstance(storage, S3DatasetStorage)
+    assert storage._key("monthly_taxi_trip", YEAR_MONTH) == _s3_key(
+        "monthly_taxi_trip", YEAR_MONTH
+    )

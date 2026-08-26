@@ -1,4 +1,4 @@
-"""Lyft 배차 가능 차량 Source → Raw → Curated 주간 DAG."""
+"""Lyft 배차 가능 차량 Source → Raw → Curated 월간 DAG."""
 
 from datetime import datetime, timedelta, timezone
 
@@ -10,8 +10,6 @@ from shared.airflow.common.slack_failure_callback import (
 )
 from sub.airflow.scripts.lyft_eligible_vehicles_raw_to_curated.tasks import (
     DEFAULT_CITY_SLUG,
-    DEFAULT_CURATED_DIR,
-    DEFAULT_RAW_DIR,
     raw_to_curated_task,
     source_to_raw_task,
     validate_raw_task,
@@ -34,7 +32,7 @@ default_args = {
     dag_id="lyft_eligible_vehicles_raw_to_curated_pipeline",
     default_args=default_args,
     description="Lyft 배차 가능 차량 목록 Source -> Raw -> Curated 수집 및 정제 파이프라인",
-    schedule="0 4 * * 1",
+    schedule="0 4 1 * *",
     start_date=datetime(2026, 8, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
@@ -54,16 +52,6 @@ default_args = {
             DEFAULT_CITY_SLUG,
             type="string",
             description="Lyft 자격 페이지의 도시 슬러그 (예: 'new-york')",
-        ),
-        "raw_dir": Param(
-            DEFAULT_RAW_DIR,
-            type="string",
-            description="Raw 데이터 저장 기본 경로",
-        ),
-        "curated_dir": Param(
-            DEFAULT_CURATED_DIR,
-            type="string",
-            description="Curated 데이터 저장 기본 경로",
         ),
     },
 )

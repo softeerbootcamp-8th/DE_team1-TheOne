@@ -6,15 +6,8 @@ import pandas as pd
 from pyspark import StorageLevel
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, lit, to_date
-from pyspark.sql.types import (
-    DateType,
-    DoubleType,
-    IntegerType,
-    StringType,
-    StructField,
-    StructType,
-    TimestampType,
-)
+
+from schema.source.attribution import ATTRIBUTION_SCHEMA
 
 # 제약 이름. `sub/prototype/attribution.py`와 같은 이름을 씁니다(#644).
 C3_WORK_MINUTES = "c3_daily_work_minutes"    # 하루 길이(첫 픽업~막 하차) 초과
@@ -37,20 +30,7 @@ CANDIDATE_COLUMNS = {
     "target_work_minutes", "target_drive_minutes", "max_deadhead_minutes",
 }
 TRAVEL_COLUMNS = {"from_location_id", "to_location_id", "travel_minutes"}
-ASSIGNMENT_SCHEMA = StructType([
-    StructField("trip_key", StringType(), False),
-    StructField("driver_id", StringType(), False),
-    StructField("taxi_id", StringType(), False),
-    StructField("service_date", DateType(), False),
-    StructField("trip_sequence", IntegerType(), False),
-    StructField("pickup_datetime", TimestampType(), False),
-    StructField("dropoff_datetime", TimestampType(), False),
-    StructField("PULocationID", IntegerType(), False),
-    StructField("DOLocationID", IntegerType(), False),
-    StructField("preference_score", DoubleType(), False),
-    StructField("tie_break", StringType(), False),
-    StructField("deadhead_minutes", DoubleType(), False),
-])
+ASSIGNMENT_SCHEMA = ATTRIBUTION_SCHEMA
 OUTPUT_COLUMNS = [field.name for field in ASSIGNMENT_SCHEMA]
 
 

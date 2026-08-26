@@ -5,6 +5,7 @@
    실제로 EIA DAG 를 빠뜨렸을 때 셸 글로브가 확장된 cron 이 그대로 통과했습니다.
 3. 모든 task의 수집·변환·검증별 retry 정책 유지
 4. Vehicle Master와 EIA 통합의 핵심 task 의존성 유지
+5. 수동 트리거 UI에서 로컬 파일 경로를 노출하지 않음
 """
 
 import ast
@@ -39,9 +40,9 @@ SCHEDULES = {
     # 과거 값 개정분을 확보하기 위한 것입니다.
     "driver_master_raw_to_silver_dag": "0 0 10 * *",
     "hvfhv_raw_to_silver_dag": "0 0 10 * *",
-    "vehicle_catalog_raw_to_curated_dag": "0 3 * * 1",
-    "lyft_eligible_vehicles_raw_to_curated_dag": "0 4 * * 1",
-    "uber_eligible_vehicles_raw_to_curated_dag": "0 5 * * 1",
+    "vehicle_catalog_raw_to_curated_dag": "0 3 1 * *",
+    "lyft_eligible_vehicles_raw_to_curated_dag": "0 4 1 * *",
+    "uber_eligible_vehicles_raw_to_curated_dag": "0 5 1 * *",
 }
 
 RETRY_CONTRACTS = {
@@ -90,6 +91,16 @@ RETRY_CONTRACTS = {
         "transform": {"build_vehicle_master": 15},
         "validation": {"validate_curated"},
     },
+}
+
+LOCAL_PATH_PARAMS = {
+    "raw_dir",
+    "curated_dir",
+    "source_input_dir",
+    "vehicle_master_dir",
+    "state_output_dir",
+    "attribution_output_dir",
+    "release_output_dir",
 }
 RETRY_CONTRACTS = {
     dag_id: contract
@@ -148,6 +159,21 @@ def test_DAG_동시실행과_catchup_계약은_분리_전과_같다(
     dag = getattr(importlib.import_module(f"dags.{module_name}"), dag_variable)
     assert dag.catchup is False
     assert dag.max_active_runs == 1
+
+
+@pytest.mark.parametrize(
+    ("module_name", "dag_variable"),
+    [
+        *DAG_VARIABLES.items(),
+        ("synthetic_driver_trip_source_dag", "synthetic_driver_trip_source_dag"),
+    ],
+)
+def test_DAG는_수동트리거에_로컬경로를_노출하지_않는다(
+    module_name, dag_variable
+):
+    dag = getattr(importlib.import_module(f"dags.{module_name}"), dag_variable)
+
+    assert LOCAL_PATH_PARAMS.isdisjoint(dag.params)
 
 
 @pytest.mark.parametrize(

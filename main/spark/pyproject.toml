@@ -17,6 +17,10 @@ dependencies = [
     "scipy==1.17.1",       # 합성 데이터 분포 (Lognormal/Gamma/logistic/softmax)
     "pandas==3.0.1",
     "pyarrow==23.0.1",
+    # GX Core만 이미지에 설치합니다. [spark] extra는 pyspark를 전이 설치해
+    # EMR 7.13이 제공하는 Spark 런타임을 덮을 수 있으므로 사용하지 않습니다.
+    # 로컬 테스트용 pyspark는 아래 dev 그룹에서 EMR 버전과 맞춥니다.
+    "great-expectations==1.20.0",
     "geopandas==1.1.4",   # taxi_zone shapefile ↔ AFDC 충전소 공간조인
     "shapely==2.1.2",
     "requests==2.34.2",
@@ -39,6 +43,8 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pyspark==3.5.6",   # EMR 7.13의 Spark 버전과 일치
+    # 이 버전을 올리면 shared/spark/common/session.py 의 _S3A_HADOOP_VERSION 도
+    # 번들 Hadoop 버전(jars/hadoop-client-api-*.jar)에 맞춰 같이 확인하세요(#712).
     "pytest==9.1.1",
     "moto==5.2.2",   # AWS 모킹 (S3 파티션 탐색 테스트)
 ]

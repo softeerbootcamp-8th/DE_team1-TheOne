@@ -7,8 +7,13 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.extractor import Extractor
 
-from main.aws_lambda.common.monthly_dataset import bronze_collection_token
+from main.aws_lambda.common.monthly_dataset import (
+    bronze_collection_token,
+    service_area_prefix,
+    service_area_root,
+)
 from shared.common.s3_reader import get_object_bytes, list_keys
+from shared.common.success_marker import data_key_is_complete, data_path_is_complete
 
 from .loader import DATASET
 
@@ -40,13 +45,18 @@ class LeaseVehicleInventoryBronzeExtractor(Extractor):
 class LeaseVehicleInventoryS3BronzeExtractor(Extractor):
     """월 파티션의 최신 수집분 원본을 S3 에서 읽습니다."""
 
-    def __init__(self, bucket: str, year_month: str):
+    def __init__(
+        self, bucket: str, year_month: str, service_area: str
+    ):
         self._bucket = bucket
         self._year_month = year_month
-        self.name = f"lease_vehicle_inventory_bronze_s3:{bucket}:{year_month}"
+        self._service_area = service_area
+        self.name = (
+            f"lease_vehicle_inventory_bronze_s3:{bucket}:{service_area}:{year_month}"
+        )
 
     def extract(self) -> pa.Table:
-        prefix = _bronze_s3_prefix(self._year_month)
+        prefix = _bronze_s3_prefix(self._year_month, self._service_area)
         key = _newest_key(list_keys(self._bucket, prefix), prefix)
         body = get_object_bytes(self._bucket, key)
         if not body:
@@ -61,13 +71,20 @@ class LeaseVehicleInventoryS3BronzeExtractor(Extractor):
         return table
 
 
-def _bronze_s3_prefix(year_month: str) -> str:
-    return f"bronze/{DATASET}/year_month={year_month}/"
+def _bronze_s3_prefix(year_month: str, service_area: str) -> str:
+    """지역 계층을 넣을 위치는 shared.common 이 정의합니다(#851)."""
+    root = service_area_prefix(
+        "bronze", DATASET, service_area=service_area
+    )
+    return f"{root}/year_month={year_month}/"
 
 
 def _newest_key(keys: list[str], prefix: str) -> str:
+    key_set = set(keys)
     candidates = [
-        (key, bronze_collection_token(PurePosixPath(key))) for key in keys
+        (key, bronze_collection_token(PurePosixPath(key)))
+        for key in keys
+        if data_key_is_complete(key, key_set)
     ]
     candidates = [(key, token) for key, token in candidates if token]
     if not candidates:
@@ -75,23 +92,43 @@ def _newest_key(keys: list[str], prefix: str) -> str:
     return max(candidates, key=lambda item: item[1])[0]
 
 
-def _newest_bronze_path(base_dir: str, year_month: str) -> Path:
-    partition = Path(base_dir) / DATASET / f"year_month={year_month}"
+def _newest_bronze_path(
+    base_dir: str, year_month: str, service_area: str
+) -> Path:
+    """지역별 월 파티션에서 최신 Bronze 경로를 찾습니다."""
+    partition = (
+        service_area_root(Path(base_dir) / DATASET, service_area)
+        / f"year_month={year_month}"
+    )
     candidates = [
         *partition.glob("*.parquet"),
         *partition.glob("collected_at=*/data.parquet"),
     ]
-    candidates = [path for path in candidates if bronze_collection_token(path)]
-    if not candidates:
-        raise FileNotFoundError(f"보유 차량 Bronze 파티션이 없습니다: {partition}")
-    return max(candidates, key=bronze_collection_token)
+    candidates = [
+        path
+        for path in candidates
+        if bronze_collection_token(path) and data_path_is_complete(path)
+    ]
+    if candidates:
+        return max(candidates, key=bronze_collection_token)
+    raise FileNotFoundError(f"보유 차량 Bronze 파티션이 없습니다: {partition}")
 
 
 def build_bronze_extractor(
-    storage: str, base_dir: str, bucket: str | None, year_month: str
+    storage: str,
+    base_dir: str,
+    bucket: str | None,
+    year_month: str,
+    service_area: str,
 ) -> Extractor:
     if storage == "local":
-        return LeaseVehicleInventoryBronzeExtractor(_newest_bronze_path(base_dir, year_month))
+        return LeaseVehicleInventoryBronzeExtractor(
+            _newest_bronze_path(base_dir, year_month, service_area)
+        )
     if storage == "s3":
-        return LeaseVehicleInventoryS3BronzeExtractor(bucket, year_month)
+        return LeaseVehicleInventoryS3BronzeExtractor(
+            bucket,
+            year_month,
+            service_area,
+        )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

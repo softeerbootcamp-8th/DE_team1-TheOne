@@ -5,8 +5,12 @@
 3. 빈 응답과 잘못된 Parquet은 완료 파일을 공개하지 않음
 4. latest 응답의 최종 URL에서 실제 월을 확인
 5. 다른 host로 이동한 응답은 저장 전에 거부
+6. service_area를 지정하면 데이터셋과 월 사이의 지역 경로에 저장
+7. 응답 URL의 service_area가 요청과 다르면 저장 전에 거부
 """
 
+import hashlib
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,13 +26,17 @@ from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
 YEAR_MONTH = "2026-08"
 API_URL = "http://source.example"
 DATASET_URL = f"{API_URL}/v1/data/{YEAR_MONTH}/datasets/monthly_taxi_trip"
+DATASET_RESPONSE_URL = f"{DATASET_URL}?service_area=NYC"
 LATEST_URL = f"{API_URL}/v1/data/latest/datasets/monthly_taxi_trip"
+DATASET_RESPONSE_URL = f"{DATASET_URL}?service_area=NYC"
 FIRST_COLLECTED_AT = datetime(
     2026, 8, 20, 10, 15, 30, 123456, tzinfo=timezone.utc
 )
 SECOND_COLLECTED_AT = datetime(
     2026, 8, 20, 11, 22, 5, 654321, tzinfo=timezone.utc
 )
+ETAG = '"source-etag"'
+LAST_MODIFIED = "Thu, 20 Aug 2026 10:00:00 GMT"
 
 
 def _parquet_bytes(taxi_id: str = "taxi-1") -> bytes:
@@ -55,9 +63,10 @@ CONTENT = _parquet_bytes()
 
 
 class Response:
-    def __init__(self, *, url=DATASET_URL, content=CONTENT):
+    def __init__(self, *, url=DATASET_RESPONSE_URL, content=CONTENT):
         self.url = url
         self.content = content
+        self.headers = {"ETag": ETAG, "Last-Modified": LAST_MODIFIED}
 
     def raise_for_status(self):
         return None
@@ -68,7 +77,7 @@ def _api(
     requested: list[str] | None = None,
     *,
     content: bytes = CONTENT,
-    response_url: str = DATASET_URL,
+    response_url: str = DATASET_RESPONSE_URL,
 ) -> None:
     def get(url, **kwargs):
         if requested is not None:
@@ -84,6 +93,7 @@ def _event(tmp_path) -> dict:
         "base_dir": str(tmp_path),
         "year": "2026",
         "month": "8",
+        "service_area": "NYC",
     }
 
 
@@ -107,10 +117,26 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
     assert path.name == "data.parquet"
     assert path.parent.name == "collected_at=20260820T101530123456Z"
     assert path.parent.parent.name == f"year_month={YEAR_MONTH}"
-    assert path.parent.parent.parent.name == "monthly_taxi_trip"
+    assert path.parent.parent.parent.name == "service_area=NYC"
+    assert path.parent.parent.parent.parent.name == "monthly_taxi_trip"
     assert result["collected_at"] == "2026-08-20T10:15:30.123456Z"
     assert result["row_count"] == pq.ParquetFile(path).metadata.num_rows == 1
     assert result["source_changed"] is True
+    manifest = json.loads((path.parent / "manifest.json").read_text())
+    assert manifest == {
+        "api_base_url": API_URL,
+        "collected_at": result["collected_at"],
+        "data_file": "data.parquet",
+        "dataset": "monthly_taxi_trip",
+        "file_size_bytes": len(CONTENT),
+        "row_count": 1,
+        "schema_version": 1,
+        "service_area": "NYC",
+        "sha256": hashlib.sha256(CONTENT).hexdigest(),
+        "source_etag": ETAG,
+        "source_last_modified": LAST_MODIFIED,
+        "year_month": YEAR_MONTH,
+    }
     assert set(result) == {
         "file_size_bytes",
         "collected_at",
@@ -121,6 +147,27 @@ def test_HVFHV_Parquet_URL만_호출해_원본과_footer행수를_저장한다(
         "year",
         "year_month",
     }
+
+
+def test_service_area를_데이터셋과_월사이의_Bronze경로에_저장한다(
+    tmp_path, monkeypatch
+):
+    calls = []
+
+    def get(url, **kwargs):
+        calls.append((url, kwargs))
+        return Response(url=f"{DATASET_URL}?service_area=TX")
+
+    monkeypatch.setattr(monthly_dataset.requests, "get", get)
+    _clock(monkeypatch, FIRST_COLLECTED_AT)
+    event = {**_event(tmp_path), "service_area": "TX"}
+
+    result = lambda_handler(event)
+
+    path = Path(result["locations"][0])
+    assert calls[0][1]["params"] == {"service_area": "TX"}
+    assert path.parent.parent.parent.name == "service_area=TX"
+    assert path.parent.parent.parent.parent.name == "monthly_taxi_trip"
 
 
 def test_같은월의_원본이_변경되면_수집시각파일을_추가해_이력을_보존한다(
@@ -140,7 +187,7 @@ def test_같은월의_원본이_변경되면_수집시각파일을_추가해_이
     assert first_path.read_bytes() == CONTENT
     assert second_path.read_bytes() == corrected
     assert len(list((tmp_path / "monthly_taxi_trip").rglob("*.parquet"))) == 2
-    assert not list((tmp_path / "monthly_taxi_trip").rglob("*.json"))
+    assert len(list((tmp_path / "monthly_taxi_trip").rglob("manifest.json"))) == 2
 
 
 def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_path, monkeypatch):
@@ -148,6 +195,7 @@ def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_
     _clock(monkeypatch, FIRST_COLLECTED_AT, SECOND_COLLECTED_AT)
 
     first = lambda_handler(_event(tmp_path))
+    (Path(first["locations"][0]).parent / "_SUCCESS").touch()
     second = lambda_handler(_event(tmp_path))
 
     assert second["locations"] == first["locations"]
@@ -155,6 +203,7 @@ def test_같은원본을_다시수집하면_최신파일을_재사용한다(tmp_
     assert first["source_changed"] is True
     assert second["source_changed"] is False
     assert len(list((tmp_path / "monthly_taxi_trip").rglob("*.parquet"))) == 1
+    assert len(list((tmp_path / "monthly_taxi_trip").rglob("manifest.json"))) == 1
 
 
 @pytest.mark.parametrize("content", [b"", b"not parquet"], ids=["empty", "invalid"])
@@ -175,7 +224,13 @@ def test_월을_지정하지않으면_latest의_최종URL에서_실제월을_확
     requested = []
     _api(monkeypatch, requested)
 
-    result = lambda_handler({"api_base_url": API_URL, "base_dir": str(tmp_path)})
+    result = lambda_handler(
+        {
+            "api_base_url": API_URL,
+            "base_dir": str(tmp_path),
+            "service_area": "NYC",
+        }
+    )
 
     assert requested == [LATEST_URL]
     assert result["year_month"] == YEAR_MONTH
@@ -195,8 +250,21 @@ def test_다른host로_이동한_응답은_저장하지않는다(tmp_path, monke
     assert not list(tmp_path.rglob("*.parquet"))
 
 
+def test_응답_service_area가_요청과_다르면_저장하지않는다(
+    tmp_path, monkeypatch
+):
+    _api(monkeypatch, response_url=f"{DATASET_URL}?service_area=TX")
+
+    with pytest.raises(ValueError, match="service_area가 요청과 다릅니다"):
+        lambda_handler(_event(tmp_path))
+
+    assert not list(tmp_path.rglob("*.parquet"))
+
+
 @pytest.mark.parametrize("event", [{"year": "2026"}, {"month": "08"}])
 def test_연월은_둘다_주거나_둘다_비워야한다(event, tmp_path):
-    event.update({"api_base_url": API_URL, "base_dir": str(tmp_path)})
+    event.update(
+        {"api_base_url": API_URL, "base_dir": str(tmp_path), "service_area": "NYC"}
+    )
     with pytest.raises(ValueError, match="함께"):
         lambda_handler(event)

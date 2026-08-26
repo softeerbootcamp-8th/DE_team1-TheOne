@@ -12,7 +12,9 @@
 | GET | `/health` | `{"status": "ok"}` |
 
 - `year_month`은 `YYYY-MM` 형식만 허용합니다 (`2026-1`, `202601` 등은 404).
-- 트레일링 슬래시·쿼리스트링은 무시합니다.
+- `service_area` 쿼리는 대문자 지역 코드입니다. 생략하면 기존 NYC로 처리합니다.
+- `latest` 리다이렉트는 요청한 `service_area`를 유지합니다.
+- 트레일링 슬래시와 그 외 쿼리스트링은 무시합니다.
 - HEAD는 헤더만 주고 본문은 안 내려줍니다 (`Content-Length`는 정확히 채워짐).
 
 ### dataset 목록
@@ -33,6 +35,8 @@
 Content-Type: application/vnd.apache.parquet
 Content-Length: <바이트 수>
 Content-Disposition: attachment; filename="<dataset>.parquet"
+ETag: "<원본 식별자>"
+Last-Modified: <HTTP date>
 ```
 
 500MB급 파일도 청크 단위로 스트리밍하므로 서버가 파일 전체를 메모리에 올리지 않습니다.
@@ -48,12 +52,12 @@ Content-Disposition: attachment; filename="<dataset>.parquet"
 
 | 값 | 동작 |
 |---|---|
-| `local` (기본값) | `SOURCE_API_LOCAL_ROOT` 아래 `year_month=YYYY-MM/manifest.json` 레이아웃을 읽음. 생성 DAG(`synthetic_driver_trip_source`)가 만드는 그대로의 형식 |
-| `prod` | S3의 `<SOURCE_API_S3_PREFIX>/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 직접 읽음. manifest 없음 |
+| `local` (기본값) | NYC는 기존 `year_month=YYYY-MM/manifest.json`, 그 외 지역은 `service_area=<지역>/year_month=YYYY-MM/manifest.json`을 읽음 |
+| `prod` | S3의 `source/published/<service_area>/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 직접 읽음. manifest 없음 |
 
-`monthly_taxi_trip`만 local manifest의 실제 키(`hvfhv_taxi_trips`, 생성 DAG가 아직 이 이름을
-씀)와 공개 API 이름이 다릅니다 — `LocalDatasetStorage._MANIFEST_KEYS`에서만 번역합니다.
-S3 쪽은 폴더명이 이미 `monthly_taxi_trip`이라 번역이 필요 없습니다.
+dataset 이름은 한 벌뿐입니다 — 공개 API 경로, local manifest의 키, S3 폴더명이 모두 같습니다.
+예전에는 발행 쪽만 `hvfhv_taxi_trips`를 써서 local은 번역표로 가리고 prod는 발행한 폴더와
+읽는 폴더가 어긋나 404였습니다(#859). 이름을 나눠 쓰면 그 사고가 그대로 돌아옵니다.
 
 ## 환경변수
 

@@ -9,10 +9,11 @@ from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
 from main.airflow.scripts.driver_vehicle_monthly_snapshot_raw_to_silver.tasks import (
-    DEFAULT_API_BASE_URL,
-    DEFAULT_BRONZE_DIR,
-    DEFAULT_SILVER_DIR,
     bronze_to_silver_task,
     raw_to_bronze_task,
     validate_bronze_task,
@@ -37,17 +38,22 @@ default_args = {
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "driver", "taxi", "snapshot", "bronze", "silver"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         "api_base_url": Param(
-            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.environ["SOURCE_API_URL"],
             type="string",
+            minLength=1,
         ),
-        "base_dir": Param(DEFAULT_BRONZE_DIR, type="string"),
-        "silver_dir": Param(DEFAULT_SILVER_DIR, type="string"),
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
+            type="string",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
+        ),
     },
 )
 def driver_vehicle_monthly_snapshot_raw_to_silver_pipeline():

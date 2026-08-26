@@ -1,6 +1,6 @@
 """휘발유·전력 CLEAN Silver 두 개를 통합 연료비 Silver 로 붙이는 실행·검증 함수.
 
-산출물은 `gas_ev_price/year_month=YYYY-MM/` — Gold 가 읽는 자리입니다.
+산출물은 `gas_ev_price/year_month=YYYY-MM/input_version=<상류조합>/fuel.parquet`입니다.
 출처는 `price_source` 로 남깁니다.
 
 대상 월을 파라미터로 받는 이유
@@ -18,23 +18,37 @@ from pathlib import Path
 from airflow.sdk import task
 
 from main.airflow.common import assets
-from shared.airflow.common.lambda_runtime import lambda_handler_for
+from main.airflow.common.assets import (
+    service_area_prefix, service_area_root, service_area_segment,
+)
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
 from shared.airflow.common.validation import (
+    REQUIRED_NULL_ERROR_RATIO,
+    REQUIRED_NULL_WARNING_RATIO,
     S3Location,
     layout_tail,
     parse_handler_result,
+    parse_location,
     parse_year_month,
     read_parquet,
-    require_file,
+    run_quality_gate,
+    run_table_gx_validation,
 )
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA, EIA, FINAL
+from main.common.eia_fuel_version import (
+    FUEL_FILE_NAME,
+    fuel_source_tokens,
+    source_collected_at_token,
+)
+from shared.common.s3_reader import list_keys
+from shared.common.success_marker import data_key_is_complete, marker_path
 
 logger = logging.getLogger(__name__)
 
 SILVER_DIR = str(PROJECT_ROOT / "data" / "silver")
 INTEGRATED_DATASET = "gas_ev_price"
-INTEGRATED_FILE_NAME = "gas_ev_price.parquet"
+INTEGRATED_FILE_NAME = FUEL_FILE_NAME
 # 데이터가 나타내는 달. lambda loader 의 PARTITION_KEY 와 같아야 합니다.
 SILVER_PARTITION_KEY = "year_month"
 
@@ -63,12 +77,32 @@ def resolve_year_month(context: dict) -> str:
     return default_year_month(reference)
 
 
-def integrated_silver_file(base_dir: str, year_month: str) -> Path:
+def integrated_silver_file(
+    base_dir: str, year_month: str, input_version: str, service_area: str
+) -> Path:
+    if fuel_source_tokens(input_version) is None:
+        raise ValueError(f"Fuel input_version이 올바르지 않습니다: {input_version!r}")
+    dataset_root = Path(base_dir) / INTEGRATED_DATASET
+    area = service_area_segment(service_area)
     return (
-        Path(base_dir)
-        / INTEGRATED_DATASET
+        (dataset_root / area)
         / f"{SILVER_PARTITION_KEY}={year_month}"
+        / input_version
         / INTEGRATED_FILE_NAME
+    )
+
+
+def integrated_silver_key(
+    year_month: str, input_version: str, service_area: str
+) -> str:
+    if fuel_source_tokens(input_version) is None:
+        raise ValueError(f"Fuel input_version이 올바르지 않습니다: {input_version!r}")
+    prefix = service_area_prefix(
+        "silver", INTEGRATED_DATASET, service_area=service_area
+    )
+    return (
+        f"{prefix}/{SILVER_PARTITION_KEY}={year_month}/"
+        f"{input_version}/{INTEGRATED_FILE_NAME}"
     )
 
 
@@ -79,11 +113,10 @@ def month_day_count(year_month: str) -> int:
     return calendar.monthrange(year, month)[1]
 
 
-def require_clean_silver(base_dir: str, year_month: str) -> dict[str, str]:
-    """두 CLEAN Silver 의 대상 월 파티션이 모두 있는지 변환 **전에** 확인합니다.
-
-    하나만 있으면 변환이 더 안쪽에서 죽어 어느 정제가 문제인지 로그를 파야 합니다.
-    """
+def require_clean_silver(
+    base_dir: str, year_month: str, service_area: str
+) -> dict[str, str]:
+    """같은 지역의 두 CLEAN Silver 월 파티션을 변환 전에 확인합니다."""
     extractor = importlib.import_module(
         "main.aws_lambda.functions.eia_fuel_price_silver.extractor"
     )
@@ -100,24 +133,49 @@ def require_clean_silver(base_dir: str, year_month: str) -> dict[str, str]:
         (extractor.GAS_DATASET, "eia_gas_price_raw_to_silver_pipeline"),
         (extractor.ELECTRICITY_DATASET, "eia_electricity_price_raw_to_silver_pipeline"),
     ):
-        path = (
-            extractor.clean_silver_file(base_dir, dataset, year_month)
-            if storage == "local"
-            else S3Location(bucket, extractor.clean_silver_key(dataset, year_month))
-        )
-        try:
-            require_file(path)
-        except FileNotFoundError as exc:
+        if storage == "local":
+            partition = (
+                service_area_root(Path(base_dir) / dataset, service_area)
+                / f"year_month={year_month}"
+            )
+            candidates = []
+            for version in partition.glob("source_collected_at=*"):
+                token = source_collected_at_token(version.name)
+                path = version / f"{dataset}.parquet"
+                if token and path.is_file() and marker_path(version).is_file():
+                    candidates.append((token, path))
+            candidate = max(candidates, default=(None, None))[1]
+        else:
+            area_prefix = service_area_prefix(
+                "silver", dataset, service_area=service_area
+            )
+            prefix = f"{area_prefix}/year_month={year_month}/"
+            keys = set(list_keys(bucket, prefix))
+            candidates = []
+            for key in keys:
+                parts = key.removeprefix(prefix).split("/")
+                if len(parts) != 2 or parts[1] != f"{dataset}.parquet":
+                    continue
+                token = source_collected_at_token(parts[0])
+                if token and data_key_is_complete(key, keys):
+                    candidates.append((token, key))
+            key = max(candidates, default=(None, None))[1]
+            candidate = S3Location(bucket, key) if key else None
+
+        if candidate is None:
             raise FileNotFoundError(
-                f"{dataset} CLEAN Silver 가 없습니다: {path} — {dag_id} 을 먼저 돌리세요."
-            ) from exc
-        found[dataset] = str(path)
+                f"{dataset} CLEAN Silver 가 없습니다: {candidate} — "
+                f"{dag_id} 을 먼저 돌리세요."
+            )
+        found[dataset] = str(candidate)
 
     logger.info("EIA CLEAN Silver 확인 (%s 대상): %s", year_month, found)
     return found
 
 
-def validate_silver(result: object) -> None:
+def validate_silver(
+    result: object, service_area: str, context: dict | None = None
+) -> None:
     """스키마·행 수·날짜 완결성·출처를 확인합니다.
 
     날짜가 하루라도 비면 Gold 의 일자 조인에서 그 날 운행이 통째로 매칭 실패하고,
@@ -130,7 +188,13 @@ def validate_silver(result: object) -> None:
     expected = month_day_count(year_month)
     parsed = parse_handler_result(result, expected_locations=1)
     path = parsed.locations[0]
-    if layout_tail(path) != layout_tail(integrated_silver_file("", year_month)):
+    input_version = result.get("input_version") if isinstance(result, dict) else None
+    expected_path = integrated_silver_file(
+        "", year_month, input_version, service_area
+    )
+    if layout_tail(path, segments=4, service_area=service_area) != layout_tail(
+        expected_path, segments=4, service_area=service_area
+    ):
         raise ValueError(f"통합 연료비 Silver 경로 규칙이 다릅니다: {path}")
 
     # `pq.read_table` 은 경로의 `year_month=` 를 파티션 컬럼으로 덧붙입니다.
@@ -177,6 +241,19 @@ def validate_silver(result: object) -> None:
             year_month, FINAL, status or "표기없음",
         )
 
+    if isinstance(path, S3Location):
+        run_table_gx_validation(
+            table,
+            SCHEMA,
+            frozenset(SCHEMA.names),
+            dataset=INTEGRATED_DATASET,
+            layer="silver",
+            data_location=path,
+            context=context or {},
+            required_warning_ratio=REQUIRED_NULL_WARNING_RATIO,
+            required_error_ratio=REQUIRED_NULL_ERROR_RATIO,
+        )
+
     logger.info(
         "EIA 통합 Silver 검증 통과: %s rows=%d 수집분=%s 전력상태=%s",
         path, table.num_rows, collected.pop(), status or "(표기없음)",
@@ -187,7 +264,11 @@ def validate_silver(result: object) -> None:
 def check_clean_silver_task(**context) -> str:
     year_month = resolve_year_month(context)
     logger.info("EIA 연료비 대상 월: %s", year_month)
-    require_clean_silver(context["params"]["silver_dir"], year_month)
+    require_clean_silver(
+        context["params"].get("silver_dir") or SILVER_DIR,
+        year_month,
+        context["params"]["service_area"],
+    )
     return year_month
 
 
@@ -196,8 +277,16 @@ def combine_silver_task(**context) -> dict:
     params = context["params"]
     year_month = context["task_instance"].xcom_pull(task_ids="check_clean_silver")
 
-    event = {"year_month": year_month, "silver_dir": params["silver_dir"]}
-    result = lambda_handler_for("eia_fuel_price_silver")(event=event)
+    event = {
+        "year_month": year_month,
+        "service_area": params["service_area"],
+    }
+    result = invoke_lambda(
+        "eia_fuel_price_silver",
+        package="main.aws_lambda.functions",
+        event=event,
+        local_event={"silver_dir": params.get("silver_dir") or SILVER_DIR},
+    )
     return {"year_month": year_month, **result}
 
 
@@ -205,10 +294,18 @@ def combine_silver_task(**context) -> dict:
 def validate_silver_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="combine_silver")
     year_month = result["year_month"]
-    validate_silver(result)
+    service_area = assets.resolve_service_area(context.get("params", {}))
+    path = parse_location(result["locations"][0])
+    run_quality_gate(
+        path.parent,
+        lambda: validate_silver(result, service_area, context),
+        layer="silver",
+        context=context,
+    )
+
     assets.publish_month_partition(
         context.get("outlet_events"),
         assets.FUEL_PRICE_SILVER,
         year_month,
-        assets.resolve_service_area(context.get("params", {})),
+        service_area,
     )

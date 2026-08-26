@@ -2,13 +2,13 @@
 
 순서를 지키는 것이 이 모듈의 전부입니다.
 
-    eligible vehicle pool → inventory constraint → weak P(class | profile)
+    vehicle-group quota → inventory reserve → random model within group
 
-`rationality` 만큼만 비용 최적을 따릅니다. 1.0 으로 두면 배정이 정답을 그대로
-써서 메인 프로덕트의 추천이 generator 규칙을 복원하는 자기충족이 됩니다 (D5).
+기본 설정은 비용 최적을 따르지 않고 남은 개별 차량 중 하나를 무작위로 고릅니다.
+`rationality`는 과거 실험 재현을 위해 남겨 두되 기본값은 0.0입니다.
 
-재고는 **모델 단위**로 셉니다. 같은 모델의 개체는 비용이 동일해서 개체마다 비용을
-다시 계산할 이유가 없습니다.
+재고는 **모델 단위**로 세고, 기사는 BOTH:SINGLE:STANDARD=1:1:8로 나눕니다.
+같은 그룹 안에서는 남은 배정 가능 대수에 비례해 무작위로 차종을 고릅니다.
 
 `sub/prototype/assign.py` 를 그대로 옮겼습니다.
 """
@@ -20,12 +20,11 @@ from collections import deque
 import numpy as np
 import pandas as pd
 
+from sub.generators.synthetic_driver_state.fleet import (
+    VEHICLE_GROUP_SHARES,
+    apportion_counts,
+)
 from sub.seeds import Stage, derive_entity_seed, derive_seed
-
-# 프리미엄 선호가 이 값 이상인 기사는 자격 있는 차만 봅니다. 근거 없는 가정이고,
-# 손잡이가 하나 더 늘어나는 걸 막으려고 중앙값으로 둡니다.
-PREMIUM_SEEKER_THRESHOLD = 0.5
-
 
 def model_weekly_cost(models: pd.DataFrame) -> np.ndarray:
     """모델별 주당 총비용 = 렌트비.
@@ -67,31 +66,65 @@ def assign_vehicles(
         for model_id, group in available_units.groupby("vehicle_model_id")
     }
     remaining = np.asarray([len(queues[m]) for m in models["vehicle_model_id"]], dtype=int)
-    is_premium = (models["vehicle_group"] != "STANDARD").to_numpy()
-
     stage_seed = derive_seed(global_seed, Stage.VEHICLE_ASSIGNMENT, target_month)
+    driver_ids = sorted(drivers["driver_id"].astype(str))
+    present_groups = sorted(models["vehicle_group"].astype(str).unique())
+    group_targets = apportion_counts(
+        len(driver_ids), {group: VEHICLE_GROUP_SHARES[group] for group in present_groups}
+    )
+    group_labels = np.asarray([
+        group
+        for group in sorted(group_targets)
+        for _ in range(group_targets[group])
+    ], dtype=object)
+    np.random.default_rng(stage_seed).shuffle(group_labels)
+    driver_group = dict(zip(driver_ids, group_labels))
+
+    # 그룹별 총 재고와 배정 목표의 차이가 곧 남길 재고입니다. 이를 모델의 초기
+    # 재고 비율로 나누면 BOTH/SINGLE은 약 33.3%, STANDARD는 약 16.7%를 남깁니다.
+    reserved = np.zeros(len(models), dtype=int)
+    model_groups = models["vehicle_group"].to_numpy()
+    for group in present_groups:
+        indexes = np.flatnonzero(model_groups == group)
+        reserve_total = max(0, int(remaining[indexes].sum()) - group_targets[group])
+        reserve_by_model = apportion_counts(
+            reserve_total,
+            {
+                str(models.at[index, "vehicle_model_id"]): float(remaining[index])
+                for index in indexes
+            },
+        )
+        for index in indexes:
+            reserved[index] = reserve_by_model[str(models.at[index, "vehicle_model_id"])]
+
     assigned: dict[str, str] = {}
     # 기사 순서가 재고 경쟁 결과를 정하므로 driver_id 정렬로 고정합니다.
     for record in drivers.sort_values("driver_id").to_dict("records"):
-        in_stock = remaining > 0
-        if not in_stock.any():
+        assignable = remaining > reserved
+        if not assignable.any():
             break
         driver_id = record["driver_id"]
         rng = np.random.default_rng(derive_entity_seed(stage_seed, driver_id))
 
-        # 1) eligible pool
-        eligible = in_stock
-        if record["tier_preference"] >= PREMIUM_SEEKER_THRESHOLD and (in_stock & is_premium).any():
-            eligible = in_stock & is_premium
+        # 1) 그룹 비율에 따라 먼저 정한 eligible pool. 그룹 안의 차종만 무작위입니다.
+        target_group = driver_group[driver_id]
+        eligible = assignable & (models["vehicle_group"].to_numpy() == target_group)
+        if not eligible.any():
+            continue
 
-        # 2) inventory constraint 는 위 `in_stock` 이 곧 그것입니다.
+        # 2) inventory constraint 는 위 `assignable` 이 곧 그것입니다.
         # 3) weak P(class | profile)
         indexes = np.flatnonzero(eligible)
         if rng.random() < rationality:
             cost = model_weekly_cost(models.iloc[indexes])
             chosen = int(indexes[int(np.argmin(cost))])
         else:
-            chosen = int(indexes[int(rng.integers(0, len(indexes)))])
+            # 차종을 균등 추첨하면 재고가 적은 고가 차종도 초반에 같은 확률로 뽑혀
+            # 조기 소진됩니다. 남은 대수를 가중치로 쓰면 개별 차량 한 대마다 선택
+            # 확률이 같고, 가격은 선택 확률에 직접 개입하지 않습니다.
+            assignable_count = remaining[indexes] - reserved[indexes]
+            probability = assignable_count / assignable_count.sum()
+            chosen = int(rng.choice(indexes, p=probability))
 
         model_id = str(models.at[chosen, "vehicle_model_id"])
         assigned[driver_id] = queues[model_id].popleft()

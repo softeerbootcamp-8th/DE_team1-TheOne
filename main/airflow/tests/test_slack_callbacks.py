@@ -7,12 +7,16 @@
    모든 검증 가드의 실패가 아무한테도 안 감 (#546)
 5. 렌더한 결과의 시도 표기가 분자·분모 같은 축을 씀 — clear 후 재실행에서
    `2 / 1` 이 나가던 문제 (#550)
-6. 실패 사유를 싣되 길면 자름. 없으면 `None` 이 아니라 `(사유 없음)`
+6. 실패 사유를 싣되 길면 자름. 없으면 `None` 이 아니라 `(사유 없음)`.
+   여러 줄이면 한 줄로 접음 — Slack 인라인 코드는 줄을 못 넘어서 EMR 실패
+   사유처럼 줄바꿈이 있으면 백틱이 글자 그대로 찍힘
 7. Block Kit은 상태·실행 유형·원인·조치를 먼저, 기술 식별자를 나중에 표시
 8. Gold 성공은 대상 연월과 Asset 실행 유형을 표시
 9. 모든 알림(텍스트·Block)이 파티션 키를 표시 — 지역 축(#674)이 들어가면 이걸로
    어느 지역이 죽었는지 가린다
 10. 파티션이 없는 DAG(키 부재·None)에서도 StrictUndefined 렌더링이 죽지 않고 `-` 로 찍힘
+11. 배포가 웹훅 커넥션을 환경변수로 넣음 — DB 에만 있으면 볼륨과 함께 조용히
+    사라지고, 4번과 같은 '알림 죽은 초록불' 이 됩니다
 """
 
 import importlib
@@ -63,6 +67,7 @@ DAG_MODULES = {
     "dags.vehicle_master_silver_dag": "vehicle_master_dag",
 }
 DAGS_DIR = Path(__file__).resolve().parents[1] / "dags"
+ROOT = Path(__file__).resolve().parents[3]
 DAG_MODULES = {
     module_name: dag_variable
     for module_name, dag_variable in DAG_MODULES.items()
@@ -341,6 +346,38 @@ def test_긴_예외는_잘라서_싣는다(text):
     assert reason.endswith("...`")
 
 
+# EMR Serverless 실패 사유는 "Last few exceptions:" 뒤에 예외를 줄 단위로 붙입니다.
+MULTILINE_EXCEPTION = RuntimeError(
+    "EMR Serverless job 실패: Serverless Job failed: FAILED - Job failed, please check "
+    "complete logs in configured logging destination. ExitCode: 1. Last few exceptions:\n"
+    "psycopg2.errors.UniqueViolation: duplicate key value violates unique constraint\n"
+    '"driver_aggregation_pkey"'
+)
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_여러_줄_사유도_한_줄로_접어_싣는다(text):
+    """Slack 의 인라인 코드(백틱 1개)는 줄을 넘지 못합니다. 여러 줄 사유를 그대로
+    실으면 여는 백틱과 닫는 백틱이 서로 다른 줄에 놓여 양쪽 다 짝이 없어지고,
+    Slack 이 코드로 렌더하지 않고 백틱을 글자 그대로 찍습니다 — 실제 EMR 실패
+    알림이 이렇게 깨져서 왔습니다. 다른 항목은 값이 한 줄이라 멀쩡했습니다.
+    """
+    rendered = _render(text, exception=MULTILINE_EXCEPTION)
+
+    reason = next(line for line in rendered.splitlines() if line.startswith("*원인*"))
+    assert reason.count("`") == 2, "백틱이 짝이 맞아야 코드로 렌더됩니다"
+    assert "driver_aggregation_pkey" in reason, "접느라 뒷부분을 잃으면 안 됩니다"
+
+
+@pytest.mark.parametrize("text", ALERT_TEXTS)
+def test_사유_안의_백틱이_코드_스팬을_깨지_않는다(text):
+    """검증 실패 메시지가 경로를 백틱으로 감싸는 경우가 있습니다."""
+    rendered = _render(text, exception=RuntimeError("`s3://de-theone/x` 가 없습니다"))
+
+    reason = next(line for line in rendered.splitlines() if line.startswith("*원인*"))
+    assert reason.count("`") == 2
+
+
 @pytest.mark.parametrize("text", ALERT_TEXTS)
 def test_예외가_없으면_None_이_아니라_사유_없음으로_찍는다(text):
     """`exception` 은 None 일 수 있고, `| string` 을 먼저 태우면 "None" 이 찍힙니다."""
@@ -420,3 +457,42 @@ def test_파티션이_없는_DAG에서도_알림이_렌더된다(text, context, 
         line for line in rendered.splitlines() if line.startswith("*파티션*")
     )
     assert partition_line == f"*파티션*: `{expected}`"
+
+
+def test_배포는_웹훅_커넥션을_환경변수로_넣는다():
+    """`airflow connections add` 로 손수 넣으면 값이 Postgres 볼륨에만 남습니다.
+    볼륨 삭제나 인스턴스 교체로 사라져도 DAG 는 그대로 돌기 때문에, 알림만 끊긴 것을
+    아무도 모릅니다. 배포마다 다시 써지는 환경변수라야 그 상태가 생기지 않습니다.
+
+    조회 순서가 EnvironmentVariablesBackend -> MetastoreBackend 이므로 이 값이
+    남아 있는 DB 행보다 우선합니다.
+    """
+    from shared.airflow.common.slack_failure_callback import SLACK_WEBHOOK_CONN_ID
+
+    compose = (ROOT / "docker-compose.ec2.yml").read_text()
+    workflow = (ROOT / ".github/workflows/deploy-airflow.yml").read_text()
+
+    # 커넥션 id 를 바꾸면 환경변수 이름도 함께 바뀌어야 합니다
+    assert f"AIRFLOW_CONN_{SLACK_WEBHOOK_CONN_ID.upper()}:" in compose
+
+    # 값이 비면 알림이 조용히 죽으니 필수 변수로 둡니다
+    assert "${SLACK_WEBHOOK_URL:?" in compose
+
+    # URL 은 password 에 둡니다 — host 는 암호화 대상이 아닙니다
+    assert '"password": "${SLACK_WEBHOOK_URL' in compose
+
+    # CD 가 .env 에 써주지 않으면 위 필수 변수 때문에 컨테이너가 아예 안 뜹니다
+    assert "SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}" in workflow
+    assert "echo SLACK_WEBHOOK_URL=" in workflow
+
+    # 웹훅 URL 이 저장소에 박히지 않았는지
+    assert "hooks.slack.com/services/T" not in compose + workflow
+
+
+@pytest.mark.parametrize("blocks", ALL_ALERT_BLOCKS)
+def test_Block에서도_여러_줄_사유가_코드_스팬을_깨지_않는다(blocks):
+    """텍스트 폴백과 Block Kit 이 같은 REASON_TEXT 를 씁니다. 한쪽만 고치면
+    실제로 나가는 Block 쪽이 깨진 채로 남습니다.
+    """
+    for line in _render_blocks(blocks, exception=MULTILINE_EXCEPTION).splitlines():
+        assert line.count("`") % 2 == 0, f"짝 없는 백틱: {line!r}"

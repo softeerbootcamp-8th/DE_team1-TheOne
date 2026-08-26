@@ -1,22 +1,36 @@
 """기사별 월간 차량 추천 대시보드.
 
-Gold 3종(`driver_car_suggestion`, `driver_aggregation`, `monthly_report`)을 읽는다.
-`DASHBOARD_DATA_SOURCE` 환경변수로 로컬 CSV(기본)/RDS를 전환한다 — `datasource.py` 참고.
-세 데이터셋 모두 `year_month` 단일 그레인 — `main/spark/jobs/silver_to_gold/job.py` 산출물.
+Gold 4종(`driver_car_suggestion`, `driver_aggregation`, `recommendation_algorithm`,
+`silver_lineage`)을 읽는다. `DASHBOARD_DATA_SOURCE` 환경변수로 로컬 CSV(기본)/RDS를
+전환한다 — `datasource.py` 참고.
 
 화면 구성은 위에서 아래로 한 줄기다.
-    필터 한 줄 → 히어로(회사 총 매출 증가) → 지표 타일 → 분포·차종 → 선정 게이트 → 리스트 → 기사 상세
+    알고리즘·하한 선택 → 지역·월 필터 → 히어로(회사 총 매출 증가) → 지표 타일
+    → 분포·차종 → 선정 게이트 → 리스트 → 기사 상세
 필터는 화면 전체를 한 번에 스코프한다 (차트별 필터를 두지 않는다).
 """
+
+import base64
+from pathlib import Path
 
 import pandas as pd
 import streamlit as st
 
 import charts
 import theme
-from datasource import build_data_source
+from datasource import DataSource, build_data_source
 
-_DATA_SOURCE = build_data_source()
+LOGO_PATH = Path(__file__).resolve().parent / "assets" / "logo_for_dashboard.png"
+
+# 기사 예상 월 순수익 증가 하한 기본값 (USD). Gold monthly_report 제거(#915) 이후
+# 더 이상 Gold가 계산해주지 않아 대시보드 상수로 둔다. threshold를 안 쓰는 알고리즘
+# (v1)에는 이 값을 그대로 쓴다.
+DEFAULT_THRESHOLD = 500.0
+
+# schema.gold.DriverCarSuggestion.threshold의 sentinel — 알고리즘이 threshold를
+# 쓰지 않으면 이 값으로 통일해 적재된다(#997). 실제 threshold는 항상 0 이상이라
+# 구분된다.
+NO_THRESHOLD = -1
 
 SUGGESTION_COLUMNS = {
     "driver_id": "기사 ID",
@@ -29,14 +43,45 @@ SUGGESTION_COLUMNS = {
 }
 
 
-@st.cache_data(ttl=5)
+@st.cache_resource
+def _logo_data_uri() -> str:
+    """로고를 base64 data URI로 한 번만 인코딩해 재사용한다.
+
+    렌더링마다 `<img src="...">`에 박아 넣는 raw HTML이라, 로컬 파일 경로로는
+    브라우저가 못 읽는다 — data URI로 직접 값을 실어야 한다.
+    """
+    encoded = base64.b64encode(LOGO_PATH.read_bytes()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
+
+
+@st.cache_resource
+def _data_source() -> DataSource:
+    """RDS 연결은 재실행마다 새로 맺지 않고 프로세스 생존 기간 동안 재사용한다.
+
+    데이터셋이 2종에서 4종(#987)으로 늘면서 매 렌더링마다 새 연결을 맺으면
+    (SSH 터널 경유 시 연결당 ~150-300ms) 왕복 비용만 1초 가까이 쌓였다.
+    """
+    return build_data_source()
+
+
+# 4개 데이터셋을 다 읽는 데 실측 1.9초다(대부분이 8.6만 행짜리
+# `driver_car_suggestion`). 5초였을 때는 필터를 한 번 만지는 사이에 캐시가 만료돼
+# 조작마다 그 1.9초를 다시 냈다 — Gold 는 월 단위 적재라 그만한 신선도가 필요 없다.
+#
+# 30초로 둔다. 연속 조작은 캐시를 타서 즉시 반응하고, 새 적재도 30초 안에 뜬다.
+# 더 빠릿하게 하려면 올려도 되지만 그만큼 새 데이터가 늦게 보인다.
+DATA_TTL_SECONDS = 30
+
+
+@st.cache_data(ttl=DATA_TTL_SECONDS)
 def load(dataset: str) -> pd.DataFrame:
-    return _DATA_SOURCE.load(dataset)
+    return _data_source().load(dataset)
 
 
 def recommendation_scope(
     suggestion: pd.DataFrame,
     aggregation: pd.DataFrame,
+    service_area: str,
     period: str,
     threshold: float,
 ) -> pd.DataFrame:
@@ -52,12 +97,17 @@ def recommendation_scope(
         }
     )
     eligible = suggestion[
-        (suggestion["year_month"] == period)
+        (suggestion["service_area"] == service_area)
+        & (suggestion["year_month"] == period)
         & (suggestion["expected_net_profit_increase"] >= threshold)
         & (suggestion["expected_revenue_increase"] > 0)
     ]
     return (
-        eligible.merge(current, on=["driver_id", "year_month"], how="inner")
+        eligible.merge(
+            current,
+            on=["service_area", "driver_id", "year_month"],
+            how="inner",
+        )
         .sort_values("expected_net_profit_increase", ascending=False)
         .reset_index(drop=True)
     )
@@ -80,8 +130,8 @@ def _head(period: str, generated_rows: int) -> None:
     st.markdown(
         f"""
         <div class="dash-head">
-          <div>
-            <h1>기사별 월간 차량 추천</h1>
+          <div style="display:flex; align-items:center; gap:.75rem;">
+            <img src="{_logo_data_uri()}" alt="logo" style="height:180px;">
             <p>Gold 산출물 기준 예상치 · 기사 순수익과 회사 렌탈 매출이 함께 늘어나는 교체 후보</p>
           </div>
           <div style="display:flex; gap:.5rem; align-items:center;">
@@ -141,18 +191,31 @@ def _aggregates(scope: pd.DataFrame) -> dict[str, float]:
     }
 
 
-def _previous_period(periods: list[str], period: str) -> str | None:
-    """정렬된 월 목록에서 바로 앞 달. 없으면 None — 델타를 숨기는 신호."""
-    ordered = sorted(periods)
-    index = ordered.index(period)
-    return ordered[index - 1] if index > 0 else None
+def _silver_source_expander(
+    lineage: pd.DataFrame, service_area: str, period: str
+) -> None:
+    """맨 아래 접힌 상태로 이번 실행이 읽은 Silver 4종 경로를 보여준다.
 
-
-def _delta(current: float, previous: float | None, money: bool = True) -> str | None:
-    if previous is None:
-        return None
-    diff = current - previous
-    return f"{diff:+,.0f}" if not money else f"${diff:+,.0f}"
+    lineage 는 지역·월 당 가장 최근 실행 한 행만 담고 있다(algorithm 축 없음) —
+    선택된 알고리즘 버전이 최신 실행과 다르면 그 실행의 출처와는 다를 수 있다.
+    """
+    with st.expander("Silver 데이터 출처", expanded=False):
+        matched = (
+            lineage[
+                (lineage["service_area"] == service_area)
+                & (lineage["year_month"] == period)
+            ]
+            if not lineage.empty
+            else lineage
+        )
+        if matched.empty:
+            st.caption("이 지역·월의 Silver 출처 정보가 없습니다.")
+            return
+        row = matched.iloc[0]
+        st.caption(f"운행 기록: {row['silver_monthly_taxi_trip_s3_link']}")
+        st.caption(f"기사 차량 스냅샷: {row['silver_driver_vehicle_monthly_snapshot_s3_link']}")
+        st.caption(f"보유 차량: {row['silver_lease_vehicle_inventory_s3_link']}")
+        st.caption(f"연료비: {row['silver_gas_ev_price_s3_link']}")
 
 
 # ── 화면 ───────────────────────────────────────────────────────────────────────
@@ -160,90 +223,100 @@ def _delta(current: float, previous: float | None, money: bool = True) -> str | 
 
 def render() -> None:
     st.set_page_config(
-        page_title="기사 차량 추천",
-        page_icon="🚕",
+        page_title="NEXT MOVE",
+        page_icon=str(LOGO_PATH),
         layout="wide",
         initial_sidebar_state="collapsed",
     )
     mode = theme.mode()
     theme.inject_css(mode)
 
-    report = load("monthly_report")
     suggestion = load("driver_car_suggestion")
     aggregation = load("driver_aggregation")
+    algorithms = load("recommendation_algorithm")
+    lineage = load("silver_lineage")
 
-    if report.empty or suggestion.empty or aggregation.empty:
+    if suggestion.empty or aggregation.empty:
         st.error(
             "data/gold 가 비어 있습니다. "
             "main/spark/jobs/silver_to_gold/job.py 를 먼저 실행하세요."
         )
         st.stop()
 
-    periods = sorted(report["year_month"].unique(), reverse=True)
-
     # 제목은 필터보다 위에 보여야 하니 자리를 먼저 잡고, 값이 정해진 뒤 채운다.
     head_slot = st.container()
 
-    # ── 필터 한 줄: 아래 모든 카드·차트·표가 이 값으로 스코프된다 ──
-    f1, f2 = st.columns([1, 2], vertical_alignment="bottom")
-    period = f1.selectbox("월", periods)
+    # ── 필터 한 줄: 알고리즘 → 하한 → 지역 → 월. 좁은 4칸에 나눠 담아 한 줄에 붙인다 ──
+    algo_col, threshold_col, area_col, month_col = st.columns(4, vertical_alignment="bottom")
 
-    report_row = report[report["year_month"] == period].iloc[0]
-    gold_threshold = float(report_row["threshold_profit_increase"])
-    month_suggestion = suggestion[suggestion["year_month"] == period]
-
-    threshold = f2.slider(
-        "기사 예상 월 순수익 증가 하한 ($)",
-        min_value=0.0,
-        max_value=float(month_suggestion["expected_net_profit_increase"].max()),
-        value=gold_threshold,
-        step=50.0,
-        format="$%d",
-        help=rf"Gold 월간 리포트 기준값은 \${gold_threshold:,.0f} 입니다.",
+    # 알고리즘 버전: 이 값으로 suggestion 전체를 좁힌 뒤 나머지 필터를 적용한다.
+    # 최신(가장 큰) 버전을 기본값으로 — 새 버전이 추가되면 그게 기본으로 뜬다.
+    algorithm_options = sorted(suggestion["recommendation_algorithm_version_id"].unique())
+    algorithm_id = algo_col.selectbox(
+        "알고리즘 버전", algorithm_options, index=len(algorithm_options) - 1
     )
+    descriptions = (
+        dict(zip(algorithms["recommendation_algorithm_version_id"], algorithms["description"]))
+        if not algorithms.empty
+        else {}
+    )
+    suggestion = suggestion[
+        suggestion["recommendation_algorithm_version_id"] == algorithm_id
+    ]
 
-    scope = recommendation_scope(suggestion, aggregation, period, threshold)
+    # 순수익 증가 하한: 이 알고리즘이 실제로 쌓은 값 중에서만 고른다(#998).
+    # 값이 전부 sentinel이면 이 알고리즘은 하한 축이 없다는 뜻 — 셀렉트박스
+    # 대신 캡션만 보여주고, 기존 기본 하한을 그대로 쓴다. 알고리즘 ID로 분기하지
+    # 않아서 나중에 하한 없는 알고리즘이 늘어도 그대로 통한다.
+    if (suggestion["threshold"] == NO_THRESHOLD).all():
+        threshold = DEFAULT_THRESHOLD
+        threshold_col.caption(f"기본 하한 ${threshold:,.0f}")
+    else:
+        # 가장 엄격한(가장 큰) 하한을 기본값으로 — 안전한 쪽이 기본이다.
+        available_thresholds = sorted(suggestion["threshold"].unique())
+        threshold = threshold_col.selectbox(
+            "기사 순수익 증가 하한 ($)",
+            available_thresholds,
+            index=len(available_thresholds) - 1,
+            format_func=lambda value: f"${value:,.0f}",
+        )
+        suggestion = suggestion[suggestion["threshold"] == threshold]
+
+    service_area = area_col.selectbox("지역", sorted(suggestion["service_area"].unique()))
+    area_suggestion = suggestion[suggestion["service_area"] == service_area]
+    periods = sorted(area_suggestion["year_month"].unique(), reverse=True)
+    period = month_col.selectbox("월", periods)
+
+    st.caption(descriptions.get(algorithm_id, "이 버전에 대한 설명이 없습니다."))
+
+    month_suggestion = area_suggestion[area_suggestion["year_month"] == period]
+
+    scope = recommendation_scope(
+        suggestion, aggregation, service_area, period, threshold
+    )
 
     with head_slot:
         _head(period, len(month_suggestion))
 
-    if threshold != gold_threshold:
-        st.caption(
-            rf"Gold 리포트 기준(\${gold_threshold:,.0f}, "
-            f"{int(report_row['recommended_driver_count']):,}명) 대신 "
-            rf"하한 \${threshold:,.0f} 로 다시 계산한 값입니다."
-        )
-
     agg = _aggregates(scope)
     _hero(agg["total_revenue"], int(agg["count"]), agg["avg_profit"],
           len(month_suggestion))
-
-    # 지난 달 대비 델타 — 같은 하한을 적용해 비교 기준을 맞춘다.
-    previous = _previous_period(list(report["year_month"].unique()), period)
-    prev_agg = (
-        _aggregates(recommendation_scope(suggestion, aggregation, previous, threshold))
-        if previous
-        else None
-    )
 
     st.write("")
     t1, t2, t3, t4 = st.columns(4)
     t1.metric(
         "추천 대상 기사",
         f"{int(agg['count']):,}명",
-        delta=_delta(agg["count"], prev_agg["count"] if prev_agg else None, money=False),
         help=f"{period} 분석 대상 {len(month_suggestion):,}명 중"
         f" {agg['count'] / max(len(month_suggestion), 1):.1%}",
     )
     t2.metric(
         "기사 1인당 예상 월 순수익 증가",
         f"${agg['avg_profit']:,.0f}",
-        delta=_delta(agg["avg_profit"], prev_agg["avg_profit"] if prev_agg else None),
     )
     t3.metric(
         "회사 평균 예상 월 렌탈 객단가 증가",
         f"${agg['avg_revenue']:,.0f}",
-        delta=_delta(agg["avg_revenue"], prev_agg["avg_revenue"] if prev_agg else None),
     )
     t4.metric(
         "추천 차종 수",
@@ -257,6 +330,7 @@ def render() -> None:
 
     if scope.empty:
         st.info("이 조건에는 해당하는 기사가 없습니다. 하한을 낮춰 보세요.")
+        _silver_source_expander(lineage, service_area, period)
         return
 
     # ── 분포 · 차종 · 사유 ──
@@ -331,6 +405,7 @@ def render() -> None:
     selected_rows = event.selection.rows if event and event.selection else []
     if not selected_rows:
         _section("기사 상세", "리스트에서 기사를 선택하면 현재 차량과 추천 차량을 나란히 비교합니다")
+        _silver_source_expander(lineage, service_area, period)
         return
 
     picked = scope.iloc[selected_rows[0]]
@@ -402,6 +477,8 @@ def render() -> None:
             """,
             unsafe_allow_html=True,
         )
+
+    _silver_source_expander(lineage, service_area, period)
 
 
 if __name__ == "__main__":

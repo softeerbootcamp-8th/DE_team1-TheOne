@@ -5,6 +5,8 @@
 3. 릴리스 재실행 → 완결된 기존 결과를 중복 생성하지 않음
 4. 정제 코드 소유권 → source job의 HVFHV 정제는 shared/ 를 그대로 쓰고, sub/ 자체
    스키마(schema/source)는 shared/ 가 쓰는 main 쪽 스키마와 구조가 같아야 함
+5. S3 발행 키 → `published/NYC` 아래에서 source_api 와 dataset 이름이 같음 (#859)
+6. 전체 차량 재고 → 배정되지 않은 차량까지 `stock`에 포함 (#974)
 """
 
 from datetime import date, datetime
@@ -43,6 +45,7 @@ from sub.spark.jobs.driver_assignment.source_job import (
     build_lease_vehicle_inventory,
     build_trip_source,
     write_source_release,
+    write_source_release_s3,
 )
 
 
@@ -164,7 +167,14 @@ def test_월별_상태는_체크포인트로_이어지고_기존_Spark_경로가
 
     first_cdv = pd.read_parquet(first.current_driver_vehicle_path)
     second_cdv = pd.read_parquet(second.current_driver_vehicle_path)
+    first_fleet = pd.read_parquet(first.fleet_units_path)
+    second_fleet = pd.read_parquet(second.fleet_units_path)
     assert len(first_cdv) == 400
+    assert len(first_fleet) > first_cdv["taxi_id"].nunique()
+    pd.testing.assert_frame_equal(
+        first_fleet.sort_values("taxi_id").reset_index(drop=True),
+        second_fleet.sort_values("taxi_id").reset_index(drop=True),
+    )
     # 경로가 str 인 이유 — `s3://` 도 담습니다(#767). `Path` 로 감싸면 스킴이 깨집니다.
     assert first.snapshot_dir.endswith("data_month=2026-08")
     assert second.snapshot_dir.endswith("data_month=2026-09")
@@ -377,11 +387,11 @@ def test_경력은_근속보다_짧을_수_없고_시드마다_재현된다(spar
     assert run(42) == run(42)              # 같은 시드면 재현
 
 
-def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집계한다(spark):
-    current_driver_vehicle = _current_driver_vehicle(spark, [
+def test_보유차량은_미배정차량까지_차종별_전체재고로_집계한다(spark):
+    fleet_units = _current_driver_vehicle(spark, [
         (f"driver-{i}", taxi_id, date(2023, 1, 1), date(2023, 1, 1), None,
          "KIA", "SPORTAGE", 2023, 574.0, True, False)
-        for i, taxi_id in enumerate(("taxi-1", "taxi-2"))
+        for i, taxi_id in enumerate(("taxi-1", "taxi-2", "taxi-unassigned"))
     ])
     vehicle_master = spark.createDataFrame(
         [
@@ -400,12 +410,12 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
         "combined_mpg_max double, image_url string, product string",
     )
 
-    inventory = build_lease_vehicle_inventory(current_driver_vehicle, vehicle_master)
+    inventory = build_lease_vehicle_inventory(fleet_units, vehicle_master)
     row = inventory.first()
 
     assert inventory.columns == LEASE_VEHICLE_INVENTORY_SCHEMA.names
     assert inventory.count() == 1
-    assert row.stock == 2
+    assert row.stock == 3
     assert row.fuel_efficiency == 26.0
     assert row.manufacturer == "KIA" and row.model_name == "SPORTAGE"
     assert row.comfort_eligible is True and row.extra_comfort_eligible is False
@@ -415,10 +425,8 @@ def test_보유차량은_이미지의_11개컬럼으로_차종별_재고를_집�
 
 
 def test_보유차량_재고는_재배정된_taxi_id를_두_번_세지_않는다(spark):
-    """#609 — 퇴사 기사와 신규 기사가 같은 달에 같은 taxi_id 를 나눠 갖고 있으면
-    (재배정) `current_driver_vehicle`에 그 taxi_id 가 두 행으로 남습니다. taxi_id
-    로 먼저 dedup 하지 않으면 물리적으로 한 대인 차량이 재고 두 대로 집계됩니다."""
-    current_driver_vehicle = _current_driver_vehicle(spark, [
+    """전체 차량 입력에 같은 taxi_id가 중복돼도 한 대로만 집계합니다."""
+    fleet_units = _current_driver_vehicle(spark, [
         ("driver-1", "taxi-1", date(2020, 1, 1), date(2020, 1, 1), date(2026, 1, 15),
          "KIA", "SPORTAGE", 2023, 574.0, True, False),
         ("driver-2", "taxi-1", date(2026, 1, 15), date(2026, 1, 15), None,
@@ -430,7 +438,7 @@ def test_보유차량_재고는_재배정된_taxi_id를_두_번_세지_않는다
         "combined_mpg_max double, image_url string, product string",
     )
 
-    inventory = build_lease_vehicle_inventory(current_driver_vehicle, vehicle_master)
+    inventory = build_lease_vehicle_inventory(fleet_units, vehicle_master)
 
     assert inventory.first().stock == 1
 
@@ -510,10 +518,74 @@ def test_완결된_릴리스를_같은_입력으로_다시_써도_중복되지_�
 
     assert first == second
     assert len(list(tmp_path.glob("year_month=2026-01"))) == 1
-    assert spark.read.parquet(str(first / "hvfhv_taxi_trips.parquet")).count() == 1
+    assert spark.read.parquet(str(first / "monthly_taxi_trip.parquet")).count() == 1
     assert spark.read.parquet(str(first / "driver_vehicle_monthly_snapshot.parquet")).count() == 1
     assert spark.read.parquet(str(first / "lease_vehicle_inventory.parquet")).count() == 1
     assert (first / "manifest.json").is_file()
+
+
+def test_S3_발행이_쓴_키를_API가_같은_dataset_이름으로_읽는다(monkeypatch):
+    """발행(`write_source_release_s3`)과 서빙(`S3DatasetStorage`)이 같은 폴더를 봐야 합니다.
+
+    이름이 갈려도 발행은 성공하고 행 수도 맞아서, 발행 로그만 보면 정상으로 보입니다 —
+    API 만 404 입니다. 실제로 운행을 `hvfhv_taxi_trips/` 로 발행하고 API 는
+    `monthly_taxi_trip/` 을 읽어 prod 에서 못 받았습니다 (#859).
+
+    Spark 의 s3a 쓰기는 moto 로 흉내낼 수 없어 `_write_one_parquet_s3` 를 키 기록기로
+    바꿉니다 — 그 함수 자체가 하는 일은 아래 `_fake_hadoop_path` 쪽 테스트가 봅니다.
+    """
+    import boto3
+    from moto import mock_aws
+
+    from sub.source_api.server import DATASETS, S3DatasetStorage
+    from sub.spark.jobs.driver_assignment import source_job
+
+    bucket, region = "test-source-bucket", "ap-northeast-2"
+    trips = MagicMock(name="monthly_taxi_trip")
+    snapshots = MagicMock(name="driver_vehicle_monthly_snapshot")
+    inventory = MagicMock(name="lease_vehicle_inventory")
+    for frame in (trips, snapshots, inventory):
+        frame.count.return_value = 1
+
+    written: list[str] = []
+    monkeypatch.setattr(
+        source_job,
+        "_write_one_parquet_s3",
+        lambda frame, *, bucket, key: written.append(key),
+    )
+    monkeypatch.setattr(source_job, "_validate_temporal_links", lambda *_: None)
+
+    with mock_aws():
+        client = boto3.client("s3", region_name=region)
+        client.create_bucket(
+            Bucket=bucket,
+            CreateBucketConfiguration={"LocationConstraint": region},
+        )
+
+        write_source_release_s3(
+            trips,
+            snapshots,
+            inventory,
+            bucket=bucket,
+            run=RunContext.create("2026-01", _monthly_config(50)),
+            input_scope="full",
+        )
+
+        assert len(written) == len(DATASETS)
+        assert all(key.startswith("source/published/NYC/") for key in written)
+        assert {
+            item["Key"]
+            for item in client.list_objects_v2(Bucket=bucket).get("Contents", [])
+        } == {"source/published/NYC/_manifests/year_month=2026-01.json"}
+        for key in written:
+            client.put_object(Bucket=bucket, Key=key, Body=b"PAR1")
+
+        storage = S3DatasetStorage(bucket)
+        for dataset in sorted(DATASETS):
+            opened = storage.open(dataset, "2026-01")
+            assert opened is not None, f"발행이 쓰지 않는 폴더를 읽고 있습니다: {dataset}"
+            stream, _ = opened
+            stream.close()
 
 
 def _fake_hadoop_path(uri, *, fs=None):

@@ -5,7 +5,10 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
+from schema.source import DRIVER_PREFERENCES_SCHEMA
 from sub.spark.jobs.driver_master.traits import (
     DISTANCE_LABELS,
     DISTANCE_MEDIUM_MAX_MI,
@@ -13,30 +16,11 @@ from sub.spark.jobs.driver_master.traits import (
     sample_driver_traits,
 )
 
-PREFERENCE_COLUMNS = [
-    "driver_id",
-    # 요일(0=월~6=일)·시간대(0~7) 인덱스의 비트마스크 정수입니다. 문자열 배열
-    # (예전 `active_weekdays`/`preferred_time_blocks`) 대신 candidates.py 가
-    # 비트 연산으로 멤버십을 검사합니다 — Spark 자체 벡터화 연산이라 이득이
-    # 크진 않지만, `array_contains` 와 데이터 계약을 하나로 맞춥니다(#643).
-    "weekday_mask",
-    "time_block_mask",
-    "time_block_weights",
-    "preferred_distance_band",
-    "preferred_distance_miles",
-    "airport_preference",
-    "manhattan_preference",
-    "tier_preference",
-    # 참고용 근사치입니다 — candidates.py/allocator.py는 더 이상 이 값을 하루 상한으로
-    # 읽지 않습니다(#642). 실제 상한은 target_drive_minutes(분 예산)입니다.
-    "target_daily_trips",
-    "min_daily_trips",
-    "max_daily_trips",
-    "target_work_minutes",
-    "target_drive_minutes",
-    "max_deadhead_minutes",
-    "buffer_seconds",
-]
+PREFERENCE_COLUMNS = DRIVER_PREFERENCES_SCHEMA.names
+# 요일(0=월~6=일)·시간대(0~7) 인덱스의 비트마스크 정수입니다. 문자열 배열
+# (예전 `active_weekdays`/`preferred_time_blocks`) 대신 candidates.py 가
+# 비트 연산으로 멤버십을 검사합니다 — Spark 자체 벡터화 연산이라 이득이
+# 크진 않지만, `array_contains` 와 데이터 계약을 하나로 맞춥니다(#643).
 # 선호 시간대는 **연속된 블록 구간**으로 잡습니다. 예전에는 가중치 상위 2개를 그냥
 # 뽑았는데, 그러면 09-12 와 21-24 처럼 떨어진 두 블록이 나오는 기사가 70% 였습니다.
 # 배정은 첫 승차부터 하차까지의 경과를 `target_work_minutes`(중앙 405분) 로 재기
@@ -188,5 +172,10 @@ def extend_driver_preferences(
 def write_driver_preferences(preferences: pd.DataFrame, output_path: str | Path) -> Path:
     path = Path(output_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    preferences[PREFERENCE_COLUMNS].to_parquet(path, index=False)
+    table = pa.Table.from_pandas(
+        preferences[PREFERENCE_COLUMNS],
+        schema=DRIVER_PREFERENCES_SCHEMA,
+        preserve_index=False,
+    )
+    pq.write_table(table, path)
     return path

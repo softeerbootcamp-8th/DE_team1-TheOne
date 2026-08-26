@@ -8,11 +8,13 @@
 6. 경고 severity GX 실패는 Data Docs에 남기되 파이프라인을 중단하지 않는다.
 7. Suite에 저장할 날짜 InSet 값은 ISO 문자열로 왕복한다.
 8. s3:// 위치는 Path로 접히지 않고 S3 조회로 검증한다.
+9. 로컬·S3 성공·격리 marker는 상호 배타적으로 전환된다 (#945).
 """
 
 import io
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -20,6 +22,7 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
 
+from shared.airflow.common import validation
 from shared.airflow.common.validation import (
     S3Location,
     layout_tail,
@@ -28,8 +31,11 @@ from shared.airflow.common.validation import (
     parse_location,
     parse_iso_date,
     parse_year_month,
+    publish_quarantine_marker,
+    publish_success_marker,
     read_parquet,
     require_file,
+    require_success_marker,
     run_gx_validation,
 )
 
@@ -321,6 +327,33 @@ def test_layout_tail은_로컬과_s3의_파티션을_같게_본다():
     assert layout_tail(local).startswith("collected_date=2026-01-01/")
 
 
+def test_지역_계층이_있으면_세그먼트를_하나_늘려_데이터셋명을_유지한다():
+    """지역 계층(#674)이 들어가면 tail 이 밀려 **데이터셋명이 빠집니다.** 비교하는 두
+    경로가 같은 빌더로 만들어지니 통과는 하지만 검사가 조용히 약해집니다(#851)."""
+    scoped = (
+        "/base/eia_gas_price/service_area=NYC/year_month=2026-08/"
+        "source_collected_at=20260824T123456123456Z/eia_gas_price.parquet"
+    )
+
+    assert layout_tail(scoped, segments=4) == (
+        "service_area=NYC/year_month=2026-08/"
+        "source_collected_at=20260824T123456123456Z/eia_gas_price.parquet"
+    )
+    assert layout_tail(scoped, segments=4, service_area="NYC") == (
+        "eia_gas_price/service_area=NYC/year_month=2026-08/"
+        "source_collected_at=20260824T123456123456Z/eia_gas_price.parquet"
+    )
+
+
+def test_지역을_안_주면_기존_세그먼트_수를_유지한다():
+    """#843/#844 가 지역을 켜기 전까지 동작이 바뀌면 안 됩니다."""
+    plain = "/base/eia_gas_price/year_month=2026-08/eia_gas_price.parquet"
+
+    assert layout_tail(plain) == (
+        "eia_gas_price/year_month=2026-08/eia_gas_price.parquet"
+    )
+
+
 def test_s3_객체가_없으면_FileNotFoundError로_알린다(monkeypatch):
     def 없음(bucket, key):
         raise RuntimeError("NoSuchKey")
@@ -384,3 +417,113 @@ def test_location_size는_로컬과_s3를_같은_방식으로_준다(monkeypatch
         lambda bucket, key: (io.BytesIO(b"12345"), 5),
     )
     assert location_size(parse_location(S3_URI)) == 5
+
+
+# --- quality state marker (#945) --------------------------------------------
+
+
+def test_로컬_SUCCESS는_공개_전에는_없고_공개하면_읽힌다(tmp_path):
+    directory = tmp_path / "year_month=2026-08"
+    directory.mkdir()
+    (directory / "_QUARANTINED.json").write_text("{}")
+
+    with pytest.raises(FileNotFoundError, match="marker"):
+        require_success_marker(directory)
+
+    publish_success_marker(directory)
+
+    assert (directory / "_SUCCESS").is_file()
+    assert not (directory / "_QUARANTINED.json").exists()
+    require_success_marker(directory)
+
+
+def test_로컬_품질실패는_SUCCESS를_지우고_격리사유를_기록한다(tmp_path):
+    directory = tmp_path / "year_month=2026-08"
+    directory.mkdir()
+    (directory / "_SUCCESS").touch()
+
+    publish_quarantine_marker(
+        directory,
+        run_id="manual__2026-08-24",
+        layer="bronze",
+        reason="ValueError: row_count=0",
+        failed_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+    )
+
+    assert not (directory / "_SUCCESS").exists()
+    assert json.loads((directory / "_QUARANTINED.json").read_text()) == {
+        "failed_at": "2026-08-24T00:00:00+00:00",
+        "layer": "bronze",
+        "reason": "ValueError: row_count=0",
+        "retryable": False,
+        "run_id": "manual__2026-08-24",
+    }
+
+
+def test_S3_SUCCESS를_최종_prefix에_쓴다(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def delete_object(self, Bucket, Key):
+            calls.append(("delete", Bucket, Key))
+
+        def put_object(self, Bucket, Key, Body):
+            calls.append(("put", Bucket, Key, Body))
+
+    monkeypatch.setattr(validation.boto3, "client", lambda name: FakeClient())
+    directory = S3Location("lake", "silver/x/year_month=2026-08")
+
+    publish_success_marker(directory)
+
+    assert calls == [
+        ("delete", "lake", f"{directory.key}/_QUARANTINED.json"),
+        ("put", "lake", f"{directory.key}/_SUCCESS", b""),
+    ]
+
+
+def test_S3_품질실패는_SUCCESS를_지우고_격리JSON을_쓴다(monkeypatch):
+    calls = []
+
+    class FakeClient:
+        def delete_object(self, Bucket, Key):
+            calls.append(("delete", Bucket, Key))
+
+        def put_object(self, Bucket, Key, Body):
+            calls.append(("put", Bucket, Key, json.loads(Body)))
+
+    monkeypatch.setattr(validation.boto3, "client", lambda name: FakeClient())
+    directory = S3Location("lake", "silver/x/year_month=2026-08")
+
+    publish_quarantine_marker(
+        directory,
+        run_id="scheduled__2026-08-24",
+        layer="silver",
+        reason="ValueError: schema",
+        failed_at=datetime(2026, 8, 24, tzinfo=timezone.utc),
+    )
+
+    assert calls == [
+        ("delete", "lake", f"{directory.key}/_SUCCESS"),
+        (
+            "put",
+            "lake",
+            f"{directory.key}/_QUARANTINED.json",
+            {
+                "failed_at": "2026-08-24T00:00:00+00:00",
+                "layer": "silver",
+                "reason": "ValueError: schema",
+                "retryable": False,
+                "run_id": "scheduled__2026-08-24",
+            },
+        ),
+    ]
+
+
+def test_S3_SUCCESS가_없으면_읽기를_거부한다(monkeypatch):
+    def missing(bucket, key):
+        raise RuntimeError("NoSuchKey")
+
+    monkeypatch.setattr(validation, "get_object_stream", missing)
+
+    with pytest.raises(FileNotFoundError, match="_SUCCESS"):
+        require_success_marker(S3Location("lake", "silver/x/year_month=2026-08"))

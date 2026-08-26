@@ -4,6 +4,8 @@
 차종 ID 가 겹치면 계산이 실패하지 않고 **틀린 숫자**를 내므로 여기서 막습니다.
 """
 
+import math
+
 import pyarrow as pa
 from pipeline_core.transformer import Transformer
 
@@ -41,6 +43,11 @@ class LeaseVehicleInventorySilverTransformer(Transformer):
                 value = row[column]
                 if value is None or (isinstance(value, str) and not value.strip()):
                     raise ValueError(f"보유 차량 데이터 필수값이 비었습니다: {column}")
+                # NaN 은 None 검사와 양수 검사를 모두 통과하므로 따로 막습니다.
+                if isinstance(value, float) and math.isnan(value):
+                    raise ValueError(
+                        f"보유 차량 데이터 필수값이 NaN 입니다: {column}"
+                    )
                 if isinstance(value, str):
                     row[column] = value.strip()
             # 리스 계약(driver_vehicle_leases)의 make_key·model_key 와 붙일 조인

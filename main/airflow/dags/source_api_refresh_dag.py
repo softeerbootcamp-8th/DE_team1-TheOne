@@ -6,10 +6,14 @@ from datetime import datetime, timedelta
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.sdk import Param, dag
 
-from main.airflow.common.assets import DEFAULT_SERVICE_AREA
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
+from main.airflow.common.gold_staleness import DEFAULT_STALE_SLA_DAYS
 from main.airflow.scripts.source_api_refresh.tasks import (
     check_and_should_refresh_task,
-    mark_processed_task,
+    check_gold_staleness_task,
     publish_api_refresh_ready_task,
 )
 from shared.airflow.common.slack_failure_callback import (
@@ -18,7 +22,6 @@ from shared.airflow.common.slack_failure_callback import (
 )
 
 
-DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 SOURCES = (
     ("monthly_taxi_trip", "monthly_taxi_trip_raw_to_silver_pipeline"),
     (
@@ -41,10 +44,10 @@ default_args = {
     dag_id="source_api_refresh_pipeline",
     default_args=default_args,
     description="원천 API 3종 독립 HEAD 감시 및 Raw→Silver 조정",
-    schedule="@daily",
+    schedule="0 3 * * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "source-api", "silver", "monitor"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
@@ -54,8 +57,9 @@ default_args = {
             pattern=r"^(0?[1-9]|1[0-2])$",
         ),
         "api_base_url": Param(
-            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.environ["SOURCE_API_URL"],
             type="string",
+            minLength=1,
         ),
         "request_timeout": Param(30, type="integer", minimum=1),
         # 대상 지역. Airflow asset 파티션 키가 "{service_area}:{year_month}" 복합
@@ -70,9 +74,19 @@ default_args = {
             pattern=r"^[A-Z][A-Z0-9_]*$",
             description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
         ),
+        "gold_stale_sla_days": Param(
+            None,
+            type=["integer", "null"],
+            description=(
+                "지역별 Gold 마지막 성공 이후 이 일수를 넘기면 Slack 경고를 보냅니다. "
+                "비우면 Variable(gold_stale_sla_days) 또는 기본값 "
+                f"{DEFAULT_STALE_SLA_DAYS}일을 씁니다."
+            ),
+        ),
     },
 )
 def source_api_refresh_pipeline():
+    check_gold_staleness_task()
     check_task_ids = []
     completed = []
     for dataset, dag_id in SOURCES:
@@ -105,21 +119,21 @@ def source_api_refresh_pipeline():
                 "api_base_url": (
                     f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['api_base_url'] }}}}"
                 ),
+                "service_area": (
+                    f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['service_area'] }}}}"
+                ),
             },
             reset_dag_run=True,
             wait_for_completion=True,
             deferrable=True,
             poke_interval=30,
         )
-        processed = mark_processed_task.override(
-            task_id=f"mark_processed_{dataset}"
-        )(refresh)
-        refresh >> trigger >> processed
-        completed.append(processed)
+        refresh >> trigger
+        completed.append(trigger)
 
     ready = publish_api_refresh_ready_task(check_task_ids)
-    for processed in completed:
-        processed >> ready
+    for trigger in completed:
+        trigger >> ready
 
 
 source_api_refresh_dag = source_api_refresh_pipeline()

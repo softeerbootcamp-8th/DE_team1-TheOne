@@ -17,23 +17,31 @@ from email.utils import format_datetime, parsedate_to_datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import BinaryIO
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 import boto3
 from botocore.exceptions import ClientError
 
 from shared.common.env import load_local_env
 from shared.common.s3_reader import get_object_stream, list_keys
+from shared.common.source_published_layout import (
+    PUBLISHED_DATASETS,
+    PUBLISHED_SERVICE_AREA,
+    S3_PUBLISHED_ROOT,
+)
 
 DEFAULT_CHUNK_SIZE = 1024 * 1024
 
-DATASETS = {
-    "monthly_taxi_trip",
-    "driver_vehicle_monthly_snapshot",
-    "lease_vehicle_inventory",
-}
+DATASETS = PUBLISHED_DATASETS
 DATASET_PATTERN = re.compile(r"^/v1/data/(\d{4}-\d{2})/datasets/([a-z_]+)$")
 LATEST_DATASET_PATTERN = re.compile(r"^/v1/data/latest/datasets/([a-z_]+)$")
+SERVICE_AREA_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+
+
+def _validate_service_area(service_area: str) -> str:
+    if not SERVICE_AREA_PATTERN.fullmatch(service_area):
+        raise ValueError(f"invalid service_area: {service_area!r}")
+    return service_area
 
 
 class DatasetStorageError(Exception):
@@ -48,9 +56,14 @@ class DatasetMetadata:
 
 
 class DatasetStorage:
-    """dataset+year_month 로 parquet 스트림을 찾는 인터페이스."""
+    """service_area+dataset+year_month 로 parquet 스트림을 찾는 인터페이스."""
 
-    def open(self, dataset: str, year_month: str) -> tuple[BinaryIO, int] | None:
+    def open(
+        self,
+        dataset: str,
+        year_month: str,
+        service_area: str = PUBLISHED_SERVICE_AREA,
+    ) -> tuple[BinaryIO, int] | None:
         """(스트림, content_length) 를 돌려줍니다. 다 쓰면 스트림을 `.close()` 해야 합니다.
 
         전체를 메모리에 올리지 않기 위한 것이라, 호출부는 `.read(size)`로 청크 단위로
@@ -58,25 +71,37 @@ class DatasetStorage:
         """
         raise NotImplementedError
 
-    def latest_year_month(self, dataset: str) -> str | None:
+    def latest_year_month(
+        self, dataset: str, service_area: str = PUBLISHED_SERVICE_AREA
+    ) -> str | None:
         raise NotImplementedError
 
-    def metadata(self, dataset: str, year_month: str) -> DatasetMetadata | None:
+    def metadata(
+        self,
+        dataset: str,
+        year_month: str,
+        service_area: str = PUBLISHED_SERVICE_AREA,
+    ) -> DatasetMetadata | None:
         raise NotImplementedError
 
 
 class LocalDatasetStorage(DatasetStorage):
     """`<root>/year_month=YYYY-MM/manifest.json` 릴리스 레이아웃을 그대로 읽습니다."""
 
-    # 생성 DAG(synthetic_driver_trip_source)가 만드는 manifest는 아직 예전 이름
-    # (hvfhv_taxi_trips)을 씁니다. 공개 API 이름(monthly_taxi_trip)과 다른 것만 번역합니다.
-    _MANIFEST_KEYS = {"monthly_taxi_trip": "hvfhv_taxi_trips"}
-
     def __init__(self, root: str | Path):
         self._root = Path(root).resolve()
 
-    def _file(self, dataset: str, year_month: str) -> tuple[Path, dict] | None:
-        release = self._root / f"year_month={year_month}"
+    def _area_root(self, service_area: str) -> Path:
+        _validate_service_area(service_area)
+        if service_area == PUBLISHED_SERVICE_AREA:
+            return self._root
+        return self._root / f"service_area={service_area}"
+
+    def _file(
+        self, dataset: str, year_month: str, service_area: str
+    ) -> tuple[Path, dict] | None:
+        area_root = self._area_root(service_area)
+        release = area_root / f"year_month={year_month}"
         manifest_path = release / "manifest.json"
         if not manifest_path.is_file():
             return None
@@ -84,27 +109,38 @@ class LocalDatasetStorage(DatasetStorage):
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise DatasetStorageError(f"invalid manifest: {manifest_path}") from exc
-        manifest_key = self._MANIFEST_KEYS.get(dataset, dataset)
-        metadata = manifest.get("datasets", {}).get(manifest_key, {})
+        metadata = manifest.get("datasets", {}).get(dataset, {})
         path = release / str(metadata.get("file", ""))
         # release 디렉터리 밖을 가리키면(경로 탈출) 내보내지 않습니다.
-        if not path.is_file() or path.parent.parent != self._root:
+        if not path.is_file() or path.parent.parent != area_root:
             return None
         return path, metadata
 
-    def open(self, dataset: str, year_month: str) -> tuple[BinaryIO, int] | None:
-        found = self._file(dataset, year_month)
+    def open(
+        self,
+        dataset: str,
+        year_month: str,
+        service_area: str = PUBLISHED_SERVICE_AREA,
+    ) -> tuple[BinaryIO, int] | None:
+        found = self._file(dataset, year_month, service_area)
         if found is None:
             return None
         path, _ = found
         return path.open("rb"), path.stat().st_size
 
-    def latest_year_month(self, dataset: str) -> str | None:
-        releases = sorted(self._root.glob("year_month=????-??"))
+    def latest_year_month(
+        self, dataset: str, service_area: str = PUBLISHED_SERVICE_AREA
+    ) -> str | None:
+        releases = sorted(self._area_root(service_area).glob("year_month=????-??"))
         return releases[-1].name.removeprefix("year_month=") if releases else None
 
-    def metadata(self, dataset: str, year_month: str) -> DatasetMetadata | None:
-        found = self._file(dataset, year_month)
+    def metadata(
+        self,
+        dataset: str,
+        year_month: str,
+        service_area: str = PUBLISHED_SERVICE_AREA,
+    ) -> DatasetMetadata | None:
+        found = self._file(dataset, year_month, service_area)
         if found is None:
             return None
         path, manifest_metadata = found
@@ -120,26 +156,42 @@ class LocalDatasetStorage(DatasetStorage):
 
 
 class S3DatasetStorage(DatasetStorage):
-    """S3의 `<prefix>/<dataset>/year_month=YYYY-MM/data.parquet` 고정 키를 읽습니다."""
+    """S3의 `<prefix>/<service_area>/<dataset>/year_month=YYYY-MM/data.parquet`을 읽습니다."""
 
-    def __init__(self, bucket: str, prefix: str = "source/published"):
+    def __init__(self, bucket: str, prefix: str = S3_PUBLISHED_ROOT):
         self._bucket = bucket
         self._prefix = prefix.strip("/")
 
-    def _key(self, dataset: str, year_month: str) -> str:
-        return f"{self._prefix}/{dataset}/year_month={year_month}/data.parquet"
+    def _key(
+        self,
+        dataset: str,
+        year_month: str,
+        service_area: str = PUBLISHED_SERVICE_AREA,
+    ) -> str:
+        area = _validate_service_area(service_area)
+        return f"{self._prefix}/{area}/{dataset}/year_month={year_month}/data.parquet"
 
-    def open(self, dataset: str, year_month: str) -> tuple[BinaryIO, int] | None:
+    def open(
+        self,
+        dataset: str,
+        year_month: str,
+        service_area: str = PUBLISHED_SERVICE_AREA,
+    ) -> tuple[BinaryIO, int] | None:
         try:
-            return get_object_stream(self._bucket, self._key(dataset, year_month))
+            return get_object_stream(
+                self._bucket, self._key(dataset, year_month, service_area)
+            )
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
             if code in ("NoSuchKey", "404"):
                 return None
             raise DatasetStorageError(str(exc)) from exc
 
-    def latest_year_month(self, dataset: str) -> str | None:
-        prefix = f"{self._prefix}/{dataset}/year_month="
+    def latest_year_month(
+        self, dataset: str, service_area: str = PUBLISHED_SERVICE_AREA
+    ) -> str | None:
+        area = _validate_service_area(service_area)
+        prefix = f"{self._prefix}/{area}/{dataset}/year_month="
         months = sorted(
             key[len(prefix) :].split("/", 1)[0]
             for key in list_keys(self._bucket, prefix)
@@ -147,11 +199,16 @@ class S3DatasetStorage(DatasetStorage):
         )
         return months[-1] if months else None
 
-    def metadata(self, dataset: str, year_month: str) -> DatasetMetadata | None:
+    def metadata(
+        self,
+        dataset: str,
+        year_month: str,
+        service_area: str = PUBLISHED_SERVICE_AREA,
+    ) -> DatasetMetadata | None:
         try:
             response = boto3.client("s3").head_object(
                 Bucket=self._bucket,
-                Key=self._key(dataset, year_month),
+                Key=self._key(dataset, year_month, service_area),
             )
         except ClientError as exc:
             code = exc.response.get("Error", {}).get("Code")
@@ -175,24 +232,57 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
         self._route(head_only=True)
 
     def _route(self, *, head_only: bool) -> None:
-        path = urlsplit(self.path).path.rstrip("/") or "/"
+        parsed = urlsplit(self.path)
+        path = parsed.path.rstrip("/") or "/"
         if path == "/health":
             self._send_json({"status": "ok"}, head_only=head_only)
             return
+        area_request = self._service_area(parsed.query)
+        if area_request is None:
+            return
+        service_area, explicit_area = area_request
         if match := LATEST_DATASET_PATTERN.fullmatch(path):
-            self._send_latest(match.group(1), head_only=head_only)
+            self._send_latest(
+                match.group(1),
+                service_area,
+                explicit_area=explicit_area,
+                head_only=head_only,
+            )
             return
         if match := DATASET_PATTERN.fullmatch(path):
-            self._send_dataset(match.group(1), match.group(2), head_only=head_only)
+            self._send_dataset(
+                match.group(1),
+                match.group(2),
+                service_area,
+                head_only=head_only,
+            )
             return
         self.send_error(404, "endpoint not found")
 
-    def _send_latest(self, dataset: str, *, head_only: bool) -> None:
+    def _service_area(self, query: str) -> tuple[str, bool] | None:
+        values = parse_qs(query, keep_blank_values=True).get("service_area")
+        if values is None:
+            return PUBLISHED_SERVICE_AREA, False
+        if len(values) != 1 or not SERVICE_AREA_PATTERN.fullmatch(values[0]):
+            self.send_error(400, "invalid service_area")
+            return None
+        return values[0], True
+
+    def _send_latest(
+        self,
+        dataset: str,
+        service_area: str,
+        *,
+        explicit_area: bool,
+        head_only: bool,
+    ) -> None:
         if dataset not in DATASETS:
             self.send_error(404, "dataset not found")
             return
         try:
-            year_month = self.storage.latest_year_month(dataset)
+            year_month = self.storage.latest_year_month(
+                dataset, service_area=service_area
+            )
         except DatasetStorageError:
             self.send_error(500, "invalid release")
             return
@@ -200,15 +290,27 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
             self.send_error(404, "data not found")
             return
         self.send_response(307)
-        self.send_header("Location", f"/v1/data/{year_month}/datasets/{dataset}")
+        location = f"/v1/data/{year_month}/datasets/{dataset}"
+        if explicit_area:
+            location += f"?service_area={service_area}"
+        self.send_header("Location", location)
         self.end_headers()
 
-    def _send_dataset(self, year_month: str, dataset: str, *, head_only: bool) -> None:
+    def _send_dataset(
+        self,
+        year_month: str,
+        dataset: str,
+        service_area: str,
+        *,
+        head_only: bool,
+    ) -> None:
         if dataset not in DATASETS:
             self.send_error(404, "dataset not found")
             return
         try:
-            metadata = self.storage.metadata(dataset, year_month)
+            metadata = self.storage.metadata(
+                dataset, year_month, service_area=service_area
+            )
         except DatasetStorageError:
             self.send_error(500, "invalid release")
             return
@@ -224,7 +326,9 @@ class ReleaseRequestHandler(BaseHTTPRequestHandler):
         stream = None
         if not head_only:
             try:
-                opened = self.storage.open(dataset, year_month)
+                opened = self.storage.open(
+                    dataset, year_month, service_area=service_area
+                )
             except DatasetStorageError:
                 self.send_error(500, "invalid release")
                 return
@@ -297,7 +401,7 @@ def storage_from_env() -> DatasetStorage:
         return LocalDatasetStorage(root)
     if env == "prod":
         bucket = os.environ["SOURCE_API_S3_BUCKET"]
-        prefix = os.getenv("SOURCE_API_S3_PREFIX", "source/published")
+        prefix = os.getenv("SOURCE_API_S3_PREFIX") or S3_PUBLISHED_ROOT
         return S3DatasetStorage(bucket, prefix)
     raise ValueError(f"알 수 없는 SOURCE_API_ENV: {env!r} (local 또는 prod)")
 

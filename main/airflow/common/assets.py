@@ -28,26 +28,73 @@ glob 이 그대로 동작하고 파티션 프루닝도 축별로 걸립니다(#8
 """
 
 import re
+from pathlib import Path
 
 from airflow.sdk import Asset
 
 
 FUEL_PRICE_SILVER = Asset("silver://gas_ev_price")
 API_SILVER_REFRESH_READY = Asset("silver://api_refresh_ready")
+GOLD_INPUTS_READY = Asset("silver://gold_inputs_ready")
 
 # API 3종은 감시 DAG가 변경된 Silver 실행을 모두 기다린 뒤 READY를 한 번만 냅니다.
-GOLD_INPUTS = API_SILVER_REFRESH_READY | FUEL_PRICE_SILVER
+# 같은 파티션의 두 입력이 처음 모이면 Gold를 실행합니다. Gold 최종 검증이 성공하면
+# GOLD_INPUTS_READY를 같은 키로 발행하므로, 그다음부터는 두 입력 중 하나만 갱신돼도
+# 같은 파티션을 다시 실행합니다.
+GOLD_INPUTS = (
+    (API_SILVER_REFRESH_READY & FUEL_PRICE_SILVER)
+    | (GOLD_INPUTS_READY & (API_SILVER_REFRESH_READY | FUEL_PRICE_SILVER))
+)
 
 # 지금 서비스하는 지역은 뉴욕 하나입니다. 지역이 늘면 지역별 설정(EIA 시리즈 URL,
 # 택시존 스키마 등)을 담을 레지스트리가 필요한데, 항목이 하나뿐인 레지스트리는
 # 과잉이라 그 시점에 만듭니다(#810).
 DEFAULT_SERVICE_AREA = "NYC"
+# 서로 다른 지역 파티션은 저장 경로와 Gold 자연 키가 격리되어 있으므로 동시에
+# 실행할 수 있습니다. 단일 EC2 LocalExecutor의 초기 운영 상한은 3개이며,
+# 지역 수가 이 값을 넘으면 나머지 DagRun은 큐에서 기다립니다.
+MAX_ACTIVE_SERVICE_AREA_RUNS = 3
 PARTITION_KEY_SEPARATOR = ":"
 # 구분자를 값에 넣을 수 없게 막습니다. 허용하면 "nyc:2026-08" 같은 값이
 # service_area 로 들어와 키가 "nyc:2026-08:2026-08" 이 되고, 파싱이 조용히 엉뚱한
 # 값을 돌려줍니다.
 SERVICE_AREA_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 YEAR_MONTH_PATTERN = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+
+
+def service_area_segment(service_area: str) -> str:
+    if not SERVICE_AREA_PATTERN.fullmatch(service_area):
+        raise ValueError(
+            f"service_area 는 대문자 코드여야 합니다(예: NYC): {service_area!r}"
+        )
+    return f"service_area={service_area}"
+
+
+def join_segments(*segments: str | None) -> str:
+    return "/".join(segment for segment in segments if segment)
+
+
+def service_area_root(root: str | Path, service_area: str) -> Path:
+    return Path(root) / service_area_segment(service_area)
+
+
+def service_area_prefix(*head: str, service_area: str) -> str:
+    return join_segments(*head, service_area_segment(service_area))
+
+
+def gold_csv_path(
+    output_dir: str,
+    dataset: str,
+    year_month: str,
+    service_area: str,
+) -> Path:
+    dataset_root = Path(output_dir) / dataset
+    area = service_area_segment(service_area)
+    return (
+        (dataset_root / area)
+        / f"year_month={year_month}"
+        / f"{dataset}.csv"
+    )
 
 
 def build_partition_key(service_area: str, year_month: str) -> str:

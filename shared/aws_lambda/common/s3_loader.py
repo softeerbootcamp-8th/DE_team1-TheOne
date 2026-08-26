@@ -12,6 +12,7 @@ import boto3
 from pipeline_core.loader import Loader, WriteResult
 
 from shared.common.env import load_local_env
+from shared.common.success_marker import marker_key, quarantine_marker_key
 
 BUCKET_ENV_VAR = "DATA_LAKE_S3_BUCKET"
 
@@ -35,14 +36,27 @@ class S3Loader(Loader):
         self,
         key: str,
         bucket: str | None = None,
+        *,
+        invalidate_parent_success: bool = False,
     ):
         load_local_env()
         self._bucket = bucket or os.environ[BUCKET_ENV_VAR]
         self._key = key
         self._client = boto3.client("s3")
+        self._invalidate_parent_success = invalidate_parent_success
 
     def write(self, data: S3Object) -> WriteResult:
         location = f"s3://{self._bucket}/{self._key}"
+        if self._invalidate_parent_success:
+            parent = self._key.rsplit("/", 1)[0]
+            self._client.delete_object(
+                Bucket=self._bucket,
+                Key=marker_key(parent),
+            )
+            self._client.delete_object(
+                Bucket=self._bucket,
+                Key=quarantine_marker_key(parent),
+            )
         self._client.put_object(
             Bucket=self._bucket,
             Key=self._key,

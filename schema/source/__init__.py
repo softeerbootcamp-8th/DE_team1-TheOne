@@ -172,7 +172,6 @@ MONTHLY_TAXI_TRIP_SCHEMA = pa.schema(
     [
         ("taxi_id", pa.string()),  # 운행한 택시 ID
         ("hvfhs_license_num", pa.string()),  # platform_name 역매핑 (Uber→HV0003, Lyft→HV0005)
-        ("on_scene_datetime", pa.timestamp("us")),  # 장소 도착 시각
         ("pickup_datetime", pa.timestamp("us")),  # 승차 시각
         ("dropoff_datetime", pa.timestamp("us")),  # 하차 시각
         ("PULocationID", pa.int32()),  # 승차 지역 ID
@@ -238,6 +237,30 @@ LEASE_VEHICLE_INVENTORY_SCHEMA = pa.schema(
 )
 
 LEASE_VEHICLE_INVENTORY_REQUIRED_NON_NULL = frozenset(LEASE_VEHICLE_INVENTORY_SCHEMA.names)
+
+"""[기사 배정 선호 마스터] Parquet 스키마."""
+DRIVER_PREFERENCES_SCHEMA = pa.schema(
+    [
+        ("driver_id", pa.string()),
+        # 요일(0~6)·시간대(0~7) 멤버십을 Spark 비트 연산으로 검사합니다.
+        ("weekday_mask", pa.int64()),
+        ("time_block_mask", pa.int64()),
+        ("time_block_weights", pa.list_(pa.float64())),
+        ("preferred_distance_band", pa.string()),
+        ("preferred_distance_miles", pa.float64()),
+        ("airport_preference", pa.float64()),
+        ("manhattan_preference", pa.float64()),
+        ("tier_preference", pa.float64()),
+        # 참고용 근사치이며 실제 상한은 target_drive_minutes입니다.
+        ("target_daily_trips", pa.int64()),
+        ("min_daily_trips", pa.int64()),
+        ("max_daily_trips", pa.int64()),
+        ("target_work_minutes", pa.int64()),
+        ("target_drive_minutes", pa.int64()),
+        ("max_deadhead_minutes", pa.int64()),
+        ("buffer_seconds", pa.int64()),
+    ]
+)
 
 # 회사 원천 스냅샷의 저장 스키마.
 #

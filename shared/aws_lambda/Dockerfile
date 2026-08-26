@@ -24,6 +24,7 @@ COPY main/aws_lambda/functions/ ${LAMBDA_TASK_ROOT}/functions/
 # (예: eia_fuel_price_layout). 위에서 functions/ 만 접두사 없이 복사해서 이 패키지가
 # 이미지에 없으면 콜드스타트 시점에 "No module named 'main'" 으로 죽습니다.
 COPY main/__init__.py ${LAMBDA_TASK_ROOT}/main/__init__.py
+COPY main/common/ ${LAMBDA_TASK_ROOT}/main/common/
 COPY main/aws_lambda/common/ ${LAMBDA_TASK_ROOT}/main/aws_lambda/common/
 
 # 동일한 런타임 의존성을 쓰는 원천 제품 함수와 공통 유틸은 제품 namespace 그대로

@@ -1,0 +1,16 @@
+# EC2 호스트 지표 수집. 배포 워크플로가 GitHub Variables의 주소를 치환합니다.
+global:
+  scrape_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  - job_name: node
+    static_configs:
+      - targets: ["${PROMETHEUS_AIRFLOW_TARGET}"]
+        labels: { instance_name: theone-airflow }
+      - targets: ["${PROMETHEUS_SOURCE_API_TARGET}"]
+        labels: { instance_name: theone-source-server }
+      - targets: ["${PROMETHEUS_DASHBOARD_TARGET}"]
+        labels: { instance_name: theone-dashboard-server }
+      - targets: ["${PROMETHEUS_GATEWAY_TARGET}"]
+        labels: { instance_name: theone-gateway }

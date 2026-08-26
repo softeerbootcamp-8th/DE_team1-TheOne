@@ -1,23 +1,64 @@
-"""원천 Silver 4종을 직접 결합해 월별 Gold 3종을 만듭니다."""
+"""원천 Silver 4종을 결합해 월별 기사 운행 집계(driver_aggregation)를 만든다.
 
+추천 차량 배정(driver_car_suggestion)은 recommendation_algorithm/ 패키지가 만들되,
+이 모듈의 build_driver_monthly_profit()·_columns() 등 공통 조각을 가져다 쓴다.
+"""
+
+import hashlib
+import json
+import logging
 from calendar import monthrange
 from dataclasses import fields
 from datetime import datetime
+from math import isclose
 
-from pyspark.sql import Column, DataFrame, Window
+from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
-from schema.gold import DriverMonthlyProfit, MonthlyReport, MonthlyVehicleRecommendation
+from schema.gold import DriverAggregation
 from schema.silver import (
     CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA,
     CLEAN_FUEL_PRICE_SCHEMA,
     CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA,
     CLEAN_MONTHLY_TAXI_TRIP_SCHEMA,
 )
+
+
+logger = logging.getLogger(__name__)
 KWH_PER_GALLON_EQUIVALENT = 33.7
 # 프리미엄 자격을 얻어도 Standard 수요가 모두 전환되지는 않습니다.
-# 현재 사업 시나리오는 기존 Standard 운행 중 40%만 프리미엄으로 전환합니다.
-PREMIUM_TIER_TRIP_SHARE = 0.4
+# 현재 사업 시나리오는 기존 Standard 운행 중 30%만 프리미엄으로 전환합니다.
+PREMIUM_TIER_TRIP_SHARE = 0.3
+# 거리대 경계와 라벨. _distance_band 와 algorithm_constants_digest 가 같은 출처를
+# 보게 해서 한쪽만 고치는 실수를 막습니다(#1088).
+_DISTANCE_BAND_EDGES: tuple[tuple[float, str], ...] = (
+    (2.0, "0-2"),
+    (5.0, "2-5"),
+    (10.0, "5-10"),
+    (20.0, "10-20"),
+)
+_DISTANCE_BAND_FALLBACK = "20+"
+
+
+def algorithm_constants_digest() -> str:
+    """Gold 계산에 직접 들어가는 고정 상수들의 SHA-256.
+
+    이 값들이 바뀌면 결과가 달라지지만 recommendation_algorithm_version_id 는
+    사람이 올려야 해서 깜빡하면 fingerprint 가 불변으로 남아 예전 Gold 를
+    재사용합니다(#1088). 상수 자체의 해시를 fingerprint 에 넣어 수동 규율
+    의존을 없앱니다.
+    """
+    payload = {
+        "kwh_per_gallon_equivalent": KWH_PER_GALLON_EQUIVALENT,
+        "premium_tier_trip_share": PREMIUM_TIER_TRIP_SHARE,
+        "distance_band_edges": [
+            [edge, label] for edge, label in _DISTANCE_BAND_EDGES
+        ],
+        "distance_band_fallback": _DISTANCE_BAND_FALLBACK,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _columns(model: type) -> list[str]:
@@ -42,6 +83,21 @@ def _require_columns(dataframe: DataFrame, required: set[str], dataset: str) -> 
 
 def _has_rows(dataframe: DataFrame) -> bool:
     return dataframe.limit(1).count() > 0
+
+
+def _unusable_number(column: str) -> Column:
+    """null·NaN·Infinity 는 비교 검증을 모두 통과하므로 한 번에 걸러냅니다.
+
+    Spark SQL 에 isinf 가 없어(Python 함수 기준 4.0 부터) 무한대 등가 비교로
+    직접 검사합니다.
+    """
+    value = F.col(column)
+    return (
+        value.isNull()
+        | F.isnan(value)
+        | (value == F.lit(float("inf")))
+        | (value == F.lit(float("-inf")))
+    )
 
 
 def _require_all_join_keys_match(
@@ -94,6 +150,41 @@ def _validate_dimensions(
         or inventory_stats["rows"] != inventory_stats["distinct_model_ids"]
     ):
         raise ValueError("보유 차량의 vehicle_model_id는 null 없이 고유해야 합니다")
+    if _has_rows(inventory.filter(F.col("stock").isNull() | (F.col("stock") < 0))):
+        raise ValueError("보유 차량의 stock은 null이 아닌 0 이상의 정수여야 합니다")
+    # fuel_efficiency 는 연료비 나눗셈 분모라 0·비유한 값이면 계산이 실패하지 않고
+    # 틀린 숫자를 냅니다. weekly_lease_fee 도 리스비 차감에 그대로 쓰입니다.
+    invalid_inventory_value = inventory.filter(
+        _unusable_number("fuel_efficiency")
+        | (F.col("fuel_efficiency") <= 0)
+        | _unusable_number("weekly_lease_fee")
+        | (F.col("weekly_lease_fee") <= 0)
+    )
+    if _has_rows(invalid_inventory_value):
+        raise ValueError(
+            "보유 차량의 fuel_efficiency와 weekly_lease_fee는 null이 아닌 양수여야 합니다"
+        )
+    invalid_snapshot_lease_fee = driver_snapshot.filter(
+        _unusable_number("weekly_lease_fee")
+        | (F.col("weekly_lease_fee") <= 0)
+    )
+    if _has_rows(invalid_snapshot_lease_fee):
+        raise ValueError("기사 차량 스냅샷의 weekly_lease_fee는 null이 아닌 양수여야 합니다")
+    occupied = driver_snapshot.groupBy("vehicle_model_id").agg(
+        F.count(F.lit(1)).alias("occupied_stock")
+    )
+    over_occupied = occupied.join(
+        F.broadcast(inventory.select("vehicle_model_id", "stock")),
+        "vehicle_model_id",
+        "left",
+    ).filter(F.col("stock").isNull() | (F.col("occupied_stock") > F.col("stock")))
+    occupied_samples = [
+        row.asDict(recursive=True) for row in over_occupied.limit(5).collect()
+    ]
+    if occupied_samples:
+        raise ValueError(
+            f"현재 운행 차량 수가 보유 재고를 초과합니다: sample={occupied_samples}"
+        )
 
     expected_days = monthrange(*map(int, year_month.split("-")))[1]
     fuel_stats = fuel_price.agg(
@@ -109,6 +200,13 @@ def _validate_dimensions(
         raise ValueError(
             f"연료비 Silver는 {year_month}의 {expected_days}일이 모두 고유해야 합니다"
         )
+    # 가격이 null 이면 일별 합계가 그 날을 무시해 연료비가 조용히 줄고, NaN 은
+    # 합계를 전부 NaN 으로 만듭니다.
+    invalid_price = fuel_price.filter(
+        _unusable_number("gas_price") | _unusable_number("ev_price")
+    )
+    if _has_rows(invalid_price):
+        raise ValueError("연료비 Silver의 가격은 null이 아닌 유한한 값이어야 합니다")
 
 
 def enrich_trips_with_fuel_cost(
@@ -147,15 +245,17 @@ def enrich_trips_with_fuel_cost(
         raise ValueError(f"HVFHV Silver에 {year_month}가 아닌 운행이 섞였습니다")
     if _has_rows(driver_snapshot.filter(F.col("snapshot_month") != year_month)):
         raise ValueError(f"기사 차량 스냅샷에 {year_month}가 아닌 행이 섞였습니다")
-    # 연료비 Silver는 다른 3종과 달리 그 시점까지의 과거 일별 가격을 전부 담고 있어
-    # (job.py의 latest_fuel_price_path), 대상 월 하루치만 걸러서 씁니다 — 다른
-    # 3종처럼 "섞이면 실패" 로 막지 않습니다.
+    # 경로에서 대상 월을 골랐더라도 파일 내용을 다시 제한해 잘못된 날짜가
+    # 운행과 조인되지 않게 합니다. 이후 일수 검증이 누락·중복을 잡습니다.
     fuel_price = fuel_price.filter(F.date_format("date", "yyyy-MM") == year_month)
+    # NaN 은 null 검사와 음수·상한 비교를 모두 통과하므로 따로 걸러야 합니다.
     invalid_trip = (
-        F.col("trip_miles").isNull()
+        _unusable_number("trip_miles")
         | (F.col("trip_miles") <= 0)
-        | F.col("driver_pay").isNull()
+        | _unusable_number("driver_pay")
         | (F.col("driver_pay") < 0)
+        | _unusable_number("tips")
+        | (F.col("tips") < 0)
     )
     if _has_rows(trips.filter(invalid_trip)):
         raise ValueError("HVFHV Silver의 거리 또는 기사 수익이 유효하지 않습니다")
@@ -261,13 +361,10 @@ def enrich_trips_with_fuel_cost(
 
 def _distance_band(trip_miles: Column) -> Column:
     """거리별 단가 차이를 보존하는 고정 운행거리 구간입니다."""
-    return (
-        F.when(trip_miles < 2, F.lit("0-2"))
-        .when(trip_miles < 5, F.lit("2-5"))
-        .when(trip_miles < 10, F.lit("5-10"))
-        .when(trip_miles < 20, F.lit("10-20"))
-        .otherwise(F.lit("20+"))
-    )
+    column = F.lit(_DISTANCE_BAND_FALLBACK)
+    for edge, label in reversed(_DISTANCE_BAND_EDGES):
+        column = F.when(trip_miles < edge, label).otherwise(column)
+    return column
 
 
 def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:
@@ -307,8 +404,8 @@ def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:
     uber_standard = standard & (F.col("hvfhs_license_num") == "HV0003")
     lyft_standard = standard & (F.col("hvfhs_license_num") == "HV0005")
     missing = rows.filter(
-        (uber_standard & F.col("_comfort_multiplier").isNull())
-        | (lyft_standard & F.col("_extra_comfort_multiplier").isNull())
+        (uber_standard & _unusable_number("_comfort_multiplier"))
+        | (lyft_standard & _unusable_number("_extra_comfort_multiplier"))
     )
     missing_samples = [
         row.asDict(recursive=True)
@@ -421,74 +518,65 @@ def build_driver_monthly_aggregation(
 
 def build_driver_monthly_profit(driver_metrics: DataFrame) -> DataFrame:
     """확정된 Gold 스키마의 기사 월 순수익 컬럼만 반환합니다."""
-    return driver_metrics.select(*_columns(DriverMonthlyProfit))
+    return driver_metrics.select(*_columns(DriverAggregation))
 
 
-def _allocate_candidates_by_stock(candidates: DataFrame) -> DataFrame:
-    """기사 선호 순서대로 제안하되 모델 재고 안에서 수익 증가가 큰 기사부터 배정합니다."""
-    preference = Window.partitionBy("driver_id").orderBy(
-        F.col("expected_monthly_net_profit").desc(),
-        F.col("_is_current").desc(),
-        F.col("_candidate_model_year").desc(),
-        F.col("_candidate_vehicle_model_id").asc(),
+# 합계는 부동소수점이라 정확히 같기를 요구하면 안 된다. Spark 는 집계 순서가
+# 실행마다 달라질 수 있어서다. 실측(NYC 2026-01, 운행 67.5만건)에서는 차이가
+# 0.00 이었지만, 그게 앞으로도 0.00 이라는 보장은 없다.
+CONTROL_TOTAL_REL_TOL = 1e-9
+CONTROL_TOTAL_ABS_TOL = 1e-6
+
+
+def reconcile_gold_control_totals(
+    trips: DataFrame, driver_metrics: DataFrame
+) -> None:
+    """Silver 운행 합계가 기사별 집계를 거쳐 보존됐는지 확인합니다.
+
+    조인 키 누락은 `_require_all_join_keys_match` 가 이미 막지만, 그건 "짝이 있나"
+    를 보는 것이고 여기서는 "합이 남았나"를 봅니다. 행 수가 맞아도 값이 밀리는
+    사고는 합계로만 잡힙니다.
+
+    Silver 운행에는 `driver_id` 가 없고 `taxi_id` 뿐입니다 — 기사는 스냅샷 조인으로
+    붙습니다. 그래서 스냅샷이 없는 `taxi_id` 의 운행이 조인에서 빠지면 합이 줄고,
+    그 순간 여기서 걸립니다.
+    """
+    silver = trips.agg(
+        F.count(F.lit(1)).alias("trips"),
+        F.sum("trip_miles").alias("mileage"),
+        F.sum("driver_pay").alias("driver_pay"),
+        F.sum(F.coalesce(F.col("tips"), F.lit(0.0))).alias("tips"),
+    ).first()
+    gold = driver_metrics.agg(
+        F.sum("monthly_mileage").alias("mileage"),
+        F.sum("monthly_driver_pay").alias("driver_pay"),
+        F.sum("monthly_tips").alias("tips"),
+    ).first()
+
+    mismatched = []
+    for name in ("mileage", "driver_pay", "tips"):
+        before = float(silver[name] or 0.0)
+        after = float(gold[name] or 0.0)
+        if not isclose(
+            before,
+            after,
+            rel_tol=CONTROL_TOTAL_REL_TOL,
+            abs_tol=CONTROL_TOTAL_ABS_TOL,
+        ):
+            mismatched.append(f"{name}: silver={before!r} gold={after!r}")
+    if mismatched:
+        raise ValueError(
+            "Gold 집계에서 운행 합계가 보존되지 않았습니다 — "
+            + "; ".join(mismatched)
+            + f" (Silver 운행 {int(silver['trips'] or 0)}건)"
+        )
+    logger.info(
+        "control total 보존 확인: trips=%d mileage=%.2f driver_pay=%.2f tips=%.2f",
+        int(silver["trips"] or 0),
+        float(silver["mileage"] or 0.0),
+        float(silver["driver_pay"] or 0.0),
+        float(silver["tips"] or 0.0),
     )
-    ranked = candidates.withColumn(
-        "_driver_rank", F.row_number().over(preference)
-    ).persist()
-    occupied_stock = (
-        ranked.filter(F.col("_is_current"))
-        .groupBy("_candidate_vehicle_model_id")
-        .agg(F.count(F.lit(1)).alias("_occupied_stock"))
-    )
-    max_rank = ranked.agg(F.max("_driver_rank")).first()[0]
-    assigned = None
-
-    for driver_rank in range(1, max_rank + 1):
-        proposals = ranked.filter(F.col("_driver_rank") == driver_rank)
-        if assigned is not None:
-            proposals = proposals.join(
-                assigned.select("driver_id"), "driver_id", "left_anti"
-            )
-
-        keep_current = proposals.filter(F.col("_is_current"))
-        changes = (
-            proposals.filter(~F.col("_is_current"))
-            .join(occupied_stock, "_candidate_vehicle_model_id", "left")
-            .fillna({"_occupied_stock": 0})
-        )
-        if assigned is None:
-            changes = changes.withColumn("_used_stock", F.lit(0))
-        else:
-            used_stock = (
-                assigned.filter(~F.col("_is_current"))
-                .groupBy("_candidate_vehicle_model_id")
-                .agg(F.count(F.lit(1)).alias("_used_stock"))
-            )
-            changes = changes.join(
-                used_stock, "_candidate_vehicle_model_id", "left"
-            ).fillna({"_used_stock": 0})
-
-        stock_priority = Window.partitionBy("_candidate_vehicle_model_id").orderBy(
-            F.col("expected_net_profit_increase").desc(),
-            F.col("expected_revenue_increase").desc(),
-            F.col("driver_id").asc(),
-        )
-        changes = (
-            changes.withColumn("_stock_rank", F.row_number().over(stock_priority))
-            .filter(
-                F.col("_stock_rank")
-                <= F.col("_candidate_stock")
-                - F.col("_occupied_stock")
-                - F.col("_used_stock")
-            )
-            .drop("_occupied_stock", "_used_stock", "_stock_rank")
-        )
-        winners = keep_current.unionByName(changes)
-        assigned = winners if assigned is None else assigned.unionByName(winners)
-        assigned = assigned.coalesce(8).localCheckpoint(eager=False)
-
-    ranked.unpersist()
-    return assigned
 
 
 def validate_gold_business_invariants(
@@ -497,219 +585,79 @@ def validate_gold_business_invariants(
     driver_snapshot: DataFrame,
     inventory: DataFrame,
 ) -> None:
-    """Gold 저장 전에 기사 보존·재고 한도·수익 방향을 Spark로 검증합니다."""
-    counts = {}
+    """Gold 저장 전에 기사 보존과 모델별 재고 한도를 검증합니다.
+
+    recommendation 은 (recommendation_algorithm_version_id, threshold) 조합마다
+    독립적인 "이 알고리즘·임계값을 쓰면 이렇게 배정된다"는 가정의 리포트를 담습니다
+    (#997) — 여러 조합이 동시에 실제 재고를 나눠 쓰는 게 아니라 서로 다른 시나리오라,
+    기사 보존과 재고 한도는 조합별로 따로 확인합니다.
+    """
+    driver_stats = {}
     for name, frame in (
         ("driver_aggregation", driver_profit),
-        ("driver_car_suggestion", recommendation),
         ("driver_snapshot", driver_snapshot),
     ):
         stats = frame.agg(
             F.count(F.lit(1)).alias("rows"),
             F.countDistinct("driver_id").alias("drivers"),
         ).first()
-        counts[name] = stats["rows"]
+        driver_stats[name] = stats["rows"]
         if stats["rows"] != stats["drivers"]:
             raise ValueError(f"{name}의 driver_id가 null이거나 중복입니다")
 
-    if len(set(counts.values())) != 1:
-        raise ValueError(f"Gold 기사 수 불일치: {counts}")
+    if len(set(driver_stats.values())) != 1:
+        raise ValueError(f"Gold 기사 수 불일치: {driver_stats}")
+    driver_count = driver_stats["driver_aggregation"]
 
-    assigned = (
-        recommendation.groupBy("vehicle_model_id")
-        .agg(F.count(F.lit(1)).alias("assigned"))
-    )
-    stock = inventory.select("vehicle_model_id", "stock")
-    overstocked = assigned.join(F.broadcast(stock), "vehicle_model_id", "left").filter(
-        F.col("stock").isNull() | (F.col("assigned") > F.col("stock"))
-    )
-    overstocked_samples = [
-        row.asDict(recursive=True) for row in overstocked.limit(5).collect()
-    ]
-    if overstocked_samples:
-        raise ValueError(f"Gold 모델별 재고 초과: sample={overstocked_samples}")
-
-    negative_samples = [
-        row.asDict(recursive=True)
-        for row in recommendation.filter(F.col("expected_net_profit_increase") < 0)
-        .select("driver_id", "vehicle_model_id", "expected_net_profit_increase")
-        .limit(5)
+    combos = [
+        (row["recommendation_algorithm_version_id"], row["threshold"])
+        for row in recommendation.select(
+            "recommendation_algorithm_version_id", "threshold"
+        )
+        .distinct()
         .collect()
     ]
-    if negative_samples:
-        raise ValueError(
-            f"Gold 예상 순수익 증가액이 음수입니다: sample={negative_samples}"
+    for algorithm_version_id, threshold in combos:
+        group = recommendation.filter(
+            (F.col("recommendation_algorithm_version_id") == algorithm_version_id)
+            & (F.col("threshold") == threshold)
         )
+        label = f"driver_car_suggestion(algorithm={algorithm_version_id}, threshold={threshold})"
 
+        group_stats = group.agg(
+            F.count(F.lit(1)).alias("rows"),
+            F.countDistinct("driver_id").alias("drivers"),
+        ).first()
+        if group_stats["rows"] != group_stats["drivers"]:
+            raise ValueError(f"{label}의 driver_id가 null이거나 중복입니다")
+        if group_stats["rows"] != driver_count:
+            raise ValueError(
+                "Gold 기사 수 불일치: "
+                f"driver_aggregation={driver_count} {label}={group_stats['rows']}"
+            )
 
-def build_monthly_vehicle_recommendation(
-    driver_metrics: DataFrame,
-    inventory: DataFrame,
-) -> DataFrame:
-    """재고 한도 안에서 수익 개선이 큰 기사부터 최선·차선 차량을 배정합니다."""
-    available = inventory.select(
-        F.col("vehicle_model_id").alias("_candidate_vehicle_model_id"),
-        F.col("manufacturer").alias("_candidate_manufacturer"),
-        F.col("model_name").alias("_candidate_model_name"),
-        F.col("model_year").alias("_candidate_model_year"),
-        F.col("fuel_type").alias("_candidate_fuel_type"),
-        F.col("fuel_efficiency").alias("_candidate_fuel_efficiency"),
-        F.col("comfort_eligible").alias("_candidate_comfort_eligible"),
-        F.col("extra_comfort_eligible").alias("_candidate_extra_comfort_eligible"),
-        F.col("weekly_lease_fee").alias("_candidate_weekly_lease_fee"),
-        F.col("stock").alias("_candidate_stock"),
-    )
-    if available.isEmpty():
-        raise ValueError("추천할 수 있는 재고 차량이 없습니다")
+        assigned = group.groupBy("vehicle_model_id").agg(
+            F.count(F.lit(1)).alias("assigned")
+        )
+        overstocked = assigned.join(
+            F.broadcast(inventory.select("vehicle_model_id", "stock")),
+            "vehicle_model_id",
+            "left",
+        ).filter(F.col("stock").isNull() | (F.col("assigned") > F.col("stock")))
+        samples = [
+            row.asDict(recursive=True) for row in overstocked.limit(5).collect()
+        ]
+        if samples:
+            raise ValueError(f"{label} 모델별 재고 초과: sample={samples}")
 
-    candidates = (
-        driver_metrics.crossJoin(F.broadcast(available))
-        .withColumn(
-            "_is_current",
-            F.col("vehicle_model_id") == F.col("_candidate_vehicle_model_id"),
-        )
-        .filter((F.col("_candidate_stock") > 0) | F.col("_is_current"))
-    )
-    expected_fuel_cost = F.when(
-        F.col("_candidate_fuel_type") == "EV",
-        F.col("_ev_price_miles")
-        * F.lit(KWH_PER_GALLON_EQUIVALENT)
-        / F.col("_candidate_fuel_efficiency"),
-    ).otherwise(F.col("_gas_price_miles") / F.col("_candidate_fuel_efficiency"))
-    expected_lease_fee = F.when(
-        F.col("_is_current"), F.col("monthly_lease_fee")
-    ).otherwise(
-        F.col("_candidate_weekly_lease_fee")
-        * F.col("_lease_weeks_in_month")
-    )
-    gains_comfort = (
-        ~F.col("comfort_eligible") & F.col("_candidate_comfort_eligible")
-    )
-    gains_extra_comfort = (
-        ~F.col("extra_comfort_eligible")
-        & F.col("_candidate_extra_comfort_eligible")
-    )
-    expected_driver_pay = (
-        F.when(
-            gains_comfort & gains_extra_comfort,
-            F.col("_monthly_driver_pay_if_both"),
-        )
-        .when(gains_comfort, F.col("_monthly_driver_pay_if_comfort"))
-        .when(
-            gains_extra_comfort,
-            F.col("_monthly_driver_pay_if_extra_comfort"),
-        )
-        .otherwise(F.col("monthly_driver_pay"))
-    )
-    candidates = (
-        candidates.withColumn("expected_monthly_fuel_cost", expected_fuel_cost)
-        .withColumn("recommended_monthly_lease_fee", expected_lease_fee)
-        .withColumn(
-            "expected_monthly_net_profit",
-            expected_driver_pay
-            + F.col("monthly_tips")
-            - F.col("expected_monthly_fuel_cost")
-            - F.col("recommended_monthly_lease_fee"),
-        )
-        .withColumn(
-            "expected_net_profit_increase",
-            F.col("expected_monthly_net_profit") - F.col("monthly_net_profit"),
-        )
-        .withColumn(
-            "expected_revenue_increase",
-            F.col("recommended_monthly_lease_fee") - F.col("monthly_lease_fee"),
-        )
-    )
-    eligible_tiers = F.concat_ws(
-        ", ",
-        F.when(
-            ~F.col("comfort_eligible") & F.col("_candidate_comfort_eligible"),
-            F.lit("Comfort(Uber)"),
-        ),
-        F.when(
-            ~F.col("extra_comfort_eligible")
-            & F.col("_candidate_extra_comfort_eligible"),
-            F.lit("Extra Comfort(Lyft)"),
-        ),
-    )
-    reasons = F.concat_ws(
-        ", ",
-        F.when(
-            F.col("recommended_monthly_lease_fee") < F.col("monthly_lease_fee"),
-            F.lit("렌트비 절감"),
-        ),
-        F.when(
-            F.col("expected_monthly_fuel_cost") < F.col("monthly_fuel_cost"),
-            F.lit("연료비 절감"),
-        ),
-        F.when(
-            F.length(eligible_tiers) > 0,
-            F.concat(eligible_tiers, F.lit(" 등급 가능")),
-        ),
-    )
-    candidates = candidates.withColumn("_reasons", reasons).withColumn(
-        "recommendation_reason",
-        F.when(F.col("_is_current"), F.lit("현재 차량 유지"))
-        .when(F.length("_reasons") > 0, F.col("_reasons"))
-        .otherwise(F.lit("예상 순수익 개선")),
-    )
-
-    best = _allocate_candidates_by_stock(candidates)
-    return best.select(
-        "driver_id",
-        "year_month",
-        F.col("_candidate_comfort_eligible").alias("comfort_eligible"),
-        F.col("_candidate_extra_comfort_eligible").alias("extra_comfort_eligible"),
-        F.col("_candidate_vehicle_model_id").alias("vehicle_model_id"),
-        F.col("_candidate_manufacturer").alias("manufacturer"),
-        F.col("_candidate_model_name").alias("model_name"),
-        F.col("_candidate_model_year").alias("model_year"),
-        "recommendation_reason",
-        F.col("_candidate_fuel_efficiency").alias("fuel_efficiency"),
-        "recommended_monthly_lease_fee",
-        "expected_monthly_fuel_cost",
-        "expected_monthly_net_profit",
-        "expected_net_profit_increase",
-        "expected_revenue_increase",
-    ).select(*_columns(MonthlyVehicleRecommendation))
-
-
-def build_monthly_report(
-    recommendation: DataFrame,
-    year_month: str,
-    service_area: str,
-    threshold_profit_increase: float,
-    is_rerun: bool,
-) -> DataFrame:
-    """기사·회사 기준을 함께 통과한 추천을 월 1행으로 요약합니다."""
-    eligible = recommendation.filter(
-        (F.col("expected_net_profit_increase") >= threshold_profit_increase)
-        & (F.col("expected_revenue_increase") > 0)
-    )
-    return (
-        eligible.agg(
-            F.count(F.lit(1)).alias("recommended_driver_count"),
-            F.coalesce(F.avg("expected_net_profit_increase"), F.lit(0.0)).alias(
-                "avg_net_profit_increase_per_driver"
-            ),
-            F.coalesce(F.avg("expected_revenue_increase"), F.lit(0.0)).alias(
-                "avg_revenue_increase_per_driver"
-            ),
-            F.coalesce(F.sum("expected_revenue_increase"), F.lit(0.0)).alias(
-                "total_revenue_increase"
-            ),
-        )
-        .select(
-            F.lit(year_month).alias("year_month"),
-            F.lit(service_area).alias("service_area"),
-            F.lit(float(threshold_profit_increase)).alias(
-                "threshold_profit_increase"
-            ),
-            F.lit(bool(is_rerun)).alias("is_rerun"),
-            "recommended_driver_count",
-            "avg_net_profit_increase_per_driver",
-            "avg_revenue_increase_per_driver",
-            "total_revenue_increase",
-        )
-        .select(*_columns(MonthlyReport))
-    )
+        negative_samples = [
+            row.asDict(recursive=True)
+            for row in group.filter(F.col("expected_net_profit_increase") < 0)
+            .select("driver_id", "vehicle_model_id", "expected_net_profit_increase")
+            .limit(5)
+            .collect()
+        ]
+        if negative_samples:
+            raise ValueError(
+                f"{label} 예상 순수익 증가액이 음수입니다: sample={negative_samples}"
+            )

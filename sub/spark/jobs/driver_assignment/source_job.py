@@ -44,6 +44,13 @@ from schema.source import (
     MONTHLY_TAXI_TRIP_SCHEMA,
 )
 from shared.common.s3_reader import is_s3_uri, parent_uri
+from shared.common.source_published_layout import (
+    PUBLISHED_DATASETS,
+    S3_PUBLISHED_PREFIX,
+    dataset_key,
+    manifest_key,
+    quality_report_key,
+)
 from shared.spark.common.session import get_or_create_spark_session
 from shared.spark.hvfhv_clean_transformer import (
     TRIP_KEY_COLUMNS,
@@ -63,12 +70,12 @@ TRIP_SOURCE_COLUMNS = MONTHLY_TAXI_TRIP_SCHEMA.names
 # "manifest·산출물 구조 자체가 바뀌었는가" 를 답합니다 — 설정을 안 바꿔도 계약이
 # 바뀌면 낡은 릴리스를 재사용하면 안 되므로 별도 필드로 둡니다(#608).
 SCHEMA_VERSION = "1"
-# 데이터셋별 실측 대 합성 비중. hvfhv_taxi_trips는 실측 TLC 운행에 합성 신원만
+# 데이터셋별 실측 대 합성 비중. monthly_taxi_trip은 실측 TLC 운행에 합성 신원만
 # 얹은 것이고, driver_vehicle_monthly_snapshot은 기사·차량 자체가 합성이며,
 # lease_vehicle_inventory는 실측 렌탈 카탈로그에 보유 대수(stock)만 가정값입니다 —
 # 소비자가 "이 숫자가 실측인가" 를 API 응답만 보고 오판하지 않도록 명시합니다.
 PROVENANCE = {
-    "hvfhv_taxi_trips": "real_facts+synthetic_identity",
+    "monthly_taxi_trip": "real_facts+synthetic_identity",
     "driver_vehicle_monthly_snapshot": "synthetic",
     "lease_vehicle_inventory": "real_catalog+assumed_stock",
 }
@@ -143,7 +150,7 @@ def add_trip_keys(raw_trips: DataFrame) -> DataFrame:
 def build_trip_source(
     raw_trips: DataFrame, clean_trips: DataFrame, assignments: DataFrame
 ) -> DataFrame:
-    """배정된 운행을 `MONTHLY_TAXI_TRIP_SCHEMA` 14컬럼으로 좁힙니다.
+    """배정된 운행을 `MONTHLY_TAXI_TRIP_SCHEMA` 13컬럼으로 좁힙니다.
 
     예전에는 TLC 원본 26컬럼을 그대로 내보냈습니다 — 공개 계약이 원본 형태에
     묶여 있었고, 원본이 컬럼을 추가하면 하류가 조용히 따라 늘어났습니다.
@@ -164,8 +171,6 @@ def build_trip_source(
     selected = assignments.select(
         "trip_key", col("taxi_id").alias("_assigned_taxi_id")
     )
-    # 원본에만 있는 것(on_scene_datetime)과 정제본에만 있는 것(zone·등급·platform_name)이
-    # 갈려 있어 둘 다 붙입니다. FINAL_SCHEMA 에 on_scene_datetime 이 없습니다.
     clean = clean_trips.select(
         "trip_key",
         col("pickup_zone"),
@@ -188,7 +193,7 @@ def build_trip_source(
     typed = _as_schema(source, MONTHLY_TAXI_TRIP_SCHEMA)
     _require_non_null(
         typed,
-        set(MONTHLY_TAXI_TRIP_SCHEMA.names) - {"on_scene_datetime"},
+        set(MONTHLY_TAXI_TRIP_SCHEMA.names),
         "운행 기록",
     )
     return typed
@@ -305,17 +310,12 @@ def _require_non_null(frame: DataFrame, columns: set[str], label: str) -> None:
 
 
 def build_lease_vehicle_inventory(
-    current_driver_vehicle: DataFrame,
+    fleet_units: DataFrame,
     vehicle_master: DataFrame,
 ) -> DataFrame:
-    """보유 차량을 차종·연식별 API 재고로 집계합니다.
-
-    `taxi_id` 로 먼저 dedup 합니다 — 이번 달 안에 기사가 바뀐 차량(퇴사 기사의
-    차량이 신규 기사에게 재배정된 경우)이 `current_driver_vehicle`에 두 행으로
-    남아 있으면 그 차량이 재고에 두 번 집계됩니다.
-    """
+    """배정 여부와 무관한 전체 보유 차량을 차종·연식별 API 재고로 집계합니다."""
     fleet = (
-        current_driver_vehicle.dropDuplicates(["taxi_id"]).groupBy(
+        fleet_units.dropDuplicates(["taxi_id"]).groupBy(
             "make_key",
             "model_key",
             "model_year",
@@ -455,7 +455,7 @@ def _existing_release(path: Path, run: RunContext, *, input_scope: str) -> bool:
             f"다시 발행하려면 {path} 를 지우고 실행하세요."
         )
     for name in (
-        "hvfhv_taxi_trips",
+        "monthly_taxi_trip",
         "driver_vehicle_monthly_snapshot",
         "lease_vehicle_inventory",
     ):
@@ -573,7 +573,7 @@ def write_source_release(
     staging = output_root / f".year_month={year_month}.staging-{uuid.uuid4().hex}"
     try:
         staging.mkdir()
-        trip_file = staging / "hvfhv_taxi_trips.parquet"
+        trip_file = staging / "monthly_taxi_trip.parquet"
         snapshot_file = staging / "driver_vehicle_monthly_snapshot.parquet"
         inventory_file = staging / "lease_vehicle_inventory.parquet"
         _write_one_parquet(trips, trip_file)
@@ -590,7 +590,7 @@ def write_source_release(
             "input_scope": input_scope,
             "provenance": PROVENANCE,
             "datasets": {
-                "hvfhv_taxi_trips": {
+                "monthly_taxi_trip": {
                     "file": trip_file.name,
                     "row_count": pq.ParquetFile(trip_file).metadata.num_rows,
                     "sha256": _sha256(trip_file),
@@ -626,7 +626,7 @@ def write_source_release_s3(
     run: RunContext,
     input_scope: str,
 ) -> str:
-    """`write_source_release()`의 S3 대응 — PUBLISHED 3종을 `source/published/`에 공개합니다.
+    """`write_source_release()`의 S3 대응 — PUBLISHED 3종을 NYC 아래 공개합니다.
 
     로컬의 "staging 디렉터리 + rename" 같은 디렉터리 단위 원자성이 S3에는 없습니다.
     대신 데이터셋마다 `_write_one_parquet_s3()`가 개별 원자성(rename)을 갖고,
@@ -643,15 +643,16 @@ def write_source_release_s3(
 
     _validate_temporal_links(trips, snapshots)
     year_month = run.target_month
-    prefix = "source/published"
     datasets = {
-        "hvfhv_taxi_trips": trips,
+        "monthly_taxi_trip": trips,
         "driver_vehicle_monthly_snapshot": snapshots,
         "lease_vehicle_inventory": inventory,
     }
+    if datasets.keys() != PUBLISHED_DATASETS:
+        raise ValueError(f"published 데이터셋 계약이 다릅니다: {sorted(datasets)}")
     manifest_datasets = {}
     for name, frame in datasets.items():
-        key = f"{prefix}/{name}/year_month={year_month}/data.parquet"
+        key = dataset_key(name, year_month)
         _write_one_parquet_s3(frame, bucket=bucket, key=key)
         manifest_datasets[name] = {"key": key, "row_count": frame.count()}
 
@@ -667,14 +668,14 @@ def write_source_release_s3(
         "provenance": PROVENANCE,
         "datasets": manifest_datasets,
     }
-    manifest_key = f"{prefix}/_manifests/year_month={year_month}.json"
+    release_manifest_key = manifest_key(year_month)
     boto3.client("s3").put_object(
         Bucket=bucket,
-        Key=manifest_key,
+        Key=release_manifest_key,
         Body=json.dumps(manifest, ensure_ascii=False, sort_keys=True).encode("utf-8"),
         ServerSideEncryption="AES256",
     )
-    return f"s3://{bucket}/{prefix}"
+    return f"s3://{bucket}/{S3_PUBLISHED_PREFIX}"
 
 
 def _capacity_drive_minutes(preferences: DataFrame, service_dates: list[date]) -> int:
@@ -879,6 +880,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
     ).transform(raw_trips).persist(StorageLevel.DISK_ONLY)
     preferences = read(str(state.preferences_path))
     current_driver_vehicle = read(str(state.current_driver_vehicle_path))
+    fleet_units = read(str(state.fleet_units_path))
     vehicle_master = read(args.vehicle_master_path)
     candidates, candidate_rejects = build_trip_candidates(
         trips,
@@ -927,7 +929,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
         seed=config.global_seed,
     ).persist(StorageLevel.DISK_ONLY)
     inventory_source = build_lease_vehicle_inventory(
-        current_driver_vehicle, vehicle_master
+        fleet_units, vehicle_master
     ).persist(StorageLevel.DISK_ONLY)
     try:
         if args.storage == "s3":
@@ -943,7 +945,7 @@ def main(args_list: list[str] | None = None) -> Path | str:
 
             boto3.client("s3").put_object(
                 Bucket=bucket,
-                Key=f"source/published/_quality_reports/year_month={args.year_month}.json",
+                Key=quality_report_key(args.year_month),
                 Body=json.dumps(quality_report, ensure_ascii=False, indent=2).encode("utf-8"),
                 ServerSideEncryption="AES256",
             )

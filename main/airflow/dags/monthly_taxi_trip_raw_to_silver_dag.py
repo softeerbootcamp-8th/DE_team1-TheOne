@@ -4,17 +4,20 @@ import os
 from datetime import datetime, timedelta
 
 from airflow.models import Variable
-from airflow.providers.amazon.aws.operators.emr import EmrServerlessStartJobOperator
 from airflow.providers.standard.operators.bash import BashOperator
 from airflow.sdk import Param, dag
 
+# provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
+from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
 from shared.airflow.common.slack_failure_callback import (
     slack_failure_callback,
     slack_retry_alert_callback,
 )
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
-    DEFAULT_API_BASE_URL,
-    DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
     MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
     PROJECT_ROOT,
@@ -31,6 +34,7 @@ EMR_ENTRY_POINT = (
 EMR_SPARK_SUBMIT_PARAMETERS = (
     "--conf spark.driver.cores=2 --conf spark.driver.memory=6g "
     "--conf spark.executor.cores=2 --conf spark.executor.memory=6g "
+    "--conf spark.dynamicAllocation.minExecutors=1 --conf spark.dynamicAllocation.initialExecutors=5 --conf spark.dynamicAllocation.maxExecutors=5 "
     "--conf spark.emr-serverless.driverEnv.PYTHONPATH=/home/hadoop "
     "--conf spark.executorEnv.PYTHONPATH=/home/hadoop"
 )
@@ -53,7 +57,7 @@ default_args = {
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "monthly_taxi_trip", "bronze", "silver", "spark", "emr", "lambda"],
     params={
         "year": Param(
@@ -68,14 +72,16 @@ default_args = {
             pattern=r"^(0?[1-9]|1[0-2])$",
             description="수동 수집 월 (예: '03' 또는 '3'). 비워두면 실행일 기준 직전 달 자동 계산",
         ),
-        "base_dir": Param(
-            DEFAULT_BRONZE_DIR,
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
             type="string",
-            description="Bronze 데이터 저장 기본 경로",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
         ),
         "api_base_url": Param(
-            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.environ["SOURCE_API_URL"],
             type="string",
+            minLength=1,
             description="월별 택시 운행 데이터 제공 주소",
         ),
         # 기본값을 Variable(hvfhv_error_threshold)에서 가져옵니다 — DAG 파싱
@@ -92,7 +98,7 @@ default_args = {
                 )
             ),
             type="number",
-            description="Bronze 불합격 행 허용 비율. 넘으면 원천이 바뀐 것으로 보고 멈춤",
+            description="Spark Silver 후보 불합격 행 허용 비율. 이상이면 적재 중단",
         ),
     },
 )
@@ -127,7 +133,8 @@ def _local_bronze_to_silver() -> BashOperator:
             "['locations'][0] }}\" "
             f"--output_path {DEFAULT_SILVER_DIR} "
             "--output_version \"{{ task_instance.xcom_pull(task_ids='validate_bronze')"
-            "['silver_staging_path'] }}\" "
+            "['silver_version_path'] }}\" "
+            "--service_area {{ params.service_area }} "
             "--error_threshold {{ params.error_threshold }}"
         ),
         env={
@@ -166,7 +173,9 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
                     "--input_path",
                     f"{{{{ {xcom}['locations'][0] }}}}",
                     "--output_version",
-                    f"{{{{ {xcom}['silver_staging_path'] }}}}",
+                    f"{{{{ {xcom}['silver_version_path'] }}}}",
+                    "--service_area",
+                    "{{ params.service_area }}",
                     "--error_threshold",
                     "{{ params.error_threshold }}",
                 ],
@@ -175,7 +184,7 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
         },
         configuration_overrides={
             "monitoringConfiguration": {
-                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/emr-logs/"}
+                "s3MonitoringConfiguration": {"logUri": f"s3://{bucket}/logs/emr-serverless/"}
             }
         },
         aws_conn_id="aws_default",
@@ -183,8 +192,11 @@ def _emr_bronze_to_silver() -> EmrServerlessStartJobOperator:
         wait_for_completion=True,
         waiter_delay=60,
         waiter_max_attempts=180,
-        deferrable=False,
-        execution_timeout=timedelta(hours=3),
+        # 배포로 triggerer가 재시작돼도 deferred 상태는 메타DB에서 이어받습니다.
+        # cancel_on_kill은 사용자 취소에만 EMR Job을 정리해 비용 누수를 막습니다.
+        deferrable=True,
+        cancel_on_kill=True,
+        execution_timeout=timedelta(hours=3, minutes=10),
     )
 
 

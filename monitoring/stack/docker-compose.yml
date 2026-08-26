@@ -1,0 +1,40 @@
+# Prometheus + Grafana. 3000·9090 은 127.0.0.1 에만 바인딩하고 SSH 터널로 봅니다
+# (보안그룹에 그 포트를 열지 않습니다).
+services:
+  prometheus:
+    image: prom/prometheus:v3.1.0
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      # 보존 기간을 못 박습니다. 안 정하면 디스크가 찰 때까지 늘어납니다.
+      - --storage.tsdb.retention.time=15d
+    ports:
+      - "127.0.0.1:9090:9090"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:11.5.0
+    environment:
+      # Airflow UI 와 같은 판단 — 터널 뒤라 로그인이 방어력을 거의 더하지 않습니다.
+      # 3000 을 공개하려면 이 세 줄을 먼저 되돌리세요.
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      # 알림 수신처 프로비저닝이 `$__env{SLACK_WEBHOOK_URL}` 로 읽습니다. 웹훅을 파일에
+      # 두지 않으려고 환경변수로 넘깁니다 — Airflow 가 쓰는 것과 같은 Secret 이라
+      # 채널도 같습니다. 값이 없으면 컨테이너가 아예 안 뜨게 필수로 둡니다: 비어
+      # 있으면 알림이 조용히 안 가고, 그게 가장 나쁜 실패입니다.
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL:?~/monitoring/.env 의 SLACK_WEBHOOK_URL 이 필요합니다}
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on: [prometheus]
+    restart: unless-stopped
+
+volumes:
+  prometheus-data:
+  grafana-data:

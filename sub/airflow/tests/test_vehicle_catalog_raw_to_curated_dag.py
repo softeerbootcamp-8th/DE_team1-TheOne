@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from shared.airflow.common import lambda_invoke
 from sub.airflow.scripts.vehicle_catalog_raw_to_curated import tasks as task_module
 
 DAG_FILE = (
@@ -65,6 +66,10 @@ def events(dag_module, monkeypatch):
         return handler
 
     monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
+    # `source_to_raw` 는 `invoke_lambda` 를 거칩니다. 그 함수는 자기 모듈의
+    # `lambda_handler_for` 를 쓰므로 위 패치가 닿지 않습니다 — 여기도 바꿔야
+    # 핸들러가 실제로 돌지 않습니다 (외부 페이지 수집·파일 쓰기).
+    monkeypatch.setattr(lambda_invoke, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 
@@ -180,7 +185,7 @@ def test_경로_파라미터가_비면_DAG_기본값을_쓴다(dag_module, event
         params={},
     )
 
-    assert events[0][1]["base_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert events[0][1]["base_dir"] == task_module.DEFAULT_RAW_DIR
     silver = silver_event(events)
-    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
-    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR
+    assert silver["raw_dir"] == task_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == task_module.DEFAULT_CURATED_DIR

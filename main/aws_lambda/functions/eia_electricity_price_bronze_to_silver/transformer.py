@@ -14,6 +14,7 @@ EIA 가 주는 값은 **교통 부문 전력 소매가** 입니다. 기사가 �
 
 import calendar
 import logging
+from bisect import bisect_left
 from datetime import date, datetime
 from io import BytesIO
 
@@ -29,6 +30,28 @@ PUBLIC_CHARGING_MARKUP = 2.0
 CENTS_PER_DOLLAR = 100.0
 EV_USD_RANGE = (0.05, 3.0)
 FINAL = "Final"
+INTERPOLATED = "Interpolated"
+
+# Bronze 원본(EIA-861M)은 지역과 무관하게 미국 전체 주가 한 파일에 들어 있는 단일
+# 소스입니다. 지역별로 실제로 다른 값을 읽어오는 지점은 여기 — 원본을 다시 받는 게
+# 아니라 어느 주(State) 행을 고르느냐로 지역이 갈립니다(#844).
+SERVICE_AREA_TO_STATE = {
+    "NYC": "NY",
+    "TX": "TX",
+    "CA": "CA",
+    "FL": "FL",
+    "MA": "MA",
+}
+
+
+def resolve_state(service_area: str) -> str:
+    try:
+        return SERVICE_AREA_TO_STATE[service_area]
+    except KeyError:
+        raise ValueError(
+            f"EIA 전력 이력에 매핑된 주(State)가 없는 지역입니다: {service_area!r} "
+            f"(등록된 지역: {sorted(SERVICE_AREA_TO_STATE)})"
+        ) from None
 
 
 def month_days(year_month: str) -> list[date]:
@@ -37,8 +60,10 @@ def month_days(year_month: str) -> list[date]:
     return [date(year, month, day) for day in range(1, last + 1)]
 
 
-def parse_electricity_monthly(body: bytes) -> dict[str, tuple[float, str]]:
-    """월간 전력요금 이력 → {YYYY-MM: (¢/kWh, 확정상태)} (뉴욕, 교통 부문).
+def parse_electricity_monthly(
+    body: bytes, state: str = STATE
+) -> dict[str, tuple[float, str]]:
+    """월간 전력요금 이력 → {YYYY-MM: (¢/kWh, 확정상태)} (지정한 주, 교통 부문).
 
     확정 상태를 함께 돌려주는 이유는 EIA 가 최근 약 17개월을 `Preliminary` 로 두고
     나중에 `Final` 로 바꾸기 때문입니다. 같은 달을 다시 만들었을 때 숫자가 달라지는
@@ -69,7 +94,7 @@ def parse_electricity_monthly(body: bytes) -> dict[str, tuple[float, str]]:
 
     prices: dict[str, tuple[float, str]] = {}
     for row in rows:
-        if row[index["State"]] != STATE:
+        if row[index["State"]] != state:
             continue
         price = row[index[price_column]]
         if not isinstance(price, (int, float)):
@@ -80,7 +105,7 @@ def parse_electricity_monthly(body: bytes) -> dict[str, tuple[float, str]]:
 
     workbook.close()
     if not prices:
-        raise ValueError(f"EIA 전력 이력에 {STATE} 데이터가 없습니다")
+        raise ValueError(f"EIA 전력 이력에 {state} 데이터가 없습니다")
     return prices
 
 
@@ -97,23 +122,49 @@ def validate(rows: list[dict], year_month: str) -> None:
             raise ValueError(f"충전 단가가 허용 범위 밖입니다: {row['ev_price']}")
 
 
+def electricity_price_for(
+    year_month: str,
+    electricity: dict[str, tuple[float, str]],
+) -> tuple[float, str]:
+    """누락 월은 선형 보간하고 이력 양 끝은 가장 가까운 월값으로 채웁니다."""
+    if year_month in electricity:
+        return electricity[year_month]
+
+    def month_number(value: str) -> int:
+        year, month = (int(part) for part in value.split("-"))
+        return year * 12 + month - 1
+
+    months = sorted(electricity, key=month_number)
+    numbers = [month_number(month) for month in months]
+    target = month_number(year_month)
+    right = bisect_left(numbers, target)
+    if right == 0:
+        return electricity[months[0]][0], INTERPOLATED
+    if right == len(months):
+        return electricity[months[-1]][0], INTERPOLATED
+
+    left_month, right_month = months[right - 1], months[right]
+    left_price = electricity[left_month][0]
+    right_price = electricity[right_month][0]
+    ratio = (target - numbers[right - 1]) / (
+        numbers[right] - numbers[right - 1]
+    )
+    return left_price + (right_price - left_price) * ratio, INTERPOLATED
+
+
 def build_daily_prices(
     year_month: str,
     electricity_body: bytes,
     bronze_collected_date: date,
+    service_area: str,
     markup: float = PUBLIC_CHARGING_MARKUP,
 ) -> list[dict]:
     """대상 월의 일별 충전 단가."""
     datetime.strptime(year_month, "%Y-%m")
 
-    electricity = parse_electricity_monthly(electricity_body)
-    if year_month not in electricity:
-        available = f"{min(electricity)} ~ {max(electricity)}"
-        raise ValueError(
-            f"EIA 전력 이력에 {year_month} 이 없습니다 (보유 {available}). "
-            "전력 통계는 약 3개월 늦게 공개됩니다."
-        )
-    cents, status = electricity[year_month]
+    state = resolve_state(service_area)
+    electricity = parse_electricity_monthly(electricity_body, state)
+    cents, status = electricity_price_for(year_month, electricity)
     ev_price = cents / CENTS_PER_DOLLAR * markup
 
     rows = [

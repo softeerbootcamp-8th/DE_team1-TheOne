@@ -1,0 +1,59 @@
+# Slack 알림 수신처.
+#
+# `instance_name` 은 호스트 알림에만 있습니다. 조건 없이 쓰면 EMR·Lambda 알림에서
+# `**` 만 찍혀 나갑니다 — `with` 로 감싸 있을 때만 붙입니다.
+#
+# 웹훅 URL 은 파일에 두지 않습니다. compose 가 `SLACK_WEBHOOK_URL` 을 컨테이너
+# 환경변수로 넘기고, Grafana 가 `$__env{}` 로 읽습니다. Airflow 가 쓰는 것과 같은
+# GitHub Secret 이라 채널도 같습니다.
+#
+# ★ 해소 알림에 발생 시점 문구를 쓰지 않습니다
+#
+#   `summary` 는 조건이 참일 때를 기준으로 쓰여 있습니다("작업이 실패했습니다").
+#   해소 알림에도 그대로 내보내면 `✅ EMR 작업 실패 / 작업이 실패했습니다` 처럼
+#   읽혀서 성공했는데 실패 알림이 온 것으로 오해합니다 — 실제로 그런 지적을
+#   받았습니다. `.Status` 로 갈라 해소일 때는 별도 문구를 씁니다.
+#
+#
+# ★ 이벤트 카운트형 알림은 해소를 보내지 않습니다
+#
+#   `FailedJobs`·`Errors`·`Throttles` 는 "그때 몇 건 있었나" 이지 상태가 아닙니다.
+#   0 으로 돌아온 것은 "새 실패가 없다" 는 뜻이고 실패한 건은 그대로여서, 해소
+#   알림에 쓸 내용이 없습니다. 반대로 용량·호스트 임계는 상태형이라 해소가
+#   "여유 생김"·"정상 복귀" 로 읽히므로 살립니다.
+#
+#   수신처 단위 설정(`disableResolveMessage`)이라 규칙별로 못 끕니다. 그래서
+#   같은 Slack 으로 가는 수신처를 하나 더 두고, `notify: fire_only` 라벨이 붙은
+#   규칙만 정책에서 그쪽으로 보냅니다. 두 수신처의 `settings` 는 같아야 하고
+#   테스트로 묶어 뒀습니다.
+#
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: slack
+    receivers:
+      - uid: theone-slack
+        type: slack
+        settings:
+          url: $__env{SLACK_WEBHOOK_URL}
+          title: '{{ if eq .Status "firing" }}🔥 {{ .CommonLabels.alertname }}{{ else }}✅ 해소 · {{ .CommonLabels.alertname }}{{ end }}'
+          text: |
+            {{ range .Alerts }}{{ with .Labels.instance_name }}*{{ . }}* — {{ end }}{{ if eq .Status "resolved" }}조건이 더 이상 참이 아닙니다. 조치하지 않아도 됩니다.{{ else }}{{ .Annotations.summary }}
+            심각도 `{{ .Labels.severity }}`{{ end }}
+            {{ end }}
+
+  # 해소 알림만 끈 사본. `settings` 는 위와 같아야 합니다.
+  - orgId: 1
+    name: slack-fire-only
+    receivers:
+      - uid: theone-slack-fire-only
+        type: slack
+        disableResolveMessage: true
+        settings:
+          url: $__env{SLACK_WEBHOOK_URL}
+          title: '{{ if eq .Status "firing" }}🔥 {{ .CommonLabels.alertname }}{{ else }}✅ 해소 · {{ .CommonLabels.alertname }}{{ end }}'
+          text: |
+            {{ range .Alerts }}{{ with .Labels.instance_name }}*{{ . }}* — {{ end }}{{ if eq .Status "resolved" }}조건이 더 이상 참이 아닙니다. 조치하지 않아도 됩니다.{{ else }}{{ .Annotations.summary }}
+            심각도 `{{ .Labels.severity }}`{{ end }}
+            {{ end }}

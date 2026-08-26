@@ -7,11 +7,13 @@
 5. API는 manifest를 공개하지 않고 세 Parquet만 다운로드
 6. EMR build_source_release는 병렬 자원과 executor 상한을 함께 지정
 7. 로컬과 EMR은 seed·bucket_size·bucket 실행 파라미터를 같은 의미로 전달
+8. 로컬 경로는 UI에서 숨기되 Spark task 내부 기본값으로 유지
 """
 
 import hashlib
 import io
 import json
+import re
 import sys
 import threading
 import urllib.error
@@ -60,6 +62,11 @@ def test_DAG는_월별로_세_원천을_생성하고_API_릴리스를_검증한�
     assert DAG.schedule == "0 0 10 * *"
     assert DAG.catchup is False and DAG.max_active_runs == 1
     assert DAG.params["test_row_limit"] == 0
+    assert set(task_module.DEFAULT_PATHS).isdisjoint(DAG.params)
+    task_params = DAG.get_task("build_source_release").params
+    assert {
+        name: task_params[name] for name in task_module.DEFAULT_PATHS
+    } == task_module.DEFAULT_PATHS
 
 
 def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다():
@@ -293,7 +300,7 @@ CONFIG_HASH = "0123456789ab"
 def _write_release(root, *, manifest_rows=1):
     release = root / "year_month=2026-09"
     release.mkdir(parents=True)
-    trip_file = release / "hvfhv_taxi_trips.parquet"
+    trip_file = release / "monthly_taxi_trip.parquet"
     snapshot_file = release / "driver_vehicle_monthly_snapshot.parquet"
     inventory_file = release / "lease_vehicle_inventory.parquet"
     pq.write_table(
@@ -345,7 +352,7 @@ def _write_release(root, *, manifest_rows=1):
         "config_hash": CONFIG_HASH,
         "created_at": "2026-09-10T00:00:00+00:00",
         "datasets": {
-            "hvfhv_taxi_trips": metadata(trip_file),
+            "monthly_taxi_trip": metadata(trip_file),
             "driver_vehicle_monthly_snapshot": metadata(snapshot_file),
             "lease_vehicle_inventory": metadata(inventory_file),
         },
@@ -407,15 +414,13 @@ def test_품질리포트가_없으면_실패한다(tmp_path):
 
 
 def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다(tmp_path):
-    """manifest의 dataset 키는 생성 DAG가 쓰는 이름 그대로지만, 공개 API는 이름이
-    다른 것(hvfhv_taxi_trips -> monthly_taxi_trip)이 있어 URL은 그걸로 만듭니다
-    (LocalDatasetStorage의 번역표 참고)."""
+    """manifest의 dataset 키와 공개 API URL의 dataset 이름은 같습니다 — 릴리스에
+    manifest 자체는 내려주지 않고, 그 안에 적힌 세 Parquet만 dataset 경로로 받습니다."""
     release, manifest = _write_release(tmp_path)
     server = create_server(LocalDatasetStorage(tmp_path), port=0)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     base_url = f"http://127.0.0.1:{server.server_port}"
-    public_names = {"hvfhv_taxi_trips": "monthly_taxi_trip"}
     try:
         for path in ("/v1/data/latest", "/v1/data/2026-09"):
             with pytest.raises(urllib.error.HTTPError) as exc_info:
@@ -423,8 +428,7 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
             assert exc_info.value.code == 404
 
         for dataset in manifest["datasets"]:
-            public_name = public_names.get(dataset, dataset)
-            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{public_name}"
+            dataset_url = f"{base_url}/v1/data/2026-09/datasets/{dataset}"
             with urllib.request.urlopen(dataset_url) as response:
                 assert response.headers["Content-Type"] == (
                     "application/vnd.apache.parquet"
@@ -434,7 +438,7 @@ def test_API는_manifest를_공개하지않고_세_Parquet만_다운로드한다
                 ).read_bytes()
 
             with urllib.request.urlopen(
-                f"{base_url}/v1/data/latest/datasets/{public_name}"
+                f"{base_url}/v1/data/latest/datasets/{dataset}"
             ) as response:
                 assert response.geturl() == dataset_url
                 assert response.read() == (
@@ -497,12 +501,18 @@ def test_운영은_EMR_Serverless_로_제출하고_완료까지_기다린다(mon
     assert type(operator).__name__ == "EmrServerlessStartJobOperator"
     assert operator.application_id == "app-test"
     assert operator.wait_for_completion is True
+    assert operator.deferrable is True
+    assert operator.cancel_on_kill is True
+    assert (
+        operator.waiter_delay * operator.waiter_max_attempts
+        < operator.execution_timeout.total_seconds()
+    )
     assert spark_submit["entryPoint"] == operator_module.EMR_ENTRY_POINT
     assert (
         operator.configuration_overrides["monitoringConfiguration"][
             "s3MonitoringConfiguration"
         ]["logUri"]
-        == "s3://test-lake/emr-logs/"
+        == "s3://test-lake/logs/emr-serverless/"
     )
 
 
@@ -517,8 +527,9 @@ def test_EMR_build_source_release는_최적화된_2core_worker와_상한을_지�
 
     for expected in (
         "spark.driver.cores=2",
-        "spark.driver.memory=6g",
-        "spark.driver.memoryOverhead=2g",
+        # 드라이버는 heap 보다 overhead 가 큽니다 (#894) — 아래 테스트가 이유를 고정합니다.
+        "spark.driver.memory=3g",
+        "spark.driver.memoryOverhead=5g",
         "spark.executor.cores=2",
         "spark.executor.memory=6g",
         "spark.executor.memoryOverhead=2g",
@@ -527,6 +538,33 @@ def test_EMR_build_source_release는_최적화된_2core_worker와_상한을_지�
         "spark.dynamicAllocation.maxExecutors=5",
     ):
         assert f"--conf {expected}" in parameters
+
+
+def test_드라이버_메모리는_파이썬_쪽에_더_준다(monkeypatch):
+    """`prepare_monthly_state` 가 SparkSession 보다 먼저 pandas 로 도는 구조 때문입니다.
+
+    그 시점에는 JVM 힙이 놀고 일하는 것은 overhead 쪽 파이썬 프로세스입니다. 실제
+    2026-02 전체 파일로 측정한 최대 RSS 가 2,150 MiB 라, 옛 배분(overhead 2g)으로는
+    컬럼 프로젝션을 넣어도 부족합니다. 컨테이너 총량은 8g 로 같아 과금은 그대로입니다.
+    """
+    monkeypatch.setenv("EMR_APPLICATION_ID", "app-test")
+    monkeypatch.setenv("EMR_EXECUTION_ROLE_ARN", "arn:aws:iam::123456789012:role/emr-exec")
+    monkeypatch.setenv("DATA_LAKE_S3_BUCKET", "test-lake")
+
+    parameters = operator_module.emr_build().job_driver["sparkSubmit"][
+        "sparkSubmitParameters"
+    ]
+
+    def gigabytes(key: str) -> int:
+        match = re.search(rf"--conf {re.escape(key)}=(\d+)g", parameters)
+        assert match, f"{key} 를 찾지 못했습니다"
+        return int(match.group(1))
+
+    heap = gigabytes("spark.driver.memory")
+    overhead = gigabytes("spark.driver.memoryOverhead")
+    assert overhead > heap, "파이썬 쪽(overhead)이 더 커야 합니다"
+    # 총량이 커지면 EMR Serverless 워커 크기가 올라가 과금이 늘어납니다.
+    assert heap + overhead == 8
 
 
 def test_EMR_은_storage_를_s3_로_고정한다(monkeypatch):

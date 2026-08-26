@@ -7,18 +7,28 @@
 
 import importlib
 import logging
-from datetime import datetime
+from datetime import timezone
 
 from airflow.sdk import task
 
-from shared.airflow.common.lambda_runtime import lambda_handler_for
+from shared.airflow.common.lambda_invoke import invoke_lambda
 from shared.airflow.common.project_paths import PROJECT_ROOT
-from shared.airflow.common.validation import layout_tail, location_size, parse_handler_result, require_file
+from shared.airflow.common.validation import (
+    S3Location,
+    layout_tail,
+    location_size,
+    parse_handler_result,
+    parse_location,
+    require_file,
+    run_file_gx_validation,
+    run_quality_gate,
+)
 
 logger = logging.getLogger(__name__)
 
 BRONZE_DIR = str(PROJECT_ROOT / "data" / "bronze")
 HANDLER_NAME = "eia_electricity_price_raw_to_bronze"
+DATASET = "eia_electricity_price"
 
 
 def _layout():
@@ -28,8 +38,21 @@ def _layout():
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
     params = context["params"]
-    event = {"base_dir": params["bronze_dir"]}
-    result = lambda_handler_for(HANDLER_NAME)(event=event)
+    collected_at = (
+        context["dag_run"].start_date.astimezone(timezone.utc)
+        .isoformat(timespec="microseconds")
+        .replace("+00:00", "Z")
+    )
+    event = {
+        "service_area": params["service_area"],
+        "collected_at": collected_at,
+    }
+    result = invoke_lambda(
+        HANDLER_NAME,
+        package="main.aws_lambda.functions",
+        event=event,
+        local_event={"base_dir": params.get("bronze_dir") or BRONZE_DIR},
+    )
     logger.info("Raw -> Bronze 완료: %s", result)
     return result
 
@@ -37,16 +60,39 @@ def raw_to_bronze_task(**context) -> dict:
 @task(task_id="validate_bronze")
 def validate_bronze_task(result: dict, **context) -> None:
     """적재 경로가 layout 규칙과 같은지, 파일이 비어 있지 않은지 확인합니다."""
+    run_quality_gate(
+        lambda: parse_location(result["locations"][0]).parent,
+        lambda: _validate_bronze(result, context),
+        layer="bronze",
+        context=context,
+    )
+
+
+def _validate_bronze(result: dict, context: dict) -> None:
     parsed = parse_handler_result(result, expected_locations=1, expected_rows=1)
     layout = _layout()
-    collected_date = datetime.strptime(result["collected_date"], "%Y-%m-%d").date()
-    expected = layout.electricity_bronze_file(context["params"]["bronze_dir"], collected_date)
+    service_area = context["params"]["service_area"]
+    expected = layout.electricity_bronze_file(
+        context["params"].get("bronze_dir") or BRONZE_DIR,
+        result.get("collected_at"),
+        service_area,
+    )
     path = require_file(parsed.locations[0])
-    if layout_tail(path) != layout_tail(expected):
+    if layout_tail(path, segments=4, service_area=service_area) != layout_tail(
+        expected, segments=4, service_area=service_area
+    ):
         raise ValueError(f"적재 경로가 예상과 다릅니다: {path}")
 
     # 하한은 수집(lambda)과 같은 값을 씁니다 — 두 곳이 갈라지면 한쪽만 통과합니다.
     size = location_size(path)
     if size < layout.ELECTRICITY_MIN_BYTES:
         raise ValueError(f"EIA 원본이 너무 작습니다: {size} bytes ({path})")
+    if isinstance(path, S3Location):
+        run_file_gx_validation(
+            size_bytes=size,
+            minimum_bytes=layout.ELECTRICITY_MIN_BYTES,
+            dataset=DATASET,
+            layer="bronze",
+            data_location=path,
+        )
     logger.info("bronze 검증 통과: %s (%d bytes)", path, size)

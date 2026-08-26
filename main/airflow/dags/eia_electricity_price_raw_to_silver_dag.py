@@ -5,13 +5,15 @@ from datetime import datetime, timedelta
 from airflow.models import Variable
 from airflow.sdk import Param, dag
 
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
+)
 from main.airflow.scripts.eia_electricity_price_bronze_to_silver.tasks import (
-    SILVER_DIR,
     bronze_to_silver_task,
     validate_silver_task,
 )
 from main.airflow.scripts.eia_electricity_price_raw_to_bronze.tasks import (
-    BRONZE_DIR,
     raw_to_bronze_task,
     validate_bronze_task,
 )
@@ -33,10 +35,10 @@ default_args = {
 @dag(
     dag_id="eia_electricity_price_raw_to_silver_pipeline",
     default_args=default_args,
-    schedule="0 6 1 * *",
+    schedule="0 2 1 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    max_active_runs=1,
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "fuel", "eia", "ev", "silver"],
     params={
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
@@ -52,8 +54,17 @@ default_args = {
             float(Variable.get("eia_electricity_markup", default_var=2.0)),
             type="number",
         ),
-        "bronze_dir": Param(BRONZE_DIR, type="string"),
-        "silver_dir": Param(SILVER_DIR, type="string"),
+        # 대상 지역. Bronze/Silver S3 경로를 지역별로 나누는 데 씁니다(#844).
+        # 지금은 NYC 하나뿐이라 기본값으로 두고, 지역이 늘면 트리거 시 지정합니다.
+        #
+        # 새 파라미터를 추가하면 test_main_dag_params.py의 기대 집합도 함께
+        # 고쳐야 합니다 — 그 테스트가 파라미터 집합 완전일치를 요구합니다.
+        "service_area": Param(
+            DEFAULT_SERVICE_AREA,
+            type="string",
+            pattern=r"^[A-Z][A-Z0-9_]*$",
+            description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
+        ),
     },
 )
 def eia_electricity_price_raw_to_silver_pipeline():

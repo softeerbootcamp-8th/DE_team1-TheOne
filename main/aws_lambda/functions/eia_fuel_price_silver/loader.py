@@ -12,11 +12,12 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from pipeline_core.loader import Loader, WriteResult
 
-from shared.common.service_area_path import join_segments, service_area_segment
+from main.aws_lambda.common.monthly_dataset import join_segments, service_area_segment
+from main.common.eia_fuel_version import FUEL_FILE_NAME, fuel_input_version
 
 from schema.silver import CLEAN_FUEL_PRICE_SCHEMA as SCHEMA
 
-from shared.aws_lambda.common.atomic_write import atomic_write
+from shared.aws_lambda.common.atomic_write import atomic_write, invalidate_success_marker
 from shared.aws_lambda.common.s3_loader import S3Loader, S3Object
 
 logger = logging.getLogger(__name__)
@@ -25,49 +26,70 @@ DATASET = "gas_ev_price"
 # 데이터가 나타내는 달입니다. 전에는 `collected_month` 였는데, 값은 데이터의 달인데
 # 이름은 "수집" 이라 구조를 오해하게 만들었습니다. TLC Silver 와 같은 이름으로 맞춥니다.
 PARTITION_KEY = "year_month"
-FILE_NAME = "gas_ev_price.parquet"
+FILE_NAME = FUEL_FILE_NAME
 
 
 def silver_file(
-    base_dir: str, year_month: str, service_area: str | None = None
+    base_dir: str,
+    year_month: str,
+    gas_source_collected_at: str,
+    ev_source_collected_at: str,
+    service_area: str,
 ) -> Path:
     dataset_root = Path(base_dir) / DATASET
     area = service_area_segment(service_area)
     return (
-        (dataset_root / area if area else dataset_root)
+        (dataset_root / area)
         / f"{PARTITION_KEY}={year_month}"
+        / fuel_input_version(gas_source_collected_at, ev_source_collected_at)
         / FILE_NAME
     )
 
 
-def silver_key(year_month: str, service_area: str | None = None) -> str:
+def silver_key(
+    year_month: str,
+    gas_source_collected_at: str,
+    ev_source_collected_at: str,
+    service_area: str,
+) -> str:
     return join_segments(
         "silver",
         DATASET,
         service_area_segment(service_area),
         f"{PARTITION_KEY}={year_month}",
+        fuel_input_version(gas_source_collected_at, ev_source_collected_at),
         FILE_NAME,
     )
 
 
 class EiaFuelPriceSilverLoader(Loader):
-    """대상 월 한 달치를 고정 경로의 로컬 Parquet 하나로 저장합니다."""
+    """대상 월·두 CLEAN 입력 조합에 로컬 Parquet 하나를 저장합니다."""
 
     def __init__(
         self,
         base_dir: str,
         year_month: str,
+        service_area: str,
     ):
         self._base_dir = base_dir
         self._year_month = year_month
+        self._service_area = service_area
 
-    def write(self, data: list[dict]) -> WriteResult:
-        if not data:
+    def write(self, data: dict) -> WriteResult:
+        rows = data.get("rows") or []
+        if not rows:
             raise ValueError("적재할 연료비 Silver 데이터가 없습니다.")
 
-        table = pa.Table.from_pylist(data, schema=SCHEMA)
-        path = silver_file(self._base_dir, self._year_month)
+        table = pa.Table.from_pylist(rows, schema=SCHEMA)
+        path = silver_file(
+            self._base_dir,
+            self._year_month,
+            data["gas_source_collected_at"],
+            data["ev_source_collected_at"],
+            self._service_area,
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
+        invalidate_success_marker(path.parent)
         atomic_write(
             path,
             lambda temporary: pq.write_table(table, temporary, compression="snappy"),
@@ -81,27 +103,36 @@ class EiaFuelPriceSilverLoader(Loader):
 
 
 class EiaFuelPriceS3SilverLoader(Loader):
-    """대상 월 한 달치를 고정 key의 S3 Parquet 하나로 저장합니다."""
+    """대상 월·두 CLEAN 입력 조합에 S3 Parquet 하나를 저장합니다."""
 
     def __init__(
         self,
         year_month: str,
+        service_area: str,
         bucket: str | None = None,
     ):
         self._year_month = year_month
         self._bucket = bucket
+        self._service_area = service_area
 
-    def write(self, data: list[dict]) -> WriteResult:
-        if not data:
+    def write(self, data: dict) -> WriteResult:
+        rows = data.get("rows") or []
+        if not rows:
             raise ValueError("적재할 연료비 Silver 데이터가 없습니다.")
 
-        table = pa.Table.from_pylist(data, schema=SCHEMA)
+        table = pa.Table.from_pylist(rows, schema=SCHEMA)
         buffer = io.BytesIO()
         pq.write_table(table, buffer, compression="snappy")
 
         result = S3Loader(
-            key=silver_key(self._year_month),
+            key=silver_key(
+                self._year_month,
+                data["gas_source_collected_at"],
+                data["ev_source_collected_at"],
+                self._service_area,
+            ),
             bucket=self._bucket,
+            invalidate_parent_success=True,
         ).write(
             S3Object(body=buffer.getvalue(), row_count=table.num_rows)
         )
@@ -119,12 +150,14 @@ def build_silver_loader(
     base_dir: str,
     bucket: str | None,
     year_month: str,
+    service_area: str,
 ) -> Loader:
     if storage == "local":
-        return EiaFuelPriceSilverLoader(base_dir, year_month)
+        return EiaFuelPriceSilverLoader(base_dir, year_month, service_area)
     if storage == "s3":
         return EiaFuelPriceS3SilverLoader(
             year_month,
+            service_area,
             bucket=bucket,
         )
     raise ValueError(f"알 수 없는 storage: {storage!r} (local 또는 s3)")

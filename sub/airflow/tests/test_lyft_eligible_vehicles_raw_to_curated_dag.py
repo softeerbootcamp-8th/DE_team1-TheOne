@@ -21,6 +21,7 @@
 
 import pytest
 
+from shared.airflow.common import lambda_invoke
 from dags import lyft_eligible_vehicles_raw_to_curated_dag as dag_module
 from sub.airflow.scripts.lyft_eligible_vehicles_raw_to_curated import tasks as task_module
 
@@ -49,6 +50,10 @@ def events(monkeypatch):
         return handler
 
     monkeypatch.setattr(task_module, "lambda_handler_for", fake_lambda_handler_for)
+    # `source_to_raw` 는 `invoke_lambda` 를 거칩니다. 그 함수는 자기 모듈의
+    # `lambda_handler_for` 를 쓰므로 위 패치가 닿지 않습니다 — 여기도 바꿔야
+    # 핸들러가 실제로 돌지 않습니다 (외부 페이지 수집·파일 쓰기).
+    monkeypatch.setattr(lambda_invoke, "lambda_handler_for", fake_lambda_handler_for)
     return captured
 
 
@@ -153,9 +158,9 @@ def test_파라미터가_비면_DAG_기본값을_쓴다(events):
     call_task("raw_to_curated", raw_result=RAW_RESULT, params={})
 
     bronze = only_event(events, RAW_FUNCTION)
-    assert bronze["base_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert bronze["base_dir"] == task_module.DEFAULT_RAW_DIR
     assert bronze["city_slug"] == dag_module.DEFAULT_CITY_SLUG
 
     silver = only_event(events, CURATED_FUNCTION)
-    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
-    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR
+    assert silver["raw_dir"] == task_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == task_module.DEFAULT_CURATED_DIR

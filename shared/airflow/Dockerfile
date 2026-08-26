@@ -37,6 +37,7 @@ COPY --chown=airflow:root sub/airflow/dags/ /opt/airflow/dags/sub/
 # schema.*, sub.generators, importlib 로 main.aws_lambda.common·sub.aws_lambda.* 까지
 # 끌어옵니다. 하나라도 빠지면 그 DAG 는 import 단계에서 죽습니다.
 COPY --chown=airflow:root main/__init__.py /opt/airflow/project-root/main/__init__.py
+COPY --chown=airflow:root main/common/ /opt/airflow/project-root/main/common/
 COPY --chown=airflow:root main/airflow/ /opt/airflow/project-root/main/airflow/
 COPY --chown=airflow:root sub/__init__.py /opt/airflow/project-root/sub/__init__.py
 COPY --chown=airflow:root sub/airflow/ /opt/airflow/project-root/sub/airflow/
