@@ -125,13 +125,17 @@ def test_경고임계치가_0이어도_불량이_없으면_경고하지_않는�
     assert counts.warning is False
 
 
-def test_추가컬럼과_검증결과를_Airflow용_JSON에_기록한다(tmp_path, monkeypatch):
+def test_추가컬럼과_검증결과를_counts로_돌려준다(monkeypatch):
+    """GX 결과는 파일로 내보내지 않고 반환값으로만 넘깁니다.
+
+    호출부(transformer)가 이 값을 `_RECON.json` 에 실어 Airflow 로 보냅니다 — 예전에는
+    같은 값을 `_GX_VALIDATION.json` 으로 한 번 더 썼습니다(#1120).
+    """
     monkeypatch.setattr(
         quality,
         "_validate_gx_batch",
         lambda dataframe, expectations, **kwargs: _validation(total=10, invalid=0),
     )
-    summary = tmp_path / "_GX_VALIDATION.json"
     dataframe = SimpleNamespace(
         columns=[*quality._EXPECTED_COLUMNS, "airport_fee", "congestion_fee"]
     )
@@ -141,16 +145,22 @@ def test_추가컬럼과_검증결과를_Airflow용_JSON에_기록한다(tmp_pat
         warning_threshold=0.01,
         error_threshold=0.05,
         data_docs_location="s3://de-theone/logs/gx-data-docs/silver/monthly_taxi_trip/service_area=NYC",
-        summary_location=str(summary),
     )
 
-    import json
-
-    payload = json.loads(summary.read_text())
     assert counts.extra_columns == ("airport_fee", "congestion_fee")
-    assert payload["extra_columns"] == ["airport_fee", "congestion_fee"]
-    assert payload["success"] is True
-    assert payload["data_docs_path"].startswith("s3://de-theone/logs/gx-data-docs/")
+    assert counts.total == 10
+    assert counts.invalid == 0
+    assert counts.error_threshold == 0.05
+
+
+def test_요약파일_인자를_더는_받지_않는다():
+    """`summary_location` 을 남겨두면 옛 호출부가 조용히 통과합니다."""
+    import inspect
+
+    parameters = inspect.signature(
+        quality.validate_monthly_taxi_trip_records
+    ).parameters
+    assert "summary_location" not in parameters
 
 
 def test_추가컬럼은_Data_Docs용_GX_warning_expectation으로_기록한다():

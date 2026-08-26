@@ -22,7 +22,6 @@ from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
     MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
     PROJECT_ROOT,
     raw_to_bronze_task,
-    report_gx_validation_task,
     validate_bronze_task,
     validate_silver_task,
 )
@@ -114,11 +113,11 @@ def monthly_taxi_trip_raw_to_silver_pipeline():
     bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     bronze_checked >> bronze_to_silver_task
 
-    gx_reported = report_gx_validation_task(bronze_checked)
+    # Spark GX 결과는 `_RECON.json` 으로 넘어와 validate_silver 가 함께 판정합니다.
+    # 예전에는 ALL_DONE 인 별도 보고 태스크가 있었는데, Spark 가 실패하면 그 위에
+    # "요약 파일이 없다" 는 에러를 덮어써 원인을 가렸습니다 (#1120).
     silver_checked = validate_silver_task.override(retries=0)(bronze_checked)
-    bronze_to_silver_task >> gx_reported
     bronze_to_silver_task >> silver_checked
-    gx_reported >> silver_checked
 
 
 def _required_prod_env(name: str) -> str:

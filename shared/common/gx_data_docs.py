@@ -6,9 +6,6 @@ from pathlib import Path, PurePosixPath
 import boto3
 
 
-GX_VALIDATION_SUMMARY_FILE_NAME = "_GX_VALIDATION.json"
-
-
 def mirrored_data_docs_prefix(
     data_key: str,
     *,

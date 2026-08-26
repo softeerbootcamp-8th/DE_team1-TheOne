@@ -1,12 +1,10 @@
 """Monthly Taxi Trip Silver 후보 전체를 GX Spark로 검증하고 결과를 발행합니다."""
 
-import json
 import logging
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import boto3
 import great_expectations as gx
 from pyspark.sql import DataFrame
 
@@ -165,28 +163,6 @@ def _validate_gx_batch(
             temporary_docs.cleanup()
 
 
-def _write_validation_summary(location: str | None, payload: dict) -> None:
-    """GX 실패 전에도 ALL_DONE Airflow task가 읽을 결과를 남깁니다.
-
-    Loader의 ``_RECON.json``은 transform 성공 뒤에만 작성되므로 대신할 수 없습니다.
-    """
-    if not location:
-        return
-    body = json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    if location.startswith(("s3://", "s3a://")):
-        bucket, key = parse_s3_uri(location)
-        boto3.client("s3").put_object(
-            Bucket=bucket,
-            Key=key,
-            Body=body,
-            ContentType="application/json",
-        )
-        return
-    path = Path(location)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(body)
-
-
 def _result_by_rule(validation) -> dict:
     results = {}
     for result in validation.results:
@@ -224,7 +200,6 @@ def validate_monthly_taxi_trip_records(
     warning_threshold: float,
     error_threshold: float,
     data_docs_location: str | None = None,
-    summary_location: str | None = None,
 ) -> SparkGXCounts:
     """전체 Spark DataFrame을 GX로 검사하고 행 단위 위반 건수를 반환합니다."""
     warning_threshold, error_threshold = _thresholds(
@@ -262,26 +237,6 @@ def validate_monthly_taxi_trip_records(
         warning=invalid > 0 and invalid_ratio >= warning_threshold,
         warning_threshold=warning_threshold,
         error_threshold=error_threshold,
-    )
-    _write_validation_summary(
-        summary_location,
-        {
-            "dataset": "monthly_taxi_trip",
-            "layer": "silver",
-            "success": invalid_ratio < error_threshold,
-            "total": counts.total,
-            "valid": counts.valid,
-            "invalid": counts.invalid,
-            "invalid_ratio": counts.invalid_ratio,
-            "missing_or_type_mismatch": counts.missing_or_type_mismatch,
-            "invalid_value": counts.invalid_value,
-            "invalid_service_tier": counts.invalid_service_tier,
-            "extra_columns": list(counts.extra_columns),
-            "warning": counts.warning or bool(counts.extra_columns),
-            "warning_threshold": counts.warning_threshold,
-            "error_threshold": counts.error_threshold,
-            "data_docs_path": data_docs_location,
-        },
     )
     logger.info(
         "GX Spark 전체 레코드 검증: total=%d valid=%d invalid=%d ratio=%.4f",

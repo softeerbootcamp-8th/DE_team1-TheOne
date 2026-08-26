@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pyarrow as pa
 from airflow.sdk import task
-from airflow.task.trigger_rule import TriggerRule
 
 from main.airflow.common.monthly_bronze import (
     SILVER_PART_PATTERN,
@@ -29,10 +28,7 @@ from shared.airflow.common.validation import (
     parse_year_month,
     run_quality_gate,
 )
-from shared.common.gx_data_docs import (
-    GX_VALIDATION_SUMMARY_FILE_NAME,
-    mirrored_data_docs_prefix,
-)
+from shared.common.gx_data_docs import mirrored_data_docs_prefix
 from shared.common.s3_reader import get_object_bytes, list_keys, parse_s3_uri
 from shared.common.success_marker import recon_key, recon_path
 from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA
@@ -95,6 +91,77 @@ def _read_recon(version_path: Path | S3Location) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _verify_gx_data_docs(version_path: Path | S3Location, docs_path: object) -> None:
+    """Spark 가 발행한 Data Docs 가 계약 경로에 실제로 올라갔는지 봅니다.
+
+    로컬 실행은 올릴 대상이 없어 `None` 이 정상입니다. S3 실행에서 `None` 이면
+    발행 자체가 안 된 것이므로 통과시키지 않습니다(#1117).
+    """
+    if not isinstance(version_path, S3Location):
+        if docs_path is not None:
+            raise ValueError(f"로컬 실행인데 S3 Data Docs 를 가리킵니다: {docs_path}")
+        return
+    expected = (
+        f"s3://{version_path.bucket}/"
+        + mirrored_data_docs_prefix(
+            version_path.key,
+            layer="silver",
+            dataset="monthly_taxi_trip",
+            data_is_file=False,
+        )
+    )
+    if docs_path != expected:
+        raise ValueError(
+            f"GX Data Docs 경로가 계약과 다릅니다: expected={expected} actual={docs_path}"
+        )
+    bucket, prefix = parse_s3_uri(str(docs_path))
+    index_key = f"{prefix.rstrip('/')}/index.html"
+    try:
+        index = get_object_bytes(bucket, index_key)
+    except Exception as exc:
+        raise ValueError(f"GX Data Docs index 가 없습니다: {docs_path}/index.html") from exc
+    if not index:
+        raise ValueError(f"GX Data Docs index 가 비어 있습니다: {docs_path}/index.html")
+
+
+def _report_gx(version_path: Path | S3Location, recon: dict) -> None:
+    """Spark GX 결과를 Airflow 로그로 남기고 불합격률 상한을 강제합니다.
+
+    상한 판정을 여기서 하는 이유 — Spark 는 `error_threshold` 를 받아 비율까지
+    계산해 두지만 그것으로 실패하지 않습니다. 예전에는 이 값을 읽는 곳이 로그
+    한 줄뿐이어서, 문서에 "넘으면 중단" 이라 적힌 상한이 실제로는 아무것도 막지
+    않았습니다(#1120).
+    """
+    total = int(recon.get("total") or 0)
+    invalid = int(recon.get("invalid") or 0)
+    ratio = float(recon.get("invalid_ratio") or 0.0)
+    error_threshold = float(
+        recon.get("error_threshold", MONTHLY_TAXI_TRIP_ERROR_THRESHOLD)
+    )
+    docs_path = recon.get("data_docs_path")
+    _verify_gx_data_docs(version_path, docs_path)
+
+    logger.info(
+        "gx_validation layer=silver engine=spark total=%d valid=%d invalid=%d "
+        "ratio=%.4f extra_columns=%s data_docs=%s",
+        total,
+        int(recon.get("valid") or 0),
+        invalid,
+        ratio,
+        ",".join(recon.get("extra_columns") or []) or "-",
+        docs_path or "disabled(local)",
+    )
+    if ratio >= error_threshold:
+        raise ValueError(
+            "불합격률이 상한을 넘었습니다 — 원천 스키마 변경 여부를 확인하세요: "
+            f"ratio={ratio:.4f} >= {error_threshold} "
+            f"(total={total} invalid={invalid}) 사유별 "
+            f"NULL/타입={recon.get('missing_or_type_mismatch')} "
+            f"값범위={recon.get('invalid_value')} "
+            f"등급={recon.get('invalid_service_tier')}"
+        )
+
+
 def _reconcile_silver(
     version_path: Path | S3Location, bronze_rows: int, silver_rows: int
 ) -> dict:
@@ -136,100 +203,6 @@ def _reconcile_silver(
         ),
     )
     return recon
-
-
-def _gx_summary_location(version_path: Path | S3Location) -> Path | S3Location:
-    if isinstance(version_path, S3Location):
-        return S3Location(
-            version_path.bucket,
-            f"{version_path.key.rstrip('/')}/{GX_VALIDATION_SUMMARY_FILE_NAME}",
-        )
-    return version_path / GX_VALIDATION_SUMMARY_FILE_NAME
-
-
-def _read_gx_summary(version_path: Path | S3Location) -> dict:
-    location = _gx_summary_location(version_path)
-    try:
-        body = (
-            get_object_bytes(location.bucket, location.key)
-            if isinstance(location, S3Location)
-            else location.read_bytes()
-        )
-    except Exception as exc:
-        raise ValueError(f"Spark GX 검증 요약이 없습니다: {location}") from exc
-    try:
-        summary = json.loads(body)
-    except (TypeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"Spark GX 검증 요약이 JSON이 아닙니다: {location}") from exc
-    required = {"success", "total", "valid", "invalid", "extra_columns"}
-    missing = sorted(required - summary.keys())
-    if missing:
-        raise ValueError(f"Spark GX 검증 요약 필드가 누락되었습니다: {missing}")
-    if not isinstance(summary["success"], bool):
-        raise ValueError("Spark GX 검증 요약 success는 bool이어야 합니다")
-    for field in ("total", "valid", "invalid"):
-        if isinstance(summary[field], bool) or not isinstance(summary[field], int):
-            raise ValueError(f"Spark GX 검증 요약 {field}은 정수여야 합니다")
-    if not isinstance(summary["extra_columns"], list) or not all(
-        isinstance(column, str) for column in summary["extra_columns"]
-    ):
-        raise ValueError("Spark GX 검증 요약 extra_columns는 문자열 목록이어야 합니다")
-    return summary
-
-
-def _expected_gx_docs_location(version_path: S3Location) -> str:
-    prefix = mirrored_data_docs_prefix(
-        version_path.key,
-        layer="silver",
-        dataset="monthly_taxi_trip",
-        data_is_file=False,
-    )
-    return f"s3://{version_path.bucket}/{prefix}"
-
-
-def _report_gx_validation(raw_result: dict) -> dict:
-    version_path = parse_location(raw_result["silver_version_path"])
-    summary = _read_gx_summary(version_path)
-    docs_path = summary.get("data_docs_path")
-    if isinstance(version_path, S3Location):
-        expected_docs = _expected_gx_docs_location(version_path)
-        if docs_path != expected_docs:
-            raise ValueError(
-                f"GX Data Docs 경로가 계약과 다릅니다: expected={expected_docs} actual={docs_path}"
-            )
-        bucket, prefix = parse_s3_uri(docs_path)
-        try:
-            index = get_object_bytes(bucket, f"{prefix.rstrip('/')}/index.html")
-        except Exception as exc:
-            raise ValueError(f"GX Data Docs index가 없습니다: {docs_path}/index.html") from exc
-        if not index:
-            raise ValueError(f"GX Data Docs index가 비어 있습니다: {docs_path}/index.html")
-    elif docs_path is not None:
-        raise ValueError(f"로컬 Spark GX 결과가 S3 Data Docs를 가리킵니다: {docs_path}")
-
-    log = logger.info if summary["success"] else logger.error
-    log(
-        "gx_validation_report dataset=monthly_taxi_trip layer=silver "
-        "success=%s total=%s valid=%s invalid=%s extra_columns=%s data_docs=%s",
-        summary["success"],
-        summary["total"],
-        summary["valid"],
-        summary["invalid"],
-        summary["extra_columns"],
-        docs_path or "disabled(local)",
-    )
-    return summary
-
-
-@task(
-    task_id="report_gx_validation",
-    trigger_rule=TriggerRule.ALL_DONE,
-    retries=0,
-    on_failure_callback=slack_failure_callback,
-)
-def report_gx_validation_task(raw_result: dict) -> dict:
-    """Spark 성공·실패와 무관하게 GX 결과와 Data Docs 위치를 Airflow에 노출합니다."""
-    return _report_gx_validation(raw_result)
 
 
 @task(task_id="raw_to_bronze")
@@ -401,6 +374,7 @@ def _validate_silver(raw_result: dict, context: dict | None = None) -> None:
     if silver_rows < 1:
         raise ValueError("Silver 레코드가 0건입니다")
     recon = _reconcile_silver(version_path, bronze_rows, silver_rows)
+    _report_gx(version_path, recon)
     total = int(recon.get("total") or bronze_rows)
     invalid = int(recon["invalid"])
     invalid_ratio = invalid / total if total else 0.0
