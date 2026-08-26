@@ -30,10 +30,10 @@ class GoldLoadVersion:
 """
 [기사별 운행 순수익]
 input: schema/silver.py - CLEAN_MONTHLY_TAXI_TRIP_SCHEMA, CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA, CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA
-output: schema/gold.py - DriverMonthlyProfit
+output: schema/gold.py - DriverAggregation
 """
 @dataclass(frozen=True)
-class DriverMonthlyProfit:
+class DriverAggregation:
     version: int
     """ 골드 데이터 버전 """
 
@@ -95,7 +95,7 @@ class DriverMonthlyProfit:
 
 """
 [재고를 반영한 기사별 차량 추천]
-input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA / schema/gold.py - DriverMonthlyProfit
+input: schema/silver.py - CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA, CLEAN_FUEL_PRICE_SCHEMA / schema/gold.py - DriverAggregation
 output: schema/gold.py - DriverCarSuggestion
 """
 @dataclass(frozen=True)
@@ -159,10 +159,10 @@ class DriverCarSuggestion:
     """예상 월간 순수익 (USD) = monthly_driver_pay + monthly_tips - expected_monthly_fuel_cost - recommended_monthly_lease_fee"""
 
     expected_net_profit_increase: float
-    """예상 순수익 증가액 (USD) = expected_monthly_net_profit - DriverMonthlyProfit.monthly_net_profit"""
+    """예상 순수익 증가액 (USD) = expected_monthly_net_profit - DriverAggregation.monthly_net_profit"""
 
     expected_revenue_increase: float
-    """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverMonthlyProfit.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
+    """예상 매출 증가액 (USD) = recommended_monthly_lease_fee - DriverAggregation.monthly_lease_fee. 회사가 추가로 받는 리스료 매출 증가분"""
 
 
 """

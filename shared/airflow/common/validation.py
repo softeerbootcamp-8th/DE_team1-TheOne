@@ -5,6 +5,7 @@ from datetime import date, datetime, timezone
 import io
 import json
 import logging
+import math
 import mimetypes
 import os
 from pathlib import Path, PurePosixPath
@@ -461,12 +462,16 @@ class _DataDocsLock:
         self._handle.close()
 
 
+_GX_REQUIRED_RECORD_VALID = "__gx_required_record_valid"
+_GX_EXTRA_COLUMNS = "__gx_extra_columns"
+
+
 def table_quality_summary(
     table: pa.Table,
     expected_schema: pa.Schema,
     required_non_null: set[str] | frozenset[str],
 ):
-    """작은 Arrow 적재 결과를 GX가 판정할 한 행짜리 지표로 요약합니다."""
+    """작은 Arrow 적재 결과를 관측용 한 행 지표로 요약합니다."""
     import pandas as pd
 
     expected_names = set(expected_schema.names)
@@ -524,6 +529,36 @@ def table_quality_summary(
     )
 
 
+def _minimum_valid_ratio(max_invalid_ratio: float) -> float:
+    if max_invalid_ratio == 0:
+        return 1.0
+    return math.nextafter(1 - max_invalid_ratio, 1.0)
+
+
+def _required_record_validity(
+    table: pa.Table, required_non_null: set[str] | frozenset[str]
+) -> pa.Array:
+    valid = pa.array([True] * table.num_rows)
+    for name in sorted(required_non_null):
+        values = table[name].combine_chunks()
+        invalid = pc.is_null(values)
+        if pa.types.is_string(values.type):
+            invalid = pc.or_(
+                invalid,
+                pc.fill_null(
+                    pc.equal(pc.utf8_trim_whitespace(values), ""),
+                    False,
+                ),
+            )
+        elif pa.types.is_floating(values.type):
+            invalid = pc.or_(
+                invalid,
+                pc.fill_null(pc.is_nan(values), False),
+            )
+        valid = pc.and_(valid, pc.invert(invalid))
+    return valid
+
+
 def run_table_gx_validation(
     table: pa.Table,
     expected_schema: pa.Schema,
@@ -537,7 +572,11 @@ def run_table_gx_validation(
     required_error_ratio: float,
     record_extra_columns: bool = False,
 ) -> None:
-    """운영 S3의 작은 Parquet 결과에 공통 NULL·스키마 정책을 적용합니다."""
+    """운영 S3의 작은 Parquet 전체 레코드에 공통 품질 정책을 적용합니다.
+
+    ``table_quality_summary`` 는 로그용 관측 지표일 뿐 GX 판정 입력이 아닙니다.
+    GX에는 실제 Silver 레코드와 레코드별 필수값 판정 컬럼을 전달합니다.
+    """
     import great_expectations as gx
 
     if not 0 <= required_error_ratio <= 1 or (
@@ -548,46 +587,83 @@ def run_table_gx_validation(
             "필수값 임계치는 0 <= warning < error <= 1 이어야 합니다"
         )
 
+    expected_names = set(expected_schema.names)
+    unknown_required = set(required_non_null) - expected_names
+    if unknown_required:
+        raise ValueError(f"기대 스키마에 없는 필수 컬럼: {sorted(unknown_required)}")
+
+    actual = {field.name: field.type for field in table.schema}
+    reserved = {_GX_REQUIRED_RECORD_VALID, _GX_EXTRA_COLUMNS} & set(actual)
+    if reserved:
+        raise ValueError(f"GX 예약 컬럼을 원본에서 사용할 수 없습니다: {sorted(reserved)}")
+    missing = sorted(set(required_non_null) - set(actual))
+    if missing:
+        raise ValueError(f"missing_columns={','.join(missing)}")
+    mismatched = sorted(
+        f"{field.name}:{actual[field.name]}!={field.type}"
+        for field in expected_schema
+        if field.name in required_non_null
+        and field.name in actual
+        and actual[field.name] != field.type
+    )
+    if mismatched:
+        raise ValueError(f"type_mismatch_columns={','.join(mismatched)}")
+
     summary = table_quality_summary(table, expected_schema, required_non_null)
+    logger.info(
+        "table_quality_summary dataset=%s layer=%s metrics=%s",
+        dataset,
+        layer,
+        summary.to_json(orient="records"),
+    )
+
+    frame = table.append_column(
+        _GX_REQUIRED_RECORD_VALID,
+        _required_record_validity(table, required_non_null),
+    ).to_pandas()
+    extra = sorted(set(actual) - expected_names)
+    frame[_GX_EXTRA_COLUMNS] = ""
+    if len(frame) and extra:
+        frame.loc[frame.index[0], _GX_EXTRA_COLUMNS] = ",".join(extra)
+
+    error_mostly = _minimum_valid_ratio(required_error_ratio)
     expectations = [
-        gx.expectations.ExpectColumnValuesToBeBetween(column="row_count", min_value=1),
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="missing_columns", value_set=[""]
-        ),
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="type_mismatch_columns", value_set=[""]
+        gx.expectations.ExpectTableRowCountToBeBetween(min_value=1),
+        *(
+            gx.expectations.ExpectColumnValuesToNotBeNull(
+                column=column,
+                mostly=error_mostly,
+            )
+            for column in sorted(required_non_null)
         ),
     ]
     if record_extra_columns:
         expectations.append(
             gx.expectations.ExpectColumnValuesToBeInSet(
-                column="extra_columns",
+                column=_GX_EXTRA_COLUMNS,
                 value_set=[""],
                 meta={"severity": "warning", "notify": False},
             )
         )
-    if summary["required_invalid_record_ratio"].notna().all():
-        if required_warning_ratio is not None:
-            expectations.append(
-                gx.expectations.ExpectColumnValuesToBeBetween(
-                    column="required_invalid_record_ratio",
-                    min_value=0,
-                    max_value=required_warning_ratio,
-                    strict_max=True,
-                    meta={"severity": "warning"},
-                )
-            )
+    if required_warning_ratio is not None:
         expectations.append(
-            gx.expectations.ExpectColumnValuesToBeBetween(
-                column="required_invalid_record_ratio",
-                min_value=0,
-                max_value=required_error_ratio,
-                strict_max=required_error_ratio > 0,
+            gx.expectations.ExpectColumnValuesToBeInSet(
+                column=_GX_REQUIRED_RECORD_VALID,
+                value_set=[True],
+                mostly=_minimum_valid_ratio(required_warning_ratio),
+                meta={"severity": "warning"},
             )
         )
+    expectations.append(
+        gx.expectations.ExpectColumnValuesToBeInSet(
+            column=_GX_REQUIRED_RECORD_VALID,
+            value_set=[True],
+            mostly=error_mostly,
+        )
+    )
     docs = gx_data_docs_location(data_location, layer=layer, dataset=dataset)
     warnings = run_gx_validation(
-        summary,
+        frame,
         expectations,
         suite_name=f"{dataset}_{layer}_suite",
         layer=layer,

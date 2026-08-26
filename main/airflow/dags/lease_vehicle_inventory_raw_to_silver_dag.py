@@ -19,7 +19,6 @@ from main.airflow.common.assets import (
     MAX_ACTIVE_SERVICE_AREA_RUNS,
 )
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver.tasks import (
-    DEFAULT_API_BASE_URL,
     bronze_to_silver_task,
     raw_to_bronze_task,
     validate_bronze_task,
@@ -50,8 +49,9 @@ default_args = {
         "year": Param(None, type=["string", "null"], pattern=r"^\d{4}$"),
         "month": Param(None, type=["string", "null"], pattern=r"^(0?[1-9]|1[0-2])$"),
         "api_base_url": Param(
-            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.environ["SOURCE_API_URL"],
             type="string",
+            minLength=1,
         ),
         "service_area": Param(
             DEFAULT_SERVICE_AREA,

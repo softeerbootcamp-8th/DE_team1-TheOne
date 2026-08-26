@@ -18,8 +18,8 @@ import psycopg2
 import psycopg2.extras
 
 from schema.gold import (
+    DriverAggregation,
     DriverCarSuggestion,
-    DriverMonthlyProfit,
     GoldLoadVersion,
     SilverLineage,
 )
@@ -48,7 +48,7 @@ _DIGEST_DATASETS = (
 )
 
 _TABLE_MODELS = {
-    _DRIVER_AGGREGATION: DriverMonthlyProfit,
+    _DRIVER_AGGREGATION: DriverAggregation,
     _DRIVER_CAR_SUGGESTION: DriverCarSuggestion,
     _SILVER_LINEAGE: SilverLineage,
 }

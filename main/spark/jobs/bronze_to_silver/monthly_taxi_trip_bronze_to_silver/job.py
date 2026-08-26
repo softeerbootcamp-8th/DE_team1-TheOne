@@ -43,6 +43,7 @@ SOURCE_COLLECTED_AT_PATTERN = re.compile(r"^source_collected_at=(\d{8}T\d{12}Z)$
 
 DEFAULT_LOCAL_INPUT = "data/bronze/monthly_taxi_trip"
 DEFAULT_LOCAL_OUTPUT = "data/silver/monthly_taxi_trip"
+DEFAULT_WARNING_THRESHOLD = 0.01
 
 
 def bronze_collection_token(path: Path) -> str | None:
@@ -128,9 +129,8 @@ class SilverVersionDirectoryLoader(Loader):
             recon_path(self._path).write_text(body, encoding="utf-8")
         logger.info("reconciliation sidecar 기록: %s", body)
 
-    def write(self, data) -> WriteResult:
-        payload = _silver_file_payload(data)
-        row_count = data.count()
+    def invalidate_publication(self) -> None:
+        """새 검증이 시작되면 이전 공개·격리·대조 마커부터 무효화합니다."""
         if is_s3_path(self._path):
             parsed = urlsplit(self._path)
             client = boto3.client("s3")
@@ -150,6 +150,11 @@ class SilverVersionDirectoryLoader(Loader):
             marker_path(self._path).unlink(missing_ok=True)
             quarantine_marker_path(self._path).unlink(missing_ok=True)
             recon_path(self._path).unlink(missing_ok=True)
+
+    def write(self, data) -> WriteResult:
+        self.invalidate_publication()
+        payload = _silver_file_payload(data)
+        row_count = data.count()
         payload.write.mode("overwrite").parquet(self._path)
         if self._recon is not None:
             counts = self._recon()
@@ -304,6 +309,12 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
             "그 기본값은 Variable(hvfhv_error_threshold) 에서 옵니다 (#743)."
         ),
     )
+    parser.add_argument(
+        "--warning_threshold",
+        type=float,
+        default=DEFAULT_WARNING_THRESHOLD,
+        help="불합격 행 경고 비율 (기본 0.01). 실패시키지 않고 관측만 합니다.",
+    )
     parser.add_argument("--spark_memory", default="4g", help="Spark driver memory")
     parser.add_argument("--start_year_month", default=None, help="시작 연월 (예: 2024-01). 한 달만 처리하려면 end와 동일하게")
     parser.add_argument("--end_year_month", default=None, help="종료 연월 (예: 2024-12, 포함)")
@@ -370,7 +381,10 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     )
 
     extractor = SparkParquetExtractor(spark, target_input_path)
-    transformer = MonthlyTaxiTripCleanTransformer(error_threshold=args.error_threshold)
+    transformer = MonthlyTaxiTripCleanTransformer(
+        error_threshold=args.error_threshold,
+        warning_threshold=args.warning_threshold,
+    )
     loader = (
         SilverVersionDirectoryLoader(
             output_version,
@@ -379,6 +393,9 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
         if output_version
         else SparkParquetLoader(output_path, partition_by=["year_month"])
     )
+    if isinstance(loader, SilverVersionDirectoryLoader):
+        # 변환/GX가 실패하더라도 이전 실행의 공개 마커가 남아 있으면 안 됩니다.
+        loader.invalidate_publication()
 
     result = Pipeline(extractor, loader, transformer=transformer).run()
     logger.info("Monthly Taxi Trip Bronze to Silver Pipeline completed: %s", result)

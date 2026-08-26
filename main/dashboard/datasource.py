@@ -19,8 +19,8 @@ import pandas as pd
 import psycopg2
 
 from schema.gold import (
+    DriverAggregation,
     DriverCarSuggestion,
-    DriverMonthlyProfit,
     RecommendationAlgorithm,
     SilverLineage,
 )
@@ -28,7 +28,7 @@ from schema.gold import (
 logger = logging.getLogger(__name__)
 
 _TABLE_MODELS = {
-    "driver_aggregation": DriverMonthlyProfit,
+    "driver_aggregation": DriverAggregation,
     "driver_car_suggestion": DriverCarSuggestion,
     "silver_lineage": SilverLineage,
     "recommendation_algorithm": RecommendationAlgorithm,

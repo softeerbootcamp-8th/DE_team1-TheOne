@@ -499,6 +499,64 @@ def test_버전_쓰기실패해도_기존_SUCCESS는_즉시_무효화된다(tmp_
     assert not (final / "_SUCCESS").exists()
 
 
+def test_GX검증이_실패해도_이전_Silver_SUCCESS는_먼저_무효화된다(
+    tmp_path, monkeypatch
+):
+    bronze = tmp_path / "bronze/year_month=2026-08/data.parquet"
+    bronze.parent.mkdir(parents=True)
+    bronze.touch()
+    (bronze.parent / "_SUCCESS").touch()
+    final = (
+        tmp_path / "silver/year_month=2026-08/"
+        "source_collected_at=20260821T123456123456Z"
+    )
+    final.mkdir(parents=True)
+    (final / "_SUCCESS").touch()
+
+    class FakeSparkContext:
+        class _JavaSparkContext:
+            class _Configuration:
+                def set(self, key, value):
+                    pass
+
+            def hadoopConfiguration(self):
+                return self._Configuration()
+
+        _jsc = _JavaSparkContext()
+
+        def setLogLevel(self, level):
+            pass
+
+    class FakeSpark:
+        sparkContext = FakeSparkContext()
+
+    class FailingPipeline:
+        def __init__(self, extractor, loader, transformer):
+            self.loader = loader
+
+        def run(self):
+            assert not (final / "_SUCCESS").exists()
+            raise ValueError("GX 품질 검증 실패")
+
+    monkeypatch.setattr(job, "get_or_create_spark_session", lambda *a, **k: FakeSpark())
+    monkeypatch.setattr(job, "SparkParquetExtractor", lambda *a, **k: object())
+    monkeypatch.setattr(job, "Pipeline", FailingPipeline)
+
+    with pytest.raises(ValueError, match="GX 품질 검증 실패"):
+        _main(
+            [
+                "--input_path",
+                str(bronze),
+                "--output_version",
+                str(final),
+                "--service_area",
+                "NYC",
+            ]
+        )
+
+    assert not (final / "_SUCCESS").exists()
+
+
 def test_S3_버전은_기존_SUCCESS를_지우고_최종_prefix에_part를_남긴다(s3_client):
     final_key = "silver/monthly_taxi_trip/year_month=2026-08/source_collected_at=x"
     s3_client.put_object(Bucket=S3_BUCKET, Key=f"{final_key}/_SUCCESS", Body=b"")

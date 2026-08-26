@@ -16,8 +16,8 @@ CPU·메모리·디스크는 `theone-monitoring` 인스턴스의 Prometheus 가 
 
 | 항목 | 값 |
 |---|---|
-| 인스턴스 | `theone-monitoring` / `i-0233a9b38d817105c` / `10.0.10.240` / t4g.small AL2023 arm64 |
-| 감시 대상 | airflow(10.0.10.28), source-server(10.0.10.81), dashboard-server(10.0.10.8), gateway(10.0.0.113) |
+| 인스턴스 | `theone-monitoring` / `MONITORING_INSTANCE_ID` / t4g.small AL2023 arm64 |
+| 감시 대상 | airflow, source-server, dashboard-server, gateway (`PROMETHEUS_*_TARGET`) |
 | 보존 | 15일 |
 | 접속 | `ssh -N -L 3000:localhost:3000 monitoring` → http://localhost:3000 |
 

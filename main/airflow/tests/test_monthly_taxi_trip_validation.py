@@ -1,11 +1,10 @@
-"""월별 택시 운행 DAG의 경계 검사와 GX 데이터 품질 규칙을 검증합니다.
+"""월별 택시 운행 DAG의 Bronze/Silver 경계와 공개 규칙을 검증합니다.
 
-Bronze 는 제공된 Parquet 원본의 경로·크기·footer 행 수를 검증합니다.
-Silver 는 Spark BashOperator 라 handler 결과 dict 자체가 없어 파티션을
-직접 열어서 봐야 합니다.
+Bronze 는 manifest·체크섬·경로·크기·footer 행 수만 검증합니다.
+레코드 품질은 Spark GX가 맡고 Airflow Silver는 파일 스키마와 reconciliation을
+직접 확인합니다.
 검증 태스크의 값어치는 "통과한다"가 아니라 "불량을 통과시키지 않는다"입니다.
 
-대용량 원본을 Pandas 에 모두 올리지 않도록 Parquet 을 배치 단위로 검사합니다.
 실제 Parquet 을 tmp_path 에 쓰며 네트워크와 Spark 는 사용하지 않습니다.
 Silver timestamp는 unit 차이는 허용하되 timezone identity는 유지합니다.
 S3 Bronze 위치는 로컬 Path로 변환하지 않고 객체 바이트로 검증합니다.
@@ -28,23 +27,19 @@ from dags import monthly_taxi_trip_raw_to_silver_dag as dag_module
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver import tasks as task_module
 from shared.airflow.common.slack_quality_warning import build_quality_warning
 from shared.common.bronze_manifest import bronze_manifest_bytes, build_bronze_manifest
+from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as BRONZE_SCHEMA
 
 DAG = dag_module.monthly_taxi_trip_dag
 COLLECTED_AT = datetime(2026, 8, 11, 8, 53, 54, tzinfo=timezone.utc)
 YEAR_MONTH = "2026-07"
 SILVER_SCHEMA = task_module.SILVER_SCHEMA
 SILVER_COLUMNS = list(SILVER_SCHEMA.names)
-SILVER_REQUIRED_COLUMNS = [
-    name
-    for name in SILVER_SCHEMA.names
-    if name in task_module.SILVER_REQUIRED_NON_NULL
-]
 validate_bronze = DAG.get_task("validate_bronze").python_callable
 validate_silver = DAG.get_task("validate_silver").python_callable
 
 
 def bronze_rows(count: int = 3, schema=None) -> list[dict]:
-    schema = task_module.SCHEMA if schema is None else schema
+    schema = BRONZE_SCHEMA if schema is None else schema
     row = {
         field.name: COLLECTED_AT if pa.types.is_timestamp(field.type)
         else 1 if pa.types.is_integer(field.type)
@@ -70,7 +65,7 @@ def write_bronze(
     records: list[dict] | None = None,
     service_area: str = "NYC",
 ) -> str:
-    schema = task_module.SCHEMA if schema is None else schema
+    schema = BRONZE_SCHEMA if schema is None else schema
     records = bronze_rows(rows, schema) if records is None else records
     dataset_root = Path(base_dir) / "monthly_taxi_trip"
     dataset_root /= f"service_area={service_area}"
@@ -121,7 +116,7 @@ def write_directory_bronze(
     )
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(
-        pa.Table.from_pylist(bronze_rows(rows, task_module.SCHEMA), schema=task_module.SCHEMA),
+        pa.Table.from_pylist(bronze_rows(rows, BRONZE_SCHEMA), schema=BRONZE_SCHEMA),
         path,
     )
     _write_manifest(path, year_month, service_area, rows)
@@ -257,17 +252,9 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
         "main.airflow.common.monthly_bronze.get_object_bytes",
         lambda bucket, key: manifest if key.endswith("manifest.json") else payload,
     )
-    captured = {}
-    monkeypatch.setattr(
-        task_module,
-        "run_gx_validation",
-        lambda dataframe, expectations, **kwargs: captured.update(
-            summary=dataframe, **kwargs
-        ) or (),
-    )
     monkeypatch.setattr(task_module, "existing_silver_partitions", lambda _: [])
 
-    task_module._validate_bronze(
+    validated = task_module._validate_bronze(
         {"result": result},
         {
             "params": {
@@ -277,9 +264,9 @@ def test_S3_Bronze를_로컬_Path로_변환하지_않고_검증한다(tmp_path, 
         },
     )
 
-    assert captured["summary"].at[0, "row_count"] == 3
-    assert captured["data_docs_s3_location"].key.startswith(
-        "logs/gx-data-docs/bronze/monthly_taxi_trip/"
+    assert validated["locations"] == [s3_path]
+    assert validated["silver_version_path"].startswith(
+        "s3://de-theone/silver/monthly_taxi_trip/"
     )
 
 
@@ -328,15 +315,63 @@ def test_Bronze_변경여부_신호가_없어도_감시DAG호출이면_처리한
     ].endswith("source_collected_at=20260811T085354000000Z")
 
 
-def test_제거된_on_scene_datetime은_Data_Docs에만_기록하고_통과한다(
-    tmp_path, monkeypatch, caplog
+def test_Bronze는_레코드_GX없이_manifest와_파일무결성만_검사한다(
+    tmp_path, monkeypatch
+):
+    records = bronze_rows(20)
+    records[0]["pickup_datetime"] = None
+    records[0]["trip_miles"] = -1
+    path = write_bronze(tmp_path, records=records)
+
+    def reject_airflow_gx(*args, **kwargs):
+        raise AssertionError("Bronze 레코드 GX는 Spark Silver 책임이어야 합니다")
+
+    monkeypatch.setattr(
+        task_module,
+        "run_gx_validation",
+        reject_airflow_gx,
+        raising=False,
+    )
+
+    result = validate_bronze(
+        result_for(path), params=bronze_params(tmp_path)
+    )
+
+    assert result["silver_version_path"].endswith(
+        "source_collected_at=20260811T085354000000Z"
+    )
+    assert (Path(path).parent / "_SUCCESS").is_file()
+
+
+def test_Bronze_스키마누락은_재수집하지_않고_Spark로_넘긴다(
+    tmp_path, monkeypatch
+):
+    schema = pa.schema(
+        field for field in BRONZE_SCHEMA if field.name != "pickup_datetime"
+    )
+    path = write_bronze(tmp_path, schema=schema)
+
+    def reject_recollect(params):
+        raise AssertionError("Bronze 레코드 계약으로 재수집하면 안 됩니다")
+
+    monkeypatch.setattr(task_module, "_collect_bronze", reject_recollect)
+
+    result = validate_bronze(
+        result_for(path), params=bronze_params(tmp_path)
+    )
+
+    assert result["locations"] == [path]
+
+
+def test_추가_on_scene_datetime이_있어도_Bronze무결성은_통과한다(
+    tmp_path, monkeypatch
 ):
     """원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다 컬럼이 많아도(TLC 원본처럼) 막지 않습니다.
 
     물리 스키마 전체 일치는 더 이상 보지 않습니다(#529) — 필수 컬럼만 있으면 통과합니다.
     """
     extra_schema = pa.schema(
-        [*task_module.SCHEMA, pa.field("on_scene_datetime", pa.timestamp("us"))]
+        [*BRONZE_SCHEMA, pa.field("on_scene_datetime", pa.timestamp("us"))]
     )
     path = write_bronze(tmp_path, schema=extra_schema)
 
@@ -347,11 +382,8 @@ def test_제거된_on_scene_datetime은_Data_Docs에만_기록하고_통과한�
         lambda context, **values: warnings.append(values),
     )
 
-    with caplog.at_level("WARNING"):
-        validate_bronze(result_for(path), params=bronze_params(tmp_path))
+    validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
-    assert "gx_validation warning layer=bronze" in caplog.text
-    assert "column=extra_columns" in caplog.text
     assert warnings == []
 
 
@@ -398,160 +430,12 @@ def test_Bronze_경로가_base_dir_layout과_다르면_막는다(tmp_path):
         validate_bronze(result_for(path), params=bronze_params(tmp_path))
 
 
-def test_필수컬럼이_전부빠지면_재수집후에도_막는다(tmp_path, monkeypatch):
-    broken_schema = pa.schema([("hvfhs_license_num", pa.string())])
-    path = write_bronze(tmp_path, schema=broken_schema)
-    result = result_for(path)
-    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
-    with pytest.raises(
-        ValueError,
-        match=r"expect_column_values_to_be_in_set\[missing_required_columns\]",
-    ):
-        validate_bronze(result, params=bronze_params(tmp_path))
-
-
-def test_Spark_필수_컬럼이_재수집후에도_없으면_GX가_실패한다(
-    tmp_path, monkeypatch
-):
-    missing = "pickup_datetime"
-    schema = pa.schema(
-        field for field in task_module.SCHEMA if field.name != missing
-    )
-    path = write_bronze(tmp_path, schema=schema)
-    result = result_for(path)
-    monkeypatch.setattr(task_module, "_collect_bronze", lambda params: result)
-
-    with pytest.raises(
-        ValueError,
-        match=r"expect_column_values_to_be_in_set\[missing_required_columns\]",
-    ):
-        validate_bronze(result, params=bronze_params(tmp_path))
-
-
-def test_Spark_필수_컬럼이_누락되면_원천부터_다시_수집한다(
-    tmp_path, monkeypatch
-):
-    schema = pa.schema(
-        field
-        for field in task_module.SCHEMA
-        if field.name != "pickup_datetime"
-    )
-    path = write_bronze(tmp_path, schema=schema)
-    calls = []
-    refreshed_results = []
-
-    def recollect(params):
-        calls.append(params)
-        corrected_path = write_bronze(tmp_path)
-        refreshed_results.append(result_for(corrected_path))
-        return refreshed_results[-1]
-
-    monkeypatch.setattr(task_module, "_collect_bronze", recollect)
-
-    refreshed = validate_bronze(
-        result_for(path), params=bronze_params(tmp_path)
-    )
-
-    assert len(calls) == 1
-    # 재수집 결과를 그대로 넘깁니다. `silver_partitions_before` 는 #165 감시용으로
-    # validate_bronze 가 덧붙이는 값이라 비교에서 뺍니다 (#532).
-    generated = {
-        "silver_version_path",
-        "silver_partitions_before",
-    }
-    assert {k: v for k, v in refreshed.items() if k not in generated} == {
-        k: v for k, v in refreshed_results[0].items() if k not in generated
-    }
-    assert "silver_partitions_before" in refreshed
-
-
 def test_행_수가_0이면_막는다(tmp_path):
     path = write_bronze(tmp_path, rows=0)
     result = result_for(path)
     result["row_count"] = 1
     with pytest.raises(ValueError, match="행 수가 수집 결과와 다릅니다"):
         validate_bronze(result, params=bronze_params(tmp_path))
-
-
-def test_필수값_불량률이_1퍼센트_미만이면_경고없이_통과한다(
-    tmp_path, monkeypatch
-):
-    records = bronze_rows(200)
-    records[0]["pickup_datetime"] = None
-    path = write_bronze(tmp_path, records=records)
-    warnings = []
-    monkeypatch.setattr(
-        task_module,
-        "send_quality_warning",
-        lambda context, **values: warnings.append(values),
-    )
-
-    validate_bronze(result_for(path), params=bronze_params(tmp_path))
-
-    assert warnings == []
-
-
-def test_한레코드의_복수위반은_한건으로_세고_1퍼센트부터_경고한다(
-    tmp_path, monkeypatch
-):
-    records = bronze_rows(100)
-    records[0]["pickup_datetime"] = None
-    records[0]["trip_miles"] = -1
-    path = write_bronze(tmp_path, records=records)
-    warnings = []
-    monkeypatch.setattr(
-        task_module,
-        "send_quality_warning",
-        lambda context, **values: warnings.append(values),
-    )
-
-    validate_bronze(result_for(path), params=bronze_params(tmp_path))
-
-    assert warnings[0]["invalid_rows"] == 1
-    assert warnings[0]["invalid_ratio"] == 0.01
-
-
-def test_Spark서비스등급규칙_위반도_레코드불량으로_집계한다(
-    tmp_path, monkeypatch
-):
-    records = bronze_rows(100)
-    records[0]["estimated_service_tier"] = "Unknown"
-    path = write_bronze(tmp_path, records=records)
-    warnings = []
-    monkeypatch.setattr(
-        task_module,
-        "send_quality_warning",
-        lambda context, **values: warnings.append(values),
-    )
-
-    validate_bronze(result_for(path), params=bronze_params(tmp_path))
-
-    assert warnings[0]["invalid_rows"] == 1
-
-
-def test_필수값_NULL_행이_정확히_5퍼센트면_GX가_실패한다(
-    tmp_path, caplog, monkeypatch
-):
-    records = bronze_rows(20)
-    records[0]["pickup_datetime"] = None
-    path = write_bronze(tmp_path, records=records)
-    warnings = []
-    monkeypatch.setattr(
-        task_module,
-        "send_quality_warning",
-        lambda context, **values: warnings.append(values),
-    )
-
-    with caplog.at_level("ERROR"), pytest.raises(
-        ValueError,
-        match=r"expect_column_values_to_be_between\[invalid_required_row_ratio\]",
-    ):
-        validate_bronze(result_for(path), params=bronze_params(tmp_path))
-
-    assert "gx_validation failed layer=bronze" in caplog.text
-    assert "column=invalid_required_row_ratio" in caplog.text
-    assert "observed_value=[0.05]" in caplog.text
-    assert warnings == []
 
 
 # --- validate_silver -------------------------------------------------------
@@ -659,6 +543,73 @@ def test_정상_silver_적재는_통과한다(tmp_path, monkeypatch):
     assert not quarantine.exists()
 
 
+def test_Silver는_Airflow요약_GX없이_Spark결과와_파일계약만_확인한다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
+    write_silver(tmp_path / "silver", rows=8, excluded=2)
+
+    def reject_airflow_gx(*args, **kwargs):
+        raise AssertionError("Silver 레코드 GX는 Spark에서 이미 끝나야 합니다")
+
+    monkeypatch.setattr(
+        task_module,
+        "run_gx_validation",
+        reject_airflow_gx,
+        raising=False,
+    )
+
+    result = result_for(bronze_path)
+    validate_silver(result)
+
+    assert (Path(result["silver_version_path"]) / "_SUCCESS").is_file()
+
+
+def test_Spark_GX경고비율은_Silver검증에서_Slack으로_알린다(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
+    bronze_path = write_bronze(tmp_path / "bronze", rows=100)
+    partition = write_silver(tmp_path / "silver", rows=98, excluded=2)
+    version = next(partition.glob("source_collected_at=*"))
+    (version / "_RECON.json").write_text(
+        json.dumps(
+            {
+                "total": 100,
+                "valid": 98,
+                "invalid": 2,
+                "invalid_ratio": 0.02,
+                "warning": True,
+                "warning_threshold": 0.01,
+                "error_threshold": 0.05,
+                "missing_or_type_mismatch": 1,
+                "invalid_value": 1,
+                "invalid_service_tier": 0,
+            }
+        )
+    )
+    warnings = []
+    monkeypatch.setattr(
+        task_module,
+        "send_quality_warning",
+        lambda context, **values: warnings.append(values),
+    )
+
+    validate_silver(result_for(bronze_path), params={})
+
+    assert warnings == [
+        {
+            "dataset": "monthly_taxi_trip",
+            "year_month": YEAR_MONTH,
+            "invalid_rows": 2,
+            "row_count": 100,
+            "invalid_ratio": 0.02,
+            "extra_columns": [],
+        }
+    ]
+
+
 def test_검증에_실패하면_최종_파일은_있어도_SUCCESS는_없다(tmp_path, monkeypatch):
     monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
@@ -693,7 +644,7 @@ def test_silver_스키마_컬럼이_다르면_막는다(tmp_path, monkeypatch):
 
     with pytest.raises(
         ValueError,
-        match=r"expect_column_values_to_be_in_set\[schema_signature\]",
+        match="Silver 스키마가 계약과 다릅니다",
     ):
         validate_silver(result_for(bronze_path))
 
@@ -703,31 +654,8 @@ def test_silver_행_수가_0이면_막는다(tmp_path, monkeypatch):
     bronze_path = write_bronze(tmp_path / "bronze", rows=10)
     write_silver(tmp_path / "silver", rows=0)
 
-    with pytest.raises(
-        ValueError, match=r"expect_column_values_to_be_between\[row_count\]"
-    ):
+    with pytest.raises(ValueError, match="Silver 레코드가 0건입니다"):
         validate_silver(result_for(bronze_path))
-
-
-@pytest.mark.parametrize("column", SILVER_REQUIRED_COLUMNS)
-def test_silver_필수값이_NULL이면_GX가_실패한다(
-    tmp_path, monkeypatch, caplog, column
-):
-    monkeypatch.setattr(task_module, "DEFAULT_SILVER_DIR", str(tmp_path / "silver"))
-    bronze_path = write_bronze(tmp_path / "bronze", rows=10)
-    records = silver_rows(5)
-    records[0][column] = None
-    write_silver(tmp_path / "silver", records=records)
-
-    with caplog.at_level("ERROR"), pytest.raises(
-        ValueError,
-        match=rf"expect_column_values_to_be_in_set\[{column}_null_count\]",
-    ):
-        validate_silver(result_for(bronze_path))
-
-    assert "gx_validation failed layer=silver" in caplog.text
-    assert f"column={column}_null_count" in caplog.text
-    assert "observed_value=[1]" in caplog.text
 
 
 def test_on_scene_datetime은_전체_운행계약에서_제외된다():
@@ -757,7 +685,7 @@ def test_silver_FINAL_SCHEMA_타입이_다르면_GX가_실패한다(
 
     with pytest.raises(
         ValueError,
-        match=r"expect_column_values_to_be_in_set\[schema_signature\]",
+        match="Silver 스키마가 계약과 다릅니다",
     ):
         validate_silver(result_for(bronze_path))
 
@@ -793,7 +721,7 @@ def test_silver_timestamp_timezone이_기대_스키마와_다르면_실패한다
 
     with pytest.raises(
         ValueError,
-        match=r"expect_column_values_to_be_in_set\[schema_signature\]",
+        match="Silver 스키마가 계약과 다릅니다",
     ):
         validate_silver(result_for(bronze_path))
 
@@ -958,52 +886,3 @@ def test_지역_스코프_루트는_다른_지역_파티션을_섞지_않는다(
     assert task_module.existing_silver_partitions(
         str(silver / "service_area=TX")
     ) == ["year_month=2026-07"]
-
-
-
-def test_Bronze_GX_실패는_재시도없이_Spark와_Silver를_실행하지_않는다(
-    tmp_path, monkeypatch, caplog
-):
-    records = bronze_rows(10)
-    records[0]["pickup_datetime"] = None
-    records[1]["dropoff_datetime"] = None
-    path = write_bronze(tmp_path, records=records, service_area="NYC")
-    result = result_for(path)
-    result.update({"year": "2026", "month": "07"})
-
-    raw_task = DAG.get_task("raw_to_bronze")
-    validation_task = DAG.get_task("validate_bronze")
-    callbacks = []
-    monkeypatch.setattr(raw_task, "python_callable", lambda **_: result)
-    monkeypatch.setattr(
-        validation_task,
-        "on_failure_callback",
-        [lambda context: callbacks.append(context["task_instance"].task_id)],
-    )
-
-    run = DAG.test(
-        logical_date=datetime(2026, 8, 13, tzinfo=timezone.utc),
-        run_conf={
-            "year": "2026",
-            "month": "07",
-            "base_dir": str(tmp_path),
-            "service_area": "NYC",
-        },
-    )
-    instances = {instance.task_id: instance for instance in run.get_task_instances()}
-
-    assert run.state == "failed"
-    assert instances["raw_to_bronze"].state == "success"
-    assert instances["validate_bronze"].state == "failed"
-    assert instances["validate_bronze"].try_number == 1
-    assert instances["bronze_to_silver"].state == "upstream_failed"
-    assert instances["validate_silver"].state == "upstream_failed"
-    quarantine = Path(path).parent / "_QUARANTINED.json"
-    payload = json.loads(quarantine.read_text())
-    assert payload["layer"] == "bronze"
-    assert payload["retryable"] is False
-    assert payload["run_id"] == run.run_id
-    assert callbacks == ["validate_bronze"]
-    assert "gx_validation failed layer=bronze" in caplog.text
-    assert "column=invalid_required_row_ratio" in caplog.text
-    assert "observed_value=[0.2]" in caplog.text

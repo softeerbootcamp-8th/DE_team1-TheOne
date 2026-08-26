@@ -15,7 +15,7 @@ from math import isclose
 from pyspark.sql import Column, DataFrame
 from pyspark.sql import functions as F
 
-from schema.gold import DriverMonthlyProfit
+from schema.gold import DriverAggregation
 from schema.silver import (
     CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA,
     CLEAN_FUEL_PRICE_SCHEMA,
@@ -518,7 +518,7 @@ def build_driver_monthly_aggregation(
 
 def build_driver_monthly_profit(driver_metrics: DataFrame) -> DataFrame:
     """확정된 Gold 스키마의 기사 월 순수익 컬럼만 반환합니다."""
-    return driver_metrics.select(*_columns(DriverMonthlyProfit))
+    return driver_metrics.select(*_columns(DriverAggregation))
 
 
 # 합계는 부동소수점이라 정확히 같기를 요구하면 안 된다. Spark 는 집계 순서가

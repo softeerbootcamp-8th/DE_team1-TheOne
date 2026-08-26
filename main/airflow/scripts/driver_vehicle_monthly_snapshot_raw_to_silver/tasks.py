@@ -19,26 +19,19 @@ from shared.airflow.common.validation import (
     run_quality_gate,
     run_table_gx_validation,
 )
-from shared.aws_lambda.common.schema_validator import (
-    SchemaValidationResult,
-    validate_parquet_schema,
-)
 from main.airflow.common.assets import resolve_service_area
 from main.airflow.common.monthly_bronze import (
     silver_version_path,
     validate_monthly_parquet_bronze,
 )
-from schema.bronze import DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as BRONZE_SCHEMA
 from schema.silver import (
     CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA as SILVER_SCHEMA,
     CLEAN_DRIVER_VEHICLE_MONTHLY_SNAPSHOT_SCHEMA_REQUIRED_NON_NULL as SILVER_REQUIRED,
 )
-from schema.source import DRIVER_VEHICLE_MONTHLY_SNAPSHOT_REQUIRED_NON_NULL as BRONZE_REQUIRED
 
 
 logger = logging.getLogger(__name__)
 DATASET = "driver_vehicle_monthly_snapshot"
-DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 DEFAULT_BRONZE_DIR = os.getenv(
     "BRONZE_DIR", str(PROJECT_ROOT / "data" / "bronze")
 )
@@ -93,7 +86,7 @@ def raw_to_bronze_task(**context) -> dict:
 
 def _collect_bronze(params: dict) -> dict:
     event = {
-        "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
+        "api_base_url": params["api_base_url"],
         "year": params.get("year"),
         "month": params.get("month"),
         "service_area": resolve_service_area(params),
@@ -122,7 +115,7 @@ def validate_bronze_task(result: dict, **context) -> dict:
 
 
 def _bronze_recon_counts(table: pa.Table) -> dict:
-    """Bronze 에서 Silver 가 몇 행이 되어야 하는지 미리 계산합니다.
+    """Silver 검증 시 Bronze 에서 기대 Silver 행 수를 계산합니다.
 
     Silver 변환이 행을 줄이는 경로는 **퇴사 기사 제외 하나뿐**입니다. 나머지 규칙
     (필수값·리스료·driver_id 중복)은 걸러내지 않고 예외를 던지므로 보존식에
@@ -130,9 +123,9 @@ def _bronze_recon_counts(table: pa.Table) -> dict:
 
         Bronze = Silver + 퇴사 기사
 
-    Bronze 쪽을 여기서 세는 이유 — 예전에는 핸들러가 보고한 행 수를 그 자신의
-    기대값으로 넘겨(`silver_result["row_count"]`) 항진명제였습니다. 변환과 적재가
-    같이 틀리면 통과했습니다.
+    핸들러가 보고한 행 수를 그 자신의 기대값으로 넘기면 변환과 적재가 같이 틀릴 때
+    통과합니다. 다만 이 계산은 원본 공개 여부를 판정하는 Bronze 책임이 아니라,
+    정제 결과를 판정하는 Silver 책임으로 둡니다.
     """
     if "exit_date" not in table.column_names:
         raise ValueError("Bronze 에 exit_date 가 없어 보존식을 세울 수 없습니다")
@@ -147,39 +140,12 @@ def _validate_bronze(
     result = state["result"]
     base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
     service_area = resolve_service_area(params)
-    path, schema_result, counts = _validate_bronze_result(
-        result, base_dir, service_area
+    validate_monthly_parquet_bronze(
+        result,
+        dataset_dir=DATASET,
+        base_dir=base_dir,
+        service_area=service_area,
     )
-    if schema_result.missing_columns:
-        logger.warning(
-            "기사 차량 스냅샷 Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집",
-            schema_result.missing_columns,
-        )
-        result = _collect_bronze(params)
-        state["result"] = result
-        path, schema_result, counts = _validate_bronze_result(
-            result, base_dir, service_area
-        )
-    for warning in schema_result.warnings:
-        logger.warning("기사 차량 스냅샷 Bronze 스키마 확장: %s", warning)
-    if schema_result.errors:
-        raise ValueError(
-            "기사 차량 스냅샷 Bronze 스키마 불일치: "
-            + "; ".join(schema_result.errors)
-        )
-    if isinstance(path, S3Location):
-        run_table_gx_validation(
-            _read_bronze_table(path),
-            BRONZE_SCHEMA,
-            BRONZE_REQUIRED,
-            dataset=DATASET,
-            layer="bronze",
-            data_location=path,
-            context=context or {},
-            required_warning_ratio=None,
-            required_error_ratio=0,
-            record_extra_columns=True,
-        )
     version_path = silver_version_path(
         params.get("silver_dir") or DEFAULT_SILVER_DIR,
         result,
@@ -188,31 +154,29 @@ def _validate_bronze(
     return {
         **result,
         "silver_version_path": str(version_path),
-        **counts,
     }
 
 
 def _read_bronze_table(path: Path | S3Location) -> pa.Table:
-    """기대 스키마가 `us` 인 타임스탬프를 `us` 로 맞춰 읽습니다.
+    """Silver 보존식 계산을 위해 타임스탬프 단위를 맞춰 Bronze 를 읽습니다.
 
     상류 Spark 가 타임스탬프를 **INT96** 으로 씁니다. PyArrow 는 그걸 `ns` 로 읽고
     Bronze 는 원본 바이트를 보존하므로 적재 쪽에서 고칠 수 없습니다. INT96 저장은
     `shared/spark/common/session.py` 가 타임존 처리를 그 위에 세워 둔 값이라
     바꾸면 Gold 조인이 밀립니다.
 
-    ★ 반드시 한 번만 읽어 두 검사에 같은 테이블을 넘깁니다. 예전에는 스키마 검사만
-      `ns`→`us` 로 고치고 GX 는 파일을 다시 읽어서, 스키마는 통과하는데 GX 가
-      `snapshot_created_at:timestamp[ns]!=timestamp[us]` 로 떨어졌습니다.
+    Bronze 공개 단계는 레코드를 해석하지 않습니다. 이 정규화는 Silver 보존식 계산과
+    정제 규칙 검증에서만 사용합니다.
     """
     table = read_parquet(path)
     fields = []
     changed = False
     for field in table.schema:
-        expected_index = BRONZE_SCHEMA.get_field_index(field.name)
+        expected_index = SILVER_SCHEMA.get_field_index(field.name)
         if expected_index < 0:
             fields.append(field)
             continue
-        expected = BRONZE_SCHEMA.field(expected_index).type
+        expected = SILVER_SCHEMA.field(expected_index).type
         if (
             pa.types.is_timestamp(field.type)
             and pa.types.is_timestamp(expected)
@@ -225,22 +189,6 @@ def _read_bronze_table(path: Path | S3Location) -> pa.Table:
     if not changed:
         return table
     return table.cast(pa.schema(fields))
-
-
-def _validate_bronze_result(
-    result: dict,
-    base_dir: str | Path,
-    service_area: str,
-) -> tuple[Path | S3Location, SchemaValidationResult, dict]:
-    path, _ = validate_monthly_parquet_bronze(
-        result,
-        dataset_dir=DATASET,
-        base_dir=base_dir,
-        service_area=service_area,
-    )
-    table = _read_bronze_table(path)
-    schema_result = validate_parquet_schema(table.schema, BRONZE_SCHEMA)
-    return path, schema_result, _bronze_recon_counts(table)
 
 
 @task(task_id="bronze_to_silver")
@@ -297,14 +245,15 @@ def _expected_silver_rows(raw_result: dict) -> int:
     포기하면(예전에는 핸들러가 보고한 값을 그 자신의 기대값으로 넘겼습니다) 변환과
     적재가 같이 틀렸을 때 통과합니다. 빠진 만큼이 설명되는지를 봅니다.
     """
-    try:
-        bronze_rows = int(raw_result["bronze_row_count"])
-        exited = int(raw_result["exited_driver_rows"])
-    except KeyError as exc:
-        # 없는 걸 통과시키면 옛 코드로 돈 실행이 조용히 검사를 건너뜁니다.
+    parsed = parse_handler_result(raw_result, expected_locations=1)
+    table = _read_bronze_table(parsed.locations[0])
+    if table.num_rows != parsed.row_count:
         raise ValueError(
-            f"Bronze 검증이 보존식 재료를 넘기지 않았습니다: {exc.args[0]}"
-        ) from None
+            "기사 차량 스냅샷 Bronze 파일 행 수가 수집 결과와 다릅니다"
+        )
+    counts = _bronze_recon_counts(table)
+    bronze_rows = counts["bronze_row_count"]
+    exited = counts["exited_driver_rows"]
     expected = bronze_rows - exited
     if expected < 0:
         raise ValueError(

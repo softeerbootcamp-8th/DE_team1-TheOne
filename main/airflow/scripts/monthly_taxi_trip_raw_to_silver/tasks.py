@@ -22,21 +22,15 @@ from shared.airflow.common.slack_failure_callback import slack_failure_callback
 from shared.airflow.common.slack_quality_warning import send_quality_warning
 from shared.airflow.common.validation import (
     S3Location,
-    gx_data_docs_location,
     parquet_file,
     parse_location,
     parse_handler_result,
     parse_year_month,
-    run_gx_validation,
     run_quality_gate,
 )
 from shared.common.s3_reader import get_object_bytes, list_keys
 from shared.common.success_marker import recon_key, recon_path
-from schema.bronze import MONTHLY_TAXI_TRIP_SCHEMA as SCHEMA
-from schema.silver import (
-    CLEAN_MONTHLY_TAXI_TRIP_REQUIRED_NON_NULL as SILVER_REQUIRED_NON_NULL,
-    CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA,
-)
+from schema.silver import CLEAN_MONTHLY_TAXI_TRIP_SCHEMA as SILVER_SCHEMA
 
 
 logger = logging.getLogger(__name__)
@@ -54,16 +48,14 @@ DEFAULT_BRONZE_DIR = os.getenv(
 DEFAULT_SILVER_DIR = os.getenv(
     "SILVER_DIR", str(PROJECT_ROOT / "data" / "silver" / "monthly_taxi_trip")
 )
-# Bronze 한 달에서 버려도 되는 행의 비율. 넘으면 원천이 바뀐 것으로 보고 멈춥니다.
-# 0.2 는 초기 관측치를 넉넉히 감싸려고 둔 값이라, 원천 스키마가 통째로 어긋나도
-# 통과할 만큼 느슨했습니다. 실측 불합격률이 1% 미만이라 5% 로 조입니다 (#508).
+# Spark가 정제한 Silver 후보 레코드의 경고·실패 비율입니다. Airflow는 DAG Param
+# 기본값과 Spark가 남긴 reconciliation 경고를 읽을 때만 이 값을 사용합니다.
 MONTHLY_TAXI_TRIP_ERROR_THRESHOLD = 0.05
 MONTHLY_TAXI_TRIP_WARNING_THRESHOLD = 0.01
-DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 
 
 def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> str:
-    """GX가 한 행짜리 품질 요약에서 비교할 Parquet 스키마 문자열을 만듭니다."""
+    """Spark part 파일의 논리 스키마 계약을 비교할 문자열을 만듭니다."""
     fields = []
     for field in schema:
         if logical_timestamp and pa.types.is_timestamp(field.type):
@@ -76,86 +68,6 @@ def _schema_signature(schema: pa.Schema, *, logical_timestamp: bool = False) -> 
             field_type = str(field.type)
         fields.append(f"{field.name}:{field_type}")
     return "|".join(fields)
-
-
-def _bronze_quality_summary(parquet_file, required_columns):
-    """Spark와 같은 유효성 조건을 Parquet 배치별로 계산합니다.
-
-    물리 스키마 전체 일치는 확인하지 않습니다 — 원천이 MONTHLY_TAXI_TRIP_SCHEMA 보다
-    많은 컬럼을 보내도(#529 진행 중) required_columns 만 있으면 검증을 계속합니다.
-    """
-    import pandas as pd
-
-    schema = parquet_file.schema_arrow
-    row_count = parquet_file.metadata.num_rows
-    missing_columns = [name for name in required_columns if name not in schema.names]
-    extra_columns = sorted(set(schema.names) - set(required_columns))
-    invalid_rows = 0
-
-    if row_count and not missing_columns:
-        for batch in parquet_file.iter_batches(columns=required_columns):
-            frame = batch.to_pandas()
-            pickup = pd.to_datetime(frame["pickup_datetime"], errors="coerce")
-            dropoff = pd.to_datetime(frame["dropoff_datetime"], errors="coerce")
-            pickup_location = pd.to_numeric(frame["PULocationID"], errors="coerce")
-            dropoff_location = pd.to_numeric(frame["DOLocationID"], errors="coerce")
-            trip_miles = pd.to_numeric(frame["trip_miles"], errors="coerce")
-            trip_time = pd.to_numeric(frame["trip_time"], errors="coerce")
-            driver_pay = pd.to_numeric(frame["driver_pay"], errors="coerce")
-            tips = pd.to_numeric(frame["tips"], errors="coerce")
-            required_non_null = [
-                name for name in required_columns if name in SILVER_REQUIRED_NON_NULL
-            ]
-            present = frame[required_non_null].notna().all(axis=1)
-            for name in (
-                "taxi_id",
-                "hvfhs_license_num",
-                "pickup_zone",
-                "dropoff_zone",
-                "estimated_service_tier",
-            ):
-                present &= frame[name].astype("string").str.strip().ne("").fillna(False)
-            valid_time = pickup.notna() & dropoff.notna() & pickup.lt(dropoff)
-            valid_range = (
-                pickup_location.notna()
-                & dropoff_location.notna()
-                & trip_miles.gt(0)
-                & trip_miles.le(1000)
-                & trip_time.gt(0)
-                & trip_time.le(86400)
-                & driver_pay.ge(0)
-                & driver_pay.le(5000)
-                & tips.ge(0)
-                & tips.le(5000)
-            )
-            valid_service_tier = (
-                frame["hvfhs_license_num"].eq("HV0003")
-                & frame["estimated_service_tier"].isin(["Standard", "Comfort"])
-            ) | (
-                frame["hvfhs_license_num"].eq("HV0005")
-                & frame["estimated_service_tier"].isin(
-                    ["Standard", "Extra Comfort"]
-                )
-            )
-            valid = present & valid_time & valid_range & valid_service_tier
-            invalid_rows += int((~valid).sum())
-
-    return pd.DataFrame(
-        [
-            {
-                "row_count": row_count,
-                "schema_signature": _schema_signature(schema),
-                "missing_required_columns": ",".join(missing_columns),
-                "extra_columns": ",".join(extra_columns),
-                "invalid_required_row_count": invalid_rows,
-                "invalid_required_row_ratio": (
-                    invalid_rows / row_count
-                    if row_count and not missing_columns
-                    else None
-                ),
-            }
-        ]
-    )
 
 
 def _read_recon(version_path: Path | S3Location) -> dict:
@@ -221,42 +133,6 @@ def _reconcile_silver(
     return recon
 
 
-def _silver_quality_summary(parquet_files, required_columns):
-    """Silver 월 전체 행 수·논리 스키마·필수값 NULL 건수를 요약합니다."""
-    import pandas as pd
-
-    row_count = 0
-    schema_signatures = set()
-    null_counts = {column: 0 for column in required_columns}
-    # 루프 변수 이름을 `parquet_file` 로 두면 이 모듈이 import 한 같은 이름의 함수를
-    # 가립니다. 지금은 루프 안에서 그 함수를 안 부르니 결과가 맞지만, 나중에 부르려
-    # 하면 조용히 루프 변수를 받습니다.
-    for file in parquet_files:
-        schema = file.schema_arrow
-        row_count += file.metadata.num_rows
-        schema_signatures.add(_schema_signature(schema, logical_timestamp=True))
-        for column in required_columns:
-            if column not in schema.names:
-                null_counts[column] = None
-            elif null_counts[column] is not None:
-                null_counts[column] += sum(
-                    batch.column(column).null_count
-                    for batch in file.iter_batches(columns=[column])
-                )
-    return pd.DataFrame(
-        [
-            {
-                "row_count": row_count,
-                "schema_signature": ",".join(sorted(schema_signatures)),
-                **{
-                    f"{column}_null_count": value
-                    for column, value in null_counts.items()
-                },
-            }
-        ]
-    )
-
-
 @task(task_id="raw_to_bronze")
 def raw_to_bronze_task(**context) -> dict:
     """월별 택시 운행 데이터를 Bronze에 저장합니다."""
@@ -266,7 +142,7 @@ def raw_to_bronze_task(**context) -> dict:
 
 def _collect_bronze(params: dict) -> dict:
     event = {
-        "api_base_url": params.get("api_base_url") or DEFAULT_API_BASE_URL,
+        "api_base_url": params["api_base_url"],
         "year": params.get("year"),
         "month": params.get("month"),
     }
@@ -355,87 +231,15 @@ def validate_bronze_task(result: dict, **context) -> dict:
 
 
 def _validate_bronze(state: dict, context: dict) -> dict:
-    """파일 경계를 확인한 뒤 Bronze 데이터 품질을 GX로 검증합니다."""
+    """Bronze의 manifest·체크섬·파일 경계만 검증합니다."""
     result = state["result"]
     params = context.get("params", {})
-    # Param이 없는 호출(단위 테스트 등)에서도 기존 리터럴과 같게 동작해야 합니다.
-    configured_threshold = params.get("error_threshold")
-    error_threshold = float(
-        configured_threshold
-        if configured_threshold is not None
-        else MONTHLY_TAXI_TRIP_ERROR_THRESHOLD
+    validate_monthly_parquet_bronze(
+        result,
+        dataset_dir="monthly_taxi_trip",
+        base_dir=params.get("base_dir") or DEFAULT_BRONZE_DIR,
+        service_area=params.get("service_area"),
     )
-    summary = _bronze_quality_result(result, params, list(SCHEMA.names))
-    missing = summary.at[0, "missing_required_columns"]
-    if missing:
-        logger.warning("Bronze 필수 컬럼 누락(%s), 원천부터 한 번 다시 수집", missing)
-        result = _collect_bronze(params)
-        state["result"] = result
-        summary = _bronze_quality_result(
-            result, params, list(SCHEMA.names)
-        )
-
-    import great_expectations as gx
-
-    expectations = [
-        gx.expectations.ExpectColumnValuesToBeBetween(
-            column="row_count", min_value=1
-        ),
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="missing_required_columns", value_set=[""]
-        ),
-    ]
-    if summary["invalid_required_row_ratio"].notna().all():
-        expectations.extend(
-            [
-                gx.expectations.ExpectColumnValuesToBeBetween(
-                    column="invalid_required_row_ratio",
-                    min_value=0,
-                    max_value=MONTHLY_TAXI_TRIP_WARNING_THRESHOLD,
-                    strict_max=True,
-                    meta={"severity": "warning"},
-                ),
-                gx.expectations.ExpectColumnValuesToBeBetween(
-                    column="invalid_required_row_ratio",
-                    min_value=0,
-                    max_value=error_threshold,
-                    strict_max=True,
-                ),
-            ]
-        )
-    expectations.append(
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="extra_columns",
-            value_set=[""],
-            meta={"severity": "warning"},
-        )
-    )
-    bronze_location = parse_location(result["locations"][0])
-    run_gx_validation(
-        summary,
-        expectations,
-        suite_name="monthly_taxi_trip_bronze_suite",
-        layer="bronze",
-        data_docs_s3_location=(
-            gx_data_docs_location(
-                bronze_location,
-                layer="bronze",
-                dataset="monthly_taxi_trip",
-            )
-            if isinstance(bronze_location, S3Location)
-            else None
-        ),
-    )
-    invalid_ratio = float(summary.at[0, "invalid_required_row_ratio"])
-    if invalid_ratio >= MONTHLY_TAXI_TRIP_WARNING_THRESHOLD:
-        send_quality_warning(
-            context,
-            dataset="monthly_taxi_trip",
-            year_month=result["year_month"],
-            invalid_rows=int(summary.at[0, "invalid_required_row_count"]),
-            row_count=int(summary.at[0, "row_count"]),
-            invalid_ratio=invalid_ratio,
-        )
     service_area = params.get("service_area")
     version_path = silver_version_path(
         DEFAULT_SILVER_DIR,
@@ -444,34 +248,13 @@ def _validate_bronze(state: dict, context: dict) -> dict:
     )
     silver_root = version_path.parent.parent
     # Spark 쓰기 전 상태입니다. validate_silver 가 이것과 비교해 #165 재발을 봅니다.
-    return {
+    validated = {
         **result,
         "silver_version_path": str(version_path),
         "silver_partitions_before": existing_silver_partitions(silver_root),
     }
-
-
-def _bronze_quality_result(
-    result: dict,
-    params: dict,
-    required_columns: list[str],
-):
-    base_dir = params.get("base_dir") or DEFAULT_BRONZE_DIR
-    path, _ = validate_monthly_parquet_bronze(
-        result,
-        dataset_dir="monthly_taxi_trip",
-        base_dir=base_dir,
-        service_area=params.get("service_area"),
-    )
-    try:
-        source = parquet_file(path)
-    except RuntimeError as exc:
-        raise ValueError(
-            f"Parquet 을 읽지 못했습니다 (다운로드가 잘렸을 수 있음): {path}"
-        ) from exc
-
-    summary = _bronze_quality_summary(source, required_columns)
-    return summary
+    state["result"] = validated
+    return validated
 
 
 @task(
@@ -484,14 +267,14 @@ def validate_silver_task(raw_result: dict, **context) -> None:
     version_path = parse_location(raw_result["silver_version_path"])
     run_quality_gate(
         version_path,
-        lambda: _validate_silver(raw_result),
+        lambda: _validate_silver(raw_result, context),
         layer="silver",
         context=context,
     )
 
 
-def _validate_silver(raw_result: dict) -> None:
-    """Spark 실행이 만든 Silver 버전 파일을 직접 열어서 확인합니다."""
+def _validate_silver(raw_result: dict, context: dict | None = None) -> None:
+    """Spark GX 이후 Silver 파일 계약과 reconciliation을 확인합니다."""
     parsed = parse_handler_result(raw_result, expected_locations=1)
     # 반환값을 쓰지 않습니다 — 이 호출 자체가 검증입니다. YYYY-MM 이 아니면
     # ValueError 로 막습니다. 대입으로 두면 미사용 변수로 보여 지워질 수 있습니다.
@@ -499,51 +282,42 @@ def _validate_silver(raw_result: dict) -> None:
     bronze_rows = parquet_file(parsed.locations[0]).metadata.num_rows
 
     version_path = parse_location(raw_result["silver_version_path"])
-    expected_schema = SILVER_SCHEMA
-    required_columns = list(SILVER_SCHEMA.names)
     part_paths = silver_part_paths(version_path)
     if not part_paths:
         raise ValueError(f"Silver part 파일이 없습니다: {version_path}")
     parquet_files = [parquet_file(path) for path in part_paths]
-    summary = _silver_quality_summary(parquet_files, required_columns)
-    import great_expectations as gx
-
-    expectations = [
-        gx.expectations.ExpectColumnValuesToBeBetween(
-            column="row_count", min_value=1
-        ),
-        gx.expectations.ExpectColumnValuesToBeInSet(
-            column="schema_signature",
-            value_set=[
-                _schema_signature(expected_schema, logical_timestamp=True)
-            ],
-        ),
-        # NULL 건수는 전 컬럼을 요약에 담아 Data Docs 에서 보이게 두고, 검사는
-        # 필수값 계약이 있는 컬럼에만 겁니다.
-        *(
-            gx.expectations.ExpectColumnValuesToBeInSet(
-                column=f"{column}_null_count", value_set=[0]
-            )
-            for column in required_columns
-            if column in SILVER_REQUIRED_NON_NULL
-        ),
-    ]
-    run_gx_validation(
-        summary,
-        expectations,
-        suite_name="monthly_taxi_trip_silver_suite",
-        layer="silver",
-        data_docs_s3_location=(
-            gx_data_docs_location(
-                part_paths[0], layer="silver", dataset="monthly_taxi_trip"
-            )
-            if isinstance(part_paths[0], S3Location)
-            else None
-        ),
+    expected_signature = _schema_signature(
+        SILVER_SCHEMA, logical_timestamp=True
     )
-
-    silver_rows = int(summary["row_count"].sum())
-    _reconcile_silver(version_path, bronze_rows, silver_rows)
+    actual_signatures = {
+        _schema_signature(file.schema_arrow, logical_timestamp=True)
+        for file in parquet_files
+    }
+    if actual_signatures != {expected_signature}:
+        raise ValueError(
+            "Silver 스키마가 계약과 다릅니다: "
+            f"expected={expected_signature} actual={sorted(actual_signatures)}"
+        )
+    silver_rows = sum(file.metadata.num_rows for file in parquet_files)
+    if silver_rows < 1:
+        raise ValueError("Silver 레코드가 0건입니다")
+    recon = _reconcile_silver(version_path, bronze_rows, silver_rows)
+    total = int(recon.get("total") or bronze_rows)
+    invalid = int(recon["invalid"])
+    invalid_ratio = invalid / total if total else 0.0
+    warning_threshold = float(
+        recon.get("warning_threshold", MONTHLY_TAXI_TRIP_WARNING_THRESHOLD)
+    )
+    if invalid_ratio >= warning_threshold:
+        send_quality_warning(
+            context or {},
+            dataset="monthly_taxi_trip",
+            year_month=raw_result["year_month"],
+            invalid_rows=invalid,
+            row_count=total,
+            invalid_ratio=invalid_ratio,
+            extra_columns=[],
+        )
 
     # #165 재발 감시 — 쓰기 전에 있던 파티션이 사라졌는지만 봅니다. 이번에 쓴 달은
     # 당연히 새로 생기므로 비교 대상이 아닙니다.

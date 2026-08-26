@@ -212,7 +212,7 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     monkeypatch.setattr(
         task_module,
         "run_table_gx_validation",
-        lambda *args, **kwargs: gx.append(kwargs),
+        lambda table, *args, **kwargs: gx.append((table, kwargs)),
     )
 
     task_module.validate_silver(
@@ -230,8 +230,9 @@ def test_S3_Silver_경로를_로컬_Path로_변환하지_않는다(monkeypatch):
     )
 
     assert isinstance(seen[0], S3Location)
-    assert gx[0]["required_warning_ratio"] == 0.01
-    assert gx[0]["required_error_ratio"] == 0.05
+    assert gx[0][0].num_rows == 31
+    assert gx[0][1]["required_warning_ratio"] == 0.01
+    assert gx[0][1]["required_error_ratio"] == 0.05
 
 
 # --- validate-then-publish (#912) --------------------------------------------
