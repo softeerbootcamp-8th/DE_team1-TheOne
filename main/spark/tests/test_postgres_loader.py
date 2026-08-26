@@ -83,6 +83,26 @@ class _VersionCursor:
         return (row,) if row is not None else None
 
 
+def test_파티션_잠금은_지역과_월_해시_두_개를_키로_건다():
+    """서로 다른 (service_area, year_month) 는 해시 쌍이 달라 잠금이 겹치지 않으므로
+    다른 파티션의 동시 실행을 막지 않는다."""
+    class Cursor:
+        def __init__(self):
+            self.sql = None
+            self.parameters = None
+
+        def execute(self, sql, parameters):
+            self.sql = " ".join(sql.split())
+            self.parameters = parameters
+
+    cursor = Cursor()
+
+    postgres_loader._acquire_partition_lock(cursor, "NYC", "2026-05")
+
+    assert cursor.sql == "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))"
+    assert cursor.parameters == ("NYC", "2026-05")
+
+
 def test_버전은_지역별로_따로_센다():
     """지역으로 안 좁히면 버전이 지역 간 공유 카운터가 됩니다 — NYC 가 v1 을 쓴 뒤
     TX 의 **첫** 적재가 v2 로 기록되어 지역별 버전 이력이 무의미해집니다."""
@@ -311,6 +331,16 @@ def test_Gold_행과_버전_메타데이터를_같은_트랜잭션에_기록한�
         sql.startswith("INSERT INTO gold_load_versions")
         for sql, _ in connection.cursor_instance.executions
     )
+
+    sqls = [sql for sql, _ in connection.cursor_instance.executions]
+    lock_index = sqls.index("SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))")
+    version_lookup_index = next(
+        index
+        for index, sql in enumerate(sqls)
+        if sql.startswith("SELECT version")
+    )
+    # 버전 조회 전에 잠금을 걸어야 동시 실행이 같은 다음 버전을 보지 않는다(#1056).
+    assert lock_index < version_lookup_index
 
 
 def test_커밋후_같은실행을_재시도하면_기존버전을_재사용한다(monkeypatch):
