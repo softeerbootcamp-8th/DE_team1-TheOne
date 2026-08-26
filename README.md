@@ -213,6 +213,15 @@
     - 최초 계산/이후 갱신의 실행 조건 구분
 </details>
 
+<details>
+<summary><a href="/docs/pipeline/PIPELINE_RECOMMENDATION_ALGORITHM_VERSIONING.md">추천 알고리즘 v1/v2 병행과 기사 순수익 증가 하한 스윕</a></summary>
+
+- 요약
+  - 문제 : 기사 순수익 우선 배정(v1) 하나만 운영해 회사 매출 관점 리포트가 없음
+  - 접근 : 회사 매출 우선·기사 순수익 증가 하한 필터 배정(v2)을 v1과 함께 운영, 기사 순수익 증가 하한 100~500 5개 스윕
+  - 해결 : 기존 `driver_car_suggestion`에 알고리즘 버전·기사 순수익 증가 하한 컬럼을 추가해 재사용, 중복 저장 없이 리포트 확장
+</details>
+
 ### 운영 용이성 및 안정성
 
 <details>
