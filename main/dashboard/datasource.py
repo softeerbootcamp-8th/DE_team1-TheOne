@@ -79,11 +79,22 @@ def _latest_version_query(
     columns: list[str],
     partition: tuple[str, ...] = ("service_area", "year_month"),
 ) -> str:
-    selected = ", ".join(f"t.{name}" for name in columns)
-    condition = " AND ".join(f"{name} = t.{name}" for name in partition)
+    """파티션(`partition`)마다 최신 version 행만 남긴다.
+
+    이전엔 상관 서브쿼리(`WHERE t.version = (SELECT MAX(version) ... WHERE
+    partition_cols)`)로 걸렀다. 서브쿼리 자체는 인덱스를 탔지만(#876), 파티션 안
+    행 수만큼 같은 MAX(version)을 반복 계산했다 — 파티션에 행이 N개면 N번 실행됐다
+    (#1069). 윈도우 함수는 정렬된 한 패스로 파티션당 한 번만 계산한다.
+    """
+    selected = ", ".join(columns)
+    partition_by = ", ".join(f"t.{name}" for name in partition)
     return (
-        f"SELECT {selected} FROM {table} t "
-        f"WHERE t.version = (SELECT MAX(version) FROM {table} WHERE {condition})"
+        f"SELECT {selected} FROM (\n"
+        f"    SELECT t.*, "
+        f"MAX(t.version) OVER (PARTITION BY {partition_by}) AS partition_latest_version\n"
+        f"    FROM {table} t\n"
+        f") sub\n"
+        f"WHERE version = partition_latest_version"
     )
 
 
