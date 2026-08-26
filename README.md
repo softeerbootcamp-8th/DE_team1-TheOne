@@ -42,6 +42,7 @@
 ### 결과 이미지
 <details>
 <summary>대시보드 이미지 확인</summary>
+
 ![대시보드 이미지](assets/dashboard_reference.png)
 </details>
 
