@@ -155,6 +155,36 @@
 ### 파이프라인 설계 및 코드 품질
 > 파이프라인 설계 및 데이터 품질 관리
 
+<details>
+<summary><a href="/docs/pipeline_design_and_data_quality/PIPELINE_LAYERS_AND_CONTRACTS.md">파이프라인 계층·DAG 의존성·버전 계약</a></summary>
+
+- 계층 : Bronze(원본, S3, Lambda) → Silver(정제, S3, Lambda 또는 Spark) → Gold(집계·추천, RDS, Spark)
+- DAG 의존성 : Airflow Asset으로 체이닝. 커스텀 센서·브랜치 없이 파티션 키(`{service_area}:{year_month}`) 단위로 자동 트리거
+- 버전 계약 : Bronze `collected_at`, Silver `source_collected_at`, Gold `version`+`load_fingerprint`. 같은 입력이면 fingerprint가 같아 재실행해도 버전이 늘지 않음
+</details>
+
+<details>
+<summary><a href="/docs/pipeline_design_and_data_quality/GOLD_RECOMMENDATION_LOGIC.md">Gold 추천 로직 (v1/v2)</a></summary>
+
+- v1(ProfitFirst) : 기사 순수익 기준 배정, 회사 매출에 기여 못 하는 교체만 제외
+- v2(RevenueFirst, threshold별) : 회사 매출 기준 배정, 순수익증가가 threshold 미만인 교체만 제외
+</details>
+
+<details>
+<summary><a href="/docs/pipeline_design_and_data_quality/DATA_QUALITY_AND_LINEAGE.md">스키마 검증·품질 게이트·계보 추적</a></summary>
+
+- 스키마 : 계층별 `pyarrow.Schema`(`schema/`)를 기준으로 컬럼 누락·타입 불일치를 진단
+- 품질 게이트 : Bronze·Silver는 Great Expectations로 행 수·필수값·스키마를 검사하고, 통과 여부를 `_SUCCESS`/`_QUARANTINED.json`으로 남김
+- Gold : GX 대신 Spark에서 직접 짠 비즈니스 불변식 검사를 통과해야 적재가 시작되고, 계보(`silver_lineage`)는 검사와 별개로 항상 기록
+</details>
+
+<details>
+<summary><a href="/docs/pipeline_design_and_data_quality/CODE_AND_CONFIG_STRUCTURE.md">코드 구조와 설정값 분리</a></summary>
+
+- 코드 구조 : Lambda·Spark·Airflow 3개 런타임이 공유하는 순수 인터페이스(`libs/pipeline_core`)와, 런타임별 SDK를 쓰는 헬퍼(`shared/{aws_lambda,spark,airflow}/common`)를 분리
+- 설정값 : 재배포 없이 바꿔야 하는 값(threshold, freshness SLA 등)은 Airflow Variable로, 환경마다 달라지는 값(버킷, DSN, 리전)은 환경변수로, 코드 로직에 붙는 상수는 그 로직 옆에 둠
+</details>
+
 ### 운영 용이성 및 안정성
 > 파이프라인 운영 안정성과 관련된 문서
 
