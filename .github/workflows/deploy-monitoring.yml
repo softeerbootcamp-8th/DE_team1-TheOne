@@ -1,17 +1,28 @@
-# EMR Serverless 대시보드와 작업 실패 알림을 배포합니다.
+# Prometheus + Grafana 설정을 모니터링 인스턴스(theone-monitoring)에 배포합니다.
 #
-# CloudFormation 을 쓰지 않는 이유 (#886, #890)
-# ---------------------------------------------
-# 리소스가 대시보드 1개 + SNS Topic 1개 + EventBridge rule 1개뿐인데, CFN 을 쓰면
-# 스택 상태 관리가 따라옵니다. 실제로 세 번 연속 배포를 막았습니다.
+# 감시 대상 전체가 이 스택 하나로 모입니다 — 호스트 4대는 Prometheus 가 스크레이프하고,
+# EMR Serverless·Lambda 는 Grafana 의 CloudWatch 데이터소스가 직접 질의합니다. 알림도
+# 전부 Grafana 규칙이라 수신처가 Slack 하나입니다.
+#
+# CloudWatch 쪽은 걷어냈습니다 (942b90b, 2026-08-25)
+# --------------------------------------------------
+# 예전에는 이 워크플로가 CloudWatch 대시보드 1개 + SNS Topic 1개 + EventBridge rule 1개를
+# CLI 로 upsert 하는 job 을 하나 더 갖고 있었습니다. EMR 을 Grafana 로 옮기면서 그 job 을
+# 지웠습니다 — 감시 창구가 셋이었고, 그중 EMR 자원 쪽에는 알림이 아예 없었습니다.
+#
+# ★ 지운 것은 **배포 코드**입니다. put-dashboard·create-topic·put-rule 은 생성 명령이라,
+#   스텝을 지워도 AWS 에 만들어진 리소스는 남습니다. 아래 env 3개가 그 이름 기록입니다.
+#   EventBridge rule 은 지금도 EMR 실패 이벤트를 SNS 로 보내지만, 이메일 구독을 건 적이
+#   없어(subscribe 는 늘 수동 1회 작업이었습니다) SNS 가 메시지를 버립니다 — 중복 알림은
+#   오지 않습니다. 과금도 무료 한도 안이라 그대로 두고 있습니다.
+#
+# CloudFormation 을 쓰지 않았던 이유 (#886, #890)
+# ----------------------------------------------
+# 위 리소스 3개를 CFN 으로 관리하려 했다가 스택 상태 관리에 세 번 연속 막혔습니다.
 #   * 파라미터 타입 검증이 배포 자격증명으로 ec2:DescribeInstances 를 호출 → 거부
 #   * 실패한 CREATE 가 ROLLBACK_COMPLETE 로 남고 DeleteStack 권한이 없어 좌초
 #   * AWS::CloudWatch::Dashboard 핸들러가 기존 대시보드에 AlreadyExists 로 거부
-# 아래 CLI 3개는 모두 멱등이고(put-dashboard·create-topic·put-rule 다 upsert)
-# 배포 role 이 이미 가진 권한만 씁니다.
-#
-# EC2 호스트 자원(CPU·메모리·디스크)은 이 대시보드에 없습니다. Prometheus + Grafana 가
-# 담당하고, 아래 stack job 이 그 인스턴스(theone-monitoring)에 설정을 배포합니다.
+# 그래서 멱등 CLI 로 내려갔고, 지금은 그 CLI 들도 없습니다. 기록으로만 남깁니다.
 #
 # 예전 주석은 그 선택의 이유를 "인스턴스 role 의 IAM 변경이 불가" 로 적었지만 그렇지
 # 않습니다 — MFA 세션이면 iam:CreateRole·PutRolePolicy 가 통합니다(#898). 실제 이유는
@@ -34,6 +45,13 @@ concurrency:
   group: deploy-monitoring
   cancel-in-progress: false
 
+# 아래 3개는 어느 스텝도 참조하지 않습니다. 942b90b 이관 이후 배포에 쓰이지 않지만,
+# AWS 에 남아 있는 리소스의 이름을 적어둔 유일한 기록입니다 — 지우면 나중에 정리하려
+# 할 때 무엇을 찾아야 하는지 알 수 없습니다. 실제로 정리한 뒤에 함께 지우세요.
+#
+#   aws cloudwatch list-dashboards
+#   aws events list-rules --name-prefix theone
+#   aws sns list-subscriptions-by-topic --topic-arn <ARN>
 env:
   DASHBOARD_NAME: theone-infrastructure-prod
   TOPIC_NAME: theone-pipeline-alerts
