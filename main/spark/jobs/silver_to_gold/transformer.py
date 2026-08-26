@@ -4,6 +4,8 @@
 이 모듈의 build_driver_monthly_profit()·_columns() 등 공통 조각을 가져다 쓴다.
 """
 
+import hashlib
+import json
 import logging
 from calendar import monthrange
 from dataclasses import fields
@@ -27,6 +29,36 @@ KWH_PER_GALLON_EQUIVALENT = 33.7
 # 프리미엄 자격을 얻어도 Standard 수요가 모두 전환되지는 않습니다.
 # 현재 사업 시나리오는 기존 Standard 운행 중 30%만 프리미엄으로 전환합니다.
 PREMIUM_TIER_TRIP_SHARE = 0.3
+# 거리대 경계와 라벨. _distance_band 와 algorithm_constants_digest 가 같은 출처를
+# 보게 해서 한쪽만 고치는 실수를 막습니다(#1088).
+_DISTANCE_BAND_EDGES: tuple[tuple[float, str], ...] = (
+    (2.0, "0-2"),
+    (5.0, "2-5"),
+    (10.0, "5-10"),
+    (20.0, "10-20"),
+)
+_DISTANCE_BAND_FALLBACK = "20+"
+
+
+def algorithm_constants_digest() -> str:
+    """Gold 계산에 직접 들어가는 고정 상수들의 SHA-256.
+
+    이 값들이 바뀌면 결과가 달라지지만 recommendation_algorithm_version_id 는
+    사람이 올려야 해서 깜빡하면 fingerprint 가 불변으로 남아 예전 Gold 를
+    재사용합니다(#1088). 상수 자체의 해시를 fingerprint 에 넣어 수동 규율
+    의존을 없앱니다.
+    """
+    payload = {
+        "kwh_per_gallon_equivalent": KWH_PER_GALLON_EQUIVALENT,
+        "premium_tier_trip_share": PREMIUM_TIER_TRIP_SHARE,
+        "distance_band_edges": [
+            [edge, label] for edge, label in _DISTANCE_BAND_EDGES
+        ],
+        "distance_band_fallback": _DISTANCE_BAND_FALLBACK,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True).encode("utf-8")
+    ).hexdigest()
 
 
 def _columns(model: type) -> list[str]:
@@ -329,13 +361,10 @@ def enrich_trips_with_fuel_cost(
 
 def _distance_band(trip_miles: Column) -> Column:
     """거리별 단가 차이를 보존하는 고정 운행거리 구간입니다."""
-    return (
-        F.when(trip_miles < 2, F.lit("0-2"))
-        .when(trip_miles < 5, F.lit("2-5"))
-        .when(trip_miles < 10, F.lit("5-10"))
-        .when(trip_miles < 20, F.lit("10-20"))
-        .otherwise(F.lit("20+"))
-    )
+    column = F.lit(_DISTANCE_BAND_FALLBACK)
+    for edge, label in reversed(_DISTANCE_BAND_EDGES):
+        column = F.when(trip_miles < edge, label).otherwise(column)
+    return column
 
 
 def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:

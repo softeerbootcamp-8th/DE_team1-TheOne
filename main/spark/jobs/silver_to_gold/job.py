@@ -33,6 +33,7 @@ from uuid import uuid4
 import pandas as pd
 from pyspark.sql import DataFrame
 
+from main.spark.jobs.silver_to_gold.input_digest import silver_input_digest
 from main.spark.jobs.silver_to_gold.postgres_loader import (
     gold_config_hash,
     write_gold_to_postgres,
@@ -49,6 +50,7 @@ from main.spark.jobs.silver_to_gold.recommendation_algorithm import (
     RevenueFirstAlgorithm,
 )
 from main.spark.jobs.silver_to_gold.transformer import (
+    algorithm_constants_digest,
     build_driver_monthly_aggregation,
     build_driver_monthly_profit,
     enrich_trips_with_fuel_cost,
@@ -356,6 +358,18 @@ def main(args_list: list[str] | None = None) -> None:
     inventory: DataFrame = spark.read.parquet(lease_vehicle_inventory_path)
     fuel_price: DataFrame = spark.read.parquet(fuel_price_path)
 
+    # fingerprint 가 경로만 보면 같은 버전 디렉터리 재발행을 못 알아챕니다(#1088) —
+    # 읽은 입력의 실제 내용을 해시해 config_hash 와 멱등성 fingerprint 에 함께 씁니다.
+    input_digests = {
+        "monthly_taxi_trip": silver_input_digest(monthly_taxi_trip_path),
+        "driver_vehicle_monthly_snapshot": silver_input_digest(
+            driver_vehicle_monthly_snapshot_path
+        ),
+        "lease_vehicle_inventory": silver_input_digest(lease_vehicle_inventory_path),
+        "fuel_price": silver_input_digest(fuel_price_path),
+    }
+    constants_digest = algorithm_constants_digest()
+
     enriched: DataFrame | None = None
     driver_metrics: DataFrame | None = None
     recommendation: DataFrame | None = None
@@ -423,6 +437,8 @@ def main(args_list: list[str] | None = None) -> None:
             year_month,
             lineage,
             recommendation_parameters,
+            input_digests=input_digests,
+            algorithm_constants_digest=constants_digest,
         )
         frames["silver_lineage"] = pd.DataFrame([lineage])
         if args.env == "prod":
@@ -431,7 +447,12 @@ def main(args_list: list[str] | None = None) -> None:
                     "--env prod는 --gold_dsn(또는 GOLD_DATABASE_URL 환경변수)이 필요합니다"
                 )
             written = write_gold_to_postgres(
-                frames, args.gold_dsn, args.service_area, year_month
+                frames,
+                args.gold_dsn,
+                args.service_area,
+                year_month,
+                input_digests=input_digests,
+                algorithm_constants_digest=constants_digest,
             )
             for dataset, rows in written.items():
                 logger.info("gold 적재 완료: dataset=%s rows=%d", dataset, rows)
