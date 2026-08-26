@@ -7,6 +7,7 @@ from pipeline_core.transformer import Transformer
 
 from main.aws_lambda.common import eia_fuel_price_layout as layout
 from shared.aws_lambda.common.logging_setup import configure_lambda_logging
+from shared.aws_lambda.common.storage_config import resolve_storage
 from .extractor import build_bronze_extractor
 from .loader import build_silver_loader
 from .transformer import build_daily_prices
@@ -33,7 +34,7 @@ def lambda_handler(event: dict | None = None, context=None) -> dict:
     if not year_month:
         raise ValueError("year_month 또는 YEAR_MONTH가 필요합니다 (YYYY-MM).")
 
-    storage = event.get("storage") or os.getenv("BRONZE_STORAGE", "local")
+    storage = resolve_storage(event)
     bucket = event.get("bucket") or os.getenv("DATA_LAKE_S3_BUCKET")
     bronze_dir = event.get("bronze_dir") or os.getenv("BRONZE_DIR", "data/bronze")
     silver_dir = event.get("silver_dir") or os.getenv("SILVER_DIR", "data/silver")
