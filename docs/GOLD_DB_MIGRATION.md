@@ -130,6 +130,32 @@ PK가
 `Indexes:`에 `idx_driver_car_suggestion_area_month_algorithm_threshold`가 있는지
 확인합니다.
 
+## 2026-08-26 Gold 실행 계보 식별자 추가 스크립트 실행 방법
+
+```bash
+psql "$GOLD_DATABASE_URL" -v ON_ERROR_STOP=1 \
+  -f main/spark/jobs/silver_to_gold/migrations/2026-08-26_add_gold_lineage_execution_metadata.sql
+```
+
+`silver_lineage`에 `airflow_run_id`, `code_sha`, `config_hash`를 추가합니다. 과거
+버전은 당시 식별자를 복원할 수 없어 `legacy__...`, `legacy-unknown`,
+`legacy-config:...` 값으로 백필합니다. 새 코드 배포 뒤 생성되는 행부터 실제 Airflow
+run ID, Spark 이미지 Git SHA, 입력 경로·추천 threshold의 안정적 SHA-256을 기록합니다.
+
+실행 후 확인:
+
+```sql
+\d silver_lineage
+SELECT service_area, year_month, version, airflow_run_id, code_sha, config_hash
+FROM silver_lineage
+ORDER BY service_area, year_month, version DESC
+LIMIT 5;
+```
+
+세 컬럼이 모두 `not null`인지 확인합니다. 이 migration을 코드보다 먼저 실행하면 이전
+Spark 이미지의 INSERT가 새 필드를 채우지 못하므로, 런북 상단 순서대로 코드 배포 직전에
+실행해 배포 창을 짧게 유지합니다.
+
 ## 이력
 
 | 날짜 | 스크립트 | 내용 | 관련 |
@@ -141,6 +167,7 @@ PK가
 | 2026-08-25 | `2026-08-25_add_threshold_to_driver_car_suggestion.sql` | `driver_car_suggestion`에 `threshold` 추가, PK 확장. 지원 인덱스를 threshold 포함해 재생성 | #997 |
 | 2026-08-25 | `2026-08-25_add_gold_version_retention_metadata.sql` | Gold 버전 생성 시각 기록과 기존 버전 백필 | #1010 |
 | 2026-08-26 | `2026-08-26_add_gold_load_fingerprint.sql` | `gold_load_versions`에 `load_fingerprint` 추가. 기존 행은 `legacy-version:<version>`으로 백필 | #1054 |
+| 2026-08-26 | `2026-08-26_add_gold_lineage_execution_metadata.sql` | `silver_lineage`에 Airflow 실행·Spark 코드·Gold 설정 식별자 추가. 복원 불가한 기존 행은 legacy sentinel로 백필 | #1058 |
 
 ### 2026-08-25 주의사항
 

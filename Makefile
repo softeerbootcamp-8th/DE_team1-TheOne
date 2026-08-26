@@ -139,9 +139,11 @@ build:
 		if [ "$$name" = "aws_lambda" ]; then name="lambda"; fi; \
 		image="$(IMAGE_PREFIX)$$name"; \
 		if [ -n "$(IMAGE_NAME)" ]; then image="$(IMAGE_NAME)"; fi; \
+		code_sha_arg=""; \
+		if [ "$$dirname" = "spark" ]; then code_sha_arg="--build-arg CODE_SHA=$(GIT_SHA)"; fi; \
 		echo "==> building $(REGISTRY)$$image:$(GIT_SHA)"; \
 		docker build --platform $(PLATFORM) --provenance=false --sbom=false -f shared/$$dirname/Dockerfile \
-			-t $(REGISTRY)$$image:$(GIT_SHA) . || exit 1; \
+			$$code_sha_arg -t $(REGISTRY)$$image:$(GIT_SHA) . || exit 1; \
 	done
 
 .PHONY: setup-hooks

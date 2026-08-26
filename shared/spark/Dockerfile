@@ -3,6 +3,12 @@
 # ★ :latest 는 떠다니는 태그입니다. 운영 배포 전에 digest(@sha256:...)로 고정하세요.
 FROM public.ecr.aws/emr-serverless/spark/emr-7.13.0:latest
 
+# Gold 실행 계보가 실제 Spark 이미지의 소스 revision을 기록합니다. Makefile이
+# 이미지 태그에 쓰는 것과 같은 짧은 Git SHA를 넘기며, 직접 docker build 할 때는
+# unknown으로 남겨 출처를 꾸며내지 않습니다.
+ARG CODE_SHA=unknown
+ENV CODE_SHA=${CODE_SHA}
+
 USER root
 
 # EMR 이 제공하지 않는 라이브러리만 설치 (pyspark 는 EMR 제공분을 씀).

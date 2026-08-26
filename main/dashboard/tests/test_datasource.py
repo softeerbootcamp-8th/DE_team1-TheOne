@@ -9,6 +9,7 @@
 7. DASHBOARD_DATA_SOURCE 기본값은 local
 8. DASHBOARD_DATA_SOURCE=rds인데 GOLD_DATABASE_URL이 없으면 즉시 ValueError
 9. 알 수 없는 DASHBOARD_DATA_SOURCE 값은 즉시 ValueError
+10. silver_lineage는 중앙 스키마의 실행·코드·설정 식별자를 최신 버전에서 읽는다
 """
 
 import sqlite3
@@ -24,7 +25,12 @@ from datasource import (
     _latest_version_query,
     build_data_source,
 )
-from schema.gold import DriverCarSuggestion, DriverMonthlyProfit, RecommendationAlgorithm
+from schema.gold import (
+    DriverCarSuggestion,
+    DriverMonthlyProfit,
+    RecommendationAlgorithm,
+    SilverLineage,
+)
 
 
 def test_RDS_소스는_현재_Gold_4종만_노출한다():
@@ -239,6 +245,44 @@ def test_RDS_소스는_알고리즘_버전별로_최신_버전을_따로_읽는�
     by_algorithm = frame.set_index("recommendation_algorithm_version_id")
     assert by_algorithm.loc[1, "expected_net_profit_increase"] == 100
     assert by_algorithm.loc[2, "expected_net_profit_increase"] == 200
+
+
+def test_RDS_소스는_최신_SilverLineage의_실행코드설정_식별자를_읽는다(
+    monkeypatch,
+):
+    columns = [field.name for field in fields(SilverLineage)]
+
+    def lineage_row(version: int, **overrides) -> dict:
+        row = {
+            "version": version,
+            "service_area": "NYC",
+            "year_month": "2026-05",
+            "airflow_run_id": f"scheduled__v{version}",
+            "code_sha": f"sha{version}",
+            "config_hash": f"config{version}",
+            "silver_monthly_taxi_trip_s3_link": "s3://silver/trips/v1",
+            "silver_driver_vehicle_monthly_snapshot_s3_link": "s3://silver/drivers/v1",
+            "silver_lease_vehicle_inventory_s3_link": "s3://silver/inventory/v1",
+            "silver_gas_ev_price_s3_link": "s3://silver/fuel/v1",
+        }
+        row.update(overrides)
+        return row
+
+    conn = _sqlite_conn_with(
+        "silver_lineage",
+        columns,
+        [lineage_row(1), lineage_row(2)],
+    )
+    monkeypatch.setattr("datasource.psycopg2.connect", lambda dsn: conn)
+
+    frame = RdsDataSource("dsn").load("silver_lineage")
+
+    assert list(frame["version"]) == [2]
+    assert frame.loc[0, ["airflow_run_id", "code_sha", "config_hash"]].to_dict() == {
+        "airflow_run_id": "scheduled__v2",
+        "code_sha": "sha2",
+        "config_hash": "config2",
+    }
 
 
 def test_RDS_소스는_버전_개념이_없는_마스터_테이블은_전체를_읽는다(monkeypatch):
