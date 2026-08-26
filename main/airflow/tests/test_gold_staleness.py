@@ -5,6 +5,9 @@
 3. 마지막 성공이 SLA 초과 → 저장된 파티션으로 Slack 콜백 호출
 4. 마지막 성공이 SLA 이내 → 알리지 않음
 5. NYC 성공과 TX 감시 상태 분리 → 한 지역 성공이 다른 지역 지연을 가리지 않음
+6. 과거 월 백필 성공 → 최신 완료 파티션과 freshness 시각 유지
+7. 같은 월 재성공 → freshness 시각 갱신
+8. 더 최신 월 성공 → 최신 완료 파티션과 freshness 시각 갱신
 
 실제 Slack 네트워크는 호출하지 않고 콜백 경계와 전달 컨텍스트를 검증합니다.
 """
@@ -65,6 +68,37 @@ def test_Gold검증성공시_지역월과_UTC성공시각을_기록한다(monkey
     completed_at = datetime.fromisoformat(state["last_success_at"])
     assert state["partition_key"] == "NYC:2026-08"
     assert before <= completed_at <= datetime.now(timezone.utc)
+
+
+def test_과거월_백필은_최신_Gold_freshness를_갱신하지_않는다(monkeypatch):
+    _variable_store(monkeypatch)
+    latest_completed_at = NOW - timedelta(days=20)
+    gold_staleness.record_success("NYC", "2026-08", latest_completed_at)
+
+    state = gold_staleness.record_success("NYC", "2024-01", NOW)
+
+    assert state["partition_key"] == "NYC:2026-08"
+    assert state["last_success_at"] == latest_completed_at.isoformat()
+
+
+def test_같은월_재성공은_freshness시각을_갱신한다(monkeypatch):
+    _variable_store(monkeypatch)
+    gold_staleness.record_success("NYC", "2026-08", NOW - timedelta(days=1))
+
+    state = gold_staleness.record_success("NYC", "2026-08", NOW)
+
+    assert state["partition_key"] == "NYC:2026-08"
+    assert state["last_success_at"] == NOW.isoformat()
+
+
+def test_더_최신월_성공은_Gold_freshness를_갱신한다(monkeypatch):
+    _variable_store(monkeypatch)
+    gold_staleness.record_success("NYC", "2026-07", NOW - timedelta(days=20))
+
+    state = gold_staleness.record_success("NYC", "2026-08", NOW)
+
+    assert state["partition_key"] == "NYC:2026-08"
+    assert state["last_success_at"] == NOW.isoformat()
 
 
 def test_성공이력이_없으면_기준점만_만들고_즉시_알리지_않는다(monkeypatch):
