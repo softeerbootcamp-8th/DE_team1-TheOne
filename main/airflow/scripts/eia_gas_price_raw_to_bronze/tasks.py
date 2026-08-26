@@ -50,7 +50,7 @@ def raw_to_bronze_task(**context) -> dict:
         "eia_gas_price_raw_to_bronze",
         package="main.aws_lambda.functions",
         event=event,
-        local_event={"base_dir": params["bronze_dir"]},
+        local_event={"base_dir": params.get("bronze_dir") or BRONZE_DIR},
     )
     logger.info("Raw -> Bronze 완료: %s", result)
     return result
@@ -72,7 +72,9 @@ def _validate_bronze(result: dict, context: dict) -> None:
     layout = _layout()
     service_area = context["params"]["service_area"]
     expected = layout.gas_bronze_file(
-        context["params"]["bronze_dir"], result.get("collected_at"), service_area
+        context["params"].get("bronze_dir") or BRONZE_DIR,
+        result.get("collected_at"),
+        service_area,
     )
     path = require_file(parsed.locations[0])
     if layout_tail(path, segments=4, service_area=service_area) != layout_tail(

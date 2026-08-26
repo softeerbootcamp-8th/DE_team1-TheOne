@@ -15,8 +15,6 @@ from main.airflow.common.assets import (
 )
 from main.airflow.scripts.driver_vehicle_monthly_snapshot_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
-    DEFAULT_BRONZE_DIR,
-    DEFAULT_SILVER_DIR,
     bronze_to_silver_task,
     raw_to_bronze_task,
     validate_bronze_task,
@@ -50,8 +48,6 @@ default_args = {
             os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
             type="string",
         ),
-        "base_dir": Param(DEFAULT_BRONZE_DIR, type="string"),
-        "silver_dir": Param(DEFAULT_SILVER_DIR, type="string"),
         "service_area": Param(
             DEFAULT_SERVICE_AREA,
             type="string",

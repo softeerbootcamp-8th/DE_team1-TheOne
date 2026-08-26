@@ -18,7 +18,7 @@ from airflow.providers.standard.operators.bash import BashOperator
 
 # provider 구현은 실패 사유를 KeyError 로 덮습니다 — shared 쪽 하위 클래스를 씁니다.
 from shared.airflow.common.emr_serverless import EmrServerlessStartJobOperator
-from sub.airflow.scripts.synthetic_driver_trip_source.tasks import ROOT
+from sub.airflow.scripts.synthetic_driver_trip_source.tasks import DEFAULT_PATHS, ROOT
 
 JOB_ENV = os.getenv("SPARK_JOB_ENV", "local")
 
@@ -66,6 +66,7 @@ def local_build() -> BashOperator:
     """컨테이너 안에서 직접 실행합니다. 입출력은 params 의 로컬 경로."""
     return BashOperator(
         task_id="build_source_release",
+        params=DEFAULT_PATHS,
         bash_command=(
             f"python {ROOT}/sub/spark/jobs/driver_assignment/source_job.py "
             + f"--hvfhv_input_path {{{{ {_XCOM}['hvfhv_input_path'] }}}} "
@@ -105,6 +106,7 @@ def emr_build() -> EmrServerlessStartJobOperator:
     data_bucket = f"{{{{ params.bucket if params.bucket else {bucket!r} }}}}"
     return EmrServerlessStartJobOperator(
         task_id="build_source_release",
+        params=DEFAULT_PATHS,
         application_id=application_id,
         execution_role_arn=execution_role_arn,
         name="synthetic-driver-trip-source-{{ ds_nodash }}",

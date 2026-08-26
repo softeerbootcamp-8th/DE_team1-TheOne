@@ -4,6 +4,7 @@
 2. 수집 2회, 변환 1회, 검증 0회의 장애 유형별 재시도 유지
 3. 지정이 없으면 직전 달, 수동 year_month가 있으면 지정한 달 사용
 4. Silver 스키마·행 수·날짜 완결성 검증 유지
+5. 경로 파라미터가 없으면 로컬 기본 Bronze/Silver 경로 사용
 """
 
 from datetime import date, datetime, timedelta, timezone
@@ -41,7 +42,7 @@ def _march(day_count=31):
 
 def test_DAG는_월간_스케줄로_Raw부터_Silver까지_네_task를_순서대로_처리한다():
     assert DAG.dag_id == "eia_gas_price_raw_to_silver_pipeline"
-    assert DAG.schedule == "0 5 1 * *"
+    assert DAG.schedule == "0 1 1 * *"
     assert set(DAG.task_ids) == {
         "raw_to_bronze",
         "validate_bronze",
@@ -68,7 +69,7 @@ def test_수집과_변환만_장애유형에_맞게_재시도한다():
     assert DAG.get_task("validate_silver").retries == 0
 
 
-def test_수집task는_지역과_수집시각만_람다에_보낸다(monkeypatch):
+def test_수집task는_경로param없이_기본경로와_지역을_람다에_보낸다(monkeypatch):
     called = {}
     handlers = []
 
@@ -85,18 +86,18 @@ def test_수집task는_지역과_수집시각만_람다에_보낸다(monkeypatch
         "DagRun", (), {"start_date": datetime(2026, 8, 17, 12, 34, 56, tzinfo=timezone.utc)}
     )()
     DAG.get_task("raw_to_bronze").python_callable(
-        params={"bronze_dir": "/bronze", "service_area": "TX"},
+        params={"service_area": "TX"},
         dag_run=dag_run,
     )
     assert handlers == ["eia_gas_price_raw_to_bronze"]
     assert called == {
         "service_area": "TX",
         "collected_at": "2026-08-17T12:34:56.000000Z",
-        "base_dir": "/bronze",
+        "base_dir": task_module.BRONZE_DIR,
     }
 
 
-def test_정제task는_년월과_지역만_람다에_보낸다(monkeypatch):
+def test_정제task는_경로param없이_기본경로와_년월을_람다에_보낸다(monkeypatch):
     called = {}
     handlers = []
 
@@ -113,8 +114,6 @@ def test_정제task는_년월과_지역만_람다에_보낸다(monkeypatch):
         params={
             "year": "2024",
             "month": "3",
-            "bronze_dir": "/bronze",
-            "silver_dir": "/silver",
             "service_area": "TX",
         },
     )
@@ -122,8 +121,8 @@ def test_정제task는_년월과_지역만_람다에_보낸다(monkeypatch):
     assert called == {
         "year_month": "2024-03",
         "service_area": "TX",
-        "bronze_dir": "/bronze",
-        "silver_dir": "/silver",
+        "bronze_dir": task_module.BRONZE_DIR,
+        "silver_dir": task_module.SILVER_DIR,
     }
 
 

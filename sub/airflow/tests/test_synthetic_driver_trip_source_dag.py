@@ -7,6 +7,7 @@
 5. API는 manifest를 공개하지 않고 세 Parquet만 다운로드
 6. EMR build_source_release는 병렬 자원과 executor 상한을 함께 지정
 7. 로컬과 EMR은 seed·bucket_size·bucket 실행 파라미터를 같은 의미로 전달
+8. 로컬 경로는 UI에서 숨기되 Spark task 내부 기본값으로 유지
 """
 
 import hashlib
@@ -61,6 +62,11 @@ def test_DAG는_월별로_세_원천을_생성하고_API_릴리스를_검증한�
     assert DAG.schedule == "0 0 10 * *"
     assert DAG.catchup is False and DAG.max_active_runs == 1
     assert DAG.params["test_row_limit"] == 0
+    assert set(task_module.DEFAULT_PATHS).isdisjoint(DAG.params)
+    task_params = DAG.get_task("build_source_release").params
+    assert {
+        name: task_params[name] for name in task_module.DEFAULT_PATHS
+    } == task_module.DEFAULT_PATHS
 
 
 def test_Spark_명령은_DE_Bronze_Silver가_아닌_source_입력만_받는다():

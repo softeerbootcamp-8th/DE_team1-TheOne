@@ -26,7 +26,9 @@ DAG_VARIABLES = {
 # sub 에서 이동한 DAG 만 등록합니다 — 셸 글로브가 확장된 cron 이 그대로 통과한 적이
 # 있어(sub 쪽 계약 참고) 스케줄은 셀 때마다 명시적으로 검사합니다.
 SCHEDULES = {
-    "eia_electricity_price_raw_to_silver_dag": "0 6 1 * *",
+    "eia_gas_price_raw_to_silver_dag": "0 1 1 * *",
+    "eia_electricity_price_raw_to_silver_dag": "0 2 1 * *",
+    "eia_fuel_price_silver_dag": "0 3 1 * *",
 }
 
 RETRY_CONTRACTS = {

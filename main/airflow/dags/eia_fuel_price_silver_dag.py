@@ -23,7 +23,6 @@ from main.airflow.common.assets import (
     MAX_ACTIVE_SERVICE_AREA_RUNS,
 )
 from main.airflow.scripts.eia_fuel_price_silver.tasks import (
-    SILVER_DIR,
     check_clean_silver_task,
     combine_silver_task,
     validate_silver_task,
@@ -46,8 +45,8 @@ default_args = {
 @dag(
     dag_id="eia_fuel_price_silver_pipeline",
     default_args=default_args,
-    # 정제 두 개(07시)가 끝난 뒤에 돕니다.
-    schedule="0 8 1 * *",
+    # 원천 정제(01:00, 02:00 UTC)가 끝난 뒤 통합합니다.
+    schedule="0 3 1 * *",
     start_date=datetime(2024, 1, 1),
     catchup=False,
     max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
@@ -55,7 +54,6 @@ default_args = {
     params={
         # 비우면 전력 공개 지연(약 3개월)만큼 물러선 달을 채웁니다.
         "year_month": Param(None, type=["string", "null"]),
-        "silver_dir": Param(SILVER_DIR, type="string"),
         # 대상 지역. Airflow asset 파티션 키가 "{service_area}:{year_month}" 복합
         # 문자열이라 이 값이 키의 앞부분이 됩니다(#674). 지금은 NYC 하나뿐이라
         # 기본값으로 두고, 지역이 늘면 트리거 시 지정합니다.

@@ -19,7 +19,6 @@ from main.airflow.common.assets import (
 )
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
     DEFAULT_API_BASE_URL,
-    DEFAULT_BRONZE_DIR,
     DEFAULT_SILVER_DIR,
     MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
     PROJECT_ROOT,
@@ -79,11 +78,6 @@ default_args = {
             type="string",
             pattern=r"^[A-Z][A-Z0-9_]*$",
             description="대상 지역 코드 (예: NYC). AWS 리전과 무관합니다",
-        ),
-        "base_dir": Param(
-            DEFAULT_BRONZE_DIR,
-            type="string",
-            description="Bronze 데이터 저장 기본 경로",
         ),
         "api_base_url": Param(
             os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),

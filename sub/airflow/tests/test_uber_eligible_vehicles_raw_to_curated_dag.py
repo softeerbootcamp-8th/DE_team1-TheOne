@@ -162,9 +162,9 @@ def test_파라미터가_비면_DAG_기본값을_쓴다(events):
     call_task("raw_to_curated", raw_result=RAW_RESULT, params={})
 
     bronze = only_event(events, RAW_FUNCTION)
-    assert bronze["base_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert bronze["base_dir"] == task_module.DEFAULT_RAW_DIR
     assert bronze["city_slug"] == dag_module.DEFAULT_CITY_SLUG
 
     silver = only_event(events, CURATED_FUNCTION)
-    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
-    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR
+    assert silver["raw_dir"] == task_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == task_module.DEFAULT_CURATED_DIR

@@ -13,7 +13,6 @@ from sub.airflow.scripts.synthetic_driver_trip_source.spark_operator import (
     build_operator,
 )
 from sub.airflow.scripts.synthetic_driver_trip_source.tasks import (
-    DEFAULT_PATHS,
     collect_source_input_task,
     validate_inputs_task,
     validate_release_task,
@@ -68,7 +67,6 @@ default_args = {
                 "--root 로 지정해 띄워야 하류 DAG 가 받을 수 있습니다"
             ),
         ),
-        **{name: Param(path, type="string") for name, path in DEFAULT_PATHS.items()},
         # 읽기에도 씁니다. vehicle_master 를 어디서 찾을지가 이 값으로 갈립니다 —
         # EC2 는 바인드 마운트가 없어 local 로 두면 컨테이너 빈 디스크를 보게 됩니다.
         "storage": Param(

@@ -178,8 +178,8 @@ def bronze_to_silver_task(**context) -> dict:
         package="main.aws_lambda.functions",
         event=event,
         local_event={
-            "bronze_dir": params["bronze_dir"],
-            "silver_dir": params["silver_dir"],
+            "bronze_dir": params.get("bronze_dir") or BRONZE_DIR,
+            "silver_dir": params.get("silver_dir") or SILVER_DIR,
         },
     )
     return {"year_month": year_month, **result}

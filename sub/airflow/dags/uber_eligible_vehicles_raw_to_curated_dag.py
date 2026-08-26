@@ -10,8 +10,6 @@ from shared.airflow.common.slack_failure_callback import (
 )
 from sub.airflow.scripts.uber_eligible_vehicles_raw_to_curated.tasks import (
     DEFAULT_CITY_SLUG,
-    DEFAULT_CURATED_DIR,
-    DEFAULT_RAW_DIR,
     raw_to_curated_task,
     source_to_raw_task,
     validate_raw_task,
@@ -54,16 +52,6 @@ default_args = {
             DEFAULT_CITY_SLUG,
             type="string",
             description="Uber 자격 페이지의 도시 슬러그 (예: 'new-york')",
-        ),
-        "raw_dir": Param(
-            DEFAULT_RAW_DIR,
-            type="string",
-            description="Raw 데이터 저장 기본 경로",
-        ),
-        "curated_dir": Param(
-            DEFAULT_CURATED_DIR,
-            type="string",
-            description="Curated 데이터 저장 기본 경로",
         ),
     },
 )

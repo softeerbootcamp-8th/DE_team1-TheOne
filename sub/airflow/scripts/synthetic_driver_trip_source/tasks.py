@@ -226,7 +226,7 @@ def _zone_lookup(source_input_dir: str | Path) -> Path:
 
 @task(task_id="collect_source_input")
 def collect_source_input_task(**context) -> dict:
-    params = context["params"]
+    params = {**DEFAULT_PATHS, **context["params"]}
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
     year_month = resolve_source_year_month(
         logical_date,
@@ -314,7 +314,9 @@ def validate_source_inputs(source_result: dict, params: dict) -> dict:
 
 @task(task_id="validate_inputs")
 def validate_inputs_task(source_result: dict, **context) -> dict:
-    result = validate_source_inputs(source_result, context["params"])
+    result = validate_source_inputs(
+        source_result, {**DEFAULT_PATHS, **context["params"]}
+    )
     logger.info("가짜 기사-운행 원천 입력 검증 통과: %s", result)
     return result
 
@@ -435,7 +437,7 @@ def validate_release_s3(bucket: str, year_month: str, seed: int | None) -> None:
 @task(task_id="validate_release")
 def validate_release_task(**context) -> None:
     result = context["task_instance"].xcom_pull(task_ids="validate_inputs")
-    params = context["params"]
+    params = {**DEFAULT_PATHS, **context["params"]}
     bucket = _s3_bucket(params)
     if bucket is not None:
         validate_release_s3(bucket, result["year_month"], params["seed"])
