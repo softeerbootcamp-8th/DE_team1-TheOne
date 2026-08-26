@@ -167,10 +167,10 @@ def test_GX는_필터전_전체_Spark_DataFrame을_직접_검증한다(
     captured = {}
     original = quality_module._validate_gx_batch
 
-    def capture(dataframe, expectations):
+    def capture(dataframe, expectations, **kwargs):
         captured["rows"] = dataframe.count()
         captured["columns"] = set(dataframe.columns)
-        return original(dataframe, expectations)
+        return original(dataframe, expectations, **kwargs)
 
     monkeypatch.setattr(quality_module, "_validate_gx_batch", capture)
     transformer = MonthlyTaxiTripCleanTransformer(
