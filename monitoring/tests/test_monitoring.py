@@ -10,11 +10,11 @@ MONITORING = ROOT / "monitoring"
 WORKFLOW = ROOT / ".github/workflows/deploy-monitoring.yml"
 
 STACK = MONITORING / "stack"
-TARGET_IPS = {
-    "10.0.10.28": "theone-airflow",
-    "10.0.10.81": "theone-source-server",
-    "10.0.10.8": "theone-dashboard-server",
-    "10.0.0.113": "theone-gateway",
+TARGETS = {
+    "${PROMETHEUS_AIRFLOW_TARGET}": "theone-airflow",
+    "${PROMETHEUS_SOURCE_API_TARGET}": "theone-source-server",
+    "${PROMETHEUS_DASHBOARD_TARGET}": "theone-dashboard-server",
+    "${PROMETHEUS_GATEWAY_TARGET}": "theone-gateway",
 }
 
 
@@ -34,14 +34,24 @@ def test_prometheus_scrapes_every_ec2_host():
         for sc in job["static_configs"]
         for t in sc["targets"]
     }
-    assert {f"{ip}:9100" for ip in TARGET_IPS} == targets
+    assert set(TARGETS) == targets
 
 
 def test_every_target_carries_a_readable_name():
     """IP 만 있으면 대시보드에서 어느 인스턴스인지 알 수 없습니다."""
     for job in _prometheus_config()["scrape_configs"]:
         for sc in job["static_configs"]:
-            assert sc["labels"]["instance_name"] in TARGET_IPS.values()
+            assert sc["labels"]["instance_name"] in TARGETS.values()
+
+
+def test_prometheus_targets_are_injected_by_the_deploy_workflow():
+    """대상이 파일에 고정되면 인스턴스 교체 후 이전 호스트를 계속 감시합니다."""
+    workflow = WORKFLOW.read_text()
+
+    for placeholder in TARGETS:
+        name = placeholder.removeprefix("${").removesuffix("}")
+        assert f"{name}: ${{{{ vars.{name} }}}}" in workflow
+        assert f'"{name}",' in workflow
 
 
 def test_prometheus_retention_is_bounded():

@@ -22,7 +22,6 @@ from shared.airflow.common.slack_failure_callback import (
 )
 
 
-DEFAULT_API_BASE_URL = "http://10.0.10.81:8091"
 SOURCES = (
     ("monthly_taxi_trip", "monthly_taxi_trip_raw_to_silver_pipeline"),
     (
@@ -58,8 +57,9 @@ default_args = {
             pattern=r"^(0?[1-9]|1[0-2])$",
         ),
         "api_base_url": Param(
-            os.getenv("SOURCE_API_URL", DEFAULT_API_BASE_URL),
+            os.environ["SOURCE_API_URL"],
             type="string",
+            minLength=1,
         ),
         "request_timeout": Param(30, type="integer", minimum=1),
         # 대상 지역. Airflow asset 파티션 키가 "{service_area}:{year_month}" 복합

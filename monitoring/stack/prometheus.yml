@@ -1,6 +1,4 @@
-# EC2 호스트 지표 수집. 대상은 사설 IP 고정입니다 — 인스턴스를 재생성하면 여기를 고쳐야
-# 합니다. ec2_sd_config 로 자동 발견하려면 인스턴스 role 에 ec2:DescribeInstances 가
-# 필요해서, 4대 고정인 지금은 static 이 단순합니다.
+# EC2 호스트 지표 수집. 배포 워크플로가 GitHub Variables의 주소를 치환합니다.
 global:
   scrape_interval: 15s
   scrape_timeout: 10s
@@ -8,11 +6,11 @@ global:
 scrape_configs:
   - job_name: node
     static_configs:
-      - targets: ["10.0.10.28:9100"]
+      - targets: ["${PROMETHEUS_AIRFLOW_TARGET}"]
         labels: { instance_name: theone-airflow }
-      - targets: ["10.0.10.81:9100"]
+      - targets: ["${PROMETHEUS_SOURCE_API_TARGET}"]
         labels: { instance_name: theone-source-server }
-      - targets: ["10.0.10.8:9100"]
+      - targets: ["${PROMETHEUS_DASHBOARD_TARGET}"]
         labels: { instance_name: theone-dashboard-server }
-      - targets: ["10.0.0.113:9100"]
+      - targets: ["${PROMETHEUS_GATEWAY_TARGET}"]
         labels: { instance_name: theone-gateway }

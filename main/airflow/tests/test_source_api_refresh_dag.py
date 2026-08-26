@@ -589,8 +589,8 @@ def test_하위DAG_trigger는_확정된_연월과_API주소와_지역을_conf로
         }
 
 
-def test_refresh_DAG는_내부_Source_API_기본주소를_사용한다():
-    assert source_api_refresh_dag.params["api_base_url"] == "http://10.0.10.81:8091"
+def test_refresh_DAG는_Source_API_환경변수_설정값을_사용한다():
+    assert source_api_refresh_dag.params["api_base_url"] == "http://source-api.test:8091"
 
 
 def test_같은월에_여러원천이_변경돼도_READY_파티션은_한번만_발행한다():
