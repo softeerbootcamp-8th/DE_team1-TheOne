@@ -419,15 +419,25 @@ def test_Gold_job은_실행코드설정_식별자를_계보에_기록한다(monk
     monkeypatch.setattr(
         job,
         "write_gold_to_postgres",
-        lambda frames, *args: captured.update(frames=frames) or {},
+        lambda frames, *args, **kwargs: captured.update(frames=frames) or {},
     )
-
-    paths = {
+    # 입력 내용 digest 는 파일을 실제로 읽습니다 — 경로별 고정값으로 대체(#1088).
+    fake_paths = {
         "monthly_taxi_trip": "s3://lake/trips/v1.parquet",
         "driver_vehicle_monthly_snapshot": "s3://lake/drivers/v1.parquet",
         "lease_vehicle_inventory": "s3://lake/inventory/v1.parquet",
         "fuel_price": "s3://lake/fuel/v1.parquet",
     }
+    fake_digests = {dataset: f"digest-{dataset}" for dataset in fake_paths}
+    monkeypatch.setattr(
+        job,
+        "silver_input_digest",
+        lambda path: fake_digests[
+            next(key for key, value in fake_paths.items() if value == path)
+        ],
+    )
+
+    paths = fake_paths
     job.main([
         "--env", "prod",
         "--gold_dsn", "postgresql://gold",
@@ -451,6 +461,8 @@ def test_Gold_job은_실행코드설정_식별자를_계보에_기록한다(monk
         "2026-05",
         lineage,
         [(1, -1), (2, 100), (2, 200)],
+        input_digests=fake_digests,
+        algorithm_constants_digest=gold_transformer.algorithm_constants_digest(),
     )
     assert len(lineage["config_hash"]) == 64
 

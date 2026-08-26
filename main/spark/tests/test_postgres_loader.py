@@ -271,6 +271,66 @@ def test_입력버전이나_추천설정이_바뀌면_fingerprint도_바뀐다()
     )
 
 
+def test_같은_경로라도_입력_내용이_달라지면_fingerprint도_바뀐다():
+    """버전 디렉터리 재발행은 경로를 바꾸지 않습니다 — 내용 해시만 잡습니다(#1088)."""
+    frames = _grain_frames([
+        ("D1", 1, -1), ("D2", 1, -1),
+        ("D1", 2, 100), ("D2", 2, 100),
+    ])
+    original_digests = {
+        "monthly_taxi_trip": "a" * 64,
+        "driver_vehicle_monthly_snapshot": "b" * 64,
+        "lease_vehicle_inventory": "c" * 64,
+        "fuel_price": "d" * 64,
+    }
+    republished_digests = {**original_digests, "monthly_taxi_trip": "f" * 64}
+
+    original = postgres_loader._gold_load_fingerprint(
+        frames, "NYC", "2026-05", input_digests=original_digests
+    )
+
+    assert original == postgres_loader._gold_load_fingerprint(
+        frames, "NYC", "2026-05", input_digests=original_digests
+    )
+    assert original != postgres_loader._gold_load_fingerprint(
+        frames, "NYC", "2026-05", input_digests=republished_digests
+    )
+
+
+def test_계산_상수가_바뀌면_fingerprint도_바뀐다():
+    frames = _grain_frames([
+        ("D1", 1, -1), ("D2", 1, -1),
+        ("D1", 2, 100), ("D2", 2, 100),
+    ])
+    original = postgres_loader._gold_load_fingerprint(
+        frames, "NYC", "2026-05", algorithm_constants_digest="constants-v1"
+    )
+
+    assert original != postgres_loader._gold_load_fingerprint(
+        frames, "NYC", "2026-05", algorithm_constants_digest="constants-v2"
+    )
+
+
+def test_상수_digest는_실제_상수값에서_계산된다():
+    """거리대 구간을 바꾸면 digest 도 함께 바뀌는지 — 단일 출처 계약(#1088)."""
+    from main.spark.jobs.silver_to_gold import transformer as gold_transformer
+
+    first = gold_transformer.algorithm_constants_digest()
+
+    assert len(first) == 64
+    monkey_patches = pytest.MonkeyPatch()
+    try:
+        monkey_patches.setattr(
+            gold_transformer, "_DISTANCE_BAND_EDGES",
+            ((3.0, "0-3"), (5.0, "3-5"), (10.0, "5-10"), (20.0, "10-20")),
+        )
+        second = gold_transformer.algorithm_constants_digest()
+    finally:
+        monkey_patches.undo()
+
+    assert first != second
+
+
 def test_기록한_config_hash가_실제입력추천설정과_다르면_적재전에_실패한다(
     monkeypatch,
 ):

@@ -39,6 +39,14 @@ _LINEAGE_COLUMNS = (
     "silver_gas_ev_price_s3_link",
 )
 
+# job.py 가 silver_input_digest() 로 계산한 내용 digest 의 데이터셋 키(#1088).
+_DIGEST_DATASETS = (
+    "monthly_taxi_trip",
+    "driver_vehicle_monthly_snapshot",
+    "lease_vehicle_inventory",
+    "fuel_price",
+)
+
 _TABLE_MODELS = {
     _DRIVER_AGGREGATION: DriverMonthlyProfit,
     _DRIVER_CAR_SUGGESTION: DriverCarSuggestion,
@@ -118,23 +126,35 @@ def gold_config_hash(
     year_month: str,
     silver_inputs: Mapping[str, object],
     recommendation_parameters: Iterable[tuple[int, int]],
+    input_digests: Mapping[str, str] | None = None,
+    algorithm_constants_digest: str | None = None,
 ) -> str:
     """Silver 입력과 추천 설정을 정렬 직렬화한 Gold 설정 SHA-256입니다.
 
     job.py가 SilverLineage.config_hash를 만들고 이 적재기가 멱등성 fingerprint를
     검증할 때 같은 함수를 씁니다. 둘이 서로 다른 정규화 규칙을 가지면 같은 실행이
     새 버전으로 쌓이거나, 반대로 다른 설정이 기존 버전을 재사용할 수 있습니다.
+
+    입력 내용 digest(#1088)와 계산 상수 digest도 함께 해시합니다 — 경로가 같아도
+    파일 내용이 달라지면 다른 실행이고, 상수 변경은 알고리즘 버전 수동 갱신 없이도
+    fingerprint 를 움직여야 하기 때문입니다.
     """
     combinations = {
         (int(algorithm_version_id), int(threshold))
         for algorithm_version_id, threshold in recommendation_parameters
     }
+    digests = input_digests or {}
     payload = {
         "service_area": service_area,
         "year_month": year_month,
         "silver_inputs": {
             column: str(silver_inputs[column]) for column in _LINEAGE_COLUMNS
         },
+        "silver_input_digests": {
+            dataset: str(digests.get(dataset) or "")
+            for dataset in _DIGEST_DATASETS
+        },
+        "algorithm_constants_digest": str(algorithm_constants_digest or ""),
         "recommendation_parameters": [
             {
                 "recommendation_algorithm_version_id": algorithm_version_id,
@@ -150,7 +170,11 @@ def gold_config_hash(
 
 
 def _gold_load_fingerprint(
-    frames: dict[str, pd.DataFrame], service_area: str, year_month: str
+    frames: dict[str, pd.DataFrame],
+    service_area: str,
+    year_month: str,
+    input_digests: Mapping[str, str] | None = None,
+    algorithm_constants_digest: str | None = None,
 ) -> str:
     """실제 적재 프레임에서 재실행 멱등성 fingerprint를 계산합니다."""
     lineage = frames[_SILVER_LINEAGE].iloc[0]
@@ -162,6 +186,8 @@ def _gold_load_fingerprint(
         year_month,
         lineage,
         recommendation_parameters,
+        input_digests=input_digests,
+        algorithm_constants_digest=algorithm_constants_digest,
     )
 
 
@@ -310,18 +336,29 @@ def _validate_frame_grains(frames: dict[str, pd.DataFrame]) -> None:
 
 
 def write_gold_to_postgres(
-    frames: dict[str, pd.DataFrame], dsn: str, service_area: str, year_month: str
+    frames: dict[str, pd.DataFrame],
+    dsn: str,
+    service_area: str,
+    year_month: str,
+    input_digests: Mapping[str, str] | None = None,
+    algorithm_constants_digest: str | None = None,
 ) -> dict[str, int]:
     """Gold 3종을 한 트랜잭션으로 적재합니다. 반환값은 `{테이블명: 적재 행 수}`.
 
     `frames`는 job.py의 `outputs`와 같은 모양(`toPandas()` 이전이 아니라 이후)이어야
     합니다 — CSV로 쓰던 것과 같은 시점의 값을 그대로 재사용합니다.
+
+    `input_digests`(Silver 입력 내용 해시)와 `algorithm_constants_digest`는
+    job.py가 lineage config_hash 를 만들 때 쓴 것과 같은 값이어야 합니다 — 다르면
+    아래 config_hash 대조에서 실패합니다(#1088).
     """
     missing = set(TABLES) - set(frames)
     if missing:
         raise ValueError(f"frames에 테이블이 빠졌습니다: {sorted(missing)}")
     _validate_frame_grains(frames)
-    load_fingerprint = _gold_load_fingerprint(frames, service_area, year_month)
+    load_fingerprint = _gold_load_fingerprint(
+        frames, service_area, year_month, input_digests, algorithm_constants_digest
+    )
     recorded_config_hash = str(frames[_SILVER_LINEAGE].iloc[0]["config_hash"])
     if recorded_config_hash != load_fingerprint:
         raise ValueError(
