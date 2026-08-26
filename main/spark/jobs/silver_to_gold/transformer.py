@@ -53,6 +53,21 @@ def _has_rows(dataframe: DataFrame) -> bool:
     return dataframe.limit(1).count() > 0
 
 
+def _unusable_number(column: str) -> Column:
+    """null·NaN·Infinity 는 비교 검증을 모두 통과하므로 한 번에 걸러냅니다.
+
+    Spark SQL 에 isinf 가 없어(Python 함수 기준 4.0 부터) 무한대 등가 비교로
+    직접 검사합니다.
+    """
+    value = F.col(column)
+    return (
+        value.isNull()
+        | F.isnan(value)
+        | (value == F.lit(float("inf")))
+        | (value == F.lit(float("-inf")))
+    )
+
+
 def _require_all_join_keys_match(
     left: DataFrame,
     right: DataFrame,
@@ -105,6 +120,24 @@ def _validate_dimensions(
         raise ValueError("보유 차량의 vehicle_model_id는 null 없이 고유해야 합니다")
     if _has_rows(inventory.filter(F.col("stock").isNull() | (F.col("stock") < 0))):
         raise ValueError("보유 차량의 stock은 null이 아닌 0 이상의 정수여야 합니다")
+    # fuel_efficiency 는 연료비 나눗셈 분모라 0·비유한 값이면 계산이 실패하지 않고
+    # 틀린 숫자를 냅니다. weekly_lease_fee 도 리스비 차감에 그대로 쓰입니다.
+    invalid_inventory_value = inventory.filter(
+        _unusable_number("fuel_efficiency")
+        | (F.col("fuel_efficiency") <= 0)
+        | _unusable_number("weekly_lease_fee")
+        | (F.col("weekly_lease_fee") <= 0)
+    )
+    if _has_rows(invalid_inventory_value):
+        raise ValueError(
+            "보유 차량의 fuel_efficiency와 weekly_lease_fee는 null이 아닌 양수여야 합니다"
+        )
+    invalid_snapshot_lease_fee = driver_snapshot.filter(
+        _unusable_number("weekly_lease_fee")
+        | (F.col("weekly_lease_fee") <= 0)
+    )
+    if _has_rows(invalid_snapshot_lease_fee):
+        raise ValueError("기사 차량 스냅샷의 weekly_lease_fee는 null이 아닌 양수여야 합니다")
     occupied = driver_snapshot.groupBy("vehicle_model_id").agg(
         F.count(F.lit(1)).alias("occupied_stock")
     )
@@ -135,6 +168,13 @@ def _validate_dimensions(
         raise ValueError(
             f"연료비 Silver는 {year_month}의 {expected_days}일이 모두 고유해야 합니다"
         )
+    # 가격이 null 이면 일별 합계가 그 날을 무시해 연료비가 조용히 줄고, NaN 은
+    # 합계를 전부 NaN 으로 만듭니다.
+    invalid_price = fuel_price.filter(
+        _unusable_number("gas_price") | _unusable_number("ev_price")
+    )
+    if _has_rows(invalid_price):
+        raise ValueError("연료비 Silver의 가격은 null이 아닌 유한한 값이어야 합니다")
 
 
 def enrich_trips_with_fuel_cost(
@@ -176,11 +216,14 @@ def enrich_trips_with_fuel_cost(
     # 경로에서 대상 월을 골랐더라도 파일 내용을 다시 제한해 잘못된 날짜가
     # 운행과 조인되지 않게 합니다. 이후 일수 검증이 누락·중복을 잡습니다.
     fuel_price = fuel_price.filter(F.date_format("date", "yyyy-MM") == year_month)
+    # NaN 은 null 검사와 음수·상한 비교를 모두 통과하므로 따로 걸러야 합니다.
     invalid_trip = (
-        F.col("trip_miles").isNull()
+        _unusable_number("trip_miles")
         | (F.col("trip_miles") <= 0)
-        | F.col("driver_pay").isNull()
+        | _unusable_number("driver_pay")
         | (F.col("driver_pay") < 0)
+        | _unusable_number("tips")
+        | (F.col("tips") < 0)
     )
     if _has_rows(trips.filter(invalid_trip)):
         raise ValueError("HVFHV Silver의 거리 또는 기사 수익이 유효하지 않습니다")
@@ -332,8 +375,8 @@ def _with_tier_revenue_scenarios(enriched: DataFrame) -> DataFrame:
     uber_standard = standard & (F.col("hvfhs_license_num") == "HV0003")
     lyft_standard = standard & (F.col("hvfhs_license_num") == "HV0005")
     missing = rows.filter(
-        (uber_standard & F.col("_comfort_multiplier").isNull())
-        | (lyft_standard & F.col("_extra_comfort_multiplier").isNull())
+        (uber_standard & _unusable_number("_comfort_multiplier"))
+        | (lyft_standard & _unusable_number("_extra_comfort_multiplier"))
     )
     missing_samples = [
         row.asDict(recursive=True)

@@ -5,6 +5,7 @@
 3. 프리미엄 배수는 5개 거리 구간별 실측값을 각 운행에 적용
 4. Gold 파일은 집계와 최종 추천 2종만 함께 교체
 5. Gold 실행은 Airflow run·Spark code·안정적 config hash를 계보에 기록
+6. 수치 차원의 NaN·Infinity·null은 Gold 진입 전에 거부 (#1080)
 """
 
 from calendar import monthrange
@@ -203,10 +204,13 @@ def test_v1과_v2를_함께_돌리면_job이_하는_것처럼_union하고_검증
 
 def test_현재보유량이_전체재고를_넘으면_실패한다(spark):
     snapshot = spark.createDataFrame(
-        [("D1", "T1", "A"), ("D2", "T2", "A")],
-        ["driver_id", "taxi_id", "vehicle_model_id"],
+        [("D1", "T1", "A", 400.0), ("D2", "T2", "A", 400.0)],
+        ["driver_id", "taxi_id", "vehicle_model_id", "weekly_lease_fee"],
     )
-    inventory = spark.createDataFrame([("A", 1)], ["vehicle_model_id", "stock"])
+    inventory = spark.createDataFrame(
+        [("A", 30.0, 400.0, 1)],
+        ["vehicle_model_id", "fuel_efficiency", "weekly_lease_fee", "stock"],
+    )
     fuel_price = spark.createDataFrame(_full_month_fuel_price("2026-02"))
 
     with pytest.raises(ValueError, match="현재 운행 차량 수가 보유 재고를 초과"):
@@ -557,6 +561,52 @@ def test_연료비에_대상월_데이터가_전혀_없으면_명확히_실패�
     fuel_price = spark.createDataFrame(fuel_rows)
 
     with pytest.raises(ValueError, match="연료비 Silver는"):
+        gold_transformer.enrich_trips_with_fuel_cost(
+            trips, driver_snapshot, inventory, fuel_price, year_month
+        )
+
+
+@pytest.mark.parametrize(
+    ("broken", "message"),
+    [
+        ("trip_miles_nan", "거리 또는 기사 수익"),
+        ("trip_driver_pay_nan", "거리 또는 기사 수익"),
+        ("trip_tips_nan", "거리 또는 기사 수익"),
+        ("inventory_fuel_efficiency_nan", "fuel_efficiency와 weekly_lease_fee"),
+        ("inventory_lease_fee_inf", "fuel_efficiency와 weekly_lease_fee"),
+        ("snapshot_lease_fee_nan", "스냅샷의 weekly_lease_fee"),
+        ("gas_price_nan", "null이 아닌 유한한 값"),
+        ("ev_price_null", "null이 아닌 유한한 값"),
+    ],
+)
+def test_수치_차원에_비유한_값이_있으면_Gold_진입을_막는다(spark, broken, message):
+    """NaN 은 null·음수·상한 비교를 전부 통과하므로 적재 전에 따로 거부한다 (#1080)."""
+    year_month = "2026-02"
+    trips, driver_snapshot, inventory = _valid_gold_inputs(spark, year_month)
+    fuel_rows = _full_month_fuel_price(year_month)
+
+    if broken == "trip_miles_nan":
+        trips = trips.withColumn("trip_miles", F.lit(float("nan")))
+    elif broken == "trip_driver_pay_nan":
+        trips = trips.withColumn("driver_pay", F.lit(float("nan")))
+    elif broken == "trip_tips_nan":
+        trips = trips.withColumn("tips", F.lit(float("nan")))
+    elif broken == "inventory_fuel_efficiency_nan":
+        inventory = inventory.withColumn("fuel_efficiency", F.lit(float("nan")))
+    elif broken == "inventory_lease_fee_inf":
+        inventory = inventory.withColumn("weekly_lease_fee", F.lit(float("inf")))
+    elif broken == "snapshot_lease_fee_nan":
+        driver_snapshot = driver_snapshot.withColumn(
+            "weekly_lease_fee", F.lit(float("nan"))
+        )
+    elif broken == "gas_price_nan":
+        fuel_rows = [{**row, "gas_price": float("nan")} for row in fuel_rows]
+    fuel_price = spark.createDataFrame(fuel_rows)
+    if broken == "ev_price_null":
+        # 전 행이 None 이면 타입 추론이 흔들리므로 double 로 명시해 채웁니다.
+        fuel_price = fuel_price.withColumn("ev_price", F.lit(None).cast("double"))
+
+    with pytest.raises(ValueError, match=message):
         gold_transformer.enrich_trips_with_fuel_cost(
             trips, driver_snapshot, inventory, fuel_price, year_month
         )
