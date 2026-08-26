@@ -246,6 +246,7 @@ def test_driver_id가_중복되면_적재하지_않는다(tmp_path):
         ("missing_column", "필수 컬럼 누락"),
         ("empty_required", "필수값"),
         ("zero_price", "0 이하"),
+        ("nan_price", "NaN"),
     ],
 )
 def test_스냅샷_품질이_깨지면_적재하지_않는다(tmp_path, broken, message):
@@ -254,8 +255,10 @@ def test_스냅샷_품질이_깨지면_적재하지_않는다(tmp_path, broken, 
         rows = [{k: v for k, v in rows[0].items() if k != "driver_id"}]
     elif broken == "empty_required":
         rows[0]["driver_id"] = "   "
-    else:
+    elif broken == "zero_price":
         rows[0]["weekly_lease_fee"] = 0.0
+    else:
+        rows[0]["weekly_lease_fee"] = float("nan")
 
     with pytest.raises(ValueError, match=message):
         _bronze(tmp_path, rows)

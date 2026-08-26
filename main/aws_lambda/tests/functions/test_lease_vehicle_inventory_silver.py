@@ -223,6 +223,8 @@ def test_새수집시각은_별도_파일로_적재한다(tmp_path):
         ("zero_stock", "0 이하"),
         ("zero_price", "0 이하"),
         ("zero_efficiency", "0 이하"),
+        ("nan_efficiency", "NaN"),
+        ("nan_price", "NaN"),
         ("empty_image_url", "필수값"),
         ("missing_column", "필수 컬럼 누락"),
     ],
@@ -237,6 +239,10 @@ def test_재고품질이_깨지면_적재하지_않는다(tmp_path, broken, mess
         rows[0]["weekly_lease_fee"] = 0.0
     elif broken == "zero_efficiency":
         rows[0]["fuel_efficiency"] = 0.0
+    elif broken == "nan_efficiency":
+        rows[0]["fuel_efficiency"] = float("nan")
+    elif broken == "nan_price":
+        rows[0]["weekly_lease_fee"] = float("nan")
     elif broken == "empty_image_url":
         rows[0]["image_url"] = "   "
     else:
