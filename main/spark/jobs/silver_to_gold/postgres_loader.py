@@ -174,6 +174,21 @@ def _written_rows_for_version(
     return written
 
 
+def _acquire_partition_lock(cursor, service_area: str, year_month: str) -> None:
+    """(service_area, year_month) 파티션 단위로 버전 조회부터 적재까지 직렬화합니다.
+
+    #973 종료 뒤에도 잠금 구현이 없어(#1056) 같은 파티션 동시 실행이 같은
+    `_next_version` 결과를 볼 수 있었습니다. 트랜잭션 스코프 잠금
+    (`pg_advisory_xact_lock`)이라 commit/rollback 시 자동 해제되어 별도 unlock이
+    필요 없고, 두 파티션이 서로 다른 (service_area, year_month) 해시 쌍을 가지므로
+    다른 파티션의 동시 실행은 막지 않습니다.
+    """
+    cursor.execute(
+        "SELECT pg_advisory_xact_lock(hashtext(%s), hashtext(%s))",
+        (service_area, year_month),
+    )
+
+
 def _next_version(cursor, service_area: str, year_month: str) -> int:
     """`driver_aggregation`에서 지역·월의 기존 버전을 확인해 +1.
 
@@ -290,6 +305,8 @@ def write_gold_to_postgres(
                 for table in TABLES:
                     cursor.execute(_create_table_sql(table))
                 cursor.execute(_create_version_table_sql())
+
+                _acquire_partition_lock(cursor, service_area, year_month)
 
                 existing_version = _existing_gold_version(
                     cursor, service_area, year_month, load_fingerprint
