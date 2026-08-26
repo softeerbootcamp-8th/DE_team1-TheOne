@@ -185,7 +185,7 @@ def test_경로_파라미터가_비면_DAG_기본값을_쓴다(dag_module, event
         params={},
     )
 
-    assert events[0][1]["base_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert events[0][1]["base_dir"] == task_module.DEFAULT_RAW_DIR
     silver = silver_event(events)
-    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
-    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR
+    assert silver["raw_dir"] == task_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == task_module.DEFAULT_CURATED_DIR

@@ -265,7 +265,9 @@ def check_clean_silver_task(**context) -> str:
     year_month = resolve_year_month(context)
     logger.info("EIA 연료비 대상 월: %s", year_month)
     require_clean_silver(
-        context["params"]["silver_dir"], year_month, context["params"]["service_area"]
+        context["params"].get("silver_dir") or SILVER_DIR,
+        year_month,
+        context["params"]["service_area"],
     )
     return year_month
 
@@ -283,7 +285,7 @@ def combine_silver_task(**context) -> dict:
         "eia_fuel_price_silver",
         package="main.aws_lambda.functions",
         event=event,
-        local_event={"silver_dir": params["silver_dir"]},
+        local_event={"silver_dir": params.get("silver_dir") or SILVER_DIR},
     )
     return {"year_month": year_month, **result}
 

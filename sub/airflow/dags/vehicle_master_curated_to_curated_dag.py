@@ -10,7 +10,6 @@ from shared.airflow.common.slack_failure_callback import (
     slack_retry_alert_callback,
 )
 from sub.airflow.scripts.vehicle_master_curated_to_curated.tasks import (
-    DEFAULT_CURATED_DIR,
     build_vehicle_master_task,
     validate_curated_task,
 )
@@ -58,11 +57,6 @@ default_args = {
                 "적재 파티션은 이 값이 아니라 읽은 원천의 최신 수집일입니다 — "
                 "재시도로 다음 날 조립돼도 같은 파티션에 들어갑니다."
             ),
-        ),
-        "curated_dir": Param(
-            DEFAULT_CURATED_DIR,
-            type="string",
-            description="Curated 데이터 기본 경로 (읽기·쓰기 모두 여기)",
         ),
     },
 )

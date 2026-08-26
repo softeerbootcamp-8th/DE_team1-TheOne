@@ -15,6 +15,7 @@
 13. 운영 EMR 대기는 배포 재시작에 안전한 deferrable 모드
 14. Fuel Silver는 최신 완료 `input_version`의 `fuel.parquet`만 Gold 입력으로 선택
 15. 운영 수동 실행도 S3 Silver 4종 완료본이 실제로 있어야 통과
+16. 경로 파라미터가 없어도 로컬 기본 경로로 입력을 해석
 """
 
 import importlib
@@ -79,6 +80,31 @@ def _params(root: Path, **overrides) -> dict:
 
 def _logical_date(year: int, month: int) -> datetime:
     return datetime(year, month, 13, tzinfo=timezone.utc)
+
+
+def test_경로_파라미터가_없어도_로컬_기본경로를_쓴다(monkeypatch):
+    captured = {}
+
+    def target_year_month(logical_date, params, path, service_area, partition_key):
+        captured["target"] = params.copy()
+        return "2026-05"
+
+    def input_paths(year_month, params, service_area):
+        captured["input"] = params.copy()
+        return {"year_month": year_month, "year": "2026", "month": "5"}
+
+    monkeypatch.setattr(dag_module, "resolve_target_year_month", target_year_month)
+    monkeypatch.setattr(dag_module, "resolve_input_paths", input_paths)
+
+    result = GOLD_DAG.get_task("validate_inputs").python_callable(
+        params={"year": None, "month": None, "service_area": "NYC"},
+        logical_date=_logical_date(2026, 5),
+        dag_run=SimpleNamespace(partition_key=None),
+    )
+
+    assert dag_module.DEFAULT_PATHS.items() <= captured["target"].items()
+    assert dag_module.DEFAULT_PATHS.items() <= captured["input"].items()
+    assert result["service_area"] == "NYC"
 
 
 def _triggering_events(api_key: str, fuel_key: str | None = None) -> dict:

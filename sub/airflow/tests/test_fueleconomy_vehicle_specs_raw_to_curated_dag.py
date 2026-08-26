@@ -154,8 +154,8 @@ def test_경로_파라미터가_비면_DAG_기본값을_쓴다(events):
     call_task("source_to_raw", params={})
     call_task("raw_to_curated", raw_result=RAW_RESULT, params={})
 
-    assert only_event(events, RAW_FUNCTION)["base_dir"] == dag_module.DEFAULT_RAW_DIR
+    assert only_event(events, RAW_FUNCTION)["base_dir"] == task_module.DEFAULT_RAW_DIR
 
     silver = only_event(events, CURATED_FUNCTION)
-    assert silver["raw_dir"] == dag_module.DEFAULT_RAW_DIR
-    assert silver["curated_dir"] == dag_module.DEFAULT_CURATED_DIR
+    assert silver["raw_dir"] == task_module.DEFAULT_RAW_DIR
+    assert silver["curated_dir"] == task_module.DEFAULT_CURATED_DIR

@@ -27,6 +27,9 @@ from schema.silver import CLEAN_LEASE_VEHICLE_INVENTORY_SCHEMA as SCHEMA
 from main.airflow.scripts.lease_vehicle_inventory_raw_to_silver import (
     tasks as task_module,
 )
+from main.airflow.scripts.driver_vehicle_monthly_snapshot_raw_to_silver import (
+    tasks as driver_task_module,
+)
 from shared.common.bronze_manifest import bronze_manifest_bytes, build_bronze_manifest
 
 
@@ -130,9 +133,7 @@ def test_기사계약_DAG와_출력_파티션을_다투지_않는다():
     """한쪽 원천이 늦어도 다른 쪽 월 적재가 멈추지 않도록 DAG 를 나눴습니다.
     나눈 이상 두 DAG 가 같은 Silver 디렉터리를 동시에 쓰면 안 됩니다."""
     assert DAG.dag_id != driver_vehicle_monthly_snapshot_raw_to_silver_dag.dag_id
-    assert DAG.params["silver_dir"] != driver_vehicle_monthly_snapshot_raw_to_silver_dag.params[
-        "silver_dir"
-    ]
+    assert task_module.DEFAULT_SILVER_DIR != driver_task_module.DEFAULT_SILVER_DIR
 
 
 def test_수집task는_제공주소를_보유차량_수집핸들러에_전달한다(monkeypatch):

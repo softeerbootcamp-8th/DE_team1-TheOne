@@ -517,7 +517,7 @@ def test_수동_연월은_정규화한_URL과_trigger값으로_반환한다(monk
 
 
 def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한다():
-    assert source_api_refresh_dag.schedule == "@daily"
+    assert source_api_refresh_dag.schedule == "0 3 * * *"
     assert source_api_refresh_dag.max_active_runs == 3
     assert len(source_api_refresh_dag.tasks) == len(SOURCES) * 2 + 2
 

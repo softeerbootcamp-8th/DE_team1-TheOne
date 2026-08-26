@@ -1,4 +1,4 @@
-"""main 데이터 파이프라인이 실제 적재에 필요한 파라미터만 노출하는지 검증합니다."""
+"""main DAG가 경로를 숨기고 운영자가 조정할 파라미터만 노출하는지 검증합니다."""
 
 import importlib
 
@@ -12,26 +12,24 @@ DAG_PARAMS = {
             "year",
             "month",
             "api_base_url",
-            "base_dir",
-            "silver_dir",
             "service_area",
         },
     ),
     "eia_electricity_price_raw_to_silver_dag": (
         "eia_electricity_price_raw_to_silver_dag",
-        {"year", "month", "markup", "bronze_dir", "silver_dir", "service_area"},
+        {"year", "month", "markup", "service_area"},
     ),
     "eia_fuel_price_silver_dag": (
         "eia_fuel_price_silver_dag",
-        {"year_month", "silver_dir", "service_area"},
+        {"year_month", "service_area"},
     ),
     "eia_gas_price_raw_to_silver_dag": (
         "eia_gas_price_raw_to_silver_dag",
-        {"year", "month", "bronze_dir", "silver_dir", "service_area"},
+        {"year", "month", "service_area"},
     ),
     "lease_vehicle_inventory_raw_to_silver_dag": (
         "lease_vehicle_inventory_raw_to_silver_dag",
-        {"year", "month", "api_base_url", "base_dir", "silver_dir", "service_area"},
+        {"year", "month", "api_base_url", "service_area"},
     ),
     "monthly_taxi_trip_raw_to_silver_dag": (
         "monthly_taxi_trip_dag",
@@ -39,7 +37,6 @@ DAG_PARAMS = {
             "year",
             "month",
             "service_area",
-            "base_dir",
             "api_base_url",
             "error_threshold",
         },
@@ -49,11 +46,6 @@ DAG_PARAMS = {
         {
             "year",
             "month",
-            "monthly_taxi_trip_path",
-            "driver_vehicle_monthly_snapshot_path",
-            "lease_vehicle_inventory_path",
-            "fuel_price_path",
-            "output_dir",
             "service_area",
             "thresholds",
         },

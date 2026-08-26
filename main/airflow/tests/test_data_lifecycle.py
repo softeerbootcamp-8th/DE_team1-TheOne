@@ -435,7 +435,7 @@ def test_Gold_마지막_테이블_삭제가_실패하면_트랜잭션을_롤백�
 def test_DAG는_매일_한번만_동시에_실행한다():
     from dags.data_lifecycle_dag import data_lifecycle_dag
 
-    assert data_lifecycle_dag.schedule == "@daily"
+    assert data_lifecycle_dag.schedule == "0 3 * * *"
     assert data_lifecycle_dag.catchup is False
     assert data_lifecycle_dag.max_active_runs == 1
     retention = data_lifecycle_dag.params.get_param("retention_days")

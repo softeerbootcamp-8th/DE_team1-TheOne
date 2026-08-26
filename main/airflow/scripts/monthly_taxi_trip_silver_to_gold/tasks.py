@@ -331,7 +331,7 @@ def validate_triggering_asset_partitions(
 
 @task(task_id="validate_inputs")
 def validate_inputs_task(**context) -> dict:
-    params = context["params"]
+    params = {**DEFAULT_PATHS, **context["params"]}
     logical_date = context.get("logical_date") or datetime.now(timezone.utc)
     dag_run = context.get("dag_run")
     partition_key = getattr(dag_run, "partition_key", None)
@@ -392,7 +392,7 @@ def validate_gold_task(**context) -> None:
         )
     else:
         validate_gold_outputs(
-            context["params"]["output_dir"],
+            context["params"].get("output_dir") or DEFAULT_PATHS["output_dir"],
             resolved["year_month"],
             resolved["service_area"],
         )
