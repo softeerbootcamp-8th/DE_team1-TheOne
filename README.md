@@ -154,9 +154,39 @@
 
 ### 파이프라인 설계 및 코드 품질
 > 파이프라인 설계 및 데이터 품질 관리
- 
+
 ### 운영 용이성 및 안정성
 > 파이프라인 운영 안정성과 관련된 문서
+
+<details>
+<summary><a href="/docs/pipeline_operations_and_reliability/SELECTIVE_API_REFRESH_AND_SINGLE_GOLD_RUN.md">변경된 API 데이터만 처리하고 최종 계산은 한 번만 실행</a></summary>
+
+- 변경된 API만 처리하고, 같은 지역·월의 Silver 입력이 모두 준비됐을 때 최종 계산을 한 번만 시작합니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline_operations_and_reliability/PIPELINE_IDEMPOTENCY_AND_LINEAGE.md">같은 입력을 다시 실행해도 결과가 늘어나지 않는 버전 관리</a></summary>
+
+- 실제 입력 내용과 계산 설정이 같으면 기존 결과를 재사용하고, 변경됐을 때만 새 버전을 만듭니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline_operations_and_reliability/CORRECTNESS_BEFORE_SUCCESS.md">DAG 성공이 아닌 데이터 정합성으로 완료를 판단</a></summary>
+
+- 입력 선택, 변환 전후 행 수, 집계 합계, 실제 적재 행을 확인한 뒤에만 결과를 공개합니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline_operations_and_reliability/OBSERVABILITY_FROM_RUN_TO_DATA.md">작업 실패와 데이터 갱신 지연을 함께 감지</a></summary>
+
+- 실패한 작업뿐 아니라 작업이 시작되지 않아 최종 데이터가 오래 갱신되지 않는 경우도 확인합니다.
+</details>
+
+<details>
+<summary><a href="/docs/pipeline_operations_and_reliability/DATA_LIFECYCLE_WITHOUT_DATA_LOSS.md">최신 정상본은 보호하고 오래된 버전만 정리</a></summary>
+
+- 지역·월별 최신 정상본은 기간과 관계없이 남기고, 90일이 지난 S3와 데이터베이스 구버전만 정리합니다.
+</details>
 
 
 ### 서버·인프라
