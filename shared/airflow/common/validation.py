@@ -6,7 +6,6 @@ import io
 import json
 import logging
 import math
-import mimetypes
 import os
 from pathlib import Path, PurePosixPath
 import tempfile
@@ -19,6 +18,11 @@ import pyarrow.parquet as pq
 
 from shared.airflow.common.slack_quality_warning import send_gx_quality_warning
 from shared.common.s3_reader import get_object_bytes, get_object_stream
+from shared.common.gx_data_docs import (
+    data_docs_config as _data_docs_config,
+    mirrored_data_docs_prefix,
+    upload_data_docs,
+)
 from shared.common.success_marker import (
     marker_key,
     marker_path,
@@ -103,24 +107,15 @@ def gx_data_docs_location(
     data_location: S3Location, *, layer: str, dataset: str
 ) -> S3Location:
     """실제 S3 파티션을 `logs/gx-data-docs` 아래에 그대로 미러링합니다."""
-    parts = PurePosixPath(data_location.key).parts
-    try:
-        layer_index = next(
-            index
-            for index in range(len(parts) - 1)
-            if parts[index:index + 2] == (layer, dataset)
-        )
-    except StopIteration as exc:
-        raise ValueError(
-            f"S3 데이터 경로에 {layer}/{dataset} 계층이 없습니다: {data_location}"
-        ) from exc
-    partitions = parts[layer_index + 2:-1]
-    if not partitions:
-        raise ValueError(f"S3 데이터 경로에 버전 파티션이 없습니다: {data_location}")
-    key = PurePosixPath(
-        "logs", "gx-data-docs", layer, dataset, *partitions
-    ).as_posix()
-    return S3Location(data_location.bucket, key)
+    return S3Location(
+        data_location.bucket,
+        mirrored_data_docs_prefix(
+            data_location.key,
+            layer=layer,
+            dataset=dataset,
+            data_is_file=True,
+        ),
+    )
 
 
 def location_size(location: Path | S3Location) -> int:
@@ -391,56 +386,6 @@ def _failure_column(failure) -> str:
     )
 
 
-def _data_docs_config(root: Path):
-    from great_expectations.data_context.types.base import DataContextConfig
-
-    stores = {
-        "expectations_store": {
-            "class_name": "ExpectationsStore",
-            "store_backend": {
-                "class_name": "TupleFilesystemStoreBackend",
-                "base_directory": str(root / ".gx_store" / "expectations"),
-            },
-        },
-        "validation_results_store": {
-            "class_name": "ValidationResultsStore",
-            "store_backend": {
-                "class_name": "TupleFilesystemStoreBackend",
-                "base_directory": str(root / ".gx_store" / "validations"),
-            },
-        },
-        # Runtime DataFrame의 datasource ID는 다음 Context에서 복원할 수 없습니다.
-        "validation_definition_store": {
-            "class_name": "ValidationDefinitionStore",
-            "store_backend": {"class_name": "InMemoryStoreBackend"},
-        },
-        "checkpoint_store": {
-            "class_name": "CheckpointStore",
-            "store_backend": {"class_name": "InMemoryStoreBackend"},
-        },
-    }
-    data_docs_sites = {
-        "local_site": {
-            "class_name": "SiteBuilder",
-            "show_how_to_buttons": False,
-            "store_backend": {
-                "class_name": "TupleFilesystemStoreBackend",
-                "base_directory": str(root),
-            },
-            "site_index_builder": {"class_name": "DefaultSiteIndexBuilder"},
-        }
-    }
-    return DataContextConfig(
-        config_version=4,
-        expectations_store_name="expectations_store",
-        validation_results_store_name="validation_results_store",
-        checkpoint_store_name="checkpoint_store",
-        stores=stores,
-        data_docs_sites=data_docs_sites,
-        analytics_enabled=False,
-    )
-
-
 class _DataDocsLock:
     def __init__(self, root: Path):
         self._root = root
@@ -707,27 +652,7 @@ def run_file_gx_validation(
 
 
 def _upload_data_docs(root: Path, target: S3Location) -> None:
-    client = boto3.client("s3")
-    paths = sorted(
-        root.rglob("*"),
-        key=lambda path: path.relative_to(root).as_posix() == "index.html",
-    )
-    for path in paths:
-        relative_path = path.relative_to(root)
-        if (
-            not path.is_file()
-            or path.name == ".build.lock"
-            or ".gx_store" in relative_path.parts
-        ):
-            continue
-        relative = relative_path.as_posix()
-        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
-        client.upload_file(
-            str(path),
-            target.bucket,
-            f"{target.key}/{relative}",
-            ExtraArgs={"ContentType": content_type},
-        )
+    upload_data_docs(root, bucket=target.bucket, prefix=target.key)
 
 
 def run_gx_validation(
