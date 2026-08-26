@@ -1,4 +1,31 @@
 from dataclasses import dataclass
+from datetime import datetime
+
+
+"""
+[Gold 적재 버전 메타데이터]
+input: Gold 적재 실행의 지역·월·입력 fingerprint
+output: PostgreSQL gold_load_versions
+"""
+
+
+@dataclass(frozen=True)
+class GoldLoadVersion:
+    service_area: str
+    """서비스 지역 코드"""
+
+    year_month: str
+    """집계 대상 월 (YYYY-MM)"""
+
+    version: int
+    """같은 지역·월 안에서 증가하는 Gold 적재 버전"""
+
+    load_fingerprint: str
+    """동일한 Silver 입력과 추천 설정을 식별하는 SHA-256 fingerprint"""
+
+    created_at: datetime
+    """PostgreSQL이 CURRENT_TIMESTAMP로 기록하는 생성 시각"""
+
 
 """
 [기사별 운행 순수익]

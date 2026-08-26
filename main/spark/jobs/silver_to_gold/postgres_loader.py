@@ -10,12 +10,18 @@ import hashlib
 import json
 import logging
 from dataclasses import fields
+from datetime import datetime
 
 import pandas as pd
 import psycopg2
 import psycopg2.extras
 
-from schema.gold import DriverMonthlyProfit, DriverCarSuggestion, SilverLineage
+from schema.gold import (
+    DriverCarSuggestion,
+    DriverMonthlyProfit,
+    GoldLoadVersion,
+    SilverLineage,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +66,7 @@ _SQL_TYPES = {
     float: "DOUBLE PRECISION",
     bool: "BOOLEAN",
     str: "TEXT",
+    datetime: "TIMESTAMPTZ",
 }
 
 
@@ -77,16 +84,17 @@ def _create_table_sql(table: str) -> str:
 
 
 def _create_version_table_sql() -> str:
-    return f"""CREATE TABLE IF NOT EXISTS {_GOLD_LOAD_VERSIONS} (
-    service_area TEXT NOT NULL,
-    year_month TEXT NOT NULL,
-    version INTEGER NOT NULL,
-    load_fingerprint TEXT NOT NULL,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    PRIMARY KEY (service_area, year_month, version),
-    CONSTRAINT gold_load_versions_load_fingerprint_key
-        UNIQUE (service_area, year_month, load_fingerprint)
-)"""
+    columns = []
+    for field in fields(GoldLoadVersion):
+        default = " DEFAULT CURRENT_TIMESTAMP" if field.name == "created_at" else ""
+        columns.append(f"{field.name} {_SQL_TYPES[field.type]} NOT NULL{default}")
+    return (
+        f"CREATE TABLE IF NOT EXISTS {_GOLD_LOAD_VERSIONS} (\n    "
+        + ",\n    ".join(columns)
+        + ",\n    PRIMARY KEY (service_area, year_month, version),\n"
+        "    CONSTRAINT gold_load_versions_load_fingerprint_key\n"
+        "        UNIQUE (service_area, year_month, load_fingerprint)\n)"
+    )
 
 
 def _record_gold_version(

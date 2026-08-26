@@ -12,19 +12,12 @@
 
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, count, expr
-from pyspark.sql.types import DoubleType, LongType, StructField, StructType
+
+from schema.source.taxi_zone_travel_times import TAXI_ZONE_TRAVEL_TIMES_SCHEMA
 
 # `allocator.TRAVEL_COLUMNS` 와 맞춰야 합니다. 한쪽만 바꾸면 실패하지 않고
 # 배정 후보가 통째로 걸러집니다 (없는 구역쌍은 예외가 아니라 후보 제외라서).
-SCHEMA = StructType(
-    [
-        StructField("from_location_id", LongType(), False),
-        StructField("to_location_id", LongType(), False),
-        StructField("travel_minutes", DoubleType(), False),
-        # 몇 건에서 나온 값인지. 배정 결과를 의심할 때 먼저 보는 값입니다.
-        StructField("trip_count", LongType(), False),
-    ]
-)
+SCHEMA = TAXI_ZONE_TRAVEL_TIMES_SCHEMA
 
 REQUIRED_COLUMNS = ("PULocationID", "DOLocationID", "trip_time")
 
