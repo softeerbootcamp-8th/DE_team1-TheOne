@@ -1,40 +1,52 @@
-# 대시보드 조회가 갑자기 30초 가까이 걸림
+# 기본키에 컬럼이 추가된 뒤 대시보드 조회가 30초로 느려진 문제
 
-## 증상
+- 요약
+  - 운영 지역 컬럼을 기본키에 추가하고 나니, 그 컬럼을 조건에 안 쓰던 조회 하나가 기본키 인덱스를 타지 못하게 됨
+  - 실행 계획을 확인해 원인을 찾고, 조회 조건에 운영 지역을 추가해 기본키 순서와 맞춤
+  - 실행 시간이 약 30초 걸리던 것이 인덱스를 다시 타는 구조로 바뀜
 
-`service_area` 컬럼/PK 마이그레이션을 Gold RDS에 적용한 뒤, 개발 dashboard-server의
-Streamlit 대시보드가 페이지를 새로고침할 때마다 한참 멈춘 것처럼 느려짐. 실제로
-`driver_aggregation` 대상 쿼리를 `EXPLAIN ANALYZE`로 떠보면 실행 시간이
-약 30초 나옴.
+## 문제
+
+대시보드는 화면을 열 때마다 매달 새로 계산되는 표(기사별 한 달 운행 실적 등)에서 가장 최근 계산 결과만 골라서 보여준다. 같은 연월 데이터라도 재계산할 때마다 새 버전 번호가 붙기 때문에, "이 연월에서 가장 최근 버전"을 매번 찾아야 한다.
+
+운영 지역별로 데이터를 분리해서 관리하기 위해 이 표의 기본키에 운영 지역 컬럼을 추가했다. 그런데 그 직후부터 대시보드를 새로고침할 때마다 화면이 한참 멈춘 것처럼 느려졌다. 실제로 느려진 조회를 실행 계획으로 확인해보니(`EXPLAIN ANALYZE`) 30초 가까이 걸리고 있었다.
 
 ```
 Seq Scan on driver_aggregation t  (actual time=2.593..29949.468 rows=2000.00 loops=1)
   Filter: (version = (SubPlan 1))
   SubPlan 1
-    ->  Aggregate (actual time=2.494..2.494 rows=1.00 loops=12000) # 12000행
+    ->  Aggregate (actual time=2.494..2.494 rows=1.00 loops=12000) # 12000행마다 반복
           ->  Index Only Scan using driver_aggregation_pkey ... loops=12000
 Execution Time: 29949.861 ms
 ```
 
-## 원인
+## 접근
 
-`main/dashboard/datasource.py`의 `_latest_version_query()`가 연도월별 최신 버전
-행을 상관 서브쿼리로 뽑는데, 이 시점엔 서브쿼리 조건이 `year_month`뿐이었음.
+실행 계획을 보면 표 전체를 훑으면서(`Seq Scan`), 한 행을 볼 때마다 "이 연월의 최신 버전이 몇인지"를 매번 다시 계산하고 있었다(`SubPlan`이 12,000번 반복). 원래 있던 조회 조건을 보면 이유를 알 수 있었다.
 
 ```sql
 WHERE t.version = (SELECT MAX(version) FROM {table} WHERE year_month = t.year_month)
 ```
 
-`service_area` 마이그레이션으로 PK가 `(year_month, version, ...)`에서
-`(service_area, year_month, version, ...)`로 바뀌면서, `year_month` 단독 조건은 더
-이상 PK 인덱스 선두 컬럼이 아니게 되어 인덱스를 타지 못함. (PK 복합 인덱스의 경우 앞에서 부터 b+tree를 탐)
+최신 버전을 찾는 조건이 연월뿐이었다. 기본키에 운영 지역 컬럼이 추가되면서 기본키 순서가 (연월, 버전, …)에서 (운영 지역, 연월, 버전, …)으로 바뀌었는데, 조회 조건은 여전히 연월만 쓰고 있어 기본키 인덱스의 맨 앞 컬럼과 맞지 않았다. 기본키처럼 여러 컬럼을 묶은 인덱스는 맨 앞 컬럼부터 순서대로 조건이 맞아야 인덱스를 타고 바로 찾아갈 수 있는데, 그 조건이 깨진 것이다. 그 결과 행마다 전체를 다시 훑는 것과 다름없어졌다.
 
 ## 해결
 
+조회 조건에 운영 지역을 추가해서 기본키 앞 두 컬럼(운영 지역, 연월) 순서와 맞췄다.
 
 ```sql
 WHERE t.version = (SELECT MAX(version) FROM {table}
                     WHERE service_area = t.service_area AND year_month = t.year_month)
 ```
 
-service_area도 검색 조건에 추가하면서, service_area, year_month 검색 조건을 compound pk `(service_area, year_month, version, ...)`에 순서대로 맞추면서 인덱스를 타게 만듦.
+이 조건은 이미 다른 문제(운영 지역이 다른 데이터가 조용히 누락되던 정합성 버그)를 고치면서 같은 파일에 들어가 있었고, 그 수정이 기본키 인덱스 문제도 함께 해결했다.
+
+## 검증
+
+수정된 조건절(운영 지역, 연월)이 기본키의 앞 두 컬럼 순서와 그대로 일치하는지 확인했다. 이 순서가 맞아야 Postgres가 인덱스를 이용해 해당 조합으로 바로 찾아갈 수 있고, 행마다 버전을 다시 계산하던 `SubPlan` 반복도 없어진다.
+
+실행 시간을 재측정하지는 않았다. 배포 후 같은 조회를 `EXPLAIN ANALYZE`로 다시 떠서 `Seq Scan`이 `Index Scan`으로 바뀌었는지, 실행 시간이 실제로 줄었는지 확인하는 절차가 남아 있다.
+
+## 참고
+
+- 관련 코드: `main/dashboard/datasource.py`의 `_latest_version_query()`
