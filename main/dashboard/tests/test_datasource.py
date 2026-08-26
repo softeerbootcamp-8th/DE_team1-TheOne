@@ -68,11 +68,11 @@ def test_최신버전_쿼리는_스키마_필드_순서로_컬럼을_고른다()
         "lease_vehicle_inventory", ["year_month", "vehicle_model_id"]
     )
 
-    assert "t.year_month" in query
-    assert "t.vehicle_model_id" in query
-    assert "MAX(version)" in query
-    assert "service_area = t.service_area" in query
-    assert "year_month = t.year_month" in query
+    assert "year_month, vehicle_model_id" in query
+    # 파티션당 MAX(version)을 한 번만 계산한다 — 상관 서브쿼리로 행마다 반복
+    # 계산하지 않는다(#1069).
+    assert "MAX(t.version) OVER (PARTITION BY t.service_area, t.year_month)" in query
+    assert "WHERE version = partition_latest_version" in query
 
 
 def _sqlite_conn_with(table: str, columns: list[str], rows: list[dict]) -> sqlite3.Connection:
