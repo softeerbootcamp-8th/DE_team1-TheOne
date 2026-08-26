@@ -5,7 +5,9 @@
   - 접근 : 
     1. 가상 회사 DB 수집 : 원천 내용이 달라질 때만 새 버전 생성(SHA-256 비교 후 적재)
       - 가상 회사 DB는 과거 기록이 변경될 수 있음
+      - 변경 감시는 Bronze manifest의 `ETag`/`Last-Modified`를 사용하고, 동일하면 다운로드와 SHA-256 계산 생략
     2. 어떤 원천에서 파생됐는지 기록 (지역-날짜-시기별 파티셔닝)
+      - Bronze `collected_at`을 Silver `source_collected_at`으로 연결
     3. 품질 검증을 통과한 버전만 공개 (검증된 데이터만 후속 단계로 넘어가도록)
   - 검증 : 각 문제 상황을 시나리오로 작성 후, 자동화 테스트 진행
 
@@ -38,15 +40,22 @@
         └─ YYYY-MM
               └─ Datatime
                     |- xxxx.parquet
+                    |- manifest.json
                     └─ _SUCCESS    
     ```
+  - manifest에 `sha256`, `source_etag`, `source_last_modified`, `collected_at`, 행 수와 파일 크기 기록
 2. **실제 내용 변경 여부 관리**(저장 후 아래 과정 진행)
   1. 읽기 가능 여부 확인
+    - 최신 완료 Bronze manifest의 `ETag`/`Last-Modified`로 조건부 HEAD 요청
+    - `304 Not Modified`이고 Bronze/Silver가 모두 있으면 다운로드와 후속 처리 생략
   2. 직전 완료본과 SHA-256 비교 (내용 동일 여부 확인)
     - 같으면, 기존 데이터 재사용(저장 X)
     - 다르면, 새 수집 버전 저장 후 이전 버전 남김
+    - 실제 수집 시에는 원본과 manifest의 SHA-256, 파일 크기, 행 수 검증 유지
   3. 정제 데이터 경로에 원천 수집 버전 기록
+    - Bronze `collected_at`을 Silver `source_collected_at`으로 기록
     - if, 원천 두 개 합친 경우엔 **두 입력 버전 함께 기록**
+    - 현재 원천 계보와 공개 상태는 경로와 `_SUCCESS`로 관리하므로 Silver manifest는 추가하지 않음
 3. **공개 여부 관리**
   > 파일 작성 완료 여부와 공개 여부 분리
   - 품질 검증 통과 : 파티션에 _SUCCESS(완료 표시 오브젝트)를 추가
@@ -59,6 +68,7 @@
   - 변경 여부에 따른 확인
     - 변경 : **새 수집 버전으로 추가**되는지 확인
     - 동일 : 기존 버전을 재사용하는지 확인
+      - 조건부 HEAD가 `304`를 반환하면 다운로드와 SHA-256 계산을 생략하는지 확인
   - 공개 여부 관리
     - 품질 검증 실패 : quarantined.json 파일 생성 확인
     - 최신 완료본 선택 : 완료된 것 중 최신을 선택하는지 (미완료된 최신 데이터를 선택하지 않는지)
@@ -66,6 +76,7 @@
     - **완료 표시 제거** : 재처리 시, 작성 전에 기존 완료 표시 지우는지 확인
     - **미완료시 완료 표시 없음** : 쓰기 실패 시 완료 표시가 안 생기는지 확인
   - 입력 버전 구분
+    - Silver의 `source_collected_at`으로 Bronze 버전을 역추적할 수 있는지 확인
     - 여러 원천을 합친 결과가 원천별 버전 변경 구분하는지 확인
   - 그 외 다수.
 
@@ -73,11 +84,18 @@
 
 - 현재
   - SHA-256을 계산하여 변경된 경우 추가 적재
+  - 변경 감시는 Bronze manifest의 `ETag`/`Last-Modified`를 사용해 불필요한 다운로드와 SHA-256 계산 생략
+  - Bronze→Silver 원천 계보는 `collected_at`/`source_collected_at`으로 관리
+  - 현재 요구사항에서는 Silver manifest를 추가하지 않음
 - 원천 파일 개수 증가 시, `원격 체크섬과 함께 사용` 필요
+- 변환 코드·설정까지 재현해야 하면 Silver manifest만 추가하지 않고 별도 버전 계약 검토
 
 ## 참고
 
+- [`main/airflow/scripts/source_api_refresh/tasks.py`](../../main/airflow/scripts/source_api_refresh/tasks.py): 조건부 HEAD와 누락 계층 복구 판단
+- [`shared/common/bronze_manifest.py`](../../shared/common/bronze_manifest.py): Bronze manifest 계약
 - [`main/aws_lambda/common/monthly_dataset.py`](../../main/aws_lambda/common/monthly_dataset.py): 원천 내용 비교와 수집 버전 관리
+- [`main/airflow/common/monthly_bronze.py`](../../main/airflow/common/monthly_bronze.py): Bronze 검증과 Silver 원천 버전 경로 계산
 - [`shared/common/success_marker.py`](../../shared/common/success_marker.py): 완료/격리 표시 규칙
 - [`shared/airflow/common/validation.py`](../../shared/airflow/common/validation.py): 품질 검증 후 공개 또는 격리
 - [`main/spark/jobs/silver_to_gold/monthly_silver.py`](../../main/spark/jobs/silver_to_gold/monthly_silver.py): 최신 완료 정제 데이터 선택
