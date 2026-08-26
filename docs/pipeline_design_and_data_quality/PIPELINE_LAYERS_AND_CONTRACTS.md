@@ -16,6 +16,10 @@
 
 Silver 런타임은 데이터 규모로 가른다: `monthly_taxi_trip`(월 70~90만 행)만 Spark, 나머지(12~2,000행)는 Lambda. Gold는 4개 Silver를 한 번에 읽어야 해서 Spark 한 실행으로 처리.
 
+### Gold 테이블 ERD
+
+![Gold RDS 스키마 ERD](../assets/gold_schema_erd.png)
+
 Gold 추천 알고리즘(v1/v2) 흐름은 [GOLD_RECOMMENDATION_LOGIC.md](./GOLD_RECOMMENDATION_LOGIC.md) 참고.
 
 ## DAG 의존성
