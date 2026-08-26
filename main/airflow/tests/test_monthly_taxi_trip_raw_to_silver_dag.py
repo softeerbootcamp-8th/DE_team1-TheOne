@@ -28,23 +28,17 @@ def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다(
         "raw_to_bronze",
         "validate_bronze",
         "bronze_to_silver",
-        "report_gx_validation",
         "validate_silver",
     }
     assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
     assert DAG.get_task("validate_bronze").downstream_task_ids == {
         "bronze_to_silver",
-        "report_gx_validation",
         "validate_silver",
     }
-    assert DAG.get_task("bronze_to_silver").downstream_task_ids == {
-        "report_gx_validation",
-        "validate_silver"
-    }
-    assert DAG.get_task("report_gx_validation").downstream_task_ids == {
-        "validate_silver"
-    }
-    assert DAG.get_task("report_gx_validation").trigger_rule == TriggerRule.ALL_DONE
+    assert DAG.get_task("bronze_to_silver").downstream_task_ids == {"validate_silver"}
+    # Spark 가 실패하면 validate_silver 도 함께 멈춥니다. 예전에는 ALL_DONE 인 보고
+    # 태스크가 있어서 Spark 실패 위에 "요약 파일이 없다" 를 덮어썼습니다 (#1120).
+    assert DAG.get_task("validate_silver").trigger_rule == TriggerRule.ALL_SUCCESS
     assert DAG.get_task("raw_to_bronze").retries == 2
     assert DAG.get_task("raw_to_bronze").retry_delay == timedelta(minutes=5)
     assert DAG.get_task("validate_bronze").retries == 0

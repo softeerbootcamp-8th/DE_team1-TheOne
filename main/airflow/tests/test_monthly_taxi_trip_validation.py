@@ -160,129 +160,131 @@ def test_품질경고메시지는_판정근거와_처리결과를_표시한다()
         assert expected in text
 
 
-def test_Spark_GX결과와_Data_Docs경로를_Airflow로그에_남긴다(
-    monkeypatch, caplog
-):
-    import logging
+S3_VERSION = (
+    "s3://de-theone/silver/monthly_taxi_trip/service_area=NYC/"
+    "year_month=2026-08/source_collected_at=20260811T085354000000Z"
+)
+S3_DOCS = (
+    "s3://de-theone/logs/gx-data-docs/silver/monthly_taxi_trip/"
+    "service_area=NYC/year_month=2026-08/"
+    "source_collected_at=20260811T085354000000Z"
+)
 
-    version = (
-        "s3://de-theone/silver/monthly_taxi_trip/service_area=NYC/"
-        "year_month=2026-08/source_collected_at=20260811T085354000000Z"
-    )
-    docs = (
-        "s3://de-theone/logs/gx-data-docs/silver/monthly_taxi_trip/"
-        "service_area=NYC/year_month=2026-08/"
-        "source_collected_at=20260811T085354000000Z"
-    )
-    summary = {
-        "success": True,
+
+def _recon(**overrides):
+    payload = {
         "total": 100,
         "valid": 98,
         "invalid": 2,
+        "missing_or_type_mismatch": 2,
+        "invalid_value": 0,
+        "invalid_service_tier": 0,
         "extra_columns": ["airport_fee"],
-        "data_docs_path": docs,
+        "invalid_ratio": 0.02,
+        "warning": True,
+        "warning_threshold": 0.01,
+        "error_threshold": 0.05,
+        "data_docs_path": S3_DOCS,
     }
+    payload.update(overrides)
+    return payload
 
-    def get_object(bucket, key):
-        assert bucket == "de-theone"
-        if key.endswith("_GX_VALIDATION.json"):
-            return json.dumps(summary).encode()
-        if key.endswith("index.html"):
-            return b"<html>GX Data Docs</html>"
-        raise AssertionError(key)
 
-    monkeypatch.setattr(task_module, "get_object_bytes", get_object)
+def test_Spark_GX결과를_Airflow로그에_남긴다(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(
+        task_module, "get_object_bytes", lambda bucket, key: b"<html>docs</html>"
+    )
     caplog.set_level(logging.INFO, logger=task_module.logger.name)
 
-    actual = task_module._report_gx_validation({"silver_version_path": version})
+    task_module._report_gx(task_module.parse_location(S3_VERSION), _recon())
 
-    assert actual == summary
-    assert "success=True total=100 valid=98 invalid=2" in caplog.text
-    assert "extra_columns=['airport_fee']" in caplog.text
-    assert f"data_docs={docs}" in caplog.text
+    assert "gx_validation layer=silver engine=spark" in caplog.text
+    assert "total=100 valid=98 invalid=2" in caplog.text
+    assert "ratio=0.0200" in caplog.text
+    assert "extra_columns=airport_fee" in caplog.text
+    assert f"data_docs={S3_DOCS}" in caplog.text
 
 
-def test_Data_Docs_index가_없으면_Airflow보고task가_실패한다(monkeypatch):
-    version = (
-        "s3://de-theone/silver/monthly_taxi_trip/service_area=NYC/"
-        "year_month=2026-08/source_collected_at=20260811T085354000000Z"
+def test_불합격률이_상한을_넘으면_실패한다(monkeypatch):
+    monkeypatch.setattr(
+        task_module, "get_object_bytes", lambda bucket, key: b"<html>docs</html>"
     )
-    docs = version.replace(
-        "s3://de-theone/silver/", "s3://de-theone/logs/gx-data-docs/silver/"
-    )
-    summary = {
-        "success": True,
-        "total": 1,
-        "valid": 1,
-        "invalid": 0,
-        "extra_columns": [],
-        "data_docs_path": docs,
-    }
+    recon = _recon(invalid=6, valid=94, invalid_ratio=0.06)
 
+    with pytest.raises(ValueError, match="불합격률이 상한을 넘었습니다"):
+        task_module._report_gx(task_module.parse_location(S3_VERSION), recon)
+
+
+def test_상한과_같은_불합격률도_실패한다(monkeypatch):
+    """상한은 초과가 아니라 도달에서 막습니다 — Spark 의 success 판정과 같은 경계."""
+    monkeypatch.setattr(
+        task_module, "get_object_bytes", lambda bucket, key: b"<html>docs</html>"
+    )
+
+    with pytest.raises(ValueError, match="불합격률이 상한을 넘었습니다"):
+        task_module._report_gx(
+            task_module.parse_location(S3_VERSION), _recon(invalid_ratio=0.05)
+        )
+
+
+def test_Data_Docs_index가_없으면_실패한다(monkeypatch):
     def get_object(bucket, key):
-        if key.endswith("_GX_VALIDATION.json"):
-            return json.dumps(summary).encode()
         raise FileNotFoundError(key)
 
     monkeypatch.setattr(task_module, "get_object_bytes", get_object)
 
-    with pytest.raises(ValueError, match="GX Data Docs index가 없습니다"):
-        task_module._report_gx_validation({"silver_version_path": version})
+    with pytest.raises(ValueError, match="GX Data Docs index 가 없습니다"):
+        task_module._report_gx(task_module.parse_location(S3_VERSION), _recon())
 
 
-def test_로컬_GX요약은_S3_Data_Docs없이_Airflow로그에_남긴다(
-    tmp_path, caplog
-):
+def test_Data_Docs_경로가_계약과_다르면_실패한다(monkeypatch):
+    monkeypatch.setattr(
+        task_module, "get_object_bytes", lambda bucket, key: b"<html>docs</html>"
+    )
+    recon = _recon(data_docs_path="s3://de-theone/logs/gx-data-docs/silver/elsewhere")
+
+    with pytest.raises(ValueError, match="GX Data Docs 경로가 계약과 다릅니다"):
+        task_module._report_gx(task_module.parse_location(S3_VERSION), recon)
+
+
+def test_S3_실행인데_Data_Docs가_없으면_실패한다(monkeypatch):
+    """로컬은 None 이 정상이지만 S3 실행에서 None 이면 발행 자체가 안 된 것입니다."""
+    monkeypatch.setattr(
+        task_module, "get_object_bytes", lambda bucket, key: b"<html>docs</html>"
+    )
+
+    with pytest.raises(ValueError, match="GX Data Docs 경로가 계약과 다릅니다"):
+        task_module._report_gx(
+            task_module.parse_location(S3_VERSION), _recon(data_docs_path=None)
+        )
+
+
+def test_로컬_실행은_Data_Docs없이_로그를_남긴다(tmp_path, caplog):
     import logging
 
+    caplog.set_level(logging.INFO, logger=task_module.logger.name)
     version = tmp_path / "year_month=2026-08/source_collected_at=x"
     version.mkdir(parents=True)
-    (version / "_GX_VALIDATION.json").write_text(
-        json.dumps(
-            {
-                "success": True,
-                "total": 1,
-                "valid": 1,
-                "invalid": 0,
-                "extra_columns": [],
-                "data_docs_path": None,
-            }
-        )
-    )
-    caplog.set_level(logging.INFO, logger=task_module.logger.name)
 
-    task_module._report_gx_validation({"silver_version_path": str(version)})
+    task_module._report_gx(version, _recon(data_docs_path=None))
 
     assert "data_docs=disabled(local)" in caplog.text
 
 
-def test_Spark_GX실패결과도_Airflow보고task가_error로그로_남긴다(
-    tmp_path, caplog
-):
+def test_GX_보고에는_별도_요약파일이_필요없다(tmp_path, caplog):
+    """`_GX_VALIDATION.json` 을 걷어낸 뒤 회귀 — recon 만으로 판정합니다(#1120)."""
     import logging
 
+    caplog.set_level(logging.INFO, logger=task_module.logger.name)
     version = tmp_path / "year_month=2026-08/source_collected_at=x"
     version.mkdir(parents=True)
-    (version / "_GX_VALIDATION.json").write_text(
-        json.dumps(
-            {
-                "success": False,
-                "total": 20,
-                "valid": 19,
-                "invalid": 1,
-                "extra_columns": ["airport_fee"],
-                "data_docs_path": None,
-            }
-        )
-    )
-    caplog.set_level(logging.ERROR, logger=task_module.logger.name)
+    assert not (version / "_GX_VALIDATION.json").exists()
 
-    summary = task_module._report_gx_validation(
-        {"silver_version_path": str(version)}
-    )
+    task_module._report_gx(version, _recon(data_docs_path=None))
 
-    assert summary["success"] is False
-    assert "success=False total=20 valid=19 invalid=1" in caplog.text
+    assert "gx_validation layer=silver engine=spark" in caplog.text
 
 
 def test_Validation_Task에_Slack_실패_콜백이_연결된다():

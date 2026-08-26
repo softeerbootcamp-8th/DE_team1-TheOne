@@ -35,6 +35,10 @@ _STRING_COLUMNS = (
 class ReconCounts:
     """변환이 몇 건을 받아 몇 건을 남겼는지, 무엇 때문에 걸렀는지.
 
+    Spark GX 가 전체 레코드를 판정한 결과 그대로다 — Airflow 로 넘어가는 GX 결과의
+    유일한 통로다(#1120). 예전에는 같은 값을 `_GX_VALIDATION.json` 으로 한 번 더
+    내보냈는데, 대조 상대 없이 로그만 찍는 쪽이라 걷어냈다.
+
     `invalid` 는 사유별 합이 아니라 `total - valid` 다. 한 행이 여러 사유에 걸릴 수
     있어 사유별 건수를 더하면 중복 집계된다 — 사유별 값은 원인을 좁히는 참고용이고
     보존식에 쓰는 건 `invalid` 뿐이다.
@@ -51,6 +55,7 @@ class ReconCounts:
     warning: bool
     warning_threshold: float
     error_threshold: float
+    data_docs_path: str | None
 
     def as_payload(self) -> dict:
         return asdict(self)
@@ -64,12 +69,11 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
         error_threshold: float = 0.05,
         warning_threshold: float = 0.01,
         gx_data_docs_location: str | None = None,
-        gx_summary_location: str | None = None,
+
     ):
         self._error_threshold = error_threshold
         self._warning_threshold = warning_threshold
         self._gx_data_docs_location = gx_data_docs_location
-        self._gx_summary_location = gx_summary_location
         # `transform()` 이 센 값을 Loader 가 sidecar 로 내보낸다. 로그로만 흘리면
         # Airflow 가 Bronze·Silver 행 수와 맞대볼 수 없다.
         self.recon: ReconCounts | None = None
@@ -129,7 +133,6 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
             warning_threshold=self._warning_threshold,
             error_threshold=self._error_threshold,
             data_docs_location=self._gx_data_docs_location,
-            summary_location=self._gx_summary_location,
         )
 
         self.recon = ReconCounts(
@@ -144,6 +147,7 @@ class MonthlyTaxiTripCleanTransformer(Transformer):
             warning=counts.warning,
             warning_threshold=counts.warning_threshold,
             error_threshold=counts.error_threshold,
+            data_docs_path=self._gx_data_docs_location,
         )
         if counts.invalid:
             logger.warning(

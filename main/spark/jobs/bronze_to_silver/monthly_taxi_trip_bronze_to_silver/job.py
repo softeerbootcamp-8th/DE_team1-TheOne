@@ -11,10 +11,7 @@ import boto3
 
 from main.spark.jobs.service_area_path import service_area_prefix, service_area_root
 from shared.common.s3_reader import list_keys
-from shared.common.gx_data_docs import (
-    GX_VALIDATION_SUMMARY_FILE_NAME,
-    mirrored_data_docs_prefix,
-)
+from shared.common.gx_data_docs import mirrored_data_docs_prefix
 from shared.common.success_marker import (
     data_key_is_complete,
     data_path_is_complete,
@@ -105,15 +102,15 @@ def resolve_path(path_str: str) -> str:
     return str(path)
 
 
-def gx_observability_locations(
-    output_version: str | None,
-) -> tuple[str | None, str | None]:
-    """Silver 버전과 같은 파티션 계층에 Data Docs와 GX 요약을 둡니다."""
-    if not output_version:
-        return None, None
-    summary = f"{output_version.rstrip('/')}/{GX_VALIDATION_SUMMARY_FILE_NAME}"
-    if not is_s3_path(output_version):
-        return None, summary
+def gx_data_docs_location(output_version: str | None) -> str | None:
+    """Silver 버전 파티션을 그대로 미러링한 Data Docs 경로.
+
+    GX 결과 수치는 별도 파일로 내보내지 않습니다 — `_RECON.json` 이 같은 값을 담고
+    Airflow 가 그걸 읽어 보존식까지 대조합니다(#1120). 로컬 실행은 Data Docs 를
+    올릴 대상이 없어 None 입니다.
+    """
+    if not output_version or not is_s3_path(output_version):
+        return None
     parsed = urlsplit(output_version)
     prefix = mirrored_data_docs_prefix(
         parsed.path.lstrip("/"),
@@ -121,7 +118,7 @@ def gx_observability_locations(
         dataset="monthly_taxi_trip",
         data_is_file=False,
     )
-    return f"{parsed.scheme}://{parsed.netloc}/{prefix}", summary
+    return f"{parsed.scheme}://{parsed.netloc}/{prefix}"
 
 
 class SilverVersionDirectoryLoader(Loader):
@@ -173,17 +170,6 @@ class SilverVersionDirectoryLoader(Loader):
             marker_path(self._path).unlink(missing_ok=True)
             quarantine_marker_path(self._path).unlink(missing_ok=True)
             recon_path(self._path).unlink(missing_ok=True)
-
-    def invalidate_gx_summary(self) -> None:
-        """transform 전에 이전 실행의 GX 요약만 제거합니다."""
-        if is_s3_path(self._path):
-            parsed = urlsplit(self._path)
-            boto3.client("s3").delete_object(
-                Bucket=parsed.netloc,
-                Key=f"{parsed.path.lstrip('/').rstrip('/')}/{GX_VALIDATION_SUMMARY_FILE_NAME}",
-            )
-            return
-        (Path(self._path) / GX_VALIDATION_SUMMARY_FILE_NAME).unlink(missing_ok=True)
 
     def write(self, data) -> WriteResult:
         self.invalidate_publication()
@@ -373,9 +359,7 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
             raise ValueError(
                 "--output_version은 year_month/source_collected_at=<UTC> 최종 디렉터리여야 합니다"
             )
-    gx_data_docs_location, gx_summary_location = gx_observability_locations(
-        output_version
-    )
+    data_docs_location = gx_data_docs_location(output_version)
 
     if bool(args.start_year_month) != bool(args.end_year_month):
         raise ValueError("--start_year_month와 --end_year_month는 함께 줘야 합니다")
@@ -421,8 +405,7 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     transformer = MonthlyTaxiTripCleanTransformer(
         error_threshold=args.error_threshold,
         warning_threshold=args.warning_threshold,
-        gx_data_docs_location=gx_data_docs_location,
-        gx_summary_location=gx_summary_location,
+        gx_data_docs_location=data_docs_location,
     )
     loader = (
         SilverVersionDirectoryLoader(
@@ -435,7 +418,6 @@ def main(args_list: Optional[list[str]] = None) -> PipelineResult:
     if isinstance(loader, SilverVersionDirectoryLoader):
         # 변환/GX가 실패하더라도 이전 실행의 공개 마커가 남아 있으면 안 됩니다.
         loader.invalidate_publication()
-        loader.invalidate_gx_summary()
 
     result = Pipeline(extractor, loader, transformer=transformer).run()
     logger.info("Monthly Taxi Trip Bronze to Silver Pipeline completed: %s", result)
