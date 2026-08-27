@@ -25,16 +25,10 @@ def test_DAG는_HVFHV한종을_Raw부터_Silver까지_순서대로_처리한다(
     assert DAG.dag_id == "monthly_taxi_trip_raw_to_silver_pipeline"
     assert DAG.schedule is None
     assert set(DAG.task_ids) == {
-        "check_no_concurrent_region_run",
         "raw_to_bronze",
         "validate_bronze",
         "bronze_to_silver",
         "validate_silver",
-    }
-    # 같은 지역의 다른 실행을 시작 지점에서 막습니다 — 뒤에서 #165 가드가 오진하기
-    # 전에 정확한 이름으로 실패시키려는 것입니다 (#1124).
-    assert DAG.get_task("check_no_concurrent_region_run").downstream_task_ids == {
-        "raw_to_bronze"
     }
     assert DAG.get_task("raw_to_bronze").downstream_task_ids == {"validate_bronze"}
     assert DAG.get_task("validate_bronze").downstream_task_ids == {

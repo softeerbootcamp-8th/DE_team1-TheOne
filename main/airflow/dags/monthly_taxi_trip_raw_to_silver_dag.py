@@ -18,7 +18,6 @@ from main.airflow.common.assets import (
     DEFAULT_SERVICE_AREA,
 )
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
-    check_no_concurrent_region_run_task,
     DEFAULT_SILVER_DIR,
     MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
     PROJECT_ROOT,
@@ -58,10 +57,10 @@ default_args = {
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    # 지역 병렬을 위한 값입니다(#674). #1122 에서 1 로 내렸다가 되돌렸습니다 — 막아야
-    # 할 것은 지역이 아니라 **같은 지역의 동시 실행**이었고, DAG 단위 상한으로는 그
-    # 둘을 구분할 수 없어 지역 병렬까지 같이 막혔습니다. 대신 첫 태스크가 같은 지역의
-    # 다른 실행을 직접 확인해 막습니다 (#1124).
+    # 지역 병렬을 위한 값입니다(#674). 같은 지역의 동시 실행은 이 상한으로 막을 수
+    # 없습니다 — 시작 지점 가드를 넣었다가 문제가 생겨 걷어냈습니다(#1124 롤백).
+    # 같은 지역의 여러 달을 동시에 수동 트리거하면 validate_silver 의 #165 가드가
+    # 서로를 유실로 신고하니, 한 달씩 순서대로 돌리세요.
     max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "monthly_taxi_trip", "bronze", "silver", "spark", "emr", "lambda"],
     params={
@@ -110,13 +109,11 @@ default_args = {
 def monthly_taxi_trip_raw_to_silver_pipeline():
     bronze_to_silver_task = _bronze_to_silver_operator()
 
-    no_conflict = check_no_concurrent_region_run_task()
     raw_result = raw_to_bronze_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
         retry_exponential_backoff=True,
     )()
-    no_conflict >> raw_result
     bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     bronze_checked >> bronze_to_silver_task
 
