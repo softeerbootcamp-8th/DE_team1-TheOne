@@ -10,6 +10,10 @@ from pathlib import Path
 import pyarrow as pa
 from airflow.sdk import task
 
+from main.airflow.common.assets import (
+    DEFAULT_SERVICE_AREA,
+    resolve_service_area,
+)
 from main.airflow.common.monthly_bronze import (
     SILVER_PART_PATTERN,
     silver_part_paths,
@@ -284,6 +288,64 @@ def existing_silver_partitions(
     return sorted(existing)
 
 
+def _conflicting_region_runs(dag_run, service_area: str) -> list[str]:
+    """같은 지역을 처리 중인 **다른** running DagRun 의 run_id.
+
+    `validate_silver` 의 #165 가드는 대상 월을 뺀 나머지 월의 `_SUCCESS` 를 봅니다.
+    마커는 Spark 가 지우고 이 DAG 의 validate_silver 가 다시 붙이므로, 없는 구간이
+    Spark 실행 시간만큼 넓습니다. 그 사이 같은 지역의 다른 실행이 상태를 찍으면
+    서로를 유실로 신고합니다 — 실제로 8초 차이로 띄운 두 수동 실행이 양쪽 다
+    격리됐습니다 (#1122).
+
+    지역이 다르면 저장 경로가 `service_area=` 로 갈려 가드가 서로를 보지 않으므로
+    통과시킵니다. 막을 것은 **같은 지역**뿐입니다.
+
+    조회가 자기 실행조차 못 보면 예외를 던집니다. 메타 DB 를 못 읽는 상황에서 빈
+    목록을 돌려주면 가드가 눈먼 채 통과하는데, 그게 이 저장소에서 반복해서 문제였던
+    "초록불인데 아무것도 검사하지 않은" 모양입니다.
+    """
+    from airflow.models import DagRun
+    from airflow.utils.state import DagRunState
+
+    runs = DagRun.find(dag_id=dag_run.dag_id, state=DagRunState.RUNNING)
+    if not any(run.run_id == dag_run.run_id for run in runs):
+        raise ValueError(
+            "동시 실행 점검이 자기 실행을 찾지 못했습니다 — 메타 DB 조회가 되지 않아 "
+            f"점검을 신뢰할 수 없습니다: dag_id={dag_run.dag_id} run_id={dag_run.run_id}"
+        )
+    return sorted(
+        run.run_id
+        for run in runs
+        if run.run_id != dag_run.run_id
+        and str(
+            (run.conf or {}).get("service_area") or DEFAULT_SERVICE_AREA
+        ) == service_area
+    )
+
+
+@task(
+    task_id="check_no_concurrent_region_run",
+    retries=0,
+    on_failure_callback=slack_failure_callback,
+)
+def check_no_concurrent_region_run_task(**context) -> None:
+    """같은 지역을 처리 중인 실행이 있으면 시작 지점에서 멈춥니다."""
+    service_area = resolve_service_area(context["params"])
+    conflicting = _conflicting_region_runs(context["dag_run"], service_area)
+    if conflicting:
+        raise ValueError(
+            f"같은 지역({service_area})을 처리 중인 다른 실행이 있습니다: "
+            f"{', '.join(conflicting)} — 끝난 뒤에 다시 트리거하세요. "
+            "같은 지역의 두 실행은 서로의 Silver 공개 마커를 지워 "
+            "정상 데이터를 격리시킵니다 (#1122)."
+        )
+    logger.info(
+        "동시 실행 점검 통과: service_area=%s run_id=%s",
+        service_area,
+        context["dag_run"].run_id,
+    )
+
+
 @task(
     task_id="validate_bronze",
     retries=1,
@@ -402,5 +464,7 @@ def _validate_silver(raw_result: dict, context: dict | None = None) -> None:
     lost = sorted(before - after - {current_partition})
     if lost:
         raise ValueError(
-            f"쓰기 전에 있던 Silver 파티션이 사라졌습니다 (#165 재발): {lost}"
+            f"쓰기 전에 있던 Silver 파티션이 사라졌습니다: {lost} — "
+            "정적 overwrite 재발(#165)이거나, 그 달을 처리하는 다른 실행이 동시에 "
+            "돌고 있습니다(#1122). 같은 지역의 running DagRun 부터 확인하세요."
         )

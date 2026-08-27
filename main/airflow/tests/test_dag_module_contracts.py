@@ -50,12 +50,7 @@ def test_DAG_동시실행과_catchup_계약을_유지한다(module_name, dag_var
     dag = getattr(importlib.import_module(f"dags.{module_name}"), dag_variable)
 
     assert dag.catchup is False
-    # monthly_taxi_trip 만 1 입니다 — 같은 지역의 다른 달을 동시에 처리하면 #165
-    # 가드가 서로를 유실로 신고합니다 (#1122). 상세는 test_dag_concurrency.py.
-    expected = 1 if module_name == "monthly_taxi_trip_raw_to_silver_dag" else (
-        MAX_ACTIVE_SERVICE_AREA_RUNS
-    )
-    assert dag.max_active_runs == expected
+    assert dag.max_active_runs == MAX_ACTIVE_SERVICE_AREA_RUNS
 
 
 @pytest.mark.parametrize(
