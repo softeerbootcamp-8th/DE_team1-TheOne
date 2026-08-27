@@ -5,6 +5,7 @@
   - 매 라운드가 끝날 때 `localCheckpoint`로 이전 계산과 연결을 끊고, 반복해서 읽는 후보 순위만 메모리에 저장
   - 기사 2,000명 × 차량 모델 3종에서 실행 시간이 7.40초에서 3.28초로 약 56% 감소
   - 모델 5종에서는 기존 방식이 884.65초 후 메모리 부족으로 실패했지만, 변경 후에는 4.68초에 기사 2,000명의 배정을 완료
+  - 전체 Silver → Gold의 Shuffle 파티션은 현재 40개이며, 로컬 반복 측정에서는 8개가 가장 빨랐으므로 운영 EMR에서 8·16·32·40을 다시 비교해야 함
 
 ## 문제
 
@@ -40,6 +41,8 @@ Spark는 DataFrame 연산을 바로 실행하지 않는다. 결과가 필요할 
 
 - 여러 라운드가 다시 읽는 후보 순위는 메모리에 저장한다.
 - 라운드가 끝날 때까지 쌓인 계산 계획은 다음 라운드로 넘기지 않는다.
+
+반복 루프 내부의 checkpoint 파티션 수와 전체 Spark SQL Shuffle 파티션 수는 분리해서 판단했다. 전자는 작은 라운드 결과의 RDD 블록 수를 제한하고, 후자는 전체 Silver → Gold의 `groupBy`, Window, Join 같은 Exchange 이후 병렬도를 정한다.
 
 ## 해결
 
@@ -86,11 +89,48 @@ Spark는 DataFrame 연산을 바로 실행하지 않는다. 결과가 필요할 
 
 ![후보 순위 캐시와 라운드별 checkpoint 결과](assets/ui_storage_checkpoint.png)
 
+### 전체 파이프라인 Shuffle 파티션 비교
+
+현재 EMR Serverless 제출 설정은 다음과 같다.
+
+```text
+spark.dynamicAllocation.minExecutors=1
+spark.dynamicAllocation.initialExecutors=5
+spark.dynamicAllocation.maxExecutors=5
+spark.executor.cores=2
+spark.sql.shuffle.partitions=40
+```
+
+따라서 현재 적용값은 32개가 아니라 **40개**다. 최대 Executor 코어는 `5 × 2 = 10`개이고 40개 파티션은 최대 자원 기준 4 wave다. 계약 테스트도 Shuffle 파티션 수가 최대 Executor 코어 수의 배수인지 검사한다.
+
+2026-08-27에 현재 코드의 전체 Silver → Gold 계산을 한 번 워밍업한 뒤 Shuffle 파티션 수만 바꾸어 각 조건을 3회 측정했다. 조건 순서는 회차마다 회전시켰다.
+
+- 입력: 운행 678,892행, 기사 2,000명, 차량 12종, 연료비 31일
+- 환경: Spark 3.5.6, Java 17, `local[3]`, driver memory 6GiB, Darwin arm64
+- 공통 설정: 명시적 Broadcast, 선택적 캐시, AQE 활성화
+- 범위: 로컬 Parquet 읽기 → 결합 → 기사 집계 → control total 대조 → v1/v2 추천과 5개 임계값 → 비즈니스 검증 → 두 결과의 `toPandas()`
+- 제외: 입력 생성, Spark 시작·워밍업, CSV·PostgreSQL 적재
+- 정확성: 모든 실행에서 집계 2,000행, 추천 12,000행으로 동일
+
+| Shuffle 파티션 수 | 1회 | 2회 | 3회 | 평균 | 중앙값 |
+|---:|---:|---:|---:|---:|---:|
+| **8** | 20.210초 | 21.504초 | 16.976초 | **19.563초** | **20.210초** |
+| 16 | 21.975초 | 26.870초 | 17.629초 | 22.158초 | 21.975초 |
+| 32 | 25.501초 | 28.424초 | 27.255초 | 27.060초 | 27.255초 |
+| 현재 운영값 **40** | 28.131초 | 28.162초 | 32.825초 | 29.706초 | 28.162초 |
+| 200 | 53.943초 | 60.993초 | 59.232초 | 58.056초 | 59.232초 |
+
+중앙값 기준 8개는 현재 운영값 40보다 28.2%, Spark 기본값 200보다 65.9% 빨랐다. 로컬 실행 슬롯이 3개뿐인 조건에서는 작은 파티션 수가 유리했고, 200개에서는 반복되는 작은 Task의 scheduling overhead가 크게 나타났다.
+
+이 결과만으로 운영값을 8개로 바꾸지는 않는다. 운영 EMR의 최대 10코어와 로컬 3코어는 병렬도가 다르고 입력 분포, Shuffle 크기, 네트워크 비용도 다르다. 운영값 변경 여부는 같은 8·16·32·40 후보를 운영 입력에서 다시 측정해 결정한다.
+
 ## 결론
 
 반복 배정의 병목은 데이터 행 수만의 문제가 아니었다. 이전 라운드의 전체 계산 절차가 다음 라운드에 중복해서 들어가면서 Spark 계획이 빠르게 커지고 있었다.
 
 반복해서 읽는 후보 순위는 메모리에 남기고, 매 라운드 결과는 `localCheckpoint`로 이전 계산과 분리했다. 그 결과 완료 가능한 비교에서는 실행 시간이 7.40초에서 3.28초로 줄었다. 라운드가 5개인 비교에서는 884.65초 후 실패하던 계산이 4.68초에 완료됐다.
+
+전체 파이프라인의 Shuffle 파티션은 현재 40개다. 로컬 측정에서는 8개가 가장 빨랐지만 이는 운영 최적값을 뜻하지 않는다. 따라서 “32개로 최적화”가 현재 상태라는 설명은 맞지 않으며, EMR에서 후보별 수행 시간과 Task 크기·spill·skew를 다시 확인해야 한다.
 
 ### 한계
 
@@ -98,11 +138,15 @@ Spark는 DataFrame 연산을 바로 실행하지 않는다. 결과가 필요할 
 
 라운드가 1~2개로 짧으면 checkpoint를 기록하는 비용이 더 크게 보일 수 있다. 차량 모델 수와 후보 수가 달라지면 적용 주기와 파티션 수를 다시 측정해야 한다.
 
+Shuffle 파티션 최적값도 Executor 수·코어, 월별 운행량, AQE의 파티션 병합 결과가 바뀌면 달라진다. 운영에서는 수행 시간뿐 아니라 scheduling time, Shuffle spill, GC, skew와 너무 작은 Task의 비율을 함께 비교해야 한다.
+
 ### 관련 코드와 측정 자료
 
 - 배정 루프: `main/spark/jobs/silver_to_gold/recommendation_algorithm/base.py`
 - 후보 순위 캐시와 해제: `main/spark/jobs/silver_to_gold/recommendation_algorithm/base.py`
 - 여러 임계값이 공유하는 후보 캐시: `main/spark/jobs/silver_to_gold/recommendation_algorithm/revenue_first.py`
+- 운영 Shuffle 파티션 설정: `main/airflow/dags/monthly_taxi_trip_silver_to_gold_dag.py`
+- Shuffle 파티션 계약 테스트: `main/airflow/tests/test_emr_serverless_runtime.py`
 - 계획 크기: `docs/spark_performance_optimization/assets/plan_growth.json`
 - 3라운드 지표: `docs/spark_performance_optimization/assets/metrics_no_checkpoint_m3.json`, `docs/spark_performance_optimization/assets/metrics_checkpoint_m3.json`
 - 5라운드 지표: `docs/spark_performance_optimization/assets/metrics_no_checkpoint_m5.json`, `docs/spark_performance_optimization/assets/metrics_checkpoint_m5.json`

@@ -3,7 +3,8 @@
 - 요약
   - 67만 건이 넘는 운행 기록에 수십~수천 행의 참조 데이터를 붙이는 과정에서 큰 데이터까지 재분배하고 정렬하는 실행 계획이 나타남
   - 작은 쪽을 각 실행 노드에 복사하는 `Broadcast Join`을 명시하고, 기사×차량 후보와 임계값 확장에도 같은 방식을 적용
-  - Spark UI에서 `SortMergeJoin`이 있던 구간이 `BroadcastHashJoin`으로 바뀐 것을 확인
+  - 자동 Broadcast와 AQE를 끈 현재 코드 검증에서도 `BroadcastHashJoin` 3개와 `BroadcastExchange` 3개가 나타나고 `SortMergeJoin`은 없었음
+  - 전체 파이프라인 반복 측정에서 명시적 Broadcast는 Shuffle Join 강제 조건보다 중앙값 기준 17.0% 빨랐음
   - Python UDF를 사용하지 않아 계산식이 Spark SQL 실행 계획 안에 남음
 
 ## 문제
@@ -21,6 +22,8 @@ Join마다 어느 쪽이 월별 운행 기록이고 어느 쪽이 작은 참조 
 Spark의 자동 판단에만 맡기지 않고 작은 DataFrame에 `broadcast`를 명시했다. Spark가 작은 데이터를 각 실행 노드에 복사하면 큰 데이터는 현재 파티션에 머문 채 해시 테이블을 조회할 수 있다.
 
 기사×차량 후보와 후보×임계값은 업무상 필요한 `crossJoin`이다. 이 경우에도 작은 차량 목록과 임계값 목록만 Broadcast한다. 후보 행 수 자체를 줄였다고 주장하지 않고, 작은 쪽을 재분배하는 단계만 없애는 데 목적을 뒀다.
+
+현재 코드의 명시적 힌트가 실제 Join 전략을 만드는지는 자동 Broadcast와 AQE를 모두 끈 최소 실행으로 확인했다. 수행 시간은 전체 Silver → Gold 경로에서 자동 Broadcast만 막고 명시적 힌트만 켜고 끄는 방식으로 비교해 다른 최적화 조건을 동일하게 유지했다.
 
 ## 해결
 
@@ -58,11 +61,37 @@ Broadcast를 명시한 실행 계획에서는 같은 큰 흐름의 Join이 `Broa
 
 코드 검색으로 추천과 집계 경로에 Python UDF, Pandas UDF, `F.udf` 사용처가 없음을 확인했다. 대용량 데이터 행을 오류 메시지로 가져올 때는 `collect()` 앞에 `limit(5)`를 둔다. 알고리즘·임계값 조합은 작은 설정 목록이라 고유 조합만 별도로 가져온다. 단일 집계 결과는 `first()`로 읽는다.
 
-실행 시간의 적용 전후 비교는 이 문서에 넣지 않았다. 캡처가 증명하는 것은 Join 방식과 Shuffle 구조의 변화다.
+현재 구현에서 힌트 자체가 만드는 실행 계획을 확인하기 위해 `spark.sql.autoBroadcastJoinThreshold=-1`, `spark.sql.adaptive.enabled=false`로 설정하고 핵심 운행 결합 결과를 `count()`로 materialize했다.
+
+```text
+rows=1
+broadcast_hash_joins=3
+broadcast_exchanges=3
+sort_merge_joins=0
+```
+
+따라서 이 최소 실행에서 관측한 Broadcast는 자동 크기 판단이나 AQE 전환이 아니라 코드에 명시한 힌트로 생성됐다.
+
+### 현재 전체 파이프라인 수행 시간
+
+2026-08-27에 현재 코드의 전체 Silver → Gold 계산을 한 번 워밍업한 뒤 각 조건을 3회 측정했다. 조건마다 입력과 캐시, AQE, Shuffle 파티션 수를 같게 두고 `spark.sql.autoBroadcastJoinThreshold=-1`로 자동 Broadcast를 막았다.
+
+- 입력: 운행 678,892행, 기사 2,000명, 차량 12종, 연료비 31일
+- 환경: Spark 3.5.6, Java 17, `local[3]`, driver memory 6GiB, Darwin arm64
+- 범위: 로컬 Parquet 읽기 → 결합 → 기사 집계 → control total 대조 → v1/v2 추천과 5개 임계값 → 비즈니스 검증 → 두 결과의 `toPandas()`
+- 제외: 입력 생성, Spark 시작·워밍업, CSV·PostgreSQL 적재
+- 정확성: 매 실행에서 집계 2,000행, 추천 12,000행으로 동일
+
+| 조건 | 1회 | 2회 | 3회 | 평균 | 중앙값 |
+|---|---:|---:|---:|---:|---:|
+| 명시적 Broadcast | 32.194초 | 28.744초 | 20.292초 | 27.077초 | **28.744초** |
+| 힌트 제거, Shuffle Join 강제 | 38.869초 | 34.631초 | 27.687초 | 33.729초 | **34.631초** |
+
+명시적 Broadcast는 중앙값 기준 5.887초, **17.0%** 단축됐고 평균 기준으로는 19.7% 단축됐다. 이는 Broadcast 효과를 분리한 로컬 합성 벤치마크이므로, 자동 Broadcast와 AQE까지 사용하는 EMR의 실제 절감률은 운영 입력과 Spark UI로 다시 측정해야 한다.
 
 ## 결론
 
-큰 운행 기록과 작은 참조 데이터의 역할을 코드에 명시했다. Spark UI에서 작은 쪽은 `BroadcastExchange`, Join은 `BroadcastHashJoin`으로 실행된 것을 확인했다.
+큰 운행 기록과 작은 참조 데이터의 역할을 코드에 명시했다. Spark UI와 현재 실행 계획에서 작은 쪽은 `BroadcastExchange`, Join은 `BroadcastHashJoin`으로 실행된 것을 확인했다. 현재 로컬 전체 경로에서는 Shuffle Join 강제 조건보다 중앙값 기준 17.0% 빨랐다.
 
 차량 모델이나 기사 프로필이 실행 노드 메모리에 부담을 줄 정도로 커지면 Broadcast 적용 여부를 다시 확인해야 한다. 이때는 데이터 크기, Broadcast 생성 시간, Executor 메모리를 함께 비교한다.
 
