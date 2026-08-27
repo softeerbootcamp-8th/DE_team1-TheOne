@@ -177,6 +177,13 @@
 - Spark UI에서 대상 DataFrame의 100% 캐시와 Storage Memory 54MiB·Disk 0B를 확인하고, 반복 배정 결과는 `localCheckpoint`로 긴 lineage와 분리했습니다.
 </details>
 
+<details>
+<summary><a href="/docs/troubleshooting/pipeline/SILVER_TO_GOLD_EMR_OOM.md">추천 계산을 조건값마다 처음부터 다시 돌리다 메모리 부족으로 작업이 실패</a></summary>
+
+- 회사 매출 우선 추천은 "기사 순수익이 최소 얼마나 늘어야 하는지"를 정하는 기준값(threshold)을 5개로 나눠 검토하는데, 차량 배정 계산을 기준값마다 처음부터 새로 돌려 총 6번 반복했습니다. 매번 만들어지는 임시 데이터가 정리되지 않고 계속 쌓여 계산 서버의 메모리가 가득 차 작업이 죽었습니다.
+- 기준값 5개를 한 번의 계산 안에서 함께 처리하도록 바꿔 반복 횟수를 6번에서 2번으로 줄였습니다.
+</details>
+
 
 ### 데이터 프로덕트의 완성도
 > 핵심 기능 구현, E2E 동작 완성도, 결과물 형태 관련 문서
