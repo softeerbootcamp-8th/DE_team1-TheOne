@@ -11,6 +11,7 @@
 9. 확정된 연월·API 주소·지역을 하위 DAG trigger conf로 전달
 10. refresh DAG가 내부 Source API 기본 주소를 사용
 11. 일일 Gold staleness 감시는 원천 refresh 분기와 독립적으로 실행
+12. 하위 DAG trigger는 실행마다 자동 Run ID를 만들고 기존 Run을 reset하지 않음
 """
 
 import hashlib
@@ -546,26 +547,8 @@ def test_감시DAG는_변경DAG들을_기다리고_READY를_한번만_발행한�
         assert trigger.trigger_dag_id == child_dag_id
         assert trigger.wait_for_completion is True
         assert trigger.deferrable is True
-        assert trigger.reset_dag_run is True
-
-
-def test_trigger_run_id에_지역이_들어간다():
-    """`version` 은 (year_month, etag, last_modified) 해시라, 두 지역이 같은 원천에서
-    같은 응답을 받으면 run_id 가 겹칩니다. `reset_dag_run=True` 와 겹치면 **한 지역이
-    다른 지역의 DagRun 을 리셋**합니다(#674). 값은 params 가 아니라 xcom 에서 꺼내
-    실제로 상태 조회에 쓴 지역과 어긋나지 않게 합니다."""
-    for dataset, _ in SOURCES:
-        gate_task_id = f"check_and_should_refresh_{dataset}"
-        trigger = source_api_refresh_dag.get_task(f"trigger_{dataset}")
-
-        assert (
-            f"ti.xcom_pull(task_ids='{gate_task_id}')['service_area']"
-            in trigger.trigger_run_id
-        )
-        # 지역이 월·version 보다 앞에 와야 같은 달의 두 지역이 다른 run_id 가 됩니다.
-        assert trigger.trigger_run_id.index("['service_area']") < (
-            trigger.trigger_run_id.index("['year_month']")
-        )
+        assert trigger.trigger_run_id is None
+        assert trigger.reset_dag_run is False
 
 
 def test_하위DAG_trigger는_확정된_연월과_API주소와_지역을_conf로_전달한다():
