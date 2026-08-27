@@ -151,30 +151,30 @@
 </div>
 
 ### 성능 최적화
-> Spark 실행 계획·Shuffle·캐시·메모리 최적화
+> 실행 시간·메모리 개선을 동일 입력의 전후 측정과 결과 동일성 검증으로 확인했습니다.
 
 <details>
-<summary><a href="/docs/spark_performance_optimization/07_allocation_loop_runtime_optimization.md">반복 배정 루프의 계산 계획 폭증과 메모리 부족 해결</a></summary>
+<summary><a href="/docs/spark_performance_optimization/07_allocation_loop_runtime_optimization.md">Spark lineage 폭증을 차단해 14분 후 OOM 나던 작업을 4.68초에 완료</a></summary>
 
-- 라운드마다 약 4배씩 커지던 Spark 계산 계획을 `localCheckpoint`로 절단해, 6라운드 기준 계획 크기를 약 6,700만 자에서 559자로 줄였습니다.
-- 기사 2,000명·차량 3종 배정은 7.40초에서 3.28초로 약 56% 단축했고, 차량 5종에서 884.65초 후 메모리 부족으로 실패하던 작업은 4.68초에 완료했습니다.
-- 적용 전후 결과 행 수와 체크섬을 비교해 성능 개선 후에도 같은 차량 배정 결과가 만들어지는지 검증했습니다.
+- 라운드마다 약 4배씩 커지던 계산 계획을 `localCheckpoint`로 절단해, 6라운드 기준 67,585,892자에서 559자로 줄였습니다.
+- 기사 2,000명·차량 3종 배정은 7.40초에서 3.28초로 56% 단축하고 Spark Job 수를 269개에서 26개로 줄였습니다.
+- 차량 5종에서는 884.65초 후 Java Heap 부족으로 실패하던 작업을 4.68초에 완료했으며, 결과 행 수와 체크섬도 동일했습니다.
 </details>
 
 <details>
-<summary><a href="/docs/spark_performance_optimization/02_broadcast_join_and_catalyst_execution.md">작은 참조 데이터 Broadcast로 불필요한 Shuffle·정렬 제거</a></summary>
+<summary><a href="/docs/spark_performance_optimization/03_selective_caching_and_lineage_cutoff.md">선택적 캐싱으로 Silver → Gold 실행시간 43.3% 단축</a></summary>
 
-- 678,892행의 운행 데이터에 수십~수천 행의 기사·차량·연료비 정보를 붙일 때 작은 입력을 명시적으로 Broadcast했습니다.
-- Spark UI에서 `SortMergeJoin`과 200개 파티션의 `Exchange·Sort`가 있던 구간이 `BroadcastHashJoin·BroadcastExchange`로 바뀐 것을 확인했습니다.
-- Python UDF 없이 Spark SQL 내장 표현식으로 계산해 직렬화 비용을 피하고 Catalyst가 전체 실행 계획을 최적화할 수 있게 했습니다.
+- 전체 파이프라인 중앙값이 cache off 49.673초에서 cache on 28.162초로 줄어 실행시간이 43.3% 단축됐습니다.
+- 재사용 횟수와 upstream 연산 비용을 기준으로 비싼 중간 DataFrame 5종만 `persist`하고, 사용 범위가 끝나면 `unpersist`했습니다.
+- 실행 계획의 `InMemoryTableScan`, Storage Memory 54MiB·Disk 0B, 해제 후 저장 RDD 1개→0개를 확인했습니다.
 </details>
 
 <details>
-<summary><a href="/docs/spark_performance_optimization/03_selective_caching_and_lineage_cutoff.md">재사용 DataFrame만 선택적으로 캐싱해 반복 계산과 메모리 낭비 절감</a></summary>
+<summary><a href="/docs/spark_performance_optimization/02_broadcast_join_and_catalyst_execution.md">Broadcast Join으로 불필요한 Shuffle을 제거해 실행시간 17.0% 단축</a></summary>
 
-- 여러 Action과 추천 알고리즘에서 반복 사용하는 Join·집계·후보 결과만 `persist`하고, 일회성 중간 결과는 캐싱하지 않았습니다.
-- 작업 범위 캐시는 `finally`에서, 추천 내부 캐시는 사용 직후 `unpersist`해 Executor 메모리 점유 시간을 제한했습니다.
-- Spark UI에서 대상 DataFrame의 100% 캐시와 Storage Memory 54MiB·Disk 0B를 확인하고, 반복 배정 결과는 `localCheckpoint`로 긴 lineage와 분리했습니다.
+- 678,892행의 운행 데이터와 수십~수천 행의 참조 데이터를 결합할 때 작은 입력에 Broadcast를 명시했습니다.
+- 전체 파이프라인 중앙값이 Shuffle Join 강제 조건 34.631초에서 28.744초로 줄어 실행시간이 17.0% 단축됐습니다.
+- 자동 Broadcast와 AQE를 끈 검증에서도 `BroadcastHashJoin` 3개·`BroadcastExchange` 3개·`SortMergeJoin` 0개를 확인했습니다.
 </details>
 
 
