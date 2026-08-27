@@ -309,53 +309,17 @@
 
 ## 기술 스택
 
-<div align="center">
+| 분류 | 기술 |
+| --- | --- |
+| **Data Processing** | ![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white) ![Apache Spark](https://img.shields.io/badge/Apache_Spark-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white) ![Pandas](https://img.shields.io/badge/Pandas-150458?style=for-the-badge&logo=pandas&logoColor=white) |
+| **Storage** | ![AWS S3](https://img.shields.io/badge/S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white) ![Amazon RDS](https://img.shields.io/badge/RDS-527FFF?style=for-the-badge&logo=amazonrds&logoColor=white) |
+| **Compute / Infrastructure** | ![AWS EMR](https://img.shields.io/badge/EMR-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white) ![AWS Lambda](https://img.shields.io/badge/Lambda-FF9900?style=for-the-badge&logo=awslambda&logoColor=white) ![AWS EC2](https://img.shields.io/badge/EC2-FF9900?style=for-the-badge&logo=amazonec2&logoColor=white) ![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white) ![AWS VPC](https://img.shields.io/badge/AWS_VPC-FF9900?style=for-the-badge&logo=amazonwebservices&logoColor=white) |
+| **Orchestration / Quality** | ![Airflow](https://img.shields.io/badge/Airflow-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white) ![Great Expectations](https://img.shields.io/badge/Great_Expectations-FF6310?style=for-the-badge&logo=greatexpectations&logoColor=white) ![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white) ![Slack](https://img.shields.io/badge/Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white) |
+| **Monitoring** | ![Grafana](https://img.shields.io/badge/Grafana-F46800?style=for-the-badge&logo=grafana&logoColor=white) ![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=for-the-badge&logo=prometheus&logoColor=white) |
+| **Visualization** | ![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white) |
+| **ETC** | ![Jira](https://img.shields.io/badge/Jira-0052CC?style=for-the-badge&logo=jira&logoColor=white) ![Confluence](https://img.shields.io/badge/Confluence-172B4D?style=for-the-badge&logo=confluence&logoColor=white) |
+| **AI 기술** | ![Codex](https://img.shields.io/badge/Codex-000000?style=for-the-badge) ![Claude](https://img.shields.io/badge/Claude-D97757?style=for-the-badge&logo=claude&logoColor=white) <img src="https://img.shields.io/badge/Context Engineering-000080?style=for-the-badge&logoColor=white" alt="Grill-Me 바로가기" /> <img src="https://img.shields.io/badge/필요 스킬 제작-1D2545?style=for-the-badge&logoColor=white" alt="스킬 제작" /> <a href="https://www.aihero.dev/skills-grill-me"><img src="https://img.shields.io/badge/Grill ME Skill-0F000?style=for-the-badge&logoColor=white" alt="Grill-Me 바로가기" /></a> <a href="https://github.com/obra/superpowers"><img src="https://img.shields.io/badge/superpowers skill-A02000?style=for-the-badge&logoColor=white" alt="Superpowers 바로가기" /></a> <a href="https://github.com/dietrichgebert/ponytail"><img src="https://img.shields.io/badge/Ponytail Skill-A08000?style=for-the-badge&logoColor=white" alt="Ponytail 바로가기" /></a> |
 
-### Data Processing
-![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![Apache Spark](https://img.shields.io/badge/Apache_Spark-E25A1C?style=for-the-badge&logo=apachespark&logoColor=white)
-![Pandas](https://img.shields.io/badge/Pandas-150458?style=for-the-badge&logo=pandas&logoColor=white)
-
-### Storage
-![AWS S3](https://img.shields.io/badge/S3-569A31?style=for-the-badge&logo=amazons3&logoColor=white)
-![Amazon RDS](https://img.shields.io/badge/RDS-527FFF?style=for-the-badge&logo=amazonrds&logoColor=white)
-
-### Compute / Infrastructure
-![AWS EMR](https://img.shields.io/badge/EMR-FF9900?style=for-the-badge&logo=amazonaws&logoColor=white)
-![AWS Lambda](https://img.shields.io/badge/Lambda-FF9900?style=for-the-badge&logo=awslambda&logoColor=white)
-![AWS EC2](https://img.shields.io/badge/EC2-FF9900?style=for-the-badge&logo=amazonec2&logoColor=white)
-![Docker](https://img.shields.io/badge/Docker-2496ED?style=for-the-badge&logo=docker&logoColor=white)
-![AWS VPC](https://img.shields.io/badge/AWS_VPC-FF9900?style=for-the-badge&logo=amazonwebservices&logoColor=white)
-
-### Orchestration / Quality
-![Airflow](https://img.shields.io/badge/Airflow-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white)
-![Great Expectations](https://img.shields.io/badge/Great_Expectations-FF6310?style=for-the-badge&logo=greatexpectations&logoColor=white)
-![GitHub Actions](https://img.shields.io/badge/GitHub_Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white)
-![Slack](https://img.shields.io/badge/Slack-4A154B?style=for-the-badge&logo=slack&logoColor=white)
-
-### Monitoring
-![Grafana](https://img.shields.io/badge/Grafana-F46800?style=for-the-badge&logo=grafana&logoColor=white)
-![Prometheus](https://img.shields.io/badge/Prometheus-E6522C?style=for-the-badge&logo=prometheus&logoColor=white)
-
-### Visualization
-![Streamlit](https://img.shields.io/badge/Streamlit-FF4B4B?style=for-the-badge&logo=streamlit&logoColor=white)
-
-### ETC
-![Jira](https://img.shields.io/badge/Jira-0052CC?style=for-the-badge&logo=jira&logoColor=white)
-![Confluence](https://img.shields.io/badge/Confluence-172B4D?style=for-the-badge&logo=confluence&logoColor=white)
-
-### AI 기술
-![Codex](https://img.shields.io/badge/Codex-000000?style=for-the-badge)
-![Claude](https://img.shields.io/badge/Claude-D97757?style=for-the-badge&logo=claude&logoColor=white)
-<img src="https://img.shields.io/badge/Context Engineering-000080?style=for-the-badge&logoColor=white" alt="Grill-Me 바로가기" />
-<img src="https://img.shields.io/badge/필요 스킬 제작-1D2545?style=for-the-badge&logoColor=white" alt="스킬 제작" />
-<a href="https://www.aihero.dev/skills-grill-me"><img src="https://img.shields.io/badge/Grill ME Skill-0F000?style=for-the-badge&logoColor=white" alt="Grill-Me 바로가기" /></a>
-<a href="https://github.com/obra/superpowers"><img src="https://img.shields.io/badge/superpowers skill-A02000?style=for-the-badge&logoColor=white" alt="Superpowers 바로가기" /></a>
-<a href="https://github.com/dietrichgebert/ponytail"><img src="https://img.shields.io/badge/Ponytail Skill-A08000?style=for-the-badge&logoColor=white" alt="Ponytail 바로가기" /></a>
-
-
-
-</div>
 <br/>
 
 [목차로 이동](#목차)
