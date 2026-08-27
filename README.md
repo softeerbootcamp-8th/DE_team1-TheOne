@@ -83,7 +83,14 @@
 | **Silver** | 원본별 정제, 연료비 통합, 레코드 품질 검증 | Lambda or Spark(EMR) | S3|
 | **Gold** | 비즈니스 로직 적용, 조인, 집계, 시뮬레이션, 추천 | Lambda or Spark(EMR) | RDS |
 
-### 4. AWS Infra Architecture
+### 4. DAG 흐름 확인
+
+1. 골드 파이프라인 진입 전
+  ![골드 진입 전 DAG](/assets/dag_architecture_before_gold.png)
+2. 골드 파이프라인 진입 후
+  ![골드 진입 후 DAG](/assets/dag_architecture_after_gold.png)
+
+### 5. AWS Infra Architecture
 ![AWS 인프라 아키텍처](assets/AWS_architecture.png)
 - [AWS 서비스별 역할 및 설명](/docs/AWS_INFRA.md)
 - 주요 항목
