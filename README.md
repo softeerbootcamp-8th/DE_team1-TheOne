@@ -272,6 +272,13 @@
   - 결과: 서브쿼리 조건에 `service_area`를 추가해 PK 선두 컬럼과 일치시켜 인덱스를 다시 타도록 했습니다.
 </details>
 
+<details>
+<summary><a href="/docs/troubleshooting/etc/DASHBOARD_LATEST_VERSION_SEQSCAN.md">대시보드 최신 버전 조회가 행마다 MAX(version)을 반복 계산해 5.4초 걸림</a></summary>
+
+- 상관 서브쿼리가 매 행마다 `MAX(version)`을 다시 계산해 `Seq Scan`이 386,704회 반복됐습니다.
+  - 결과: 윈도우 함수로 재작성해 `MAX(version)`을 파티션당 한 번만 계산하도록 바꿔 실행 시간이 5423.773ms에서 812.079ms로 줄었습니다.
+</details>
+
 ### [의사결정 문서](./docs/decision_making/README.md)
 > 팀내 의견 공유를 통해 날짜별 의사결정한 내용(기술/기획 등) 정리
 
