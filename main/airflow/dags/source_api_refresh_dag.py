@@ -98,17 +98,6 @@ def source_api_refresh_pipeline():
         trigger = TriggerDagRunOperator(
             task_id=f"trigger_{dataset}",
             trigger_dag_id=dag_id,
-            # 지역을 run_id 에 넣습니다. version 은 (year_month, etag, last_modified)
-            # 해시라, 두 지역이 같은 원천에서 같은 응답을 받으면 run_id 가 겹치고
-            # reset_dag_run=True 때문에 **한 지역이 다른 지역의 DagRun 을 리셋**합니다
-            # (#674). 값은 params 가 아니라 xcom 에서 꺼내 실제로 상태 조회에 쓴
-            # 지역과 어긋나지 않게 합니다.
-            trigger_run_id=(
-                f"source_refresh__{dataset}__"
-                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['service_area'] }}}}__"
-                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year_month'] }}}}__"
-                f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['version'] }}}}"
-            ),
             conf={
                 "year": (
                     f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['year'] }}}}"
@@ -123,7 +112,6 @@ def source_api_refresh_pipeline():
                     f"{{{{ ti.xcom_pull(task_ids='{gate_task_id}')['service_area'] }}}}"
                 ),
             },
-            reset_dag_run=True,
             wait_for_completion=True,
             deferrable=True,
             poke_interval=30,
