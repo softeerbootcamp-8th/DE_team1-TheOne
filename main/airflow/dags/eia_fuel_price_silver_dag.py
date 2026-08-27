@@ -10,14 +10,15 @@ Bronze 원본을 직접 읽지 않습니다 — 정제(주간·월간 원본을 
 스케줄
 -----
 지정이 없으면 전력 공개 지연(약 3개월)만큼 물러선 달을 채웁니다 — 두 CLEAN 중 전력이
-늦게 나오므로 그쪽에 맞춥니다. 원천 정제 DAG 두 개(01:00, 02:00 UTC)의 완료를
-ExternalTaskSensor 로 기다린 뒤 03:00 에 통합합니다 — 스케줄 오프셋만으로는 상류가
-재시도로 늦어질 때 빈 Silver 로 실패합니다.
+늦게 나오므로 그쪽에 맞춥니다. 원천 정제 DAG 두 개(01:00, 02:00 UTC) 뒤인 03:00 에 통합합니다.
+
+예전에는 상류 완료를 `ExternalTaskSensor` 로 기다렸는데(#1086), 실제로 매칭되지 않아
+걷어냈습니다. 상류가 늦으면 기다리는 대신 `check_clean_silver` 가 파일 부재로 즉시
+실패하므로, 그때 다시 트리거하면 됩니다 — 월 1회 DAG 이라 그 편이 낫습니다.
 """
 
 from datetime import datetime, timedelta
 
-from airflow.providers.standard.sensors.external_task import ExternalTaskSensor
 from airflow.sdk import Param, dag
 
 from main.airflow.common.assets import (
@@ -42,35 +43,6 @@ default_args = {
     "on_retry_callback": slack_retry_alert_callback,
     "on_failure_callback": slack_failure_callback,
 }
-
-
-def _upstream_logical_date(hour: int):
-    """같은 달 실행의 상류 논리 날짜로 바꿉니다.
-
-    세 DAG 모두 매월 1일에 실행되지만 시각이 달라(01·02·03시 UTC) 논리 실행일이
-    정확히 일치하지 않습니다. 상류 실행 시각으로 시간을 맞춰 같은 달 실행을
-    기다립니다.
-    """
-
-    def _map(logical_date):
-        return logical_date.replace(hour=hour, minute=0, second=0, microsecond=0)
-
-    return _map
-
-
-def _wait_for(external_dag_id: str, hour: int, task_id: str) -> ExternalTaskSensor:
-    return ExternalTaskSensor(
-        task_id=task_id,
-        external_dag_id=external_dag_id,
-        external_task_ids=["validate_silver"],
-        allowed_states=["success"],
-        execution_date_fn=_upstream_logical_date(hour),
-        check_existence=True,
-        # 월간 DAG 라 worker 를 점유하지 않도록 reschedule 모드로 폴링합니다.
-        mode="reschedule",
-        poll_interval=300,
-        timeout=60 * 60 * 6,
-    )
 
 
 @dag(
@@ -103,17 +75,7 @@ def eia_fuel_price_silver_pipeline():
     # 통합만 재시도합니다. 확인·검증은 파일을 다시 봐도 결과가 같아서 재시도가
     # 실패를 늦추기만 합니다.
     (
-        [
-            _wait_for(
-                "eia_gas_price_raw_to_silver_pipeline", 1, "wait_gas_silver"
-            ),
-            _wait_for(
-                "eia_electricity_price_raw_to_silver_pipeline",
-                2,
-                "wait_electricity_silver",
-            ),
-        ]
-        >> check_clean_silver_task.override(retries=0)()
+        check_clean_silver_task.override(retries=0)()
         >> combine_silver_task.override(retries=1, retry_delay=timedelta(minutes=10))()
         >> validate_silver_task.override(retries=0)()
     )

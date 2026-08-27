@@ -123,48 +123,31 @@ def test_DAG는_월간_스케줄로_확인_통합_검증을_순서대로_처리�
     assert DAG.dag_id == "eia_fuel_price_silver_pipeline"
     assert DAG.schedule == "0 3 1 * *"
     assert set(DAG.task_ids) == {
-        "wait_gas_silver",
-        "wait_electricity_silver",
         "check_clean_silver",
         "combine_silver",
         "validate_silver",
-    }
-    assert DAG.get_task("wait_gas_silver").downstream_task_ids == {"check_clean_silver"}
-    assert DAG.get_task("wait_electricity_silver").downstream_task_ids == {
-        "check_clean_silver"
     }
     assert DAG.get_task("check_clean_silver").downstream_task_ids == {"combine_silver"}
     assert DAG.get_task("combine_silver").downstream_task_ids == {"validate_silver"}
     assert DAG.catchup is False and DAG.max_active_runs == 3
 
 
-def test_상류_두_DAG의_validate_silver_성공을_기다린다():
-    """스케줄 오프셋만으로는 상류 재시도와 겹칠 수 있으므로 완료를 보장한다 (#1086)."""
-    gas = DAG.get_task("wait_gas_silver")
-    electricity = DAG.get_task("wait_electricity_silver")
+def test_상류_대기_센서를_두지_않는다():
+    """센서(#1086)를 걷어냈습니다.
 
-    assert (gas.external_dag_id, electricity.external_dag_id) == (
-        "eia_gas_price_raw_to_silver_pipeline",
-        "eia_electricity_price_raw_to_silver_pipeline",
-    )
-    for task in (gas, electricity):
-        assert task.external_task_ids == ["validate_silver"]
-        assert task.allowed_states == ["success"]
-        assert task.mode == "reschedule"
+    수동 실행의 논리 날짜가 스케줄 실행과 달라 매칭되지 않았습니다. 상류가 늦으면
+    기다리는 대신 `check_clean_silver` 가 파일 부재로 즉시 실패하고, 그때 다시
+    트리거하면 됩니다 — 월 1회 DAG 이라 그 편이 낫습니다.
+    """
+    assert not [task_id for task_id in DAG.task_ids if task_id.startswith("wait_")]
 
 
-def test_센서는_상류_실행시각으로_논리날짜를_맞춰_본다():
-    """같은 달 1일이어도 실행 시각이 달라 논리 날짜가 어긋나므로 보정한다 (#1086)."""
-    logical_date = datetime(2026, 8, 1, 3, 0)
+def test_첫_태스크가_상류_파일을_직접_확인한다():
+    """센서를 뺀 자리를 파일 확인이 메웁니다 — 상태가 아니라 산출물을 봅니다."""
+    check = DAG.get_task("check_clean_silver")
 
-    assert (
-        DAG.get_task("wait_gas_silver").execution_date_fn(logical_date)
-        == datetime(2026, 8, 1, 1, 0)
-    )
-    assert (
-        DAG.get_task("wait_electricity_silver").execution_date_fn(logical_date)
-        == datetime(2026, 8, 1, 2, 0)
-    )
+    assert check.upstream_task_ids == set()
+    assert check.downstream_task_ids == {"combine_silver"}
 
 
 def test_통합만_재시도하고_확인과_검증은_재시도하지_않는다():
