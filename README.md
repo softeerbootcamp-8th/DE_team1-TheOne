@@ -4,7 +4,7 @@
 <h4><b>택시 차량 리스 업체를 위한 <span style="color:#0c549f;">운행 데이터 기반 차량 교체 추천</span> 대시보드</b></h4>
 
 <p>NEXTMOVE는 <span style="color:#0c549f;font-weight:bold;">운행 데이터를 기반으로 차량 교체를 제안할 고객을 확인</span>할 수 있는 대시보드입니다.<br/>
-이때, 추천 대상은 <span style="color:#0c549f;font-weight:bold;">상위 등급 차량 교체시 고객의 순수익이 월 $500 이상 증가</span>하는 고객입니다.</p>
+이때, 추천 대상은 <span style="color:#0c549f;font-weight:bold;">차량 교체시 고객의 순수익이 월 $500 이상 증가</span>하는 고객입니다.</p>
 
 <a href="https://43-200-202-72.sslip.io/"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a> <a href="docs/TEAM_RULES.md"><img src="https://img.shields.io/badge/팀규칙_바로가기-000000?style=for-the-badge&logoColor=white" alt="팀 규칙 바로가기" /></a>
 </div>
@@ -22,7 +22,7 @@
 
 ## 프로젝트 개요 
 ### 대상 
-- 뉴욕 Uber·Lyft 기사 대상 차량 리스 업체의 고객 담당자
+- 미국 Uber * Lyft 기사 대상 차량 리스 업체의 고객 담당자
 ### 문제점
 - 객단가 향상을 통한 매출 상승 기회 상실 
   - 기사에게 더 높은 순수익을 주면서도 리스 업체의 객단가를 끌어올릴 수 있는 차량을 데이터 기반으로 추천하지 못함
