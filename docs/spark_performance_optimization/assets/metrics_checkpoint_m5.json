@@ -1,0 +1,21 @@
+{
+  "variant": "checkpoint",
+  "drivers": 2000,
+  "models": 5,
+  "stock_per_model": 2,
+  "shuffle_partitions": 32,
+  "assigned_rows": 2000,
+  "elapsed_sec": 4.68,
+  "error": null,
+  "checksum_rows": 2000,
+  "checksum_sum_hash": -127909078907,
+  "app_id": "local-1787727073206",
+  "jobs_total": 38,
+  "tasks_total": 1066,
+  "stage_runtime_sec_sum": 4.0,
+  "shuffle_read_mb": 0.8,
+  "shuffle_write_mb": 0.5,
+  "memory_spill_mb": 0.0,
+  "disk_spill_mb": 0.0,
+  "executor_storage_used_mb": 5.0
+}

@@ -1,0 +1,21 @@
+{
+  "variant": "none",
+  "drivers": 2000,
+  "models": 3,
+  "stock_per_model": 2,
+  "shuffle_partitions": 32,
+  "assigned_rows": 2000,
+  "elapsed_sec": 7.4,
+  "error": null,
+  "checksum_rows": 2000,
+  "checksum_sum_hash": -120522737923,
+  "app_id": "local-1787728033826",
+  "jobs_total": 269,
+  "tasks_total": 1330,
+  "stage_runtime_sec_sum": 66.8,
+  "shuffle_read_mb": 3.3,
+  "shuffle_write_mb": 3.3,
+  "memory_spill_mb": 0.0,
+  "disk_spill_mb": 0.0,
+  "executor_storage_used_mb": 16.3
+}

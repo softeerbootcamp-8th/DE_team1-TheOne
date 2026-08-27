@@ -1,0 +1,8 @@
+{
+  "method": "라운드별로 배정 결과 DataFrame의 논리 계획(analyzed plan) 문자열 길이를 실행 없이 측정",
+  "data": "합성: 기사 300명 × 차량 모델 9종, 모델당 재고 2대",
+  "rounds": 6,
+  "no_checkpoint_plan_chars": [34899, 192616, 867476, 3742884, 15948388, 67585892],
+  "checkpoint_plan_chars": [559, 559, 559, 559, 559, 559],
+  "no_checkpoint_round_over_ratio": [5.52, 4.50, 4.31, 4.26, 4.24]
+}

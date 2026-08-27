@@ -1,0 +1,13 @@
+{
+  "variant": "none",
+  "drivers": 2000,
+  "models": 5,
+  "stock_per_model": 2,
+  "shuffle_partitions": 32,
+  "assigned_rows": null,
+  "elapsed_sec": 884.65,
+  "error": "Py4JJavaError: An error occurred while calling o588.count.\n: java.lang.OutOfMemoryError: Java heap space\n",
+  "checksum_rows": null,
+  "checksum_sum_hash": null,
+  "metrics_error": "<urlopen error [Errno 61] Connection refused>"
+}

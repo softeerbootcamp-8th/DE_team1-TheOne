@@ -144,9 +144,16 @@
 [목차로 이동](#목차)
 
 ## 문서화
+<div align=center>
+
+<a href="docs/README.md"><img src="https://img.shields.io/badge/문서화 규칙 확인-000000?style=for-the-badge&logoColor=white" alt="대시보드 바로가기" /></a> <a href="docs/decision_making/README.md"><img src="https://img.shields.io/badge/날짜별 의사 결정 문서-000000?style=for-the-badge&logoColor=white" alt="팀 규칙 바로가기" /></a>
+
+</div>
 
 ### 성능 최적화
 > Spark 성능 최적화
+
+
 
 ### 데이터 프로덕트의 완성도
 > 핵심 기능 구현, E2E 동작 완성도, 결과물 형태 관련 문서
@@ -192,6 +199,12 @@
 
 ### 운영 용이성 및 안정성
 > 파이프라인 운영 안정성과 관련된 문서
+
+<details>
+<summary><a href="/docs/pipeline_operations_and_reliability/SELECTIVE_API_REFRESH_AND_SINGLE_GOLD_RUN.md">스키마 드리프트 및 데이터 불량률 정책</a></summary>
+
+- 데이터 특성 별로 다른 기준의 정책을 적용
+</details>
 
 <details>
 <summary><a href="/docs/pipeline_operations_and_reliability/SELECTIVE_API_REFRESH_AND_SINGLE_GOLD_RUN.md">변경된 API 데이터만 처리하고 최종 계산은 한 번만 실행</a></summary>
