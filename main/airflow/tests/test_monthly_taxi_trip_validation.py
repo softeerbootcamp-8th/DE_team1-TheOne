@@ -1014,3 +1014,53 @@ def test_지역_스코프_루트는_다른_지역_파티션을_섞지_않는다(
     assert task_module.existing_silver_partitions(
         str(silver / "service_area=TX")
     ) == ["year_month=2026-07"]
+
+
+class _FakeRun:
+    def __init__(self, run_id, service_area=None, dag_id="monthly_taxi_trip_raw_to_silver_pipeline"):
+        self.run_id = run_id
+        self.dag_id = dag_id
+        self.conf = {"service_area": service_area} if service_area else {}
+
+
+def _patch_find(monkeypatch, runs):
+    import airflow.models
+
+    monkeypatch.setattr(
+        airflow.models.DagRun, "find", staticmethod(lambda **kwargs: runs)
+    )
+
+
+def test_같은_지역의_다른_실행이_있으면_시작에서_막는다(monkeypatch):
+    me = _FakeRun("manual__me", "NYC")
+    _patch_find(monkeypatch, [me, _FakeRun("manual__other", "NYC")])
+
+    assert task_module._conflicting_region_runs(me, "NYC") == ["manual__other"]
+
+    with pytest.raises(ValueError, match="같은 지역\\(NYC\\)을 처리 중인 다른 실행"):
+        task_module.check_no_concurrent_region_run_task.function(
+            params={"service_area": "NYC"}, dag_run=me
+        )
+
+
+def test_다른_지역_실행은_통과시킨다(monkeypatch):
+    """지역은 저장 경로로 격리되어 가드가 서로를 보지 않습니다 (#674)."""
+    me = _FakeRun("manual__me", "NYC")
+    _patch_find(monkeypatch, [me, _FakeRun("manual__tx", "TX")])
+
+    assert task_module._conflicting_region_runs(me, "NYC") == []
+
+
+def test_지역을_안_준_실행은_기본_지역으로_본다(monkeypatch):
+    me = _FakeRun("manual__me", "NYC")
+    _patch_find(monkeypatch, [me, _FakeRun("scheduled__x")])  # conf 비어 있음
+
+    assert task_module._conflicting_region_runs(me, "NYC") == ["scheduled__x"]
+
+
+def test_자기_실행조차_못_보면_실패한다(monkeypatch):
+    """메타 DB 를 못 읽을 때 빈 목록으로 조용히 통과하면 가드가 눈먼 채 초록불이 됩니다."""
+    _patch_find(monkeypatch, [])
+
+    with pytest.raises(ValueError, match="자기 실행을 찾지 못했습니다"):
+        task_module._conflicting_region_runs(_FakeRun("manual__me", "NYC"), "NYC")

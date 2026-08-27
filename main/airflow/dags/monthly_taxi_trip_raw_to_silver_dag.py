@@ -14,9 +14,11 @@ from shared.airflow.common.slack_failure_callback import (
     slack_retry_alert_callback,
 )
 from main.airflow.common.assets import (
+    MAX_ACTIVE_SERVICE_AREA_RUNS,
     DEFAULT_SERVICE_AREA,
 )
 from main.airflow.scripts.monthly_taxi_trip_raw_to_silver.tasks import (
+    check_no_concurrent_region_run_task,
     DEFAULT_SILVER_DIR,
     MONTHLY_TAXI_TRIP_ERROR_THRESHOLD,
     PROJECT_ROOT,
@@ -56,16 +58,11 @@ default_args = {
     schedule=None,
     start_date=datetime(2024, 1, 1),
     catchup=False,
-    # 이 DAG 만 1 입니다. 지역은 `service_area=` 경로로 격리되지만(#674) **같은 지역의
-    # 다른 달은 아닙니다** — validate_silver 의 #165 가드가 대상 월을 뺀 나머지 월의
-    # `_SUCCESS` 를 보고, 옆 실행이 Spark 를 시작하며 자기 마커를 지우면 그것을 유실로
-    # 신고합니다. 마커는 Spark 가 지우고 validate_silver 가 다시 붙이므로 없는 구간이
-    # Spark 실행 시간만큼 넓습니다. 실제로 8초 차이로 띄운 두 수동 실행이 서로를
-    # 유실로 신고하고 양쪽 다 격리됐습니다 (#1122).
-    #
-    # 지역이 둘 이상 생기면 DAG 단위 상한으로는 "지역은 병렬, 월은 직렬" 을 표현할 수
-    # 없으므로 지역별 Pool 같은 수단을 그때 도입합니다.
-    max_active_runs=1,
+    # 지역 병렬을 위한 값입니다(#674). #1122 에서 1 로 내렸다가 되돌렸습니다 — 막아야
+    # 할 것은 지역이 아니라 **같은 지역의 동시 실행**이었고, DAG 단위 상한으로는 그
+    # 둘을 구분할 수 없어 지역 병렬까지 같이 막혔습니다. 대신 첫 태스크가 같은 지역의
+    # 다른 실행을 직접 확인해 막습니다 (#1124).
+    max_active_runs=MAX_ACTIVE_SERVICE_AREA_RUNS,
     tags=["main", "monthly_taxi_trip", "bronze", "silver", "spark", "emr", "lambda"],
     params={
         "year": Param(
@@ -113,11 +110,13 @@ default_args = {
 def monthly_taxi_trip_raw_to_silver_pipeline():
     bronze_to_silver_task = _bronze_to_silver_operator()
 
+    no_conflict = check_no_concurrent_region_run_task()
     raw_result = raw_to_bronze_task.override(
         retries=2,
         retry_delay=timedelta(minutes=5),
         retry_exponential_backoff=True,
     )()
+    no_conflict >> raw_result
     bronze_checked = validate_bronze_task.override(retries=0)(raw_result)
     bronze_checked >> bronze_to_silver_task
 
