@@ -59,7 +59,7 @@ def test_DAG는_월별로_세_원천을_생성하고_API_릴리스를_검증한�
     assert DAG.get_task("build_source_release").downstream_task_ids == {
         "validate_release"
     }
-    assert DAG.schedule == "0 0 10 * *"
+    assert DAG.schedule == "0 0 * * *"
     assert DAG.catchup is False and DAG.max_active_runs == 1
     assert DAG.params["test_row_limit"] == 0
     assert set(task_module.DEFAULT_PATHS).isdisjoint(DAG.params)

@@ -31,7 +31,7 @@ default_args = {
     dag_id="synthetic_driver_trip_source_pipeline",
     default_args=default_args,
     description="월별 HVFHV에 기사·차량을 배정해 제공 데이터 3종 생성",
-    schedule="0 0 10 * *",
+    schedule="0 0 * * *",
     start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
     catchup=False,
     max_active_runs=1,
